@@ -47,9 +47,10 @@ and `DATABASE_URL` injected by the platform. The same shape for Immortal:
 2. **Managed Postgres requires TLS.** DigitalOcean Managed Postgres
    enforces TLS (`sslmode=require`). Immortal's allowed dependency set
    provides `tokio-postgres` with **no TLS backend**, so the binary cannot
-   connect to Managed Postgres today. Choosing Path B therefore requires
-   adding `tokio-postgres-rustls` (or `postgres-native-tls`) — **requires
-   owner sign-off per AGENTS.md rule 2**. Until that approval exists, use
+   connect to Managed Postgres today. Path B therefore needs
+   `tokio-postgres-rustls`. **Owner approval granted 2026-08-03** (recorded
+   in `AGENTS.md` rule 2): the crate may be added behind a feature flag
+   when this path is implemented. Until that implementation lands, use
    Path A, where Postgres is local and plaintext-on-localhost is correct.
 3. **No local disk, no sidecars** — fine: Immortal keeps all state in
    Postgres and needs nothing else. This is where the one-binary design

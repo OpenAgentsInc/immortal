@@ -10,6 +10,14 @@ Read `README.md` first.
 2. **Use only these direct dependencies:** `tokio`, `tokio-tungstenite`,
    `tokio-postgres`, `secp256k1`, `sha2`, `serde`, `serde_json`. To add a
    dependency, get owner approval first. Record the approval in this file.
+
+   Approved additions:
+   - `tokio-postgres-rustls` with its `rustls` chain (owner approval,
+     2026-08-03). Purpose: an optional TLS backend for managed Postgres
+     services that require TLS (for example DigitalOcean Managed
+     Postgres). Add it only when that deployment path is implemented,
+     behind a feature flag. The Debian single-box and Google Cloud
+     Unix-socket paths do not use it.
 3. **Write the Nostr primitives in this repository.** Put the event, tag,
    filter, canonical ID, replacement, and deletion logic in `src/domain/`.
    Do not use a third-party Nostr crate.

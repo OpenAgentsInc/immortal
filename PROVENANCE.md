@@ -5,7 +5,8 @@ does what. Update this file when an agent joins, leaves, or changes role.
 
 ## Record to date
 
-As of commit `0efe8e0` (2026-08-03):
+As of commit `0efe8e0` (2026-08-03; superseded by the work log below —
+Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 - **100% of the repository content was written by Anthropic Claude**
   (Claude Fable 5 / Opus 5, one Claude Code session), directed and
@@ -58,6 +59,18 @@ As of commit `0efe8e0` (2026-08-03):
   formatting, and `git diff --check` are clean. Updated the README and roadmap
   to distinguish the completed domain milestone from the still-skeletal
   store, gateway, and executable server.
+
+### 2026-08-03 — Human owner: first dependency approval
+
+- Approved `tokio-postgres-rustls` (with its `rustls` chain) as an
+  optional TLS backend for managed Postgres services that require TLS.
+  The approval is recorded in `AGENTS.md` rule 2, which stays the
+  canonical approval list. The dependency is not in the tree yet; it
+  enters only when the TLS deployment path is implemented, behind a
+  feature flag.
+- Context: the deployment review (commit `b74a5e8`) surfaced the blocker
+  — DigitalOcean Managed Postgres mandates TLS, which `tokio-postgres`
+  alone cannot speak. Claude surfaced it; the owner decided.
 
 ## Rules
 
