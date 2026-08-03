@@ -110,14 +110,30 @@ pub fn compare_replacement(
     if current_address != candidate_address {
         return Err(DomainError::ReplacementAddressMismatch);
     }
-    if current.id == candidate.id {
-        return Ok(ReplacementDecision::Duplicate);
+    Ok(compare_replacement_order(
+        current.created_at,
+        &current.id,
+        candidate.created_at,
+        &candidate.id,
+    ))
+}
+
+/// Compare replacement versions when the store already has just the head's
+/// ordering columns. IDs are assumed to be validated lowercase NIP-01 IDs.
+pub fn compare_replacement_order(
+    current_created_at: u64,
+    current_id: &str,
+    candidate_created_at: u64,
+    candidate_id: &str,
+) -> ReplacementDecision {
+    if current_id == candidate_id {
+        return ReplacementDecision::Duplicate;
     }
 
-    Ok(match candidate.created_at.cmp(&current.created_at) {
+    match candidate_created_at.cmp(&current_created_at) {
         Ordering::Greater => ReplacementDecision::ReplaceCurrent,
         Ordering::Less => ReplacementDecision::KeepCurrent,
-        Ordering::Equal if candidate.id < current.id => ReplacementDecision::ReplaceCurrent,
+        Ordering::Equal if candidate_id < current_id => ReplacementDecision::ReplaceCurrent,
         Ordering::Equal => ReplacementDecision::KeepCurrent,
-    })
+    }
 }

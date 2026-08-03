@@ -72,6 +72,49 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   — DigitalOcean Managed Postgres mandates TLS, which `tokio-postgres`
   alone cannot speak. Claude surfaced it; the owner decided.
 
+### 2026-08-03 — Codex 5.6 Sol (Extra High), M2 Store
+
+- Began M2 from commit `c8b6053` after reconciling the owner's optional
+  Postgres-TLS approval. M2 uses only the original allowlisted `tokio` and
+  `tokio-postgres`; the approved TLS backend remains out of the dependency
+  tree until its deployment path is implemented.
+- Scope: versioned transactional migrations; event, tag, replacement,
+  deletion-tombstone, and policy tables; prepared runtime statements;
+  admission with cross-process race serialization; ingest sequencing and
+  transactional `NOTIFY`; NIP-01 query/catch-up reads; full-text-search
+  storage; and least-privilege operations documentation.
+- Verification plan: deterministic unit/fixture checks plus an isolated
+  temporary PostgreSQL 16 cluster on this workstation, with no persistent
+  service or second database added to the product architecture.
+- Implemented the version-1 schema and migration ledger. Migration names and
+  SHA-256 hashes are verified under a database-wide advisory lock; immutable
+  embedded DDL is the only non-prepared execution path. Added a verification-
+  only connection mode for a split least-privilege runtime role.
+- Implemented prepared admission and read statements. Conflicting event IDs
+  and replacement addresses take sorted transaction-scoped advisory locks;
+  the event, tag indexes, head transition, tombstones, deletions, ingest
+  sequence, and `NOTIFY` commit as one unit. Ephemeral events are checked but
+  never inserted, with a database constraint as a second barrier.
+- The first disposable-Postgres run passed the live M2 contract, including
+  idempotent migration, hash verification, post-commit notification, FTS,
+  exact tag lookup, replacement tie races, deletion-before-event, and a
+  concurrent deletion/arrival race across independent connections.
+- Reconciled Claude's concurrent production-parity audit at commit `aedb027`
+  into the active M2 implementation. The database-owned admission pipeline now
+  includes optional pubkey and kind allowlists, pubkey and kind blocklists,
+  closed membership, UTF-8 content-byte and tag-count limits, and configurable
+  future and past timestamp bounds. Each branch has a live-Postgres contract
+  assertion and the split runtime role remains read-only over policy state.
+- Milestone-close verification: 15 optimized domain fixture tests and the M2
+  static contract pass; `cargo clippy --all-targets -- -D warnings`, rustdoc
+  with warnings denied, formatting, and `git diff --check` are clean. The final
+  disposable-Postgres run passed migration application and idempotence, hash-
+  drift failure, runtime-role grants, transactional notification, query and
+  FTS reads, ephemeral and expiration handling, replacement/deletion races,
+  and every configurable policy branch. The destructive live suite requires
+  its disposable-database guard, preventing accidental use against an
+  operator database.
+
 ### 2026-08-03 — Claude: production-parity audit and roadmap update
 
 - Audited the operator's existing production relay

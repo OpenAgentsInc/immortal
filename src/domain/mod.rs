@@ -16,5 +16,8 @@ pub use deletion::{DeletionRequest, DeletionTombstone};
 pub use error::DomainError;
 pub use event::{Event, Tag};
 pub use filter::{Filter, matches_any};
-pub use replacement::{EventClass, ReplacementAddress, ReplacementDecision, compare_replacement};
+pub use replacement::{
+    EventClass, ReplacementAddress, ReplacementDecision, compare_replacement,
+    compare_replacement_order,
+};
 pub use timestamp::TimestampPolicy;

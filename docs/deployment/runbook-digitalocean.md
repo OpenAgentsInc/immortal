@@ -136,24 +136,17 @@ and `DATABASE_URL` injected by the platform. The same shape for Immortal:
    platform builds the Dockerfile, probes `/health`, and does a rolling
    replacement — the book's zero-downtime flow.
 
-4. Migrations. The book runs `sqlx migrate run` from the developer machine
-   against the managed database, temporarily allowing external access, and
-   notes this is a pragmatic shortcut. Immortal equivalent:
-
-   ```sh
-   # Temporarily add your IP as a trusted source in the DB settings, then:
-   for f in migrations/*.sql; do
-     psql "<MANAGED_DATABASE_URL>" -v ON_ERROR_STOP=1 --single-transaction -f "$f"
-   done
-   # Remove your IP from trusted sources again.
-   ```
-
-   Better, once the `immortal migrate` subcommand exists: run it as an App
-   Platform job before deployment, so no external access is ever opened.
+4. Migrations are embedded in the release and recorded with content hashes.
+   The first new process applies pending versions under a Postgres advisory
+   lock before binding; concurrent processes wait and verify. Do not run the
+   raw SQL files from a developer machine, because that bypasses the ledger
+   and needlessly opens external database access. A split-role deployment
+   instead runs the same embedded runner as an App Platform job using the
+   migration-owner credential; see [`database.md`](database.md).
 
 5. Lock down **trusted sources** on the managed database so only the App
-   Platform app (and, transiently, your migration IP) can reach it. This is
-   the book's closing security step for the chapter and is not optional.
+   Platform app can reach it. This is the book's closing security step for
+   the chapter and is not optional.
 
 6. Domain: add `relay.example.com` in the app's settings (Networking →
    Domains), create the CNAME it asks for. App Platform terminates TLS for

@@ -58,9 +58,10 @@ TLS is the job of the reverse proxy (nginx or Caddy).
 
 ## Status
 
-M1 (the protocol domain) is implemented with pinned NIP fixtures. The binary
-is still a server skeleton: Postgres storage begins in M2 and the WebSocket
-gateway begins in M3. See `docs/ROADMAP.md`.
+M1 (the protocol domain) and M2 (the Postgres store) are implemented with
+pinned fixtures and a disposable-Postgres contract suite. The binary is still
+a server skeleton: the WebSocket gateway begins in M3. See
+`docs/ROADMAP.md`.
 
 ## Provenance
 

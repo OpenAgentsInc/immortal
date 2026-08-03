@@ -29,21 +29,21 @@ The NIP-01 primitives, written from `nips/official/01.md`, with fixtures.
       nostr-rs-relay tests (MIT, attributed), replacement and deletion
       races
 
-## M2 — Store (`src/store/`)
+## M2 — Store (`src/store/`) (done)
 
 Postgres owns everything. One admission transaction.
 
-- [ ] Schema migration files (versioned .sql, applied in a transaction)
-- [ ] Tables: `nostr_event` (with `ingest_seq`), `nostr_indexed_tag`,
+- [x] Schema migration files (versioned .sql, applied in a transaction)
+- [x] Tables: `nostr_event` (with `ingest_seq`), `nostr_indexed_tag`,
       `replaceable_head`, `deletion_tombstone`, policy tables
-- [ ] Admission transaction: dedup, replacement compare-and-set,
+- [x] Admission transaction: dedup, replacement compare-and-set,
       tombstones, policy, tag rows, `ingest_seq`, `NOTIFY`
-- [ ] Compound indexes for the NIP-01 access patterns
-- [ ] FTS: generated tsvector column + GIN index (for NIP-50 later)
-- [ ] Admission policy pipeline: allow/block lists for kinds and
+- [x] Compound indexes for the NIP-01 access patterns
+- [x] FTS: generated tsvector column + GIN index (for NIP-50 later)
+- [x] Admission policy pipeline: allow/block lists for kinds and
       pubkeys, closed-membership mode, content-size, tag-count, and
       timestamp bounds — all configurable
-- [ ] Prepared statements only; least-privilege role documented
+- [x] Prepared statements only; least-privilege role documented
 
 ## M3 — Gateway (`src/gateway/`)
 

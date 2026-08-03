@@ -41,9 +41,10 @@ without a TLS backend, so database connections are plaintext. This is
 correct for the supported topologies: same host, private Unix socket, or a
 private network the platform secures. A deployment that requires TLS to the
 database (for example a managed Postgres that enforces `sslmode=require`)
-needs a TLS crate (`tokio-postgres-rustls` or `postgres-native-tls`) —
-**requires owner sign-off per AGENTS.md rule 2**. See the DigitalOcean
-runbook for the concrete case.
+uses the owner-approved `tokio-postgres-rustls` backend. That optional feature
+is approved in `AGENTS.md` but is not in the dependency tree yet; it lands
+with the managed-Postgres deployment path. See the DigitalOcean runbook for
+the concrete case.
 
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
@@ -124,6 +125,6 @@ IMMORTAL_LOG_LEVEL=info
 
 ## Status note
 
-The relay is currently a skeleton. This document is the binding contract for
-the configuration surface as the implementation lands. If the implementation
-must diverge, change this file in the same commit.
+The M1 domain and M2 Postgres store are implemented. The executable server and
+its environment parser land with M3. This document remains the binding
+contract; if implementation must diverge, change it in the same commit.

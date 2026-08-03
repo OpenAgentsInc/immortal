@@ -145,22 +145,15 @@ gcloud projects add-iam-policy-binding <PROJECT_ID> \
 To rotate the credential: add a new secret version and redeploy. Nothing is
 baked into the image.
 
-### A.5 Apply migrations
+### A.5 Migration behavior
 
-Run them through the Cloud SQL Auth Proxy from your workstation or CI (the
-proxy is a local development tool, not a deployed service):
-
-```sh
-cloud-sql-proxy <PROJECT_ID>:<REGION>:immortal-pg --port 5433 &
-for f in migrations/*.sql; do
-  psql "postgres://immortal:<YOUR_DB_PASSWORD>@127.0.0.1:5433/immortal" \
-    -v ON_ERROR_STOP=1 --single-transaction -f "$f"
-done
-kill %1
-```
-
-(Once the `immortal migrate` subcommand exists, a Cloud Run Job with the
-same image and `--add-cloudsql-instances` is the cleaner CI path.)
+Migrations are embedded in the release, serialized by a Postgres advisory
+lock, and recorded with content hashes. Do not apply the raw SQL files with
+`psql`, because doing so bypasses that ledger. With the simple owner role, the
+first new process applies pending versions before binding. With split roles,
+run the same embedded runner as a Cloud Run Job using the migration-owner
+credential and `--add-cloudsql-instances`; see
+[`database.md`](database.md).
 
 ### A.6 Deploy to Cloud Run
 
@@ -244,8 +237,9 @@ gcloud run services update-traffic immortal --region=<REGION> \
   --to-revisions=<OLD_REVISION>=100
 ```
 
-Apply migrations (additive-first) before deploying the image that needs
-them, exactly as in the Debian runbook.
+For split roles, complete the migration job before routing traffic to the new
+revision. With the simple owner role, startup applies the embedded additive
+migrations before the new process binds, exactly as in the Debian runbook.
 
 Backups: Cloud SQL automated backups + point-in-time recovery:
 

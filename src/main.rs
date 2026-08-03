@@ -1,6 +1,7 @@
 //! Immortal — a hardened Nostr relay. One Rust binary, one Postgres.
 //!
-//! Server skeleton. The M1 domain library is implemented; remaining layout:
+//! Server skeleton. The M1 domain and M2 store libraries are implemented;
+//! remaining layout:
 //!   domain/  — NIP-01 primitives: event, tags, filters, canonical ID,
 //!              replacement addresses, deletion semantics (owned, no
 //!              third-party Nostr crate)
@@ -11,7 +12,7 @@
 
 fn main() {
     println!(
-        "immortal {} — domain milestone complete; relay server not implemented (see README.md)",
+        "immortal {} — domain and store milestones complete; relay server not implemented (see README.md)",
         env!("CARGO_PKG_VERSION")
     );
 }

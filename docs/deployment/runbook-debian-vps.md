@@ -56,7 +56,7 @@ psql "postgres://immortal:<YOUR_DB_PASSWORD>@127.0.0.1:5432/immortal" -c "SELECT
 Least privilege: the `immortal` role owns only its database and is not a
 superuser. Do not grant more.
 
-## 3. Install the binary and migrations
+## 3. Install the binary
 
 Use a versioned layout so rollback is a symlink flip:
 
@@ -64,25 +64,15 @@ Use a versioned layout so rollback is a symlink flip:
 sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin immortal
 sudo mkdir -p /opt/immortal/releases/<VERSION>
 sudo cp immortal /opt/immortal/releases/<VERSION>/immortal
-sudo cp -r migrations /opt/immortal/releases/<VERSION>/migrations
 sudo chmod 755 /opt/immortal/releases/<VERSION>/immortal
 sudo ln -sfn /opt/immortal/releases/<VERSION> /opt/immortal/current
 ```
 
-Apply migrations (in order, each in one transaction; the relay also verifies
-schema version at startup and refuses to run against a schema it does not
-understand):
-
-```sh
-cd /opt/immortal/current
-for f in migrations/*.sql; do
-  psql "postgres://immortal:<YOUR_DB_PASSWORD>@127.0.0.1:5432/immortal" \
-    -v ON_ERROR_STOP=1 --single-transaction -f "$f"
-done
-```
-
-(When the `immortal migrate` subcommand lands, prefer it: it records applied
-versions with content hashes and skips already-applied files.)
+Migrations are compiled into the release. The relay applies pending versions
+under one transaction and advisory lock before binding, records their content
+hashes, and refuses a changed or unknown schema. Do not run the SQL files with
+`psql`; that bypasses the migration ledger. See
+[`database.md`](database.md).
 
 ## 4. Environment file
 
@@ -284,20 +274,13 @@ Immortal's protocol tolerates disconnects: clients reconnect and re-send
 # 1. Stage the new release beside the old one.
 sudo mkdir -p /opt/immortal/releases/<NEW_VERSION>
 sudo cp immortal /opt/immortal/releases/<NEW_VERSION>/immortal
-sudo cp -r migrations /opt/immortal/releases/<NEW_VERSION>/migrations
 sudo chmod 755 /opt/immortal/releases/<NEW_VERSION>/immortal
 
-# 2. Apply new migrations (additive-first; old binary keeps working).
-cd /opt/immortal/releases/<NEW_VERSION>
-for f in migrations/*.sql; do  # the migrate subcommand skips applied files
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -f "$f"
-done
-
-# 3. Flip and restart.
+# 2. Flip and restart. The new binary migrates before it binds.
 sudo ln -sfn /opt/immortal/releases/<NEW_VERSION> /opt/immortal/current
 sudo systemctl restart immortal
 
-# 4. Verify.
+# 3. Verify.
 curl -fsS http://127.0.0.1:8080/health
 journalctl -u immortal -n 20 --no-pager
 ```
@@ -318,8 +301,7 @@ curl -fsS http://127.0.0.1:8080/health
 This works because migrations are additive-first: the old binary runs
 against the newer schema. If a release ever requires a destructive
 migration, its notes must say so, and rollback then means restoring the
-pre-upgrade dump — which is why step 8 applies migrations only after a
-fresh backup exists.
+pre-upgrade dump. Always take a fresh backup before beginning an upgrade.
 
 ## 10. Routine checks
 
