@@ -9,7 +9,7 @@ mod migration;
 mod statements;
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     future::poll_fn,
     sync::{
         Arc,
@@ -17,7 +17,10 @@ use std::{
     },
 };
 
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
 use tokio_postgres::{AsyncMessage, Client, NoTls, Row, types::ToSql};
 
 use crate::domain::{
@@ -30,7 +33,12 @@ pub use migration::MigrationReport;
 use statements::Statements;
 
 const EVENT_CHANNEL: &str = "immortal_event";
+const EPHEMERAL_CHANNEL: &str = "immortal_ephemeral";
 const LISTEN_EVENT_SQL: &str = "LISTEN immortal_event";
+const LISTEN_EPHEMERAL_SQL: &str = "LISTEN immortal_ephemeral";
+const EPHEMERAL_CHUNK_BYTES: usize = 3_500;
+const EPHEMERAL_MAX_BYTES: usize = 1_048_576;
+const EPHEMERAL_MAX_ASSEMBLIES: usize = 256;
 
 /// A successfully committed admission or a protocol-level refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,8 +72,27 @@ pub enum AdmissionRejection {
         created_at: u64,
         earliest_allowed: u64,
     },
+    AuthEvent,
     Deleted,
     Superseded,
+}
+
+/// The operator-owned limits that the gateway advertises in NIP-11.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayPolicy {
+    pub closed_membership: bool,
+    pub max_content_bytes: usize,
+    pub max_tags: usize,
+    pub max_future_seconds: u64,
+    pub max_past_seconds: u64,
+}
+
+/// A committed durable position or a validated ephemeral event delivered
+/// through Postgres `NOTIFY` without ever entering a table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreNotification {
+    Stored(i64),
+    Ephemeral(Event),
 }
 
 /// A decoded stored event and its relay-local monotonic position.
@@ -140,6 +167,9 @@ impl Store {
         self.ensure_current()?;
         event.validate_structure()?;
         event.validate_crypto()?;
+        if event.kind == 22_242 {
+            return Ok(AdmissionOutcome::Rejected(AdmissionRejection::AuthEvent));
+        }
         if let Some(expiration) = event.expiration()
             && expiration <= now
         {
@@ -338,9 +368,14 @@ impl Store {
         }
 
         if event.class() == EventClass::Ephemeral {
+            notify_ephemeral(&transaction, &statements, event).await?;
             transaction.commit().await?;
             return Ok(AdmissionOutcome::Ephemeral);
         }
+
+        // Serialize sequence allocation and commit order across processes.
+        // This makes an `ingest_seq` high-water mark a safe EOSE boundary.
+        transaction.query_one(&statements.ingest_lock, &[]).await?;
 
         let tags_json = serde_json::to_string(&event.tags)
             .map_err(|error| StoreError::Serialization(error.to_string()))?;
@@ -421,6 +456,30 @@ impl Store {
             .get(0))
     }
 
+    pub async fn relay_policy(&self) -> Result<RelayPolicy, StoreError> {
+        self.ensure_current()?;
+        let row = self
+            .client
+            .query_opt(&self.statements.policy, &[])
+            .await?
+            .ok_or_else(|| StoreError::InvalidPolicy("singleton row is missing".to_owned()))?;
+        Ok(AdmissionPolicy::from_row(&row)?.into())
+    }
+
+    pub async fn event_by_ingest_seq(
+        &self,
+        ingest_seq: i64,
+        now: u64,
+    ) -> Result<Option<StoredEvent>, StoreError> {
+        self.ensure_current()?;
+        let now = pg_i64(now, "now")?;
+        self.client
+            .query_opt(&self.statements.event_by_ingest, &[&ingest_seq, &now])
+            .await?
+            .map(decode_event_row)
+            .transpose()
+    }
+
     /// Read a bounded, stable catch-up page through a previously sampled
     /// high-water mark.
     pub async fn events_after(
@@ -449,6 +508,44 @@ impl Store {
         filter: &Filter,
         now: u64,
         max_results: usize,
+    ) -> Result<Vec<StoredEvent>, StoreError> {
+        self.query_filter_through(filter, now, max_results, i64::MAX)
+            .await
+    }
+
+    /// Execute a historical filter through a stable durable high-water mark.
+    pub async fn query_filter_through(
+        &self,
+        filter: &Filter,
+        now: u64,
+        max_results: usize,
+        through: i64,
+    ) -> Result<Vec<StoredEvent>, StoreError> {
+        self.query_filter_inner(filter, now, max_results, through, None)
+            .await
+    }
+
+    /// As [`Store::query_filter_through`], but issue a Postgres cancellation
+    /// request when the owning client disconnects or replaces the REQ.
+    pub async fn query_filter_cancellable(
+        &self,
+        filter: &Filter,
+        now: u64,
+        max_results: usize,
+        through: i64,
+        cancel: watch::Receiver<bool>,
+    ) -> Result<Vec<StoredEvent>, StoreError> {
+        self.query_filter_inner(filter, now, max_results, through, Some(cancel))
+            .await
+    }
+
+    async fn query_filter_inner(
+        &self,
+        filter: &Filter,
+        now: u64,
+        max_results: usize,
+        through: i64,
+        mut cancel: Option<watch::Receiver<bool>>,
     ) -> Result<Vec<StoredEvent>, StoreError> {
         self.ensure_current()?;
         filter.validate()?;
@@ -479,14 +576,30 @@ impl Store {
         let tags_json = serde_json::to_string(&tag_map)
             .map_err(|error| StoreError::Serialization(error.to_string()))?;
         let params: &[&(dyn ToSql + Sync)] = &[
-            &ids, &authors, &kinds, &since, &until, &tags_json, &now, &limit,
+            &ids, &authors, &kinds, &since, &until, &tags_json, &now, &limit, &through,
         ];
-        self.client
-            .query(&self.statements.query_filter, params)
-            .await?
-            .into_iter()
-            .map(decode_event_row)
-            .collect()
+        let rows = if let Some(cancel) = &mut cancel {
+            if *cancel.borrow() {
+                return Err(StoreError::QueryCancelled);
+            }
+            let query = self.client.query(&self.statements.query_filter, params);
+            tokio::pin!(query);
+            tokio::select! {
+                result = &mut query => result?,
+                changed = cancel.changed() => {
+                    if changed.is_err() || *cancel.borrow() {
+                        self.client.cancel_token().cancel_query(NoTls).await?;
+                        return Err(StoreError::QueryCancelled);
+                    }
+                    query.await?
+                }
+            }
+        } else {
+            self.client
+                .query(&self.statements.query_filter, params)
+                .await?
+        };
+        rows.into_iter().map(decode_event_row).collect()
     }
 }
 
@@ -496,11 +609,11 @@ impl Drop for Store {
     }
 }
 
-/// Dedicated bounded `LISTEN immortal_event` connection. A malformed
-/// payload, driver failure, or full local queue marks it not current so M3 can
-/// close client connections and recover from `ingest_seq`.
+/// Dedicated bounded durable and ephemeral notification connection. A
+/// malformed payload, incomplete protocol state, driver failure, or full
+/// local queue marks it not current so the gateway can fail closed.
 pub struct NotificationListener {
-    receiver: mpsc::Receiver<i64>,
+    receiver: mpsc::Receiver<StoreNotification>,
     connection_current: Arc<AtomicBool>,
     _client: Client,
     connection_task: JoinHandle<()>,
@@ -513,6 +626,7 @@ impl NotificationListener {
         let connection_current = Arc::new(AtomicBool::new(true));
         let task_current = Arc::clone(&connection_current);
         let connection_task = tokio::spawn(async move {
+            let mut assemblies = HashMap::new();
             loop {
                 match poll_fn(|context| connection.poll_message(context)).await {
                     Some(Ok(AsyncMessage::Notification(notification)))
@@ -521,8 +635,28 @@ impl NotificationListener {
                         let Ok(ingest_seq) = notification.payload().parse::<i64>() else {
                             break;
                         };
-                        if ingest_seq <= 0 || sender.try_send(ingest_seq).is_err() {
+                        if ingest_seq <= 0
+                            || sender
+                                .try_send(StoreNotification::Stored(ingest_seq))
+                                .is_err()
+                        {
                             break;
+                        }
+                    }
+                    Some(Ok(AsyncMessage::Notification(notification)))
+                        if notification.channel() == EPHEMERAL_CHANNEL =>
+                    {
+                        match accept_ephemeral_chunk(notification.payload(), &mut assemblies) {
+                            Ok(Some(event)) => {
+                                if sender
+                                    .try_send(StoreNotification::Ephemeral(event))
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(()) => break,
                         }
                     }
                     Some(Ok(_)) => {}
@@ -534,6 +668,8 @@ impl NotificationListener {
 
         let listen = client.prepare(LISTEN_EVENT_SQL).await?;
         client.execute(&listen, &[]).await?;
+        let listen_ephemeral = client.prepare(LISTEN_EPHEMERAL_SQL).await?;
+        client.execute(&listen_ephemeral, &[]).await?;
         Ok(Self {
             receiver,
             connection_current,
@@ -547,6 +683,15 @@ impl NotificationListener {
     }
 
     pub async fn recv(&mut self) -> Option<i64> {
+        loop {
+            match self.receiver.recv().await? {
+                StoreNotification::Stored(ingest_seq) => return Some(ingest_seq),
+                StoreNotification::Ephemeral(_) => {}
+            }
+        }
+    }
+
+    pub async fn recv_notification(&mut self) -> Option<StoreNotification> {
         self.receiver.recv().await
     }
 }
@@ -595,6 +740,122 @@ fn admission_lock_keys(
         );
     }
     keys
+}
+
+async fn notify_ephemeral(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    event: &Event,
+) -> Result<(), StoreError> {
+    let bytes =
+        serde_json::to_vec(event).map_err(|error| StoreError::Serialization(error.to_string()))?;
+    if bytes.len() > EPHEMERAL_MAX_BYTES {
+        return Err(StoreError::EphemeralTooLarge(bytes.len()));
+    }
+    let total = bytes.len().div_ceil(EPHEMERAL_CHUNK_BYTES);
+    for (index, chunk) in bytes.chunks(EPHEMERAL_CHUNK_BYTES).enumerate() {
+        let payload = format!("{}:{index}:{total}:{}", event.id, encode_hex(chunk));
+        transaction
+            .query_one(&statements.notify_ephemeral, &[&payload])
+            .await?;
+    }
+    Ok(())
+}
+
+struct EphemeralAssembly {
+    chunks: Vec<Option<Vec<u8>>>,
+    bytes: usize,
+}
+
+fn accept_ephemeral_chunk(
+    payload: &str,
+    assemblies: &mut HashMap<String, EphemeralAssembly>,
+) -> Result<Option<Event>, ()> {
+    let mut parts = payload.splitn(4, ':');
+    let event_id = parts.next().ok_or(())?;
+    let index = parts.next().ok_or(())?.parse::<usize>().map_err(|_| ())?;
+    let total = parts.next().ok_or(())?.parse::<usize>().map_err(|_| ())?;
+    let encoded = parts.next().ok_or(())?;
+    let max_chunks = EPHEMERAL_MAX_BYTES.div_ceil(EPHEMERAL_CHUNK_BYTES);
+    if event_id.len() != 64
+        || !event_id
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        || total == 0
+        || total > max_chunks
+        || index >= total
+        || encoded.len() > EPHEMERAL_CHUNK_BYTES * 2
+    {
+        return Err(());
+    }
+    let chunk = decode_hex(encoded)?;
+    if assemblies.len() >= EPHEMERAL_MAX_ASSEMBLIES && !assemblies.contains_key(event_id) {
+        return Err(());
+    }
+    let assembly = assemblies
+        .entry(event_id.to_owned())
+        .or_insert_with(|| EphemeralAssembly {
+            chunks: vec![None; total],
+            bytes: 0,
+        });
+    if assembly.chunks.len() != total || assembly.chunks[index].is_some() {
+        return Err(());
+    }
+    assembly.bytes = assembly.bytes.checked_add(chunk.len()).ok_or(())?;
+    if assembly.bytes > EPHEMERAL_MAX_BYTES {
+        return Err(());
+    }
+    assembly.chunks[index] = Some(chunk);
+    if assembly.chunks.iter().any(Option::is_none) {
+        return Ok(None);
+    }
+
+    let assembly = assemblies.remove(event_id).ok_or(())?;
+    let mut bytes = Vec::with_capacity(assembly.bytes);
+    for chunk in assembly.chunks {
+        bytes.extend(chunk.ok_or(())?);
+    }
+    let event = serde_json::from_slice::<Event>(&bytes).map_err(|_| ())?;
+    event.validate_structure().map_err(|_| ())?;
+    event.validate_crypto().map_err(|_| ())?;
+    if event.id != event_id || event.class() != EventClass::Ephemeral || event.kind == 22_242 {
+        return Err(());
+    }
+    Ok(Some(event))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, ()> {
+    if !value.len().is_multiple_of(2) {
+        return Err(());
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = decode_nibble(pair[0])?;
+            let low = decode_nibble(pair[1])?;
+            Ok((high << 4) | low)
+        })
+        .collect()
+}
+
+fn decode_nibble(byte: u8) -> Result<u8, ()> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        _ => Err(()),
+    }
 }
 
 async fn apply_deletion(
@@ -664,8 +925,12 @@ fn decode_event_row(row: Row) -> Result<StoredEvent, StoreError> {
         content: row.get(5),
         sig: row.get(6),
     };
-    event.validate_structure().map_err(StoreError::Domain)?;
-    event.validate_crypto().map_err(StoreError::Domain)?;
+    event
+        .validate_structure()
+        .map_err(|error| StoreError::CorruptRow(error.to_string()))?;
+    event
+        .validate_crypto()
+        .map_err(|error| StoreError::CorruptRow(error.to_string()))?;
     Ok(StoredEvent {
         event,
         ingest_seq: row.get(7),
@@ -701,6 +966,18 @@ impl AdmissionPolicy {
                 StoreError::InvalidPolicy("max_past_seconds is negative".to_owned())
             })?,
         })
+    }
+}
+
+impl From<AdmissionPolicy> for RelayPolicy {
+    fn from(policy: AdmissionPolicy) -> Self {
+        Self {
+            closed_membership: policy.closed_membership,
+            max_content_bytes: policy.max_content_bytes,
+            max_tags: policy.max_tags,
+            max_future_seconds: policy.max_future_seconds,
+            max_past_seconds: policy.max_past_seconds,
+        }
     }
 }
 

@@ -142,6 +142,52 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   service. That stays a reverse-proxy concern on the operator side; it
   does not enter this binary.
 
+### 2026-08-03 — Codex 5.6 Sol (Extra High), M3 Gateway
+
+- Began M3 from commit `5acb0ff` on a clean `main`, current with
+  `origin/main`, after rereading the repository doctrine, configuration
+  contract, M2 store interfaces, and pinned NIP-01, NIP-11, and NIP-42 texts.
+- Scope: the complete WebSocket/HTTP gateway milestone — owned wire parsing,
+  NIP-11, per-connection NIP-42 state, indexed subscriptions, race-free
+  history/live handoff, durable and ephemeral cross-process fanout, bounded
+  resources and rate limits, cancellable queries, graceful shutdown, and
+  executable startup.
+- Dependency decision: add `tokio-tungstenite` 0.30.0 with only its handshake
+  feature and expand the existing `tokio` feature set for networking, signals,
+  and I/O utilities. Both direct dependencies are already explicitly allowed
+  by `AGENTS.md`; no new approval is required. The crate is MIT-licensed, and
+  disabling default features avoids pulling a client connector or TLS stack
+  into the relay server.
+- Implemented fail-fast environment parsing and the runnable binary; migration
+  and fixed runtime workers become current before bind. One bounded gateway
+  serves health, NIP-11 with CORS, and WebSocket upgrades on the same listener,
+  accepts every path consistently, and drains on SIGINT/SIGTERM.
+- Implemented owned NIP-01/AUTH wire parsing, per-connection unpredictable
+  NIP-42 challenges, fixed-window IP/pubkey limits, query-cost and shape
+  bounds, cancellable historical jobs, bounded outbound queues, and an indexed
+  subscription hub keyed by event ID, author, kind, and tag.
+- Made the EOSE boundary explicit: durable sequence allocation is serialized
+  at the end of admission, subscriptions enter buffering before their query,
+  history reads through a sampled high-water mark, and the hub deduplicates and
+  flushes later durable plus ephemeral events after EOSE.
+- Implemented the ephemeral lane without storage: immediate in-process fanout
+  follows the completed admission transaction, while validated hexadecimal
+  chunks travel over Postgres `NOTIFY` to other relay processes. A bounded
+  recent-ID window suppresses the publisher process's notification echo.
+- The first fresh-Postgres M3 run passed a real two-process HTTP/WebSocket
+  contract: NIP-11/CORS, per-connection AUTH and auth-required refusal,
+  historical EOSE, durable cross-delivery, duplicate suppression, a chunked
+  12 KB ephemeral event with no historical result, CLOSE, and graceful
+  shutdown.
+- Milestone-close hardening bounded configuration values, malformed response
+  identifiers, historical batches, EOSE buffers, notification reassembly, and
+  every local queue; AUTH shares the EVENT rate budgets and oversized outbound
+  events close only their slow/incompatible client. Final verification passed
+  formatting, all-target checks and tests, Clippy with warnings denied,
+  rustdoc with warnings denied, and an optimized build. The final disposable-
+  Postgres deployment run passed the M2 store contract, the two-gateway M3
+  contract, and a real binary startup/health/NIP-11/SIGTERM smoke test.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

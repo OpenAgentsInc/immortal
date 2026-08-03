@@ -22,6 +22,7 @@ cache, no sync engine. Postgres does all the storage work.
 | [`insights.md`](insights.md) | The book's production insights by theme, each mapped onto Immortal. |
 | [`configuration.md`](configuration.md) | Immortal's configuration contract: environment variables only, with fail-fast validation. |
 | [`database.md`](database.md) | Postgres schema, transactional admission, migrations, and simple or split least-privilege roles. |
+| [`gateway.md`](gateway.md) | HTTP/WebSocket runtime, indexed subscriptions, race-free EOSE, fanout, limits, and shutdown. |
 | [`runbook-debian-vps.md`](runbook-debian-vps.md) | The canonical single-box deployment: Debian stable, apt Postgres, systemd, Caddy or nginx, backups, upgrade and rollback. Works on any VPS (Hetzner, OVH, and others). |
 | [`runbook-digitalocean.md`](runbook-digitalocean.md) | DigitalOcean: the Droplet path, and the App Platform + Managed Postgres path the book uses, with honest notes on fit. |
 | [`runbook-google-cloud.md`](runbook-google-cloud.md) | Google Cloud: Cloud Run + Cloud SQL + Secret Manager + Artifact Registry, and a GCE VM alternative. |
@@ -31,8 +32,9 @@ cache, no sync engine. Postgres does all the storage work.
 1. Read the root `README.md` and `AGENTS.md` first. They are binding.
 2. Read `configuration.md` to learn the environment variables.
 3. Read `database.md` for schema migration and role choices.
-4. Pick one runbook and follow its numbered steps.
-5. Read `insights.md` when you want the reasoning behind a step.
+4. Read `gateway.md` for runtime and failure behavior.
+5. Pick one runbook and follow its numbered steps.
+6. Read `insights.md` when you want the reasoning behind a step.
 
 ## Invariants that apply to every runbook
 

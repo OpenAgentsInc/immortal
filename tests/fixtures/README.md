@@ -16,6 +16,11 @@ names the NIP that owns the behavior.
 - `nip01/replacement.json`, `nip09/deletion.json`, and
   `nip40/expiration.json` were written for Immortal directly from the pinned
   NIP-01, NIP-09, and NIP-40 text.
+- `nip01/gateway_messages.json`, `nip11/document.json`, and
+  `nip42/auth.json` were written for Immortal directly from the pinned NIP-01,
+  NIP-11, and NIP-42 texts. They pin gateway message shape, relay information,
+  limit metadata, and canonical authentication acceptance boundaries. The M3
+  live contract separately checks NIP-11 CORS behavior.
 
 Fixture data is committed rather than generated so a specification or
 implementation change produces a reviewable diff.

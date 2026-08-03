@@ -34,7 +34,7 @@ for the same lock and then verify the resulting ledger.
 
 Do not execute `migrations/*.sql` directly with `psql`: that bypasses the
 hash ledger and makes the database unverifiable. M2 exposes the embedded
-runner through `Store::connect_with_report`; M3 will invoke it during process
+runner through `Store::connect_with_report`; M3 invokes it during process
 startup before binding the network listener.
 
 Migration DDL is the only use of `batch_execute`: it is immutable SQL loaded
@@ -43,8 +43,9 @@ statement is prepared once through `tokio-postgres` and uses typed parameters.
 
 `Store::connect_verified` is the hardened runtime path. It checks that all
 known migration names and hashes are current without requesting DDL
-privileges. M3 will wire the migration and verified-runtime paths into process
-startup before the network listener binds.
+privileges. Gateway startup runs migrations once, then creates its fixed set of
+verified runtime workers and the dedicated notification connection before the
+network listener binds.
 
 ## Admission transaction
 
@@ -61,8 +62,17 @@ race where a deletion and its target arrive on different processes at the
 same time.
 
 Ephemeral kinds pass signature, timestamp, policy, and tombstone checks, but
-the schema rejects them and the store never inserts them. M3 owns their live
-delivery lane.
+the schema rejects them and the store never inserts them. After commit the
+gateway fans them out locally and sends bounded hexadecimal chunks through the
+`immortal_ephemeral` Postgres notification channel for other relay processes.
+Listeners validate and reassemble the signed event in memory; no ephemeral
+payload enters a table.
+
+Durable admissions take a short global advisory lock immediately before
+allocating `ingest_seq`. Conflicting event/replacement locks have already been
+taken at that point. This makes durable sequence order equal commit order, so
+the gateway can use a sampled high-water mark as a race-free historical/live
+EOSE boundary.
 
 ## Admission policy
 

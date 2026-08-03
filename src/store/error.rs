@@ -8,8 +8,11 @@ pub enum StoreError {
     Database(tokio_postgres::Error),
     Domain(DomainError),
     ConnectionClosed,
+    WorkQueueFull,
     MigrationDrift(String),
     InvalidPolicy(String),
+    QueryCancelled,
+    EphemeralTooLarge(usize),
     TimestampOutOfRange { field: &'static str, value: u64 },
     InvalidLimit(usize),
     Serialization(String),
@@ -22,8 +25,13 @@ impl fmt::Display for StoreError {
             Self::Database(error) => write!(f, "Postgres error: {error}"),
             Self::Domain(error) => write!(f, "invalid event: {error}"),
             Self::ConnectionClosed => f.write_str("Postgres connection driver is not current"),
+            Self::WorkQueueFull => f.write_str("database work queue is full"),
             Self::MigrationDrift(reason) => write!(f, "schema migration drift: {reason}"),
             Self::InvalidPolicy(reason) => write!(f, "invalid relay admission policy: {reason}"),
+            Self::QueryCancelled => f.write_str("database query was cancelled"),
+            Self::EphemeralTooLarge(bytes) => {
+                write!(f, "ephemeral event is {bytes} bytes; maximum is 1048576")
+            }
             Self::TimestampOutOfRange { field, value } => {
                 write!(f, "{field} timestamp {value} exceeds Postgres bigint range")
             }

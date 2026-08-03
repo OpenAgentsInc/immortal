@@ -21,6 +21,7 @@ const MEMBER_SQL: &str = "SELECT 1 FROM relay_member_pubkey WHERE pubkey = $1";
 const BLOCKED_PUBKEY_SQL: &str = "SELECT reason FROM relay_blocked_pubkey WHERE pubkey = $1";
 const BLOCKED_KIND_SQL: &str = "SELECT reason FROM relay_blocked_kind WHERE kind = $1";
 const ADVISORY_LOCK_SQL: &str = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))";
+const INGEST_LOCK_SQL: &str = "SELECT pg_advisory_xact_lock(1229802831, 1229866836)";
 const TOMBSTONE_MATCH_SQL: &str = r#"
 SELECT EXISTS (
     SELECT 1
@@ -103,12 +104,18 @@ WHERE kind = $1
   AND created_at <= $4
 "#;
 const NOTIFY_SQL: &str = "SELECT pg_notify('immortal_event', $1)";
+const NOTIFY_EPHEMERAL_SQL: &str = "SELECT pg_notify('immortal_ephemeral', $1)";
 const EVENT_BY_ID_SQL: &str = r#"
 SELECT id, pubkey, created_at, kind, tags::text, content, sig, ingest_seq
 FROM nostr_event
 WHERE id = $1 AND (expires_at IS NULL OR expires_at > $2)
 "#;
 const LATEST_INGEST_SQL: &str = "SELECT COALESCE(MAX(ingest_seq), 0) FROM nostr_event";
+const EVENT_BY_INGEST_SQL: &str = r#"
+SELECT id, pubkey, created_at, kind, tags::text, content, sig, ingest_seq
+FROM nostr_event
+WHERE ingest_seq = $1 AND (expires_at IS NULL OR expires_at > $2)
+"#;
 const EVENTS_AFTER_SQL: &str = r#"
 SELECT id, pubkey, created_at, kind, tags::text, content, sig, ingest_seq
 FROM nostr_event
@@ -128,6 +135,7 @@ WHERE ($1::text[] IS NULL OR e.id = ANY($1))
   AND ($4::bigint IS NULL OR e.created_at >= $4)
   AND ($5::bigint IS NULL OR e.created_at <= $5)
   AND (e.expires_at IS NULL OR e.expires_at > $7)
+  AND e.ingest_seq <= $9
   AND NOT EXISTS (
       SELECT 1
       FROM jsonb_each($6::text::jsonb) requested(tag_name, tag_values)
@@ -155,6 +163,7 @@ pub(crate) struct Statements {
     pub blocked_pubkey: Statement,
     pub blocked_kind: Statement,
     pub advisory_lock: Statement,
+    pub ingest_lock: Statement,
     pub tombstone_match: Statement,
     pub head: Statement,
     pub insert_event: Statement,
@@ -166,7 +175,9 @@ pub(crate) struct Statements {
     pub delete_event_target: Statement,
     pub delete_address_target: Statement,
     pub notify: Statement,
+    pub notify_ephemeral: Statement,
     pub event_by_id: Statement,
+    pub event_by_ingest: Statement,
     pub latest_ingest: Statement,
     pub events_after: Statement,
     pub query_filter: Statement,
@@ -183,6 +194,7 @@ impl Statements {
             blocked_pubkey: client.prepare(BLOCKED_PUBKEY_SQL).await?,
             blocked_kind: client.prepare(BLOCKED_KIND_SQL).await?,
             advisory_lock: client.prepare(ADVISORY_LOCK_SQL).await?,
+            ingest_lock: client.prepare(INGEST_LOCK_SQL).await?,
             tombstone_match: client.prepare(TOMBSTONE_MATCH_SQL).await?,
             head: client.prepare(HEAD_SQL).await?,
             insert_event: client.prepare(INSERT_EVENT_SQL).await?,
@@ -194,7 +206,9 @@ impl Statements {
             delete_event_target: client.prepare(DELETE_EVENT_TARGET_SQL).await?,
             delete_address_target: client.prepare(DELETE_ADDRESS_TARGET_SQL).await?,
             notify: client.prepare(NOTIFY_SQL).await?,
+            notify_ephemeral: client.prepare(NOTIFY_EPHEMERAL_SQL).await?,
             event_by_id: client.prepare(EVENT_BY_ID_SQL).await?,
+            event_by_ingest: client.prepare(EVENT_BY_INGEST_SQL).await?,
             latest_ingest: client.prepare(LATEST_INGEST_SQL).await?,
             events_after: client.prepare(EVENTS_AFTER_SQL).await?,
             query_filter: client.prepare(QUERY_FILTER_SQL).await?,

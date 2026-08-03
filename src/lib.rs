@@ -3,4 +3,5 @@
 #![forbid(unsafe_code)]
 
 pub mod domain;
+pub mod gateway;
 pub mod store;

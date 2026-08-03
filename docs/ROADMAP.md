@@ -45,21 +45,21 @@ Postgres owns everything. One admission transaction.
       timestamp bounds — all configurable
 - [x] Prepared statements only; least-privilege role documented
 
-## M3 — Gateway (`src/gateway/`)
+## M3 — Gateway (`src/gateway/`) (done)
 
 The WebSocket protocol server.
 
-- [ ] WS handshake + NIP-11 document on HTTP GET
-- [ ] NIP-01 message flow: EVENT, REQ, CLOSE, OK, EOSE, CLOSED, NOTICE
-- [ ] NIP-42 per-connection challenge state
-- [ ] `SubscriptionIndex` (by id, author, kind, tag) — no linear scans
-- [ ] Race-free EOSE: buffer live events during the historical query,
+- [x] WS handshake + NIP-11 document on HTTP GET
+- [x] NIP-01 message flow: EVENT, REQ, CLOSE, OK, EOSE, CLOSED, NOTICE
+- [x] NIP-42 per-connection challenge state
+- [x] `SubscriptionIndex` (by id, author, kind, tag) — no linear scans
+- [x] Race-free EOSE: buffer live events during the historical query,
       deduplicate, flush after EOSE
-- [ ] Ephemeral lane (kinds 20000–29999): in-process + `NOTIFY`, never
+- [x] Ephemeral lane (kinds 20000–29999): in-process + `NOTIFY`, never
       stored
-- [ ] Limits: frame size, event bytes, subscriptions per connection,
+- [x] Limits: frame size, event bytes, subscriptions per connection,
       filters per REQ; per-IP and per-pubkey rate limits
-- [ ] Query cancel on client disconnect; bounded per-connection send
+- [x] Query cancel on client disconnect; bounded per-connection send
       queues; graceful shutdown
 
 ## M4 — Conformance

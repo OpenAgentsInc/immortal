@@ -48,7 +48,7 @@ the concrete case.
 
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
-| `IMMORTAL_DB_CONNECTIONS` | no | `4` | Worker database connections. One additional dedicated connection is used for `LISTEN/NOTIFY`. |
+| `IMMORTAL_DB_CONNECTIONS` | no | `4` | Worker database connections (1–64). One additional dedicated connection is used for `LISTEN/NOTIFY`. |
 
 ### Network
 
@@ -57,7 +57,8 @@ the concrete case.
 | `IMMORTAL_BIND_ADDR` | no | `127.0.0.1` | Listen address. Keep the default behind a same-host reverse proxy. Set `0.0.0.0` in containers. |
 | `IMMORTAL_PORT` | no | `8080` | Listen port for WebSocket and NIP-11 HTTP (one port, one listener). |
 | `PORT` | no | — | Platform-injected port (Cloud Run, App Platform). When set, it overrides `IMMORTAL_PORT`. |
-| `IMMORTAL_RELAY_URL` | for NIP-42 | — | Public URL of this relay, e.g. `wss://relay.example.com`. Used to validate the `relay` tag in NIP-42 AUTH events and advertised in NIP-11. Required if NIP-42 is enabled; startup error if NIP-42 is on and this is unset. |
+| `IMMORTAL_RELAY_URL` | for NIP-42 | — | Public URL of this relay, e.g. `wss://relay.example.com`. Used to validate the `relay` tag in NIP-42 AUTH events and to advertise NIP-42 support in NIP-11. |
+| `IMMORTAL_AUTH_REQUIRED` | no | `false` | Require a valid per-connection NIP-42 authentication event before EVENT or REQ. `IMMORTAL_RELAY_URL` must be set when this is true. |
 
 TLS terminates at the reverse proxy. The binary itself never speaks TLS and
 has no certificate configuration.
@@ -66,15 +67,16 @@ has no certificate configuration.
 
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
-| `IMMORTAL_MAX_FRAME_BYTES` | no | `131072` | Maximum WebSocket frame/message size in bytes. Larger frames close the connection. Also bounds maximum stored event size. |
-| `IMMORTAL_MAX_SUBSCRIPTIONS` | no | `32` | Maximum concurrent subscriptions per connection. Excess `REQ` is answered with `CLOSED`. |
-| `IMMORTAL_MAX_FILTERS` | no | `16` | Maximum filters per `REQ`. |
-| `IMMORTAL_MAX_LIMIT` | no | `1000` | Cap on any filter `limit`; also the default page size when a filter has no `limit`. |
-| `IMMORTAL_MAX_QUERY_COST` | no | `100000` | Upper bound on estimated rows scanned per `REQ`; costlier queries are refused with `CLOSED`. |
+| `IMMORTAL_MAX_FRAME_BYTES` | no | `131072` | Maximum WebSocket frame/message and gateway event size in bytes (1,024–16,777,216). Larger frames close the connection; larger publications are refused. The database admission policy has its own content bound. |
+| `IMMORTAL_MAX_SUBSCRIPTIONS` | no | `32` | Maximum concurrent subscriptions per connection (1–1,024). Excess `REQ` is answered with `CLOSED`. |
+| `IMMORTAL_MAX_FILTERS` | no | `16` | Maximum filters per `REQ` (1–256). |
+| `IMMORTAL_MAX_LIMIT` | no | `1000` | Cap on any filter `limit` (1–100,000); also the default page size when a filter has no `limit`. |
+| `IMMORTAL_MAX_QUERY_COST` | no | `100000` | Upper bound on estimated rows scanned per `REQ` (1–1,000,000,000); costlier queries are refused with `CLOSED`. |
 | `IMMORTAL_RATE_EVENTS_PER_MIN_IP` | no | `120` | `EVENT` messages accepted per minute per client IP. |
 | `IMMORTAL_RATE_EVENTS_PER_MIN_PUBKEY` | no | `60` | `EVENT` messages accepted per minute per author pubkey. |
 | `IMMORTAL_RATE_REQ_PER_MIN_IP` | no | `120` | `REQ` messages per minute per client IP. |
-| `IMMORTAL_MAX_CONNECTIONS_PER_IP` | no | `20` | Concurrent WebSocket connections per client IP. |
+| `IMMORTAL_MAX_CONNECTIONS_PER_IP` | no | `20` | Concurrent WebSocket connections per client IP (1–4,096). |
+| `IMMORTAL_SEND_QUEUE_CAPACITY` | no | `256` | Maximum queued outbound messages per connection (8–65,536). Historical result batches and per-subscription EOSE buffers are each capped below half this value so their handoff remains bounded. A slow connection that fills the queue is closed. |
 
 When the relay runs behind a reverse proxy, the client IP is taken from the
 proxy connection's `X-Forwarded-For` / `X-Real-IP` header **only when**
@@ -125,6 +127,5 @@ IMMORTAL_LOG_LEVEL=info
 
 ## Status note
 
-The M1 domain and M2 Postgres store are implemented. The executable server and
-its environment parser land with M3. This document remains the binding
-contract; if implementation must diverge, change it in the same commit.
+The M1 domain, M2 Postgres store, and M3 executable gateway implement this
+contract. If implementation must diverge, change this file in the same commit.

@@ -1,0 +1,920 @@
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    io,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::{Semaphore, watch},
+    task::{JoinHandle, JoinSet},
+    time::timeout,
+};
+use tokio_tungstenite::tungstenite::{
+    Message,
+    error::Error as WebSocketError,
+    protocol::{CloseFrame, frame::coding::CloseCode},
+};
+
+use crate::{
+    domain::{Event, EventClass, Filter},
+    store::{
+        AdmissionOutcome, AdmissionRejection, NotificationListener, Store, StoreError,
+        StoreNotification,
+    },
+};
+
+use super::{
+    GatewayConfig, GatewayError,
+    auth::{AuthState, make_challenge, read_process_secret},
+    db::DbPool,
+    rate::{ConnectionPermit, RateLimiter},
+    socket::{
+        ServerWebSocket, effective_ip, is_websocket_upgrade, read_http_head, serve_http,
+        websocket_handshake,
+    },
+    subscription::{ConnectionId, HubHandle, PublishedEvent},
+    wire::{self, ClientMessage, closed_message, notice_message, ok_message, parse_client_message},
+};
+
+const MAX_PROCESS_CONNECTIONS: usize = 4_096;
+const NOTIFICATION_QUEUE_CAPACITY: usize = 2_048;
+const HUB_COMMAND_CAPACITY: usize = 2_048;
+const MAX_DB_QUEUED_JOBS: usize = 256;
+
+pub struct Gateway {
+    listener: TcpListener,
+    local_addr: SocketAddr,
+    state: Arc<ServerState>,
+    shutdown: watch::Sender<bool>,
+    shutdown_receiver: watch::Receiver<bool>,
+    background: Vec<JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+pub struct ShutdownHandle {
+    sender: watch::Sender<bool>,
+}
+
+struct ServerState {
+    config: Arc<GatewayConfig>,
+    db: DbPool,
+    hub: HubHandle,
+    rate: RateLimiter,
+    challenge_secret: [u8; 32],
+    next_connection_id: AtomicU64,
+    nip11: Arc<str>,
+    current: Arc<AtomicBool>,
+    shutdown: watch::Sender<bool>,
+}
+
+struct ConnectionContext {
+    connection_id: ConnectionId,
+    ip: std::net::IpAddr,
+    state: Arc<ServerState>,
+    auth: Option<AuthState>,
+    active_subscriptions: HashSet<String>,
+    cancellations: HashMap<String, watch::Sender<bool>>,
+    generation: u64,
+    query_tasks: JoinSet<()>,
+}
+
+impl Gateway {
+    /// Validate configuration, migrate and verify Postgres, create fixed
+    /// workers and notification state, and only then bind the network socket.
+    pub async fn start(config: GatewayConfig) -> Result<Self, GatewayError> {
+        config.validate()?;
+        let challenge_secret = read_process_secret()?;
+        let (migration_store, _) = Store::connect_with_report(&config.database_url).await?;
+        let policy = migration_store.relay_policy().await?;
+        drop(migration_store);
+
+        let mut notifications =
+            NotificationListener::connect(&config.database_url, NOTIFICATION_QUEUE_CAPACITY)
+                .await?;
+        let (shutdown, shutdown_receiver) = watch::channel(false);
+        let current = Arc::new(AtomicBool::new(true));
+        let queue_capacity = MAX_DB_QUEUED_JOBS.div_ceil(config.db_connections);
+        let (db, mut background) = DbPool::start(
+            &config.database_url,
+            config.db_connections,
+            queue_capacity,
+            shutdown.clone(),
+            shutdown_receiver.clone(),
+            Arc::clone(&current),
+        )
+        .await?;
+        let (hub, hub_task) = HubHandle::start(
+            HUB_COMMAND_CAPACITY,
+            (config.limits.send_queue_capacity.saturating_sub(1) / 2).max(1),
+            config.limits.max_frame_bytes,
+            shutdown_receiver.clone(),
+        );
+        background.push(hub_task);
+
+        let notify_db = db.clone();
+        let notify_hub = hub.clone();
+        let notify_shutdown = shutdown.clone();
+        let notify_current = Arc::clone(&current);
+        let mut notify_stop = shutdown_receiver.clone();
+        background.push(tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    changed = notify_stop.changed() => {
+                        if changed.is_err() || *notify_stop.borrow() {
+                            break;
+                        }
+                    }
+                    notification = notifications.recv_notification() => {
+                        let Some(notification) = notification else {
+                            fail_process(&notify_current, &notify_shutdown);
+                            break;
+                        };
+                        let now = unix_now();
+                        let published = match notification {
+                            StoreNotification::Stored(ingest_seq) => {
+                                match notify_db.event_by_ingest_seq(ingest_seq, now).await {
+                                    Ok(Some(stored)) => Some(PublishedEvent {
+                                        event: Arc::new(stored.event),
+                                        ingest_seq: Some(stored.ingest_seq),
+                                    }),
+                                    Ok(None) => None,
+                                    Err(_) => {
+                                        fail_process(&notify_current, &notify_shutdown);
+                                        break;
+                                    }
+                                }
+                            }
+                            StoreNotification::Ephemeral(event) => Some(PublishedEvent {
+                                event: Arc::new(event),
+                                ingest_seq: None,
+                            }),
+                        };
+                        if let Some(published) = published
+                            && notify_hub.publish(published, now).await.is_err()
+                        {
+                            fail_process(&notify_current, &notify_shutdown);
+                            break;
+                        }
+                    }
+                }
+            }
+        }));
+
+        let listener = match TcpListener::bind(config.bind_addr).await {
+            Ok(listener) => listener,
+            Err(error) => {
+                let _ = shutdown.send(true);
+                return Err(error.into());
+            }
+        };
+        let local_addr = listener.local_addr()?;
+        let nip11 = Arc::<str>::from(wire::nip11_json(&config, &policy));
+        let state = Arc::new(ServerState {
+            rate: RateLimiter::new(config.limits.clone()),
+            config: Arc::new(config),
+            db,
+            hub,
+            challenge_secret,
+            next_connection_id: AtomicU64::new(1),
+            nip11,
+            current,
+            shutdown: shutdown.clone(),
+        });
+        Ok(Self {
+            listener,
+            local_addr,
+            state,
+            shutdown,
+            shutdown_receiver,
+            background,
+        })
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    pub fn shutdown_handle(&self) -> ShutdownHandle {
+        ShutdownHandle {
+            sender: self.shutdown.clone(),
+        }
+    }
+
+    pub async fn run(mut self) -> Result<(), GatewayError> {
+        let connection_slots = Arc::new(Semaphore::new(MAX_PROCESS_CONNECTIONS));
+        let mut connections = JoinSet::new();
+        loop {
+            tokio::select! {
+                changed = self.shutdown_receiver.changed() => {
+                    if changed.is_err() || *self.shutdown_receiver.borrow() {
+                        break;
+                    }
+                }
+                accepted = self.listener.accept() => {
+                    let (stream, peer) = match accepted {
+                        Ok(accepted) => accepted,
+                        Err(_) => {
+                            fail_process(&self.state.current, &self.shutdown);
+                            break;
+                        }
+                    };
+                    let Ok(slot) = Arc::clone(&connection_slots).try_acquire_owned() else {
+                        drop(stream);
+                        continue;
+                    };
+                    let state = Arc::clone(&self.state);
+                    connections.spawn(async move {
+                        let _slot = slot;
+                        let _ = handle_socket(stream, peer, state).await;
+                    });
+                }
+                completed = connections.join_next(), if !connections.is_empty() => {
+                    let _ = completed;
+                }
+            }
+        }
+
+        let failed = !self.state.current.load(Ordering::Acquire);
+        self.state.current.store(false, Ordering::Release);
+        let _ = self.shutdown.send(true);
+        let grace = self.state.config.shutdown_grace;
+        if timeout(grace, async {
+            while connections.join_next().await.is_some() {}
+        })
+        .await
+        .is_err()
+        {
+            connections.abort_all();
+            while connections.join_next().await.is_some() {}
+        }
+        for mut task in self.background.drain(..) {
+            if timeout(grace, &mut task).await.is_err() {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+        if failed {
+            Err(GatewayError::Internal(
+                "Postgres notification or worker state became non-current".to_owned(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl ShutdownHandle {
+    pub fn shutdown(&self) {
+        let _ = self.sender.send(true);
+    }
+}
+
+async fn handle_socket(
+    mut stream: TcpStream,
+    peer: SocketAddr,
+    state: Arc<ServerState>,
+) -> Result<(), GatewayError> {
+    let (request_bytes, head) = read_http_head(&mut stream).await?;
+    if !is_websocket_upgrade(&head) {
+        return serve_http(
+            stream,
+            &head,
+            &state.nip11,
+            state.current.load(Ordering::Acquire),
+        )
+        .await;
+    }
+    let ip = effective_ip(&head, peer.ip(), state.config.trust_proxy);
+    let Some(connection_permit) = state.rate.connect(ip) else {
+        return Ok(());
+    };
+    let websocket =
+        websocket_handshake(stream, request_bytes, state.config.limits.max_frame_bytes).await?;
+    handle_websocket(websocket, ip, connection_permit, state).await
+}
+
+async fn handle_websocket(
+    mut websocket: ServerWebSocket,
+    ip: std::net::IpAddr,
+    _connection_permit: ConnectionPermit,
+    state: Arc<ServerState>,
+) -> Result<(), GatewayError> {
+    let connection_id = state.next_connection_id.fetch_add(1, Ordering::Relaxed);
+    let channels = state
+        .hub
+        .add_connection(connection_id, state.config.limits.send_queue_capacity)
+        .await?;
+    let mut outbound = channels.outbound;
+    let mut close = channels.close;
+    let mut shutdown = state.shutdown.subscribe();
+    let auth = state.config.relay_url.as_ref().map(|relay_url| {
+        AuthState::new(
+            make_challenge(&state.challenge_secret, connection_id, ip),
+            relay_url.clone(),
+        )
+    });
+    let mut context = ConnectionContext {
+        connection_id,
+        ip,
+        state: Arc::clone(&state),
+        auth,
+        active_subscriptions: HashSet::new(),
+        cancellations: HashMap::new(),
+        generation: 0,
+        query_tasks: JoinSet::new(),
+    };
+    let mut pending = VecDeque::new();
+    if let Some(auth) = &context.auth {
+        pending.push_back(wire::auth_message(auth.challenge()));
+    }
+    let mut write_pending = false;
+
+    'connection: loop {
+        while context.query_tasks.try_join_next().is_some() {}
+        let mut progressed = false;
+        if let Some(message) = pending.pop_front() {
+            queue_websocket_text(&mut websocket, message)?;
+            write_pending = true;
+            progressed = true;
+        } else if let Ok(message) = outbound.try_recv() {
+            queue_websocket_text(&mut websocket, message)?;
+            write_pending = true;
+            progressed = true;
+        }
+        if write_pending {
+            match websocket.flush() {
+                Ok(()) => write_pending = false,
+                Err(WebSocketError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed) => {
+                    break 'connection;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        match websocket.read() {
+            Ok(Message::Text(text)) => {
+                progressed = true;
+                handle_client_text(&mut context, text.as_str(), &mut pending).await?;
+            }
+            Ok(Message::Binary(_)) => {
+                progressed = true;
+                pending.push_back(notice_message("invalid: binary messages are not supported"));
+            }
+            Ok(Message::Ping(_) | Message::Pong(_)) => {
+                progressed = true;
+                write_pending = true;
+            }
+            Ok(Message::Close(_)) => {
+                break 'connection;
+            }
+            Ok(Message::Frame(_)) => {}
+            Err(WebSocketError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed) => {
+                break 'connection;
+            }
+            Err(WebSocketError::Capacity(_)) => {
+                let _ = websocket.close(Some(CloseFrame {
+                    code: CloseCode::Size,
+                    reason: "message too large".into(),
+                }));
+                break 'connection;
+            }
+            Err(_) => break 'connection,
+        }
+        if progressed {
+            continue;
+        }
+
+        enum Wake {
+            Socket,
+            Outbound(Option<String>),
+            Stop,
+        }
+        let wake = {
+            let socket = websocket.get_ref().stream();
+            tokio::select! {
+                _ = socket.readable() => Wake::Socket,
+                _ = socket.writable(), if write_pending => Wake::Socket,
+                message = outbound.recv() => Wake::Outbound(message),
+                changed = close.changed() => {
+                    let _ = changed;
+                    Wake::Stop
+                }
+                changed = shutdown.changed() => {
+                    let _ = changed;
+                    Wake::Stop
+                }
+            }
+        };
+        match wake {
+            Wake::Socket => {}
+            Wake::Outbound(Some(message)) => pending.push_back(message),
+            Wake::Outbound(None) | Wake::Stop => break 'connection,
+        }
+    }
+
+    for cancellation in context.cancellations.values() {
+        let _ = cancellation.send(true);
+    }
+    context.query_tasks.abort_all();
+    while context.query_tasks.join_next().await.is_some() {}
+    context
+        .state
+        .hub
+        .remove_connection(context.connection_id)
+        .await;
+    let _ = websocket.close(Some(CloseFrame {
+        code: CloseCode::Away,
+        reason: "connection closing".into(),
+    }));
+    let _ = websocket.flush();
+    Ok(())
+}
+
+async fn handle_client_text(
+    context: &mut ConnectionContext,
+    text: &str,
+    pending: &mut VecDeque<String>,
+) -> Result<(), GatewayError> {
+    let message = match parse_client_message(text) {
+        Ok(message) => message,
+        Err(error) => {
+            if let Some(event_id) = error.event_id {
+                pending.push_back(ok_message(
+                    &event_id,
+                    false,
+                    &format!("invalid: {}", error.reason),
+                ));
+            } else if let Some(subscription_id) = error.subscription_id {
+                pending.push_back(closed_message(
+                    &subscription_id,
+                    &format!("invalid: {}", error.reason),
+                ));
+            } else {
+                pending.push_back(notice_message(&format!("invalid: {}", error.reason)));
+            }
+            return Ok(());
+        }
+    };
+    match message {
+        ClientMessage::Auth(event) => handle_auth(context, event, pending),
+        ClientMessage::Event(event) => handle_event(context, event, pending).await,
+        ClientMessage::Req {
+            subscription_id,
+            filters,
+        } => handle_req(context, subscription_id, filters, pending).await,
+        ClientMessage::Close { subscription_id } => {
+            if let Some(cancellation) = context.cancellations.remove(&subscription_id) {
+                let _ = cancellation.send(true);
+            }
+            context.active_subscriptions.remove(&subscription_id);
+            context
+                .state
+                .hub
+                .remove(context.connection_id, subscription_id)
+                .await;
+            Ok(())
+        }
+    }
+}
+
+fn handle_auth(
+    context: &mut ConnectionContext,
+    event: Event,
+    pending: &mut VecDeque<String>,
+) -> Result<(), GatewayError> {
+    if let Err(error) = event.validate_structure() {
+        pending.push_back(ok_message(
+            &bounded(&event.id, 64),
+            false,
+            &format!("invalid: {error}"),
+        ));
+        return Ok(());
+    }
+    if !context.state.rate.event_from_ip(context.ip)
+        || !context.state.rate.event_from_pubkey(&event.pubkey)
+    {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "rate-limited: authentication event rate exceeded",
+        ));
+        return Ok(());
+    }
+    let Some(auth) = &mut context.auth else {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "restricted: NIP-42 is not configured on this relay",
+        ));
+        return Ok(());
+    };
+    match auth.authenticate(&event, unix_now()) {
+        Ok(()) => pending.push_back(ok_message(&event.id, true, "")),
+        Err(reason) => pending.push_back(ok_message(&event.id, false, &reason)),
+    }
+    Ok(())
+}
+
+async fn handle_event(
+    context: &mut ConnectionContext,
+    event: Event,
+    pending: &mut VecDeque<String>,
+) -> Result<(), GatewayError> {
+    if let Err(error) = event.validate_structure() {
+        pending.push_back(ok_message(
+            &bounded(&event.id, 64),
+            false,
+            &format!("invalid: {error}"),
+        ));
+        return Ok(());
+    }
+    if context.state.config.auth_required
+        && !context
+            .auth
+            .as_ref()
+            .is_some_and(AuthState::is_authenticated)
+    {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "auth-required: authenticate before publishing",
+        ));
+        return Ok(());
+    }
+    if !context.state.rate.event_from_ip(context.ip)
+        || !context.state.rate.event_from_pubkey(&event.pubkey)
+    {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "rate-limited: event rate exceeded",
+        ));
+        return Ok(());
+    }
+    let event_bytes = serde_json::to_vec(&event)
+        .map_err(|error| GatewayError::Internal(format!("event serialization: {error}")))?;
+    if event_bytes.len() > context.state.config.limits.max_frame_bytes {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "invalid: event exceeds the configured byte limit",
+        ));
+        return Ok(());
+    }
+    let event_id = event.id.clone();
+    let ephemeral = (event.class() == EventClass::Ephemeral).then(|| Arc::new(event.clone()));
+    let admission_now = unix_now();
+    match context.state.db.admit(event, admission_now).await {
+        Ok(outcome) => {
+            if matches!(outcome, AdmissionOutcome::Ephemeral)
+                && let Some(event) = ephemeral
+                && context
+                    .state
+                    .hub
+                    .publish(
+                        PublishedEvent {
+                            event,
+                            ingest_seq: None,
+                        },
+                        admission_now,
+                    )
+                    .await
+                    .is_err()
+            {
+                fail_process(&context.state.current, &context.state.shutdown);
+            }
+            let (accepted, reason) = admission_response(outcome);
+            pending.push_back(ok_message(&event_id, accepted, &reason));
+        }
+        Err(error) => {
+            pending.push_back(ok_message(&event_id, false, &store_error_response(&error)));
+        }
+    }
+    Ok(())
+}
+
+async fn handle_req(
+    context: &mut ConnectionContext,
+    subscription_id: String,
+    filters: Vec<Filter>,
+    pending: &mut VecDeque<String>,
+) -> Result<(), GatewayError> {
+    if context.state.config.auth_required
+        && !context
+            .auth
+            .as_ref()
+            .is_some_and(AuthState::is_authenticated)
+    {
+        pending.push_back(closed_message(
+            &subscription_id,
+            "auth-required: authenticate before subscribing",
+        ));
+        return Ok(());
+    }
+    if !context.state.rate.req_from_ip(context.ip) {
+        pending.push_back(closed_message(
+            &subscription_id,
+            "rate-limited: REQ rate exceeded",
+        ));
+        return Ok(());
+    }
+    if subscription_id.is_empty() || subscription_id.chars().count() > 64 {
+        pending.push_back(closed_message(
+            &subscription_id,
+            "invalid: subscription id must contain 1 to 64 characters",
+        ));
+        return Ok(());
+    }
+    if filters.len() > context.state.config.limits.max_filters {
+        pending.push_back(closed_message(
+            &subscription_id,
+            "restricted: too many filters",
+        ));
+        return Ok(());
+    }
+    if !context.active_subscriptions.contains(&subscription_id)
+        && context.active_subscriptions.len() >= context.state.config.limits.max_subscriptions
+    {
+        pending.push_back(closed_message(
+            &subscription_id,
+            "restricted: too many active subscriptions",
+        ));
+        return Ok(());
+    }
+    let filters = match validate_and_clamp_filters(filters, &context.state.config) {
+        Ok(filters) => filters,
+        Err(reason) => {
+            pending.push_back(closed_message(&subscription_id, &reason));
+            return Ok(());
+        }
+    };
+    if context.query_tasks.len()
+        >= context
+            .state
+            .config
+            .limits
+            .max_subscriptions
+            .saturating_mul(2)
+    {
+        pending.push_back(closed_message(
+            &subscription_id,
+            "rate-limited: too many historical queries in flight",
+        ));
+        return Ok(());
+    }
+
+    context.generation = context.generation.wrapping_add(1).max(1);
+    let generation = context.generation;
+    let previous_cancellation = context.cancellations.remove(&subscription_id);
+    if !context
+        .state
+        .hub
+        .register(
+            context.connection_id,
+            subscription_id.clone(),
+            generation,
+            filters.clone(),
+        )
+        .await?
+    {
+        return Err(GatewayError::Internal(
+            "connection disappeared while registering subscription".to_owned(),
+        ));
+    }
+    if let Some(cancellation) = previous_cancellation {
+        let _ = cancellation.send(true);
+    }
+    context.active_subscriptions.insert(subscription_id.clone());
+    let (cancel, cancel_receiver) = watch::channel(false);
+    context
+        .cancellations
+        .insert(subscription_id.clone(), cancel);
+    let db = context.state.db.clone();
+    let hub = context.state.hub.clone();
+    let connection_id = context.connection_id;
+    let max_results = context.state.config.limits.max_limit.min(
+        (context
+            .state
+            .config
+            .limits
+            .send_queue_capacity
+            .saturating_sub(1)
+            / 2)
+        .max(1),
+    );
+    context.query_tasks.spawn(async move {
+        match db
+            .history(filters, unix_now(), max_results, cancel_receiver)
+            .await
+        {
+            Ok(history) => {
+                hub.history_ready(
+                    connection_id,
+                    subscription_id,
+                    generation,
+                    history.high_water,
+                    history.events,
+                )
+                .await;
+            }
+            Err(StoreError::QueryCancelled) => {}
+            Err(_) => {
+                hub.close_subscription(
+                    connection_id,
+                    subscription_id,
+                    "error: historical query failed".to_owned(),
+                )
+                .await;
+            }
+        }
+    });
+    Ok(())
+}
+
+fn validate_and_clamp_filters(
+    mut filters: Vec<Filter>,
+    config: &GatewayConfig,
+) -> Result<Vec<Filter>, String> {
+    let mut total_cost = 0_usize;
+    for filter in &mut filters {
+        filter
+            .validate()
+            .map_err(|error| format!("invalid: {error}"))?;
+        if filter.ids.as_ref().is_some_and(Vec::is_empty)
+            || filter.authors.as_ref().is_some_and(Vec::is_empty)
+            || filter.kinds.as_ref().is_some_and(Vec::is_empty)
+            || filter.tags.values().any(Vec::is_empty)
+        {
+            return Err("invalid: filter arrays must not be empty".to_owned());
+        }
+        for (name, values) in &filter.tags {
+            if matches!(name, 'e' | 'p')
+                && values.iter().any(|value| {
+                    value.len() != 64
+                        || !value
+                            .as_bytes()
+                            .iter()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+                })
+            {
+                return Err(format!(
+                    "invalid: #{name} values must be 64 lowercase hexadecimal characters"
+                ));
+            }
+        }
+        let limit = filter
+            .limit
+            .unwrap_or(config.limits.max_limit)
+            .min(config.limits.max_limit);
+        filter.limit = Some(limit);
+        let selector_values = filter.ids.as_ref().map_or(0, Vec::len)
+            + filter.authors.as_ref().map_or(0, Vec::len)
+            + filter.kinds.as_ref().map_or(0, Vec::len)
+            + filter.tags.values().map(Vec::len).sum::<usize>();
+        let factor = if filter.ids.is_some() {
+            1
+        } else if filter.authors.is_some() && filter.kinds.is_some() {
+            4
+        } else if !filter.tags.is_empty() {
+            10
+        } else if filter.authors.is_some() || filter.kinds.is_some() {
+            20
+        } else if filter.since.is_some() || filter.until.is_some() {
+            50
+        } else {
+            100
+        };
+        let cost = limit
+            .saturating_mul(factor)
+            .saturating_add(selector_values.saturating_mul(factor));
+        total_cost = total_cost.saturating_add(cost);
+        if total_cost > config.limits.max_query_cost {
+            return Err("restricted: query cost exceeds the configured limit".to_owned());
+        }
+    }
+    Ok(filters)
+}
+
+fn admission_response(outcome: AdmissionOutcome) -> (bool, String) {
+    match outcome {
+        AdmissionOutcome::Stored { .. } | AdmissionOutcome::Ephemeral => (true, String::new()),
+        AdmissionOutcome::Duplicate => (true, "duplicate: already have this event".to_owned()),
+        AdmissionOutcome::Rejected(rejection) => match rejection {
+            AdmissionRejection::BlockedPubkey(reason) | AdmissionRejection::BlockedKind(reason) => {
+                (false, format!("blocked: {}", bounded(&reason, 512)))
+            }
+            AdmissionRejection::PubkeyNotAllowed
+            | AdmissionRejection::KindNotAllowed
+            | AdmissionRejection::NotMember => (
+                false,
+                "restricted: event is not allowed by relay policy".to_owned(),
+            ),
+            AdmissionRejection::ContentTooLarge { .. } => {
+                (false, "invalid: event content is too large".to_owned())
+            }
+            AdmissionRejection::TooManyTags { .. } => {
+                (false, "invalid: event has too many tags".to_owned())
+            }
+            AdmissionRejection::TimestampTooFarInFuture { .. }
+            | AdmissionRejection::TimestampTooOld { .. } => (
+                false,
+                "invalid: event timestamp is outside relay bounds".to_owned(),
+            ),
+            AdmissionRejection::AuthEvent => (
+                false,
+                "invalid: authentication events cannot be published".to_owned(),
+            ),
+            AdmissionRejection::Deleted => (
+                false,
+                "blocked: event is covered by a deletion request".to_owned(),
+            ),
+            AdmissionRejection::Superseded => (
+                true,
+                "duplicate: newer replaceable event already stored".to_owned(),
+            ),
+        },
+    }
+}
+
+fn store_error_response(error: &StoreError) -> String {
+    match error {
+        StoreError::Domain(reason) => format!("invalid: {}", bounded(&reason.to_string(), 512)),
+        StoreError::TimestampOutOfRange { .. }
+        | StoreError::InvalidLimit(_)
+        | StoreError::Serialization(_)
+        | StoreError::EphemeralTooLarge(_) => {
+            format!("invalid: {}", bounded(&error.to_string(), 512))
+        }
+        StoreError::QueryCancelled => "error: admission was cancelled".to_owned(),
+        _ => "error: storage unavailable".to_owned(),
+    }
+}
+
+fn bounded(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+fn queue_websocket_text(
+    websocket: &mut ServerWebSocket,
+    message: String,
+) -> Result<(), GatewayError> {
+    match websocket.write(Message::text(message)) {
+        Ok(()) => Ok(()),
+        Err(WebSocketError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn fail_process(current: &AtomicBool, shutdown: &watch::Sender<bool>) {
+    current.store(false, Ordering::Release);
+    let _ = shutdown.send(true);
+}
+
+pub fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{domain::Filter, gateway::GatewayConfig};
+
+    use super::validate_and_clamp_filters;
+
+    #[test]
+    fn req_limits_reject_empty_arrays_and_expensive_queries_and_clamp_limits() {
+        let mut config = GatewayConfig::new(
+            "host=/tmp dbname=test".to_owned(),
+            "127.0.0.1:0".parse().unwrap(),
+        );
+        config.limits.max_limit = 10;
+        config.limits.max_query_cost = 1_000;
+
+        let empty = Filter {
+            ids: Some(Vec::new()),
+            ..Filter::default()
+        };
+        assert!(validate_and_clamp_filters(vec![empty], &config).is_err());
+
+        let expensive = vec![Filter::default(), Filter::default()];
+        assert!(validate_and_clamp_filters(expensive, &config).is_err());
+
+        let bounded = Filter {
+            ids: Some(vec!["a".repeat(64)]),
+            limit: Some(1_000),
+            ..Filter::default()
+        };
+        let filters = validate_and_clamp_filters(vec![bounded], &config).unwrap();
+        assert_eq!(filters[0].limit, Some(10));
+    }
+}

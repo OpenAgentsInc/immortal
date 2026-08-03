@@ -37,9 +37,10 @@ Postgres does all the storage work:
 Event admission is one database transaction. The relay sends `OK` to the
 client only after the commit.
 
-A relay process uses the sequence number to find events it did not see. If
-a process cannot become current, it closes its connections. Clients
-reconnect. This is safe in the Nostr protocol.
+A relay process uses the sequence number to fetch committed notifications and
+to define stable historical/live boundaries. If its database or notification
+stream cannot remain current, it closes its connections. Clients reconnect.
+This is safe in the Nostr protocol.
 
 Ephemeral events (kinds 20000–29999) do not go to storage.
 
@@ -58,10 +59,40 @@ TLS is the job of the reverse proxy (nginx or Caddy).
 
 ## Status
 
-M1 (the protocol domain) and M2 (the Postgres store) are implemented with
-pinned fixtures and a disposable-Postgres contract suite. The binary is still
-a server skeleton: the WebSocket gateway begins in M3. See
-`docs/ROADMAP.md`.
+M1 (the protocol domain), M2 (the Postgres store), and M3 (the HTTP/WebSocket
+gateway) are implemented with pinned fixtures and disposable-Postgres contract
+suites. The binary is a running Nostr relay; M4 adds the broader conformance,
+chaos, and load proof. See `docs/ROADMAP.md`.
+
+## Quick start
+
+On Debian, install Postgres and create a dedicated database owner:
+
+```sh
+sudo apt-get install -y postgresql
+sudo -u postgres createuser --pwprompt immortal
+sudo -u postgres createdb --owner=immortal immortal
+```
+
+Build and start the relay. The embedded migration runner applies and verifies
+the schema before the network listener binds:
+
+```sh
+cargo build --release
+DATABASE_URL='postgres://immortal:<YOUR_DB_PASSWORD>@127.0.0.1:5432/immortal' \
+  ./target/release/immortal
+```
+
+In another terminal, verify health and NIP-11:
+
+```sh
+curl -fsS http://127.0.0.1:8080/health
+curl -fsS -H 'Accept: application/nostr+json' http://127.0.0.1:8080/
+```
+
+Put Caddy or nginx in front for public TLS, then set `IMMORTAL_RELAY_URL` to
+the public `wss://` URL to enable NIP-42. The complete environment contract and
+production runbooks are in `docs/deployment/`.
 
 ## Provenance
 
