@@ -1,0 +1,21 @@
+# Domain Fixture Corpus
+
+These fixtures test the pinned specifications under `nips/`. Each directory
+names the NIP that owns the behavior.
+
+## Provenance
+
+- `nip01/events.json` contains the signed `hello world` event and canonical
+  ID vector from `scsibug/nostr-rs-relay`, commit
+  `b5c1f642e4f4c3b9c54f5d18d66f4c53642076b4`, `src/event.rs`, MIT license.
+  Its `tags: null` compatibility input was normalized to the NIP-01 wire form
+  `tags: []`; the canonical bytes, ID, and signature are unchanged.
+- `nip01/filters.json` adapts the filter-matching cases from the same commit's
+  `src/subscription.rs`. Immortal changes the old prefix cases to assert exact
+  matching because the pinned NIP-01 no longer allows prefix matching.
+- `nip01/replacement.json`, `nip09/deletion.json`, and
+  `nip40/expiration.json` were written for Immortal directly from the pinned
+  NIP-01, NIP-09, and NIP-40 text.
+
+Fixture data is committed rather than generated so a specification or
+implementation change produces a reviewable diff.

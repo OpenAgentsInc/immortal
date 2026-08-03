@@ -25,6 +25,40 @@ As of commit `0efe8e0` (2026-08-03):
 | Claude (Anthropic) | Foundation to date: doctrine, NIP source policy and sync, roadmap, inspiration reviews, deployment docs. Ongoing: architecture, policy documents, and review. |
 | Codex (OpenAI) | Implementation of the roadmap milestones (`docs/ROADMAP.md`, M1 and later): domain, store, gateway, conformance, under the AGENTS.md rules. Handoff date: 2026-08-03. |
 
+## Active work log
+
+### 2026-08-03 — Codex 5.6 Sol (Extra High), M1 Domain
+
+- Accepted the implementation handoff from Claude Fable 5 at commit
+  `15e736b` on `main`.
+- Read the binding repository rules and pinned NIP-01, NIP-09, and NIP-40
+  specifications before implementation.
+- Scope: the complete M1 domain milestone — owned event and tag types,
+  canonical IDs, Schnorr verification, exact filter matching, kind and
+  replacement semantics, expiration, deletion tombstones, timestamp bounds,
+  and attributed fixture corpora.
+- Dependency decision: use only the already-approved `secp256k1`, `sha2`,
+  `serde`, and `serde_json` entries from the `AGENTS.md` allowlist. No owner
+  approval or rule change is required. `secp256k1` is CC0-1.0 (the same
+  license as Immortal) and explicitly allowlisted; the other three are dual
+  MIT/Apache-2.0.
+- Concurrent-work note: Claude completed and pushed the deployment-doc set as
+  commit `b74a5e8` while M1 was in progress. The shared worktree advanced
+  cleanly; Codex did not modify those files.
+- Implemented the owned `src/domain/` library with explicit validation layers
+  and pure replacement/deletion decisions suitable for the M2 admission
+  transaction.
+- Added committed NIP-01, NIP-09, and NIP-40 fixture files with source and
+  license attribution. The first complete run passed 14 fixture tests in both
+  debug and release modes; follow-up review added canonical escaping coverage
+  and aligned malformed expiration tags with the pinned spec/reference
+  behavior (ignored rather than treated as event-invalid).
+- Milestone-close verification: 15 optimized fixture tests pass;
+  `cargo clippy --all-targets -- -D warnings`, rustdoc with warnings denied,
+  formatting, and `git diff --check` are clean. Updated the README and roadmap
+  to distinguish the completed domain milestone from the still-skeletal
+  store, gateway, and executable server.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

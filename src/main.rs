@@ -1,6 +1,6 @@
 //! Immortal — a hardened Nostr relay. One Rust binary, one Postgres.
 //!
-//! Pre-implementation skeleton. Module layout per AGENTS.md:
+//! Server skeleton. The M1 domain library is implemented; remaining layout:
 //!   domain/  — NIP-01 primitives: event, tags, filters, canonical ID,
 //!              replacement addresses, deletion semantics (owned, no
 //!              third-party Nostr crate)
@@ -11,7 +11,7 @@
 
 fn main() {
     println!(
-        "immortal {} — pre-implementation skeleton (see README.md)",
+        "immortal {} — domain milestone complete; relay server not implemented (see README.md)",
         env!("CARGO_PKG_VERSION")
     );
 }

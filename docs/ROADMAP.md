@@ -12,20 +12,20 @@ external-project reviews live in `docs/inspiration/`.
 - [x] First inspiration review (nostr-rs-relay)
 - [x] Deployment docs (`docs/deployment/`)
 
-## M1 — Domain (`src/domain/`)
+## M1 — Domain (`src/domain/`) (done)
 
 The NIP-01 primitives, written from `nips/official/01.md`, with fixtures.
 
-- [ ] Event type, tag model, single-letter tag indexing rule
-- [ ] Canonical serialization and event ID (SHA-256)
-- [ ] Schnorr signature verification (secp256k1)
-- [ ] Filter model and matching (ids, authors, kinds, tags, since, until,
+- [x] Event type, tag model, single-letter tag indexing rule
+- [x] Canonical serialization and event ID (SHA-256)
+- [x] Schnorr signature verification (secp256k1)
+- [x] Filter model and matching (ids, authors, kinds, tags, since, until,
       limit) — no prefix matching
-- [ ] Classification: regular, replaceable, ephemeral, addressable;
+- [x] Classification: regular, replaceable, ephemeral, addressable;
       replacement address; expiration (NIP-40)
-- [ ] Deletion semantics (NIP-09), including deletion-before-event
-- [ ] Timestamp bounds (reject far-future events)
-- [ ] Fixture corpus: known event IDs, filter cases ported from
+- [x] Deletion semantics (NIP-09), including deletion-before-event
+- [x] Timestamp bounds (reject far-future events)
+- [x] Fixture corpus: known event IDs, filter cases ported from
       nostr-rs-relay tests (MIT, attributed), replacement and deletion
       races
 
