@@ -28,10 +28,10 @@ impl DeletionRequest {
                     event_ids.insert(id.to_owned());
                 }
                 (Some("a"), Some(value)) => {
-                    if let Ok(address) = ReplacementAddress::from_str(value)
-                        && address.pubkey == event.pubkey
-                    {
-                        addresses.insert(address);
+                    if let Ok(address) = ReplacementAddress::from_str(value) {
+                        if address.pubkey == event.pubkey {
+                            addresses.insert(address);
+                        }
                     }
                 }
                 _ => {}

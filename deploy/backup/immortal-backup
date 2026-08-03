@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+backup_dir=/var/backups/immortal
+retention_days=14
+stamp="$(date -u +%Y-%m-%dT%H%M%SZ)"
+destination="${backup_dir}/immortal-${stamp}.dump"
+temporary="${destination}.tmp"
+
+cleanup() {
+    if test -n "${temporary}"; then
+        rm -f -- "${temporary}"
+    fi
+}
+trap cleanup EXIT HUP INT TERM
+
+umask 077
+test -d "${backup_dir}"
+pg_dump --dbname=immortal --format=custom --no-owner --no-acl \
+    --file="${temporary}"
+chmod 0600 "${temporary}"
+mv -- "${temporary}" "${destination}"
+temporary=
+
+find "${backup_dir}" -type f -name 'immortal-*.dump' \
+    -mtime "+${retention_days}" -delete

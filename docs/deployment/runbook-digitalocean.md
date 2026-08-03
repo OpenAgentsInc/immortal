@@ -1,171 +1,105 @@
 # Runbook: DigitalOcean
 
-Two paths exist on DigitalOcean:
+The supported DigitalOcean deployment is one Debian 13 Droplet containing the
+Immortal binary, apt Postgres, and Caddy or nginx. This is the canonical
+single-box topology with DigitalOcean providing the VM and network edge.
 
-- **Path A — Droplet.** A plain Debian VM. This is the recommended path for
-  Immortal. It is the Debian runbook with a different control panel.
-- **Path B — App Platform + Managed Postgres.** The path *Zero To
-  Production In Rust* ch. 5 uses for its web service. It can host Immortal,
-  but read the honest notes first: one of them requires an owner decision.
+DigitalOcean App Platform with Managed Postgres is deliberately **not** a
+supported M5 path. Managed Postgres requires TLS, while the shipped binary has
+no Postgres TLS backend. The owner has approved an optional
+`tokio-postgres-rustls` feature, but approval is not implementation; do not
+deploy that topology until the feature and its live managed-database proof
+land together.
 
-## Path A: Droplet (recommended)
+## 1. Create the Droplet
 
-1. Create a Droplet: Debian stable image, the smallest size is enough to
-   start (1 vCPU / 1 GB), enable backups if you want provider-level disk
-   snapshots.
-2. Add your SSH key during creation. Log in: `ssh root@<DROPLET_IP>`.
-3. Point DNS `A` (and `AAAA`) for `relay.example.com` at the Droplet IP.
-   DigitalOcean DNS or any registrar works.
-4. Optionally create a DigitalOcean Cloud Firewall allowing inbound TCP
-   22, 80, 443 only, and attach it to the Droplet (equivalent to the `ufw`
-   step in the Debian runbook — use one or the other).
-5. Follow [`runbook-debian-vps.md`](runbook-debian-vps.md) from step 1 to
-   the end. Nothing DigitalOcean-specific remains: Postgres from apt on the
-   same box, systemd unit, Caddy or nginx for TLS, `pg_dump` backups.
+1. Create an amd64 or arm64 Droplet with the Debian 13 image.
+2. Start with at least 1 GiB RAM and choose storage for the expected Postgres
+   data volume. Resize from measured use rather than guessing future scale.
+3. Add an SSH key. Keep password login disabled.
+4. Reserve an IP if the relay hostname must survive Droplet replacement.
+5. Point `relay.example.com` at the Droplet IP.
 
-Provider notes:
+## 2. Restrict the network
 
-- Droplet snapshots/backups complement, not replace, `pg_dump`: a snapshot
-  of a running Postgres restores to a crash-consistent state, while a dump
-  is a clean logical copy you can restore anywhere.
-- If you later split the database onto a second Droplet, put both in one
-  VPC and keep Postgres listening on the private interface only. That is
-  still one Postgres — the architecture is unchanged.
+Create a DigitalOcean Cloud Firewall attached to the Droplet:
 
-## Path B: App Platform + Managed Postgres (the book's path)
+| Direction | Protocol | Port | Source/destination |
+| --- | --- | ---: | --- |
+| Inbound | TCP | 22 | operator IP ranges |
+| Inbound | TCP | 80 | all IPv4/IPv6 |
+| Inbound | TCP | 443 | all IPv4/IPv6 |
+| Outbound | all | all | all |
 
-The book (ZTP, ch. 5) deploys with a committed `spec.yaml`, Docker build,
-health-check probe, environment-variable secrets, a managed dev Postgres,
-and `DATABASE_URL` injected by the platform. The same shape for Immortal:
+Do not expose Postgres 5432 or Immortal 8080. The service unit binds both
+application and database traffic to localhost. Use either the cloud firewall
+or the Debian runbook's `ufw` step as the primary rule set; if you use both,
+keep them identical.
 
-### Honest fit assessment — read before choosing this path
+## 3. Install Immortal
 
-1. **WebSockets:** App Platform supports WebSocket upgrades through its
-   load balancer, so the core relay protocol works. Expect the platform to
-   recycle instances during deploys and maintenance; clients reconnect,
-   which the Nostr protocol and Immortal's fail-closed design tolerate.
-2. **Managed Postgres requires TLS.** DigitalOcean Managed Postgres
-   enforces TLS (`sslmode=require`). Immortal's allowed dependency set
-   provides `tokio-postgres` with **no TLS backend**, so the binary cannot
-   connect to Managed Postgres today. Path B therefore needs
-   `tokio-postgres-rustls`. **Owner approval granted 2026-08-03** (recorded
-   in `AGENTS.md` rule 2): the crate may be added behind a feature flag
-   when this path is implemented. Until that implementation lands, use
-   Path A, where Postgres is local and plaintext-on-localhost is correct.
-3. **No local disk, no sidecars** — fine: Immortal keeps all state in
-   Postgres and needs nothing else. This is where the one-binary design
-   pays off.
-4. **Trusted sources** (below) are the platform's substitute for the
-   private network you would build yourself; use them.
-5. Managed Postgres includes automated backups and point-in-time recovery;
-   the `pg_dump` cron from the Debian runbook becomes optional
-   belt-and-braces (run it from your workstation if you want an off-provider
-   copy).
+Connect to the Droplet and follow the canonical runbook end to end:
 
-### Steps
+```sh
+ssh root@<DROPLET_IP>
+```
 
-1. Install and authenticate `doctl`:
+Continue with [`runbook-debian-vps.md`](runbook-debian-vps.md). Use the
+committed systemd, proxy, environment, and backup assets rather than creating
+provider-specific variants.
 
-   ```sh
-   doctl auth init
-   ```
+## 4. DigitalOcean backup choices
 
-2. Commit a spec file (shape per the book's ch. 5 spec, adapted):
+The required backup remains the runbook's logical `pg_dump`, copied off the
+Droplet and restore-tested. DigitalOcean Droplet backups or snapshots are a
+second layer, not a replacement: a VM image of running Postgres is only
+crash-consistent, while the custom-format dump is portable and testable.
 
-   ```yaml
-   # spec.yaml
-   name: immortal
-   region: fra
-   services:
-     - name: relay
-       dockerfile_path: Dockerfile
-       source_dir: .
-       github:
-         repo: <YOUR_GITHUB_ORG>/immortal
-         branch: main
-         deploy_on_push: true
-       health_check:
-         http_path: /health
-       http_port: 8080
-       instance_count: 1
-       instance_size_slug: basic-xxs
-       envs:
-         - key: PORT
-           scope: RUN_TIME
-           value: "8080"
-         - key: IMMORTAL_BIND_ADDR
-           scope: RUN_TIME
-           value: "0.0.0.0"
-         - key: IMMORTAL_RELAY_URL
-           scope: RUN_TIME
-           value: "wss://relay.example.com"
-         - key: IMMORTAL_TRUST_PROXY
-           scope: RUN_TIME
-           value: "true"
-         - key: IMMORTAL_LOG_LEVEL
-           scope: RUN_TIME
-           value: "info"
-         - key: DATABASE_URL
-           scope: RUN_TIME
-           value: ${immortal-db.DATABASE_URL}
-   databases:
-     - name: immortal-db
-       engine: PG
-       version: "16"
-   ```
+Before an upgrade:
 
-   Notes:
-   - `${immortal-db.DATABASE_URL}` is the book's pattern: the platform
-     injects the managed database's connection string (TLS-bearing — see
-     honest note 2) at run time; no credential is committed.
-   - The Dockerfile is the one in
-     [`runbook-google-cloud.md`](runbook-google-cloud.md) (multi-stage,
-     static binary).
-   - `instance_count: 1`. Multiple instances work architecturally
-     (`LISTEN/NOTIFY` + `ingest_seq` exist for exactly that), but scale out
-     deliberately, not by default.
+1. start `immortal-backup.service` and verify success;
+2. copy the new dump off the Droplet;
+3. optionally take a Droplet snapshot;
+4. follow the canonical symlink upgrade and schema-aware rollback procedure.
 
-3. Create the app:
+## 5. Verify
 
-   ```sh
-   doctl apps create --spec spec.yaml
-   doctl apps list
-   ```
+From outside DigitalOcean:
 
-   Subsequent pushes to `main` deploy automatically (`deploy_on_push`), the
-   platform builds the Dockerfile, probes `/health`, and does a rolling
-   replacement — the book's zero-downtime flow.
+```sh
+curl -fsS https://relay.example.com/health
+curl -fsS -H 'Accept: application/nostr+json' \
+  https://relay.example.com/
+```
 
-4. Migrations are embedded in the release and recorded with content hashes.
-   The first new process applies pending versions under a Postgres advisory
-   lock before binding; concurrent processes wait and verify. Do not run the
-   raw SQL files from a developer machine, because that bypasses the ledger
-   and needlessly opens external database access. A split-role deployment
-   instead runs the same embedded runner as an App Platform job using the
-   migration-owner credential; see [`database.md`](database.md).
+Publish and query an event over `wss://relay.example.com`. On the Droplet,
+confirm that neither Postgres nor port 8080 is publicly listening and that the
+backup timer is active:
 
-5. Lock down **trusted sources** on the managed database so only the App
-   Platform app can reach it. This is the book's closing security step for
-   the chapter and is not optional.
+```sh
+sudo ss -ltnp
+systemctl is-active immortal.service immortal-backup.timer
+```
 
-6. Domain: add `relay.example.com` in the app's settings (Networking →
-   Domains), create the CNAME it asks for. App Platform terminates TLS for
-   you — consistent with Immortal's TLS-at-the-proxy invariant; the
-   platform's edge is the proxy.
+## Unsupported managed-platform path
 
-7. Verify:
+Do not use App Platform + Managed Postgres with the current binary. Current
+DigitalOcean connection details use `sslmode=require`; `tokio-postgres`
+without a TLS connector fails rather than silently downgrading, which is the
+correct fail-closed behavior. Trusted sources restrict reachability but do not
+replace TLS.
 
-   ```sh
-   curl -fsS -H 'Accept: application/nostr+json' https://relay.example.com/
-   ```
+When the approved optional TLS feature is implemented, this section can grow
+into a separate runbook only after a disposable managed-cluster proof covers:
 
-   Then connect a client to `wss://relay.example.com`, publish, and read
-   back.
+- TLS negotiation and credential redaction;
+- migrations and `LISTEN/NOTIFY` through the managed endpoint;
+- App Platform WebSocket upgrade and health behavior;
+- backup/restore and rollback; and
+- a manual, non-GitHub-billed conformance command.
 
-### When to prefer which path
+Until then, the Droplet path above is the final DigitalOcean M5 runbook.
 
-| Situation | Path |
-| --- | --- |
-| Default; full control; no dependency changes | A (Droplet) |
-| No-ssh operations, platform-managed TLS/deploys accepted, TLS-to-Postgres crate approved by owner | B (App Platform) |
-| Cheapest possible relay | A (everything on one small Droplet) |
+## Current platform references
+
+- [DigitalOcean PostgreSQL connection details](https://docs.digitalocean.com/products/databases/postgresql/how-to/connect/)

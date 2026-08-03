@@ -18,54 +18,19 @@ gcloud config set project <PROJECT_ID>
 
 ## Path A: Cloud Run + Cloud SQL
 
-### A.1 Dockerfile
+### A.1 Container image
 
-Multi-stage, applying the book's Docker insights (ZTP, ch. 5): dependency
-layer caching via the cargo-chef principle, minimal runtime image. cargo-chef
-is a build tool, not a runtime dependency, so using it in the builder stage
-does not touch the dependency allowlist. The runtime stage is static musl on
-`scratch`: Immortal needs no TLS libraries (TLS terminates at the platform;
-Cloud SQL is reached over a platform-provided Unix socket), no shell, no
-assets.
+Use the committed root [`Dockerfile`](../../Dockerfile) and
+[`.dockerignore`](../../.dockerignore). The multi-stage build pins its Rust
+builder, compiles with `--locked`, strips the release binary, and copies it
+into Debian 13 slim under an unprivileged numeric user. The runtime starts one
+process: `/usr/local/bin/immortal`.
 
-```dockerfile
-# ---- chef: cache the dependency build as its own layer ----
-FROM rust:1-bookworm AS chef
-RUN cargo install cargo-chef && rustup target add x86_64-unknown-linux-musl
-RUN apt-get update && apt-get install -y musl-tools && rm -rf /var/lib/apt/lists/*
-WORKDIR /app
-
-FROM chef AS planner
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
-FROM chef AS builder
-COPY --from=planner /app/recipe.json recipe.json
-# Dependency layer: rebuilt only when Cargo.toml/Cargo.lock change.
-RUN cargo chef cook --release --target x86_64-unknown-linux-musl --recipe-path recipe.json
-COPY . .
-RUN cargo build --release --target x86_64-unknown-linux-musl \
- && strip target/x86_64-unknown-linux-musl/release/immortal
-
-# ---- runtime: the binary and nothing else ----
-FROM scratch
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/immortal /immortal
-# Cloud Run injects PORT; the binary honors it (see configuration.md).
-ENV IMMORTAL_BIND_ADDR=0.0.0.0
-ENTRYPOINT ["/immortal"]
-```
-
-If musl ever becomes a problem, the fallback runtime stage is
-`gcr.io/distroless/cc-debian12` with a plain gnu-target build — still no
-shell, still minimal.
-
-Add a `.dockerignore` (the book's build-context insight):
-
-```text
-target/
-.git/
-docs/
-```
+The Debian runtime is intentional. It matches the canonical operating-system
+target, avoids an unproved musl variant, and carries the CA store needed by a
+future owner-approved Postgres-TLS build without changing the image shape.
+No database client, shell command, migration tool, or sidecar starts with the
+container.
 
 ### A.2 Artifact Registry
 
@@ -90,34 +55,29 @@ gcloud sql instances create immortal-pg \
   --database-version=POSTGRES_16 \
   --region=<REGION> \
   --tier=db-g1-small \
-  --storage-auto-increase \
-  --no-assign-ip \
-  --network=default
+  --storage-auto-increase
 gcloud sql databases create immortal --instance=immortal-pg
-gcloud sql users create immortal --instance=immortal-pg \
-  --password='<YOUR_DB_PASSWORD>'
 ```
 
 Least privilege: `immortal` is a plain role owning one database. Do not use
-the `postgres` superuser in `DATABASE_URL`. Connect once as admin and
-tighten ownership:
+the `postgres` administrator in `DATABASE_URL`. Connect once as admin, create
+the login, set its password through `psql`'s non-echoing prompt, and transfer
+ownership:
 
 ```sh
 gcloud sql connect immortal-pg --user=postgres --database=immortal
 # In psql:
+CREATE ROLE immortal LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+\password immortal
 ALTER DATABASE immortal OWNER TO immortal;
 ```
 
 Connection choice (this is the important design note): Cloud Run mounts a
 **Unix domain socket** at `/cloudsql/<PROJECT_ID>:<REGION>:immortal-pg` when
-you pass `--add-cloudsql-instances`. The platform encrypts and authenticates
-the hop for you. `tokio-postgres` speaks Unix sockets natively, so **no TLS
-crate is needed** — the dependency allowlist survives intact. The
-private-IP alternative also works inside a VPC connector without TLS, but
-the socket path is simpler and is what this runbook uses. (A TLS-to-Postgres
-crate would only become necessary for direct public-IP connections; that
-path is not used here and would require owner sign-off per AGENTS.md
-rule 2.)
+you pass `--add-cloudsql-instances`. Cloud Run's Cloud SQL integration
+encrypts and authorizes the connection; no database authorized-network entry
+is needed. `tokio-postgres` speaks Unix sockets natively, so **no TLS crate is
+needed**. Direct database-IP connections are not part of this runbook.
 
 `LISTEN/NOTIFY` works over Cloud SQL and over the socket; it is plain
 protocol.
@@ -128,9 +88,17 @@ The book's principle (ZTP, ch. 5): secrets are injected by the platform,
 never committed. On Google Cloud the store is Secret Manager, and Cloud Run
 injects secrets as environment variables at deploy time.
 
+Create `immortal-database-url` in Secret Manager using the Cloud console. Paste
+this value, replacing the password inside the quoted field:
+
+```text
+host=/cloudsql/<PROJECT_ID>:<REGION>:immortal-pg user=immortal password='<YOUR_DB_PASSWORD>' dbname=immortal
+```
+
+Using the console avoids putting the credential in argv or shell history.
+Then create the runtime identity and grants:
+
 ```sh
-printf 'host=/cloudsql/<PROJECT_ID>:<REGION>:immortal-pg user=immortal password=<YOUR_DB_PASSWORD> dbname=immortal' \
-  | gcloud secrets create immortal-database-url --data-file=-
 
 # Allow the runtime service account to read it:
 gcloud iam service-accounts create immortal-run
@@ -150,10 +118,9 @@ baked into the image.
 Migrations are embedded in the release, serialized by a Postgres advisory
 lock, and recorded with content hashes. Do not apply the raw SQL files with
 `psql`, because doing so bypasses that ledger. With the simple owner role, the
-first new process applies pending versions before binding. With split roles,
-run the same embedded runner as a Cloud Run Job using the migration-owner
-credential and `--add-cloudsql-instances`; see
-[`database.md`](database.md).
+first process applies pending versions before binding. M5 uses the single
+database-owner login because the binary does not expose a migration-only
+command; see [`database.md`](database.md).
 
 ### A.6 Deploy to Cloud Run
 
@@ -173,7 +140,7 @@ gcloud run deploy immortal \
   --timeout=3600 \
   --session-affinity \
   --cpu=1 --memory=512Mi \
-  --use-http2=false
+  --no-use-http2
 ```
 
 WebSocket notes — why each flag is set:
@@ -226,20 +193,24 @@ the payoff of line-oriented JSON logging (see `insights.md`, Telemetry).
 ### A.8 Upgrade and rollback
 
 ```sh
-# Upgrade: push a new image tag, then
+# Before upgrade, create an on-demand database backup.
+gcloud sql backups create --instance=immortal-pg
+
+# Deploy the already-pushed new image tag.
 gcloud run deploy immortal --region=<REGION> \
   --image=<REGION>-docker.pkg.dev/<PROJECT_ID>/immortal/immortal:<NEW_VERSION>
 # Cloud Run does a rolling replacement; old revision drains, new one takes over.
 
-# Rollback: route traffic back to the previous revision
+# If no migration was applied, route traffic back to the previous revision.
 gcloud run revisions list --service=immortal --region=<REGION>
 gcloud run services update-traffic immortal --region=<REGION> \
   --to-revisions=<OLD_REVISION>=100
 ```
 
-For split roles, complete the migration job before routing traffic to the new
-revision. With the simple owner role, startup applies the embedded additive
-migrations before the new process binds, exactly as in the Debian runbook.
+An older revision rejects a schema containing an unknown migration when it
+starts. If the failed revision applied a migration, restore the pre-upgrade
+Cloud SQL backup or use point-in-time recovery before routing to the old
+revision. Release notes must state migration and rollback compatibility.
 
 Backups: Cloud SQL automated backups + point-in-time recovery:
 
@@ -258,7 +229,7 @@ An off-provider `pg_dump` through the proxy remains good practice.
    gcloud compute instances create immortal-1 \
      --zone=<REGION>-b \
      --machine-type=e2-small \
-     --image-family=debian-12 --image-project=debian-cloud \
+     --image-family=debian-13 --image-project=debian-cloud \
      --tags=https-server,http-server
    gcloud compute firewall-rules create allow-http --allow=tcp:80 --target-tags=http-server
    gcloud compute firewall-rules create allow-https --allow=tcp:443 --target-tags=https-server
@@ -271,7 +242,8 @@ An off-provider `pg_dump` through the proxy remains good practice.
 3. SSH in (`gcloud compute ssh immortal-1 --zone=<REGION>-b`) and follow
    [`runbook-debian-vps.md`](runbook-debian-vps.md) end to end: apt
    Postgres on the same VM, versioned binary layout, hardened systemd unit,
-   Caddy or nginx for TLS, `pg_dump` cron, symlink upgrade/rollback.
+   Caddy or nginx for TLS, the backup timer, and schema-aware
+   symlink upgrade/rollback.
 
 4. Optional provider extras: VM snapshots as belt-and-braces
    (`gcloud compute disks snapshot ...`), and Cloud Logging's agent if you
@@ -279,3 +251,10 @@ An off-provider `pg_dump` through the proxy remains good practice.
 
 Path B is the same one-box relay as the canonical runbook; choose it when
 you want Google's network but not Cloud Run's request model.
+
+## Current platform references
+
+- [Cloud Run WebSocket behavior](https://cloud.google.com/run/docs/triggering/websockets)
+- [Cloud Run request timeouts](https://cloud.google.com/run/docs/configuring/request-timeout)
+- [Cloud Run to Cloud SQL connections](https://cloud.google.com/sql/docs/postgres/connect-run)
+- [Compute Engine Debian image families](https://cloud.google.com/compute/docs/images/os-details)

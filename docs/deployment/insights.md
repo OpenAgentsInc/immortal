@@ -170,24 +170,17 @@ database.
 
 **Immortal.**
 
-- The same multi-stage shape applies. `cargo-chef` is a build tool, not a
-  runtime dependency, so it is acceptable in CI and in the builder stage; it
-  never appears in `Cargo.toml`. If you prefer zero extra tooling, the
-  manual variant of the same principle works: copy `Cargo.toml` +
-  `Cargo.lock` with a stub `src/main.rs`, `cargo build --release` to cache
-  dependencies, then copy real sources and build again.
-- Immortal makes no outbound TLS connections in the default deployment (TLS
-  terminates at the proxy; Postgres is local or reached over a private
-  socket), so the runtime stage can be `gcr.io/distroless/cc-debian12` —
-  or even `scratch` with a `x86_64-unknown-linux-musl` static build, since
-  `secp256k1` and `sha2` compile fine with musl and no runtime asset is
-  needed. Include `ca-certificates` only if a TLS-to-database path is ever
-  approved.
+- The committed root Dockerfile uses the same multi-stage shape without
+  adding `cargo-chef` or another build tool. `cargo build --locked --release`
+  consumes the pinned lockfile in a Rust 1.94.1 Debian 13 builder.
+- The runtime is Debian 13 slim with `ca-certificates`, one unprivileged user,
+  and the stripped binary. This favors a proved, inspectable target over an
+  untested musl or `scratch` variant while still starting exactly one process.
 - There is no compile-time query checking to keep offline (`sqlx`'s
   `SQLX_OFFLINE` concern does not exist); prepared statements are validated
   against the real schema by integration tests instead.
-- A concrete Dockerfile lives in
-  [`runbook-google-cloud.md`](runbook-google-cloud.md).
+- The concrete [`Dockerfile`](../../Dockerfile) is referenced by the Google
+  Cloud runbook rather than duplicated inside documentation.
 
 ## 6. Deployment strategy
 
@@ -199,23 +192,23 @@ environment-agnostic: same binary, different environment variables.
 
 **Immortal.** The binary is deliberately platform-agnostic: it reads
 environment variables, listens on one port, logs to stdout, and keeps all
-state in Postgres. That makes three deployment shapes equally valid:
+state in Postgres. M5 proves these deployment shapes:
 
 - A Debian VPS with systemd and Caddy/nginx — the canonical path
   (AGENTS.md rule 9: a new Debian server plus apt Postgres plus this binary
   is a running relay in minutes). See
   [`runbook-debian-vps.md`](runbook-debian-vps.md).
-- DigitalOcean, either a Droplet (same as the VPS runbook) or App Platform
-  with a spec file, matching the book's own path — with honest caveats
-  about WebSockets and managed-Postgres TLS. See
+- A DigitalOcean Droplet, which is the same proved Debian topology. App
+  Platform + Managed Postgres remains unsupported until the approved
+  Postgres-TLS feature and its live proof land. See
   [`runbook-digitalocean.md`](runbook-digitalocean.md).
 - Google Cloud Run + Cloud SQL, because the relay process is stateless:
   many relay processes against one Postgres is an explicit design goal
   (`LISTEN/NOTIFY` + `ingest_seq`). See
   [`runbook-google-cloud.md`](runbook-google-cloud.md).
 
-Configuration is identical across all three; only the injection mechanism
-differs (EnvironmentFile, spec `envs`, Cloud Run `--set-env-vars`).
+Configuration is identical across the supported shapes; only injection
+differs (systemd `EnvironmentFile` or Cloud Run environment and secrets).
 
 ## 7. Zero-downtime deployment
 
@@ -240,8 +233,10 @@ architecture leans into it.
 - Because `OK` is sent only after commit, a kill at any moment never
   acknowledges an unstored event. The client retries; admission is
   idempotent (see theme 12). This is the crash-safety half of zero-downtime.
-- Migration compatibility: additive first, destructive later (theme 4). Two
-  relay versions may serve one database during the overlap window.
+- Migration compatibility must be stated per release. An older binary rejects
+  an unknown migration when it starts, so binary-only rollback is safe only
+  when no new migration was applied. A schema-changing rolling release needs
+  an explicit compatibility plan and pre-upgrade restore point.
 
 ## 8. Health checks
 
@@ -260,9 +255,8 @@ endpoint is nearly free.
   failing closed would make the proxy route traffic into instant closes.
 - The NIP-11 document (`GET /` with `Accept: application/nostr+json`)
   doubles as a functional smoke test after deploy.
-- Every runbook wires this endpoint into its probe: systemd watchdog or a
-  cron curl on the VPS, `health_check.http_path` on App Platform, startup
-  and liveness probes on Cloud Run.
+- Every runbook verifies this endpoint after service start. Cloud Run also
+  configures it as the startup and liveness probe.
 
 ## 9. Error handling
 
@@ -409,30 +403,24 @@ the canonical serialization, signed).
   invariant), so their redelivery semantics are the client's concern, as the
   protocol intends.
 
-## 13. CI
+## 13. Local conformance gates
 
-**Book (ZTP, ch. 1).** A CI pipeline should gate every change with: `cargo
-test`, `cargo fmt --check`, `cargo clippy -- -D warnings` (deny warnings in
-CI, not necessarily locally), code-coverage reporting (`cargo tarpaulin`) as
-information, and `cargo audit` for known-vulnerable dependencies. Fast
-feedback beats thorough-but-slow; keep the pipeline runnable by every
-contributor.
+**Book (ZTP, ch. 1).** An automated pipeline can gate every change with
+`cargo test`, `cargo fmt --check`, `cargo clippy -- -D warnings`, coverage,
+and dependency auditing. Fast feedback beats thorough-but-slow.
 
 **Immortal.**
 
-- The same five gates apply unchanged — they are toolchain, not
-  dependencies. `cargo audit` (or `cargo deny`) is cheap here because the
-  dependency tree is tiny; it also guards the allowlist: CI can diff
-  `cargo metadata` direct dependencies against the seven allowed names and
-  fail on drift, mechanically enforcing AGENTS.md rule 2.
-- Integration tests run against a real Postgres (the book launches one in
-  Docker; a GitHub Actions `services:` container or a local
-  `scripts/init_db`-style script both work). Each test creates a
-  randomized-name logical database for isolation, then applies the
-  migration files — the ch. 3 test-isolation pattern, using our own
-  migration runner instead of `sqlx::migrate!`.
+- Immortal keeps the gates but runs them manually and locally. GitHub
+  workflows and any path requiring GitHub billing are forbidden by
+  `AGENTS.md`. The committed conformance scripts keep the exact commands
+  reviewable and repeatable.
+- Integration tests run against a real, temporary local Postgres cluster.
+  Each test creates a dedicated logical database, applies the embedded
+  migrations, and removes the cluster on exit — the ch. 3 test-isolation
+  pattern, using our own migration runner instead of `sqlx::migrate!`.
 - Protocol fixtures are part of the gate: each implemented NIP has a fixture
-  corpus (AGENTS.md rule 8), and CI runs them like unit tests.
+  corpus (AGENTS.md rule 8), and the local suite runs them like unit tests.
 - The deployment test stays green (AGENTS.md rule 9): a scripted
   check that a fresh Debian container + apt Postgres + the release binary
   serves NIP-11 and accepts an event, mirroring the book's insistence that

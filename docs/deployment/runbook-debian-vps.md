@@ -1,21 +1,26 @@
 # Runbook: Debian VPS (canonical single-box deployment)
 
-This is the canonical Immortal deployment: one fresh Debian stable server,
-Postgres from apt, the `immortal` binary under systemd, and Caddy or nginx
-terminating TLS. It applies to any VPS provider (Hetzner, OVH, DigitalOcean
-Droplet, a home server). Target time: minutes.
+This is the canonical Immortal deployment: Debian 13 (`trixie`), Postgres 17
+from apt, one `immortal` binary under systemd, and Caddy or nginx terminating
+public TLS. It applies to a physical server or any VPS provider. All durable
+state stays in the one Postgres database.
 
-Placeholders to replace throughout: `relay.example.com` (your domain),
-`<YOUR_DB_PASSWORD>` (a long random password), `<VERSION>` (the release you
-deploy).
+The committed files under `deploy/` are the source of truth for service,
+proxy, environment, and backup configuration. Do not maintain private copies
+of the snippets in this document.
+
+Replace these placeholders before enabling the service:
+
+- `relay.example.com` — the relay's public DNS name;
+- `<YOUR_DB_PASSWORD>` — a long random database password; and
+- `<VERSION>` — the immutable release label installed on this server.
 
 Prerequisites:
 
-- A Debian stable (12+) server with root or sudo access.
-- A DNS `A`/`AAAA` record for `relay.example.com` pointing at the server.
-- The `immortal` release binary for `x86_64-unknown-linux-gnu` (build with
-  `cargo build --release` on a matching Debian, or use the static musl
-  build from the Docker runbook).
+- a fresh Debian 13 amd64 or arm64 server with root or sudo access;
+- DNS `A` and, if applicable, `AAAA` records pointing at the server; and
+- either a release binary built for the server or a repository checkout from
+  which to build it.
 
 ## 1. Base system
 
@@ -25,7 +30,15 @@ sudo apt-get upgrade -y
 sudo apt-get install -y postgresql curl ca-certificates
 ```
 
-Optional but recommended firewall (allow SSH, HTTP, HTTPS only):
+If building on the server, install Debian's Rust 1.85 toolchain and compiler:
+
+```sh
+sudo apt-get install -y cargo build-essential
+cargo build --locked --release
+```
+
+Allow only SSH, HTTP, and HTTPS at the provider firewall. If the provider has
+no firewall, use `ufw`:
 
 ```sh
 sudo apt-get install -y ufw
@@ -35,278 +48,278 @@ sudo ufw allow 443/tcp
 sudo ufw enable
 ```
 
-The relay itself binds `127.0.0.1` and is never exposed directly.
+The relay binds `127.0.0.1:8080`; never expose that port publicly.
 
 ## 2. Postgres
 
-Debian's packaged Postgres starts automatically and listens on localhost
-only, which is what we want.
+Debian's packaged Postgres starts automatically and listens locally. Create a
+plain login role and one database without putting the password in shell
+history:
 
 ```sh
-sudo -u postgres psql -c "CREATE ROLE immortal LOGIN PASSWORD '<YOUR_DB_PASSWORD>';"
-sudo -u postgres psql -c "CREATE DATABASE immortal OWNER immortal;"
+sudo -u postgres createuser --pwprompt immortal
+sudo -u postgres createdb --owner=immortal immortal
 ```
 
-Verify:
+Verify the credential:
 
 ```sh
-psql "postgres://immortal:<YOUR_DB_PASSWORD>@127.0.0.1:5432/immortal" -c "SELECT 1;"
+psql 'postgres://immortal:<YOUR_DB_PASSWORD>@127.0.0.1:5432/immortal' \
+  --command='SELECT 1;'
 ```
 
-Least privilege: the `immortal` role owns only its database and is not a
-superuser. Do not grant more.
+The `immortal` role is not a superuser and owns only its database. The first
+relay start applies the embedded schema under an advisory lock and records its
+hash; do not apply files under `migrations/` directly with `psql`.
 
 ## 3. Install the binary
 
-Use a versioned layout so rollback is a symlink flip:
+Use an immutable release directory and one atomic `current` symlink:
 
 ```sh
 sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin immortal
-sudo mkdir -p /opt/immortal/releases/<VERSION>
-sudo cp immortal /opt/immortal/releases/<VERSION>/immortal
-sudo chmod 755 /opt/immortal/releases/<VERSION>/immortal
+sudo install -d -o root -g root -m 0755 /opt/immortal/releases/<VERSION>
+sudo install -o root -g root -m 0755 immortal \
+  /opt/immortal/releases/<VERSION>/immortal
 sudo ln -sfn /opt/immortal/releases/<VERSION> /opt/immortal/current
 ```
 
-Migrations are compiled into the release. The relay applies pending versions
-under one transaction and advisory lock before binding, records their content
-hashes, and refuses a changed or unknown schema. Do not run the SQL files with
-`psql`; that bypasses the migration ledger. See
-[`database.md`](database.md).
+When building from this checkout, the source path is
+`target/release/immortal` instead of `immortal`.
 
-## 4. Environment file
+## 4. Configure the environment
+
+Install the committed template, then replace its password, hostname, and any
+operator-specific values with `sudoedit`:
 
 ```sh
-sudo mkdir -p /etc/immortal
-sudo tee /etc/immortal/immortal.env >/dev/null <<'EOF'
-DATABASE_URL=postgres://immortal:<YOUR_DB_PASSWORD>@127.0.0.1:5432/immortal
-IMMORTAL_BIND_ADDR=127.0.0.1
-IMMORTAL_PORT=8080
-IMMORTAL_RELAY_URL=wss://relay.example.com
-IMMORTAL_TRUST_PROXY=true
-IMMORTAL_LOG_LEVEL=info
-EOF
-sudo chown root:immortal /etc/immortal/immortal.env
-sudo chmod 0640 /etc/immortal/immortal.env
+sudo install -d -o root -g immortal -m 0750 /etc/immortal
+sudo install -o root -g immortal -m 0640 deploy/immortal.env.example \
+  /etc/immortal/immortal.env
+sudoedit /etc/immortal/immortal.env
+if sudo grep -q '<' /etc/immortal/immortal.env; then
+  echo 'ERROR: unresolved placeholder remains' >&2
+  false
+fi
 ```
 
-Secrets live only in this root-owned file — never in the unit file, never in
-argv. See `configuration.md` for every variable and default.
+The database password lives only in this root-owned file. Never put it in the
+unit, command line, repository, or logs. The complete environment contract is
+in [`configuration.md`](configuration.md).
 
-## 5. systemd unit (with hardening)
+## 5. Install the hardened systemd unit
 
 ```sh
-sudo tee /etc/systemd/system/immortal.service >/dev/null <<'EOF'
-[Unit]
-Description=Immortal Nostr relay
-After=network-online.target postgresql.service
-Wants=network-online.target
-Requires=postgresql.service
-
-[Service]
-Type=simple
-User=immortal
-Group=immortal
-EnvironmentFile=/etc/immortal/immortal.env
-ExecStart=/opt/immortal/current/immortal
-Restart=on-failure
-RestartSec=2
-TimeoutStopSec=15
-LimitNOFILE=65536
-
-# Hardening: the relay needs the network, read access to its binary,
-# and nothing else. Fail closed at the sandbox level too.
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-PrivateDevices=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectKernelLogs=true
-ProtectControlGroups=true
-ProtectClock=true
-ProtectHostname=true
-ProtectProc=invisible
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-RestrictNamespaces=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
-SystemCallFilter=@system-service
-SystemCallErrorNumber=EPERM
-CapabilityBoundingSet=
-AmbientCapabilities=
-UMask=0077
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
+sudo install -o root -g root -m 0644 deploy/systemd/immortal.service \
+  /etc/systemd/system/immortal.service
+sudo systemd-analyze verify /etc/systemd/system/immortal.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now immortal
+sudo systemctl enable --now immortal.service
 ```
 
-Verify:
+Verify startup and inspect the sandbox:
 
 ```sh
-systemctl status immortal --no-pager
+systemctl status immortal.service --no-pager
 curl -fsS http://127.0.0.1:8080/health
 curl -fsS -H 'Accept: application/nostr+json' http://127.0.0.1:8080/
-journalctl -u immortal -n 20 --no-pager
+sudo systemd-analyze security --no-pager immortal.service
+journalctl -u immortal.service -n 20 --no-pager
 ```
 
-Logs are single-line JSON on stdout; journald captures them. Query with
-`journalctl -u immortal -o cat | tail`.
+The canonical unit permits only localhost networking and port 8080, denies
+filesystem writes, removes capabilities, restricts namespaces and system
+calls, and stops within 15 seconds. Change the socket restrictions only if
+you also change the documented single-box topology.
 
-## 6. Reverse proxy with TLS
+## 6. Put a TLS reverse proxy in front
 
-TLS always terminates here, not in the binary. Pick Caddy (simplest,
-automatic certificates) or nginx.
+Pick one. Both templates preserve WebSocket upgrades and the client-address
+headers used when `IMMORTAL_TRUST_PROXY=true`.
 
-### Option A: Caddy
+### Caddy (recommended)
 
 ```sh
 sudo apt-get install -y caddy
-sudo tee /etc/caddy/Caddyfile >/dev/null <<'EOF'
-relay.example.com {
-    reverse_proxy 127.0.0.1:8080
-}
-EOF
-sudo systemctl reload caddy
+sudo install -o root -g root -m 0644 deploy/caddy/Caddyfile \
+  /etc/caddy/Caddyfile
+sudoedit /etc/caddy/Caddyfile
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy.service
 ```
 
-Caddy obtains and renews the certificate automatically and proxies
-WebSockets without extra configuration.
+Caddy obtains and renews the public certificate automatically.
 
-### Option B: nginx
+### nginx
 
 ```sh
 sudo apt-get install -y nginx certbot python3-certbot-nginx
-sudo tee /etc/nginx/sites-available/immortal >/dev/null <<'EOF'
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    ''      close;
-}
-
-server {
-    listen 80;
-    listen [::]:80;
-    server_name relay.example.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_read_timeout 600s;
-        proxy_send_timeout 600s;
-    }
-}
-EOF
-sudo ln -sfn /etc/nginx/sites-available/immortal /etc/nginx/sites-enabled/immortal
-sudo nginx -t && sudo systemctl reload nginx
+sudo install -o root -g root -m 0644 deploy/nginx/immortal.conf \
+  /etc/nginx/sites-available/immortal
+sudoedit /etc/nginx/sites-available/immortal
+sudo ln -sfn /etc/nginx/sites-available/immortal \
+  /etc/nginx/sites-enabled/immortal
+sudo nginx -t
+sudo systemctl reload nginx.service
 sudo certbot --nginx -d relay.example.com --redirect
 ```
 
-`proxy_read_timeout` must exceed the client ping interval or idle WebSockets
-drop every 60 seconds (nginx default).
+The 600-second proxy timeouts are inactivity timeouts; normal WebSocket ping
+traffic keeps a connection open.
 
-### Verify end to end
+Verify from outside the server:
 
 ```sh
-curl -fsS -H 'Accept: application/nostr+json' https://relay.example.com/
+curl -fsS -H 'Accept: application/nostr+json' \
+  https://relay.example.com/
 ```
 
-Then connect a Nostr client to `wss://relay.example.com`, publish a note,
-and read it back.
+Then connect a Nostr client to `wss://relay.example.com`, publish an event,
+and query it back.
 
-## 7. Backups
+## 7. Install and prove nightly backups
 
-State lives in exactly one place: the Postgres database. Back up nothing
-else (the binary and migrations are in version control/releases).
-
-### Nightly logical dump (baseline — do this at minimum)
+The backup service creates a private, atomic custom-format `pg_dump` every
+night, retains 14 days locally, and catches up after downtime. Install the
+committed artifacts:
 
 ```sh
-sudo mkdir -p /var/backups/immortal
-sudo tee /etc/cron.d/immortal-backup >/dev/null <<'EOF'
-30 3 * * * postgres pg_dump --format=custom --file=/var/backups/immortal/immortal-$(date +\%F).dump immortal && find /var/backups/immortal -name '*.dump' -mtime +14 -delete
-EOF
+sudo install -d -o postgres -g postgres -m 0700 /var/backups/immortal
+sudo install -o root -g root -m 0755 deploy/backup/immortal-backup \
+  /usr/local/sbin/immortal-backup
+sudo install -o root -g root -m 0644 \
+  deploy/backup/immortal-backup.service \
+  deploy/backup/immortal-backup.timer \
+  /etc/systemd/system/
+sudo systemd-analyze verify \
+  /etc/systemd/system/immortal-backup.service \
+  /etc/systemd/system/immortal-backup.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now immortal-backup.timer
+sudo systemctl start immortal-backup.service
+sudo systemctl status immortal-backup.service --no-pager
+sudo ls -l /var/backups/immortal/
 ```
 
-Copy dumps off the machine (object storage, another host). A backup on the
-same disk is not a backup. Restore test — do this once now, not during an
-incident:
+Copy backups off the server on an operator-controlled schedule. A dump on the
+same disk is a restore point, not a disaster-recovery backup.
+
+Test the newest dump immediately:
 
 ```sh
-sudo -u postgres createdb immortal_restore_test
-sudo -u postgres pg_restore -d immortal_restore_test /var/backups/immortal/immortal-<DATE>.dump
-sudo -u postgres psql -d immortal_restore_test -c "SELECT count(*) FROM events;"
+sudo -u postgres createdb --owner=immortal immortal_restore_test
+sudo -u postgres pg_restore --role=immortal \
+  --dbname=immortal_restore_test \
+  /var/backups/immortal/immortal-<TIMESTAMP>.dump
+sudo -u postgres psql --dbname=immortal_restore_test \
+  --command='SELECT count(*) FROM nostr_event;'
+sudo -u postgres psql --dbname=immortal_restore_test \
+  --command='SELECT version, name, sha256 FROM schema_migrations ORDER BY version;'
 sudo -u postgres dropdb immortal_restore_test
 ```
 
-### WAL notes (point-in-time recovery, optional)
+### Recover the production database
 
-`pg_dump` loses everything after the last dump. If losing up to a day of
-events is unacceptable, enable continuous archiving:
+Keep the failed database until the restored relay passes verification:
 
-- Set in `postgresql.conf`: `wal_level = replica`, `archive_mode = on`, and
-  an `archive_command` that copies each WAL segment off-host (or use
-  `pg_receivewal` from another machine).
-- Take periodic base backups with `pg_basebackup`.
-- Recovery: restore the base backup, provide `restore_command`, set a
-  recovery target time.
+```sh
+sudo systemctl stop immortal.service
+sudo -u postgres psql --dbname=postgres \
+  --command="SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'immortal';"
+sudo -u postgres psql --dbname=postgres \
+  --command='ALTER DATABASE immortal RENAME TO immortal_failed;'
+sudo -u postgres createdb --owner=immortal immortal
+sudo -u postgres pg_restore --role=immortal --dbname=immortal \
+  /var/backups/immortal/immortal-<TIMESTAMP>.dump
+sudo systemctl start immortal.service
+curl -fsS http://127.0.0.1:8080/health
+journalctl -u immortal.service -n 30 --no-pager
+```
 
-This stays within one Postgres — it is configuration, not a new service.
-For a single small relay, the nightly dump is usually the right trade.
+After publish/query verification and owner approval, remove
+`immortal_failed`. If verification fails, stop the service, remove the newly
+restored `immortal` database, rename `immortal_failed` back to `immortal`, and
+start the service.
+
+For a tighter recovery-point objective, configure Postgres WAL archiving and
+periodic base backups to operator-controlled off-host storage. That remains
+one Postgres; it does not add a product service.
 
 ## 8. Upgrade
 
-Immortal's protocol tolerates disconnects: clients reconnect and re-send
-`REQ`. A restart is a brief blip, not an outage.
+Take and verify a fresh backup before changing the binary:
 
 ```sh
-# 1. Stage the new release beside the old one.
-sudo mkdir -p /opt/immortal/releases/<NEW_VERSION>
-sudo cp immortal /opt/immortal/releases/<NEW_VERSION>/immortal
-sudo chmod 755 /opt/immortal/releases/<NEW_VERSION>/immortal
-
-# 2. Flip and restart. The new binary migrates before it binds.
-sudo ln -sfn /opt/immortal/releases/<NEW_VERSION> /opt/immortal/current
-sudo systemctl restart immortal
-
-# 3. Verify.
-curl -fsS http://127.0.0.1:8080/health
-journalctl -u immortal -n 20 --no-pager
+sudo systemctl start immortal-backup.service
+sudo systemctl status immortal-backup.service --no-pager
+sudo -u postgres psql --dbname=immortal \
+  --command='SELECT version, name FROM schema_migrations ORDER BY version;'
 ```
 
-On SIGTERM the relay stops accepting, drains in-flight admissions within
-`IMMORTAL_SHUTDOWN_GRACE_SECONDS`, and exits; systemd's `TimeoutStopSec`
-backs that with SIGKILL. Because `OK` is only sent after commit, a restart
-can never acknowledge an unstored event.
+Stage the new release beside the current one, flip the symlink, restart, and
+verify:
 
-## 9. Rollback
+```sh
+sudo install -d -o root -g root -m 0755 \
+  /opt/immortal/releases/<NEW_VERSION>
+sudo install -o root -g root -m 0755 immortal \
+  /opt/immortal/releases/<NEW_VERSION>/immortal
+sudo ln -sfn /opt/immortal/releases/<NEW_VERSION> /opt/immortal/current
+sudo systemctl restart immortal.service
+curl -fsS http://127.0.0.1:8080/health
+journalctl -u immortal.service -n 30 --no-pager
+```
+
+On SIGTERM the relay stops accepting connections, drains in-flight admission
+within `IMMORTAL_SHUTDOWN_GRACE_SECONDS`, and exits. It never sends `OK`
+before commit.
+
+## 9. Roll back
+
+Read the release notes before relying on a binary-only rollback. An older
+binary deliberately rejects an unknown migration version, so a release that
+applied a new migration requires the pre-upgrade database restore as well as
+the old binary.
+
+If the failed release applied no migration, flip back directly:
 
 ```sh
 sudo ln -sfn /opt/immortal/releases/<OLD_VERSION> /opt/immortal/current
-sudo systemctl restart immortal
+sudo systemctl restart immortal.service
 curl -fsS http://127.0.0.1:8080/health
 ```
 
-This works because migrations are additive-first: the old binary runs
-against the newer schema. If a release ever requires a destructive
-migration, its notes must say so, and rollback then means restoring the
-pre-upgrade dump. Always take a fresh backup before beginning an upgrade.
+If it applied a migration, follow **Recover the production database** with
+the pre-upgrade dump while the old binary is selected. This fail-closed rule
+prevents an old release from silently interpreting a schema it does not know.
 
 ## 10. Routine checks
 
-- `journalctl -u immortal --since -1h | grep -c error` — should be 0.
-- `curl -fsS https://relay.example.com/health` from off-host (or a cheap
-  external uptime monitor).
-- Disk: `df -h /` and `sudo -u postgres psql -c "SELECT pg_size_pretty(pg_database_size('immortal'));"`.
-- Backups exist and are recent: `ls -lh /var/backups/immortal | tail`.
+- `systemctl is-active immortal.service immortal-backup.timer`
+- `journalctl -u immortal.service --since=-1h -p warning --no-pager`
+- `curl -fsS https://relay.example.com/health` from off-host
+- `df -h /var/lib/postgresql /var/backups/immortal`
+- `sudo -u postgres psql --dbname=immortal --command="SELECT pg_size_pretty(pg_database_size('immortal'));"`
+- `systemctl list-timers immortal-backup.timer --no-pager`
+- restore the newest off-host dump into a temporary database at least monthly
+
+## 11. Reproduce the fresh-Debian acceptance
+
+The guarded acceptance command starts a disposable Debian 13 container,
+installs apt Postgres and Debian Rust, builds the release binary, serves
+health and NIP-11, publishes and reads a pinned signed event, then creates and
+restores a logical backup:
+
+```sh
+./scripts/run-debian-acceptance.sh
+```
+
+It uses a running Apple Container, Podman, or Docker runtime selected locally
+and requires a wrapper-only disposable-container guard before the destructive
+inner script runs. It does not use GitHub workflows or any GitHub-billed
+service.
+
+## Current platform references
+
+- [Debian releases](https://www.debian.org/releases/)
+- [Debian 13 release information](https://www.debian.org/releases/trixie/)

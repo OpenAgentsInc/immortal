@@ -124,10 +124,10 @@ impl Event {
     ) -> Result<(), DomainError> {
         self.validate_structure()?;
         timestamp_policy.validate(self.created_at, now)?;
-        if let Some(expiration) = self.expiration()
-            && expiration <= now
-        {
-            return Err(DomainError::ExpiredEvent { expiration, now });
+        if let Some(expiration) = self.expiration() {
+            if expiration <= now {
+                return Err(DomainError::ExpiredEvent { expiration, now });
+            }
         }
         self.validate_crypto()
     }

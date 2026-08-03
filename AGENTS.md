@@ -39,12 +39,17 @@ Read `README.md` first.
    the package manager, and this binary must make a running relay in
    minutes, with only the README as the guide.
 10. **No secrets in this repository.** This repository is public.
+11. **No GitHub workflows or GitHub-billed automation.** Do not add or use
+    GitHub Actions, `.github/workflows/`, or any conformance/deployment path
+    that requires GitHub billing. All required checks must run manually on a
+    contributor machine or through explicitly owner-approved, non-GitHub
+    infrastructure.
 
 ## License rule
 
 This repository is CC0-1.0. Dependencies with MIT, Apache, or BSD licenses
 are permitted. Do not copy code with an incompatible license.
 
-## Workflow
+## Working agreement
 
 Work on `main`. Commit and push completed work.

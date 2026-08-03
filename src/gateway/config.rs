@@ -204,21 +204,22 @@ impl GatewayConfig {
         {
             return Err(config("relay identity field exceeds its configured bound"));
         }
-        if let Some(pubkey) = &self.identity.pubkey
-            && (pubkey.len() != 64 || !is_lower_hex(pubkey))
-        {
-            return Err(config(
-                "IMMORTAL_RELAY_PUBKEY must be 64 lowercase hexadecimal characters",
-            ));
+        if let Some(pubkey) = &self.identity.pubkey {
+            if pubkey.len() != 64 || !is_lower_hex(pubkey) {
+                return Err(config(
+                    "IMMORTAL_RELAY_PUBKEY must be 64 lowercase hexadecimal characters",
+                ));
+            }
         }
-        if let Some(relay_url) = &self.relay_url
-            && (!relay_url.starts_with("ws://") && !relay_url.starts_with("wss://")
+        if let Some(relay_url) = &self.relay_url {
+            if !relay_url.starts_with("ws://") && !relay_url.starts_with("wss://")
                 || relay_url.len() > 2_048
-                || relay_url.chars().any(char::is_whitespace))
-        {
-            return Err(config(
-                "IMMORTAL_RELAY_URL must be a valid ws:// or wss:// URL",
-            ));
+                || relay_url.chars().any(char::is_whitespace)
+            {
+                return Err(config(
+                    "IMMORTAL_RELAY_URL must be a valid ws:// or wss:// URL",
+                ));
+            }
         }
         if self.auth_required && self.relay_url.is_none() {
             return Err(config(

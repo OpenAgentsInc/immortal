@@ -43,8 +43,9 @@ private network the platform secures. A deployment that requires TLS to the
 database (for example a managed Postgres that enforces `sslmode=require`)
 uses the owner-approved `tokio-postgres-rustls` backend. That optional feature
 is approved in `AGENTS.md` but is not in the dependency tree yet; it lands
-with the managed-Postgres deployment path. See the DigitalOcean runbook for
-the concrete case.
+only with a managed-Postgres deployment path and a live TLS proof. The
+DigitalOcean runbook therefore supports its Droplet topology and marks App
+Platform + Managed Postgres unsupported for the current binary.
 
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
@@ -56,7 +57,7 @@ the concrete case.
 | --- | --- | --- | --- |
 | `IMMORTAL_BIND_ADDR` | no | `127.0.0.1` | Listen address. Keep the default behind a same-host reverse proxy. Set `0.0.0.0` in containers. |
 | `IMMORTAL_PORT` | no | `8080` | Listen port for WebSocket and NIP-11 HTTP (one port, one listener). |
-| `PORT` | no | — | Platform-injected port (Cloud Run, App Platform). When set, it overrides `IMMORTAL_PORT`. |
+| `PORT` | no | — | Platform-injected port (for example Cloud Run). When set, it overrides `IMMORTAL_PORT`. |
 | `IMMORTAL_RELAY_URL` | for NIP-42 | — | Public URL of this relay, e.g. `wss://relay.example.com`. Used to validate the `relay` tag in NIP-42 AUTH events and to advertise NIP-42 support in NIP-11. |
 | `IMMORTAL_AUTH_REQUIRED` | no | `false` | Require a valid per-connection NIP-42 authentication event before EVENT or REQ. `IMMORTAL_RELAY_URL` must be set when this is true. |
 

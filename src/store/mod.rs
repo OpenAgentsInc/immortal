@@ -170,10 +170,10 @@ impl Store {
         if event.kind == 22_242 {
             return Ok(AdmissionOutcome::Rejected(AdmissionRejection::AuthEvent));
         }
-        if let Some(expiration) = event.expiration()
-            && expiration <= now
-        {
-            return Err(crate::domain::DomainError::ExpiredEvent { expiration, now }.into());
+        if let Some(expiration) = event.expiration() {
+            if expiration <= now {
+                return Err(crate::domain::DomainError::ExpiredEvent { expiration, now }.into());
+            }
         }
 
         let created_at = pg_i64(event.created_at, "created_at")?;
@@ -836,7 +836,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, ()> {
-    if !value.len().is_multiple_of(2) {
+    if value.len() % 2 != 0 {
         return Err(());
     }
     value

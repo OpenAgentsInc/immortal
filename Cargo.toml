@@ -2,6 +2,7 @@
 name = "immortal"
 version = "0.0.1"
 edition = "2024"
+rust-version = "1.85"
 license = "CC0-1.0"
 description = "A hardened Nostr relay. One Rust binary, one Postgres. Nothing else."
 repository = "https://github.com/OpenAgentsInc/immortal"

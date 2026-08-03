@@ -56,21 +56,25 @@ TLS is the job of the reverse proxy (nginx or Caddy).
    `AGENTS.md`).
 4. **Easy to deploy.** A new Debian server, Postgres from the package
    manager, and this binary make a relay in minutes.
+5. **Locally proved.** Conformance and deployment acceptance run manually;
+   GitHub workflows and GitHub-billed automation are prohibited.
 
 ## Status
 
-M1 through M4 are complete: the protocol domain, Postgres store, HTTP/WebSocket
-gateway, pinned per-NIP fixtures, CI conformance, actual-process chaos proof,
-and a published release-load baseline. The binary is a running Nostr relay;
-M5 packages the production deployment kit. See `docs/ROADMAP.md` and
-`docs/conformance/`.
+M1 through M5 are complete: the protocol domain, Postgres store,
+HTTP/WebSocket gateway, pinned per-NIP fixtures, locally executable
+conformance, actual-process chaos and load proofs, and the production
+deployment kit. M6 is the next protocol-expansion phase. See
+`docs/ROADMAP.md`, `docs/conformance/`, and `docs/deployment/`.
 
 ## Quick start
 
-On Debian, install Postgres and create a dedicated database owner:
+On Debian 13, install the build toolchain and Postgres, then create a dedicated
+database owner:
 
 ```sh
-sudo apt-get install -y postgresql
+sudo apt-get update
+sudo apt-get install -y postgresql curl ca-certificates cargo build-essential
 sudo -u postgres createuser --pwprompt immortal
 sudo -u postgres createdb --owner=immortal immortal
 ```
@@ -79,7 +83,7 @@ Build and start the relay. The embedded migration runner applies and verifies
 the schema before the network listener binds:
 
 ```sh
-cargo build --release
+cargo build --locked --release
 DATABASE_URL='postgres://immortal:<YOUR_DB_PASSWORD>@127.0.0.1:5432/immortal' \
   ./target/release/immortal
 ```
@@ -92,8 +96,21 @@ curl -fsS -H 'Accept: application/nostr+json' http://127.0.0.1:8080/
 ```
 
 Put Caddy or nginx in front for public TLS, then set `IMMORTAL_RELAY_URL` to
-the public `wss://` URL to enable NIP-42. The complete environment contract and
-production runbooks are in `docs/deployment/`.
+the public `wss://` URL to enable NIP-42. The production path installs the
+committed files under `deploy/`; follow
+`docs/deployment/runbook-debian-vps.md` for systemd, TLS proxy, backups,
+restore, upgrade, and rollback.
+
+Reproduce the full fresh-Debian proof manually with a running Apple Container,
+Podman, or Docker runtime:
+
+```sh
+./scripts/run-debian-acceptance.sh
+```
+
+Run the complete manual M1–M5 conformance gate with
+`./scripts/test-conformance.sh`. No GitHub workflow or billed GitHub runner is
+used.
 
 ## Provenance
 

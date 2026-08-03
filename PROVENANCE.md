@@ -214,7 +214,9 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   subscription-index lane, and send-queue overflow. Added a coverage matrix
   and a GitHub Actions workflow that runs formatting, warnings-denied Clippy,
   every pinned fixture/static test, fresh-Postgres contracts, process chaos,
-  the load proof, and the binary deployment smoke test.
+  the load proof, and the binary deployment smoke test. M5 subsequently
+  deletes that workflow under the owner's no-GitHub-automation invariant;
+  this sentence remains as the historical M4 record.
 - Published the five-run optimized workstation baseline: 6,849.89 committed
   events/sec median, 0.41 ms WebSocket-connect p99 median, and 2.12 ms
   REQ-to-EOSE p99 median for ten historical events. The committed report names
@@ -228,6 +230,63 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   two-binary gap/chaos, five-run release load, and actual binary
   startup/health/NIP-11/SIGTERM contracts; its independent load sample stayed
   within the published baseline ranges.
+
+### 2026-08-03 — Human owner: no GitHub automation invariant
+
+- Directed that Immortal must not use GitHub workflows for any purpose and
+  that no required check may depend on GitHub billing. Required conformance
+  must be manual or use separately approved non-GitHub infrastructure.
+- The decision is binding as `AGENTS.md` rule 11. M5 removes the M4 GitHub
+  Actions workflow and replaces its required gate with a committed local
+  command; no GitHub-hosted check remains part of the project contract.
+
+### 2026-08-03 — Codex 5.6 Sol (Extra High), M5 Deployment Kit
+
+- Began M5 from commit `c2a91e9` on a clean `main`, current with
+  `origin/main`, and accepted the handoff under the identity Codex 5.6 Sol
+  (Extra High). Scope: prove a new Debian host from package-manager
+  dependencies through a real relay and database restore; commit hardened
+  service, proxy, container, and backup assets; and make the Debian,
+  DigitalOcean, and Google Cloud runbooks operationally honest.
+- Reconciled the owner's no-GitHub-automation decision first. Deleted
+  `.github/workflows/conformance.yml`, added the repository invariant, and
+  moved the complete required gate to `scripts/test-conformance.sh`, which a
+  contributor runs locally. The deployment acceptance wrapper selects a
+  local Apple Container, Podman, or Docker runtime and has two explicit
+  disposable-environment guards before its destructive inner script runs.
+- Added the deployment kit: a reproducible multi-stage root `Dockerfile`, a
+  fail-fast environment template, a hardened single-box systemd unit, Caddy
+  and nginx WebSocket proxy templates, and an atomic custom-format `pg_dump`
+  program with a sandboxed systemd service and persistent nightly timer.
+  Static deployment tests pin the security and architecture invariants,
+  including the absence of a GitHub workflow directory.
+- The first fresh-Debian build exposed that the code used Rust syntax newer
+  than Debian 13's package-manager Rust 1.85. Declared that minimum supported
+  version and rewrote the handful of let-chain and integer-helper expressions
+  into semantically equivalent Rust 1.85 forms. No dependency was added and
+  no protocol behavior changed.
+- The disposable Debian 13 proof installs apt PostgreSQL and Rust, builds the
+  locked release, validates the committed systemd units, starts the actual
+  relay, checks health and NIP-11, publishes and queries a pinned signed event
+  over a raw WebSocket client, shuts down with SIGTERM, then creates and
+  restores a real dump and verifies the restored `nostr_event` row.
+- Reworked the runbooks around paths the current binary can actually support.
+  Debian 13 is the canonical single-box deployment. DigitalOcean's supported
+  path is a Debian Droplet because Managed PostgreSQL requires TLS and the
+  owner-approved optional TLS backend has not landed. Google Cloud documents
+  the Cloud Run/Cloud SQL Unix-socket path and its WebSocket timeout/reconnect
+  behavior plus a Debian GCE alternative. Restore, upgrade, and rollback
+  instructions now account for Immortal's migration ledger and its deliberate
+  refusal to run an old binary against an unknown schema.
+- Milestone-close verification rebuilt the final multi-stage image as
+  `immortal:m5`, then passed the complete committed manual gate: formatting,
+  locked all-target checks and tests, Clippy and rustdoc with warnings denied,
+  shell/Python/static checks, M2 live storage, M3 live gateway, M4 two-process
+  gap/chaos, five-run release load, and M5 fresh-Debian acceptance. The load
+  sample reported 6,555.07 committed events/sec median, 0.43 ms connect-p99
+  median, and 2.08 ms REQ-to-EOSE-p99 median. The disposable Debian 13 image
+  used apt Rust 1.85 and PostgreSQL 17; systemd verification, signed-event
+  publish/query, graceful shutdown, and the real backup restore all passed.
 
 ## Rules
 

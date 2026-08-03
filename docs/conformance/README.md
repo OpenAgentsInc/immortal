@@ -1,10 +1,11 @@
 # Conformance
 
-M4 makes the proof surface executable in CI. The repository carries pinned
-fixtures for every NIP implemented through M3, live contracts against a fresh
-Postgres database, an actual two-process chaos proof, and a repeatable
-release-mode load harness. `.github/workflows/conformance.yml` runs all of
-them on every pull request and every push to `main`.
+M4 makes the proof surface executable on a contributor machine. The repository
+carries pinned fixtures for every NIP implemented through M3, live contracts
+against a fresh Postgres database, an actual two-process chaos proof, and a
+repeatable release-mode load harness. `scripts/test-postgres.sh` runs the live
+proofs locally; GitHub workflows and GitHub-billed automation are prohibited
+by `AGENTS.md`.
 
 ## Coverage map
 
@@ -22,6 +23,19 @@ them on every pull request and every push to `main`.
 | M4 events/sec, WebSocket connect p99, and REQ-to-EOSE p99 | `tests/load_postgres.rs` and [`load-report.md`](load-report.md) |
 
 ## Running locally
+
+The complete M1–M5 manual gate is:
+
+```sh
+./scripts/test-conformance.sh
+```
+
+It runs formatting, compilation, fixtures, Clippy, rustdoc, live Postgres,
+multi-process chaos, the release load proof, and the disposable Debian 13
+deployment acceptance. It needs local Postgres tools plus a running Apple
+Container, Podman, or Docker runtime. It never invokes GitHub automation.
+
+For faster iteration, run the layers separately.
 
 The fast, database-independent layer is:
 

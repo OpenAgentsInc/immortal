@@ -41,11 +41,12 @@ Migration DDL is the only use of `batch_execute`: it is immutable SQL loaded
 with `include_str!`, never SQL assembled at run time. Every runtime data
 statement is prepared once through `tokio-postgres` and uses typed parameters.
 
-`Store::connect_verified` is the hardened runtime path. It checks that all
-known migration names and hashes are current without requesting DDL
-privileges. Gateway startup runs migrations once, then creates its fixed set of
-verified runtime workers and the dedicated notification connection before the
-network listener binds.
+`Store::connect_verified` checks that all known migration names and hashes are
+current without executing DDL. Gateway startup first runs migrations with its
+single configured database credential, then creates its fixed set of verified
+workers and the dedicated notification connection before the network listener
+binds. M5 therefore deploys one database-owner login; the binary does not yet
+expose separate migrator/runtime credentials or a migration-only command.
 
 ## Admission transaction
 
@@ -103,42 +104,15 @@ The Debian runbook's `immortal` role owns only the `immortal` database and is
 not a superuser, replication role, role creator, or database creator. This is
 the supported minimal deployment. It may apply migrations and run the relay.
 
-### Split migration and runtime roles
+### Split migration and runtime roles (not yet a deployment mode)
 
-For a stricter production installation, create the database with a migration
-owner and a separate login used by the running relay:
+The store API has the verification primitive needed for a future split-role
+mode, but the executable intentionally exposes only one `DATABASE_URL` and
+always performs migration bootstrap before binding. Do not configure a
+runtime-only role today: startup will fail closed when it cannot run the
+embedded migration transaction.
 
-```sql
-CREATE ROLE immortal_migrator LOGIN PASSWORD '<MIGRATION_PASSWORD>'
-    NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
-CREATE ROLE immortal_runtime LOGIN PASSWORD '<RUNTIME_PASSWORD>'
-    NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
-CREATE DATABASE immortal OWNER immortal_migrator;
-```
-
-Connect as `immortal_migrator`, run the embedded migrations, then grant only
-the runtime operations M2 uses:
-
-```sql
-GRANT CONNECT ON DATABASE immortal TO immortal_runtime;
-GRANT USAGE ON SCHEMA public TO immortal_runtime;
-
-GRANT SELECT ON schema_migrations TO immortal_runtime;
-GRANT SELECT, INSERT, DELETE ON nostr_event TO immortal_runtime;
-GRANT SELECT, INSERT ON nostr_indexed_tag TO immortal_runtime;
-GRANT SELECT, INSERT, UPDATE ON replaceable_head TO immortal_runtime;
-GRANT SELECT, INSERT, UPDATE ON deletion_tombstone TO immortal_runtime;
-GRANT SELECT ON relay_policy, relay_allowed_pubkey, relay_allowed_kind,
-    relay_member_pubkey, relay_blocked_pubkey, relay_blocked_kind
-    TO immortal_runtime;
-GRANT USAGE, SELECT ON SEQUENCE nostr_event_ingest_seq_seq
-    TO immortal_runtime;
-```
-
-The running process connects as `immortal_runtime` and uses
-`Store::connect_verified`. Operators change policy and apply future migrations
-through `immortal_migrator`; the public relay process cannot grant itself
-rights or alter the schema. Each future migration must explicitly grant its
-new runtime operations.
-
-Never put either password in this repository or a command-line argument.
+A future split-role deployment must add an explicit migration-only command,
+separate credential handling, per-migration runtime grants, and a live
+least-privilege proof before any runbook may recommend it. Never put a
+database password in this repository or a command-line argument.

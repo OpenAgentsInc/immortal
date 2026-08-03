@@ -21,11 +21,11 @@ cache, no sync engine. Postgres does all the storage work.
 | --- | --- |
 | [`insights.md`](insights.md) | The book's production insights by theme, each mapped onto Immortal. |
 | [`configuration.md`](configuration.md) | Immortal's configuration contract: environment variables only, with fail-fast validation. |
-| [`database.md`](database.md) | Postgres schema, transactional admission, migrations, and simple or split least-privilege roles. |
+| [`database.md`](database.md) | Postgres schema, transactional admission, migrations, the current single-owner role, and the future split-role boundary. |
 | [`gateway.md`](gateway.md) | HTTP/WebSocket runtime, indexed subscriptions, race-free EOSE, fanout, limits, and shutdown. |
 | [`../conformance/README.md`](../conformance/README.md) | Fixture, live-Postgres, multi-process chaos, and release-load proof coverage. |
-| [`runbook-debian-vps.md`](runbook-debian-vps.md) | The canonical single-box deployment: Debian stable, apt Postgres, systemd, Caddy or nginx, backups, upgrade and rollback. Works on any VPS (Hetzner, OVH, and others). |
-| [`runbook-digitalocean.md`](runbook-digitalocean.md) | DigitalOcean: the Droplet path, and the App Platform + Managed Postgres path the book uses, with honest notes on fit. |
+| [`runbook-debian-vps.md`](runbook-debian-vps.md) | The canonical single-box deployment: Debian 13, apt Postgres, hardened systemd, Caddy or nginx, backups, restore, upgrade, and schema-aware rollback. |
+| [`runbook-digitalocean.md`](runbook-digitalocean.md) | DigitalOcean: the supported Debian 13 Droplet path and the explicit managed-platform boundary. |
 | [`runbook-google-cloud.md`](runbook-google-cloud.md) | Google Cloud: Cloud Run + Cloud SQL + Secret Manager + Artifact Registry, and a GCE VM alternative. |
 
 ## Reading order
@@ -48,3 +48,13 @@ cache, no sync engine. Postgres does all the storage work.
 - Ephemeral events (kinds 20000–29999) are never stored.
 - No secrets in this repository. Runbooks use placeholders such as
   `<YOUR_DB_PASSWORD>`.
+- No GitHub workflows or GitHub-billed conformance. Run the committed local
+  proof commands manually.
+
+## Committed deployment assets
+
+The canonical templates live under `deploy/`: the environment file, hardened
+systemd unit, Caddy and nginx configurations, and the backup service/timer.
+The root `Dockerfile` is the Cloud Run image definition. The Debian runbook
+installs these files directly so executable configuration and documentation
+cannot drift independently.

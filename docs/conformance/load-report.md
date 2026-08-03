@@ -51,7 +51,8 @@ the target Debian profile rather than extrapolating this workstation result.
 ```
 
 The harness prints one `M4_BENCHMARK_JSON=...` line containing sample counts,
-medians, and ranges so CI logs retain machine-readable evidence. It asserts
-correct protocol responses but deliberately has no fixed performance
-threshold: shared CI runners are suitable for regression observation, not a
-stable latency service-level objective.
+medians, and ranges so a manually captured conformance log retains
+machine-readable evidence. It asserts correct protocol responses but
+deliberately has no fixed performance threshold: heterogeneous contributor
+machines are suitable for regression observation, not a stable latency
+service-level objective.

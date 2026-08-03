@@ -206,11 +206,11 @@ impl Gateway {
                                 ingest_seq: None,
                             }),
                         };
-                        if let Some(published) = published
-                            && notify_hub.publish(published, now).await.is_err()
-                        {
-                            fail_process(&notify_current, &notify_shutdown);
-                            break;
+                        if let Some(published) = published {
+                            if notify_hub.publish(published, now).await.is_err() {
+                                fail_process(&notify_current, &notify_shutdown);
+                                break;
+                            }
                         }
                     }
                 }
@@ -625,22 +625,24 @@ async fn handle_event(
     let admission_now = unix_now();
     match context.state.db.admit(event, admission_now).await {
         Ok(outcome) => {
-            if matches!(outcome, AdmissionOutcome::Ephemeral)
-                && let Some(event) = ephemeral
-                && context
-                    .state
-                    .hub
-                    .publish(
-                        PublishedEvent {
-                            event,
-                            ingest_seq: None,
-                        },
-                        admission_now,
-                    )
-                    .await
-                    .is_err()
-            {
-                fail_process(&context.state.current, &context.state.shutdown);
+            if matches!(&outcome, AdmissionOutcome::Ephemeral) {
+                if let Some(event) = ephemeral {
+                    if context
+                        .state
+                        .hub
+                        .publish(
+                            PublishedEvent {
+                                event,
+                                ingest_seq: None,
+                            },
+                            admission_now,
+                        )
+                        .await
+                        .is_err()
+                    {
+                        fail_process(&context.state.current, &context.state.shutdown);
+                    }
+                }
             }
             let (accepted, reason) = admission_response(outcome);
             pending.push_back(ok_message(&event_id, accepted, &reason));

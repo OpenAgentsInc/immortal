@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Immortal PostgreSQL logical backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+RandomizedDelaySec=15m
+Persistent=true
+Unit=immortal-backup.service
+
+[Install]
+WantedBy=timers.target

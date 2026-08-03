@@ -64,19 +64,20 @@ The WebSocket protocol server.
 
 ## M4 — Conformance (done)
 
-- [x] Per-NIP fixture suite wired into CI; every M1–M3 behavior covered
+- [x] Per-NIP fixture suite wired into the local conformance command; every
+      M1–M3 behavior covered
 - [x] Multi-process proof: two processes, one Postgres — cross-delivery,
       `ingest_seq` gap catch-up, kill-one chaos, fail-closed on gap
 - [x] Load proof with published numbers (events/sec, connect p99,
       REQ-to-EOSE p99)
 
-## M5 — Deployment kit
+## M5 — Deployment kit (done)
 
-- [ ] Single-box acceptance: fresh Debian + apt Postgres + binary =
+- [x] Single-box acceptance: fresh Debian + apt Postgres + binary =
       running relay in minutes, README-only
-- [ ] Hardened systemd unit, nginx and Caddy snippets, backup and
+- [x] Hardened systemd unit, nginx and Caddy snippets, backup and
       restore procedure, upgrade and rollback procedure
-- [ ] Runbooks final (`docs/deployment/`): Debian VPS, DigitalOcean,
+- [x] Runbooks final (`docs/deployment/`): Debian VPS, DigitalOcean,
       Google Cloud
 
 ## M6 — NIP expansion
@@ -111,7 +112,8 @@ as early as possible.
 ## M8 — Hardening and formal work
 
 - [ ] Formal model of the admission/replacement/deletion state machine;
-      checker run in CI; counterexamples become fixtures
+      checker run in the local conformance suite; counterexamples become
+      fixtures
 - [ ] Fuzzing on the wire parser and filter matcher
 - [ ] Long-run soak: memory, connection churn, Postgres bloat,
       `NOTIFY` storm behavior
@@ -139,6 +141,6 @@ M6 reaches the NIP-29 item; does not wait for M7 or M8.
 
 - A specification change (NIP sync) is normative only after review plus a
   fixture update.
-- A milestone is done when its fixtures pass in CI and the deployment
-  test still passes.
+- A milestone is done when its fixtures and the guarded local deployment
+  test pass. GitHub workflows and GitHub-billed automation are prohibited.
 - New dependencies: owner sign-off first, recorded in AGENTS.md.
