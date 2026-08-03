@@ -60,6 +60,11 @@ TLS is the job of the reverse proxy (nginx or Caddy).
 
 Skeleton only. The relay functions are not implemented yet.
 
+## Provenance
+
+AI agents write this repository under human direction. `PROVENANCE.md`
+records which agent does what, and the trailer rules for commits.
+
 ## License
 
 CC0-1.0. Public domain. No permission is necessary.
