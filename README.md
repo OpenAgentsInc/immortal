@@ -1,58 +1,65 @@
 # Immortal
 
-A hardened Nostr relay. One Rust binary, one Postgres. Nothing else.
+A hardened Nostr relay. One Rust binary and one Postgres database. Nothing
+else.
 
-Named for the Immortal's hardened shields. Public domain (CC0).
+License: CC0-1.0. Public domain.
 
-## Thesis
+## What Immortal is
 
-A small activist network should be able to run durable, sovereign, signed
-group infrastructure on a single cheap box with two well-understood pieces:
+Immortal is a relay for the Nostr protocol. It runs as one program. It keeps
+all data in one Postgres database. It does not need other services.
+
+You can run it on one small server. You can also run many relay processes
+against one database. The design is the same in both cases.
+
+## Architecture
 
 ```text
-Nostr clients  ⇄  immortal (one static Rust binary: WebSocket + NIP-11 HTTP)
-                      │
-                  Postgres
-                  events · tag indexes · replaceable heads · deletion
-                  tombstones · policy · full-text search · LISTEN/NOTIFY
-                  fanout · monotonic ingest_seq
+Nostr clients  <=>  immortal (one binary: WebSocket + NIP-11 HTTP)
+                        |
+                    Postgres
+                    events, tag indexes, replaceable heads,
+                    deletion tombstones, policy, full-text search,
+                    LISTEN/NOTIFY, ingest sequence
 ```
 
-Postgres is pushed as far as it goes — it is the store, the query engine, the
-search index, and the fanout bus. There is no message broker, no sync
-service, no cache tier, no sidecar. TLS terminates at the reverse proxy
-(nginx or Caddy) the box already has.
+Postgres does all the storage work:
 
-Scale-up is the same picture, wider: N immortal processes against one
-Postgres, coordinated by `LISTEN/NOTIFY` plus `ingest_seq` catch-up. A
-process that cannot catch up fails closed — drops its sockets — and clients
-reconnect. No coordination service ever enters the design.
+- It stores events.
+- It indexes tags for queries.
+- It keeps the current replaceable-event heads.
+- It keeps deletion tombstones.
+- It does full-text search with a generated column and a GIN index.
+- It tells all relay processes about new events with `LISTEN/NOTIFY`.
+- It gives each event a sequence number (`ingest_seq`).
 
-## Design doctrine
+Event admission is one database transaction. The relay sends `OK` to the
+client only after the commit.
 
-1. **Standard.** Boring, battle-tested components only: Rust, tokio,
-   Postgres. Protocol behavior comes from NIP text, not from novel
-   architecture.
-2. **Hardened.** Bounded everything (frame size, subscriptions per
-   connection, filters per REQ, query budgets, rate limits). Prepared
-   statements only. Least-privilege database role. Fail closed, never open.
-   Shipped systemd unit carries the hardening flags.
-3. **Simple.** One crate. One binary. One database. A dependency tree short
-   enough to read in one sitting — see the allowlist in `AGENTS.md`.
-4. **Deployable by non-specialists.** The acceptance test is a fresh Debian
-   stable box to a serving relay in minutes, with a package-manager Postgres
-   and one binary. If a step needs a specialist, the step is a bug.
+A relay process uses the sequence number to find events it did not see. If
+a process cannot become current, it closes its connections. Clients
+reconnect. This is safe in the Nostr protocol.
+
+Ephemeral events (kinds 20000–29999) do not go to storage.
+
+TLS is the job of the reverse proxy (nginx or Caddy).
+
+## Design rules
+
+1. **Standard.** Rust, tokio, and Postgres only.
+2. **Hardened.** Prepared SQL statements only. Limits on frame size,
+   subscriptions, filters, and query cost. Rate limits per IP and per
+   pubkey. Fail closed.
+3. **Simple.** One crate. One binary. Seven direct dependencies (see
+   `AGENTS.md`).
+4. **Easy to deploy.** A new Debian server, Postgres from the package
+   manager, and this binary make a relay in minutes.
 
 ## Status
 
-Pre-implementation skeleton. The build plan, architecture decisions, and
-packet breakdown live in the OpenAgents monorepo at
-`docs/spacetime/2026-08-03-rust-spacetimedb-nostr-infra-considerations.md`.
-
-Conformance oracle: the [`nostr-effect`](https://github.com/OpenAgentsInc/nostr-effect)
-TypeScript implementation — every protocol fixture runs against both, and
-divergence is a build failure.
+Skeleton only. The relay functions are not implemented yet.
 
 ## License
 
-CC0-1.0. Public domain. Take it, run it, fork it, no permission needed.
+CC0-1.0. Public domain. No permission is necessary.
