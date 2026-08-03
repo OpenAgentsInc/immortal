@@ -1,0 +1,12 @@
+[package]
+name = "immortal"
+version = "0.0.1"
+edition = "2021"
+license = "CC0-1.0"
+description = "A hardened Nostr relay. One Rust binary, one Postgres. Nothing else."
+repository = "https://github.com/OpenAgentsInc/immortal"
+
+# Dependency policy: additions require owner sign-off recorded in AGENTS.md.
+# Allowlist: tokio, tokio-tungstenite, tokio-postgres, secp256k1, sha2,
+# serde, serde_json. Dependencies land with the packet that uses them.
+[dependencies]

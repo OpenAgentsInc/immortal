@@ -1,0 +1,8 @@
+/target
+*.env
+.env*
+*.sqlite
+*.sqlite3
+*.db
+.DS_Store
+/tmp/
