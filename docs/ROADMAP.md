@@ -10,7 +10,7 @@ external-project reviews live in `docs/inspiration/`.
 - [x] Compiling Cargo skeleton, edition 2024
 - [x] NIP source lanes and sync script (`nips/`, three pinned upstreams)
 - [x] First inspiration review (nostr-rs-relay)
-- [ ] Deployment docs (`docs/deployment/`) — in progress
+- [x] Deployment docs (`docs/deployment/`)
 
 ## M1 — Domain (`src/domain/`)
 
