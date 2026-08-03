@@ -40,6 +40,9 @@ Postgres owns everything. One admission transaction.
       tombstones, policy, tag rows, `ingest_seq`, `NOTIFY`
 - [ ] Compound indexes for the NIP-01 access patterns
 - [ ] FTS: generated tsvector column + GIN index (for NIP-50 later)
+- [ ] Admission policy pipeline: allow/block lists for kinds and
+      pubkeys, closed-membership mode, content-size, tag-count, and
+      timestamp bounds — all configurable
 - [ ] Prepared statements only; least-privilege role documented
 
 ## M3 — Gateway (`src/gateway/`)
@@ -78,10 +81,20 @@ The WebSocket protocol server.
 
 ## M6 — NIP expansion
 
-In order, each with fixtures before the next starts:
+In order, each with fixtures before the next starts. The order puts the
+items a production deployment depends on first, so M9 becomes reachable
+as early as possible.
 
 - [ ] NIP-40 expiration sweep (scheduled delete + query-time exclusion)
 - [ ] NIP-70 protected events (with NIP-42 state)
+- [ ] NIP-17 private-message delivery gating: store gift wraps
+      (kind 1059) but serve each only to its `p`-tagged recipient;
+      honor kind 10050 relay lists
+- [ ] NIP-29 relay-managed groups: `h`-tag scoping, membership
+      enforced before store, moderation kinds 9000–9010, join 9021 and
+      leave 9022, relay-signed group metadata 39000–39005
+- [ ] NIP-86 relay management API (HTTP, NIP-98-authenticated) for
+      policy and group administration without direct SQL
 - [ ] NIP-45 COUNT (bounded)
 - [ ] NIP-50 search (the FTS column from M2)
 - [ ] NIP-65 relay-list handling notes
@@ -103,6 +116,24 @@ In order, each with fixtures before the next starts:
 - [ ] Long-run soak: memory, connection churn, Postgres bloat,
       `NOTIFY` storm behavior
 - [ ] Security pass against the AGENTS.md rules; publish the results
+
+## M9 — Drop-in replacement kit
+
+Everything an operator needs to replace an existing production relay with
+Immortal behind the same hostname, with no client changes. Can start once
+M6 reaches the NIP-29 item; does not wait for M7 or M8.
+
+- [ ] Signed-event bulk import: JSONL in, idempotent, preserves ids and
+      signatures, replays replacement and deletion rules in `ingest_seq`
+      order
+- [ ] NIP-11 parity configuration: name, description, pubkey, limits,
+      and supported-NIP list fully operator-configurable
+- [ ] Policy parity checklist: map an existing relay's allow/block and
+      membership rules onto the M2 policy pipeline
+- [ ] Shadow mode guide: run Immortal read-only beside the existing
+      relay, replay traffic, diff responses
+- [ ] Cutover and rollback runbook addition in `docs/deployment/`:
+      hostname switch, import, verify, roll back
 
 ## Standing rules
 

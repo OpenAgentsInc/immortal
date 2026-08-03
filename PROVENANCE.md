@@ -72,6 +72,33 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   — DigitalOcean Managed Postgres mandates TLS, which `tokio-postgres`
   alone cannot speak. Claude surfaced it; the owner decided.
 
+### 2026-08-03 — Claude: production-parity audit and roadmap update
+
+- Audited the operator's existing production relay
+  (`relay.openagents.com`, currently hosted from the prior TypeScript
+  implementation) and its two client applications (the OpenAgents
+  monorepo surfaces and the Omega desktop client) to enumerate the
+  relay-side surface actually in use.
+- Findings: wire verbs EVENT, REQ, CLOSE, and AUTH; NIP-42
+  authentication; NIP-29 relay-managed groups with `h`-tag scoping,
+  pre-store membership enforcement, moderation and join/leave kinds, and
+  relay-signed 39000-range metadata; gift-wrapped private messages
+  (kinds 13/14/1059) that need recipient-gated delivery; NIP-78 and
+  NIP-51 addressable data plus several custom kinds admitted by policy;
+  a policy pipeline (allow/block kinds and pubkeys, closed membership,
+  size and timestamp bounds); NIP-11. COUNT and negentropy are served by
+  the current host but no client uses them.
+- Roadmap updated so a defined point reaches functional parity for a
+  cutover: the M2 policy pipeline is now explicit, M6 gains NIP-17
+  delivery gating, NIP-29 groups, and the NIP-86 management API ahead of
+  COUNT/search, and a new M9 milestone defines the drop-in replacement
+  kit (bulk import, NIP-11 parity, policy mapping, shadow mode, cutover
+  and rollback runbook).
+- Known adjacency, deliberately out of scope: the current host's NIP-29
+  module also serves group-call well-known endpoints for a media
+  service. That stays a reverse-proxy concern on the operator side; it
+  does not enter this binary.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names
