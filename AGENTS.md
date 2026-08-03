@@ -21,8 +21,12 @@ Read `README.md` first.
    cannot become current, it must close its connections.
 7. **Keep ephemeral events out of storage.** Kinds 20000–29999 never go to
    a table.
-8. **Test against the NIP specifications.** Keep a fixture corpus for each
-   implemented NIP. A protocol change without a fixture is not complete.
+8. **Test against the NIP specifications in `nips/`.** That directory
+   holds our pinned copies from three upstream sources (official, block,
+   openagents) — see `nips/README.md` for the sync and review process.
+   Keep a fixture corpus for each implemented NIP. A protocol change
+   without a fixture is not complete. A sync commit never changes the
+   implementation by itself.
 9. **Keep the deployment test green.** A new Debian server, Postgres from
    the package manager, and this binary must make a running relay in
    minutes, with only the README as the guide.
