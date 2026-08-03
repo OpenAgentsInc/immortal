@@ -1,7 +1,7 @@
 [package]
 name = "immortal"
 version = "0.0.1"
-edition = "2021"
+edition = "2024"
 license = "CC0-1.0"
 description = "A hardened Nostr relay. One Rust binary, one Postgres. Nothing else."
 repository = "https://github.com/OpenAgentsInc/immortal"
