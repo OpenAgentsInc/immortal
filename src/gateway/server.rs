@@ -46,6 +46,7 @@ const MAX_PROCESS_CONNECTIONS: usize = 4_096;
 const NOTIFICATION_QUEUE_CAPACITY: usize = 2_048;
 const HUB_COMMAND_CAPACITY: usize = 2_048;
 const MAX_DB_QUEUED_JOBS: usize = 256;
+const MAX_NOTIFICATION_GAP: usize = 4_096;
 
 pub struct Gateway {
     listener: TcpListener,
@@ -92,11 +93,14 @@ impl Gateway {
         let challenge_secret = read_process_secret()?;
         let (migration_store, _) = Store::connect_with_report(&config.database_url).await?;
         let policy = migration_store.relay_policy().await?;
-        drop(migration_store);
-
         let mut notifications =
             NotificationListener::connect(&config.database_url, NOTIFICATION_QUEUE_CAPACITY)
                 .await?;
+        // LISTEN is current before the cursor is sampled. Notifications at or
+        // below this boundary can be ignored because no client socket is bound
+        // yet; later jumps are caught up through the durable sequence.
+        let initial_ingest_seq = migration_store.latest_ingest_seq().await?;
+        drop(migration_store);
         let (shutdown, shutdown_receiver) = watch::channel(false);
         let current = Arc::new(AtomicBool::new(true));
         let queue_capacity = MAX_DB_QUEUED_JOBS.div_ceil(config.db_connections);
@@ -123,6 +127,7 @@ impl Gateway {
         let notify_current = Arc::clone(&current);
         let mut notify_stop = shutdown_receiver.clone();
         background.push(tokio::spawn(async move {
+            let mut durable_cursor = initial_ingest_seq;
             loop {
                 tokio::select! {
                     changed = notify_stop.changed() => {
@@ -138,17 +143,63 @@ impl Gateway {
                         let now = unix_now();
                         let published = match notification {
                             StoreNotification::Stored(ingest_seq) => {
-                                match notify_db.event_by_ingest_seq(ingest_seq, now).await {
-                                    Ok(Some(stored)) => Some(PublishedEvent {
-                                        event: Arc::new(stored.event),
-                                        ingest_seq: Some(stored.ingest_seq),
-                                    }),
-                                    Ok(None) => None,
-                                    Err(_) => {
+                                if ingest_seq <= durable_cursor {
+                                    continue;
+                                }
+                                let Some(gap) = ingest_seq
+                                    .checked_sub(durable_cursor)
+                                    .and_then(|gap| usize::try_from(gap).ok())
+                                else {
+                                    fail_process(&notify_current, &notify_shutdown);
+                                    break;
+                                };
+                                if gap > MAX_NOTIFICATION_GAP {
+                                    fail_process(&notify_current, &notify_shutdown);
+                                    break;
+                                }
+                                let catch_up = match notify_db
+                                    .catch_up(
+                                        durable_cursor,
+                                        ingest_seq,
+                                        now,
+                                        MAX_NOTIFICATION_GAP + 1,
+                                    )
+                                    .await
+                                {
+                                    Ok(catch_up)
+                                        if catch_up.latest >= ingest_seq
+                                            && catch_up.events.len() <= MAX_NOTIFICATION_GAP =>
+                                    {
+                                        catch_up
+                                    }
+                                    Ok(_) | Err(_) => {
                                         fail_process(&notify_current, &notify_shutdown);
                                         break;
                                     }
+                                };
+                                let mut failed = false;
+                                for stored in catch_up.events {
+                                    if notify_hub
+                                        .publish(
+                                            PublishedEvent {
+                                                event: Arc::new(stored.event),
+                                                ingest_seq: Some(stored.ingest_seq),
+                                            },
+                                            now,
+                                        )
+                                        .await
+                                        .is_err()
+                                    {
+                                        failed = true;
+                                        break;
+                                    }
                                 }
+                                if failed {
+                                    fail_process(&notify_current, &notify_shutdown);
+                                    break;
+                                }
+                                durable_cursor = ingest_seq;
+                                None
                             }
                             StoreNotification::Ephemeral(event) => Some(PublishedEvent {
                                 event: Arc::new(event),

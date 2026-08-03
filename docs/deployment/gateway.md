@@ -42,10 +42,13 @@ connection-local generation number.
 
 ## Cross-process delivery
 
-Stored admissions notify their committed `ingest_seq`; each process fetches
-that exact validated row and applies its local subscription index. Admission
+Stored admissions notify their committed `ingest_seq`; each process advances a
+durable cursor and applies every validated row through that position to its
+local subscription index. A small jump triggers a bounded `events_after`
+catch-up, including rows whose individual notification was missed. Admission
 serializes sequence allocation immediately before insert, so sequence order is
-commit order and the EOSE boundary is stable.
+commit order and the EOSE boundary is stable. A gap larger than 4,096 positions
+or one that Postgres cannot prove makes the process fail closed.
 
 Ephemeral events are validated and policy-checked in the same admission
 transaction but never inserted. After commit they enter the publisher's local
@@ -65,8 +68,8 @@ and recent ephemeral IDs are all bounded.
 
 A client disconnect, CLOSE, or replacement REQ cancels its historical query.
 A full connection queue closes that connection. A failed database worker,
-failed notification stream, malformed cross-process payload, or notification overflow
-makes the whole process non-current: health changes, every connection closes,
-and the binary exits non-zero so the service manager can restart it. SIGINT or
-SIGTERM stops accept, cancels queries, closes connections, and drains within
-`IMMORTAL_SHUTDOWN_GRACE_SECONDS`.
+failed notification stream, unprovable sequence gap, malformed cross-process
+payload, or notification overflow makes the whole process non-current: health
+changes, every connection closes, and the binary exits non-zero so the service
+manager can restart it. SIGINT or SIGTERM stops accept, cancels queries, closes
+connections, and drains within `IMMORTAL_SHUTDOWN_GRACE_SECONDS`.

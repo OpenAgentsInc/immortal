@@ -23,6 +23,7 @@ cache, no sync engine. Postgres does all the storage work.
 | [`configuration.md`](configuration.md) | Immortal's configuration contract: environment variables only, with fail-fast validation. |
 | [`database.md`](database.md) | Postgres schema, transactional admission, migrations, and simple or split least-privilege roles. |
 | [`gateway.md`](gateway.md) | HTTP/WebSocket runtime, indexed subscriptions, race-free EOSE, fanout, limits, and shutdown. |
+| [`../conformance/README.md`](../conformance/README.md) | Fixture, live-Postgres, multi-process chaos, and release-load proof coverage. |
 | [`runbook-debian-vps.md`](runbook-debian-vps.md) | The canonical single-box deployment: Debian stable, apt Postgres, systemd, Caddy or nginx, backups, upgrade and rollback. Works on any VPS (Hetzner, OVH, and others). |
 | [`runbook-digitalocean.md`](runbook-digitalocean.md) | DigitalOcean: the Droplet path, and the App Platform + Managed Postgres path the book uses, with honest notes on fit. |
 | [`runbook-google-cloud.md`](runbook-google-cloud.md) | Google Cloud: Cloud Run + Cloud SQL + Secret Manager + Artifact Registry, and a GCE VM alternative. |

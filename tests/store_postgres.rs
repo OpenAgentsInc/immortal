@@ -8,7 +8,7 @@ use immortal::{
     store::{AdmissionOutcome, AdmissionRejection, NotificationListener, Store, StoreError},
 };
 use secp256k1::{Keypair, Secp256k1, SecretKey};
-use tokio::time::timeout;
+use tokio::{sync::watch, time::timeout};
 use tokio_postgres::NoTls;
 
 const NOW: u64 = 10_000;
@@ -102,6 +102,14 @@ async fn m2_store_contract_against_postgres() {
             .unwrap()
             .is_empty()
     );
+    let (cancel, cancelled) = watch::channel(false);
+    cancel.send(true).unwrap();
+    assert!(matches!(
+        store
+            .query_filter_cancellable(&Filter::default(), NOW, 10, i64::MAX, cancelled)
+            .await,
+        Err(StoreError::QueryCancelled)
+    ));
 
     let ephemeral = signed_event(1, 110, 20_000, Vec::new(), "never stored");
     assert_eq!(

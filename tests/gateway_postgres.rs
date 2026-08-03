@@ -114,6 +114,13 @@ fn websocket_contract(address_one: SocketAddr, address_two: SocketAddr) {
     assert_eq!(closed[0], "CLOSED");
     assert!(closed[2].as_str().unwrap().starts_with("auth-required:"));
     authenticate(&mut subscriber, 20, &subscriber_challenge);
+    send_json(&mut subscriber, json!(["UNSUPPORTED"]));
+    assert_eq!(read_json(&mut subscriber)[0], "NOTICE");
+    send_json(
+        &mut subscriber,
+        json!(["REQ", "too-many", {}, {}, {}, {}, {}]),
+    );
+    assert_eq!(read_json(&mut subscriber)[0], "CLOSED");
     send_json(&mut subscriber, json!(["REQ", "sub", {}]));
     assert_eq!(read_json(&mut subscriber), json!(["EOSE", "sub"]));
 
@@ -125,6 +132,13 @@ fn websocket_contract(address_one: SocketAddr, address_two: SocketAddr) {
     let rejected_auth_publish = read_json(&mut publisher);
     assert_eq!(rejected_auth_publish[0], "OK");
     assert_eq!(rejected_auth_publish[2], false);
+
+    let mut invalid = signed_event(21, now(), 1, Vec::new(), "invalid signature");
+    invalid.content.push('!');
+    send_json(&mut publisher, json!(["EVENT", invalid]));
+    let invalid_response = read_json(&mut publisher);
+    assert_eq!(invalid_response[0], "OK");
+    assert_eq!(invalid_response[2], false);
 
     let regular = signed_event(21, now(), 1, Vec::new(), "cross-process durable");
     send_json(&mut publisher, json!(["EVENT", regular]));
@@ -141,6 +155,9 @@ fn websocket_contract(address_one: SocketAddr, address_two: SocketAddr) {
     assert_eq!(duplicate[2], true);
     assert!(duplicate[3].as_str().unwrap().starts_with("duplicate:"));
     assert_no_message(&mut subscriber);
+
+    subscription_limit_contract(address_two);
+    oversized_frame_contract(address_two);
 
     let ephemeral = signed_event(22, now(), 20_000, Vec::new(), &"e".repeat(12_000));
     send_json(&mut publisher, json!(["EVENT", ephemeral]));
@@ -166,6 +183,40 @@ fn websocket_contract(address_one: SocketAddr, address_two: SocketAddr) {
 
     subscriber.close(None).unwrap();
     publisher.close(None).unwrap();
+}
+
+fn subscription_limit_contract(address: SocketAddr) {
+    let mut websocket = connect_client(address);
+    let challenge = expect_auth_challenge(&mut websocket);
+    authenticate(&mut websocket, 24, &challenge);
+    for sequence in 0..8 {
+        let subscription_id = format!("limit-{sequence}");
+        send_json(
+            &mut websocket,
+            json!(["REQ", subscription_id, {"ids": ["f".repeat(64)]}]),
+        );
+        assert_eq!(read_json(&mut websocket)[0], "EOSE");
+    }
+    send_json(
+        &mut websocket,
+        json!(["REQ", "limit-refused", {"ids": ["f".repeat(64)]}]),
+    );
+    let response = read_json(&mut websocket);
+    assert_eq!(response[0], "CLOSED");
+    assert!(response[2].as_str().unwrap().starts_with("restricted:"));
+    websocket.close(None).unwrap();
+}
+
+fn oversized_frame_contract(address: SocketAddr) {
+    let mut websocket = connect_client(address);
+    expect_auth_challenge(&mut websocket);
+    websocket.send(Message::text("x".repeat(131_073))).unwrap();
+    match websocket.read() {
+        Ok(Message::Close(_))
+        | Err(tokio_tungstenite::tungstenite::Error::ConnectionClosed)
+        | Err(tokio_tungstenite::tungstenite::Error::Protocol(_)) => {}
+        other => panic!("oversized frame did not close the connection: {other:?}"),
+    }
 }
 
 fn connect_client(address: SocketAddr) -> WebSocket<StdTcpStream> {

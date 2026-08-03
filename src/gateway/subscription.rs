@@ -581,7 +581,7 @@ fn event_index_keys(event: &Event) -> HashSet<IndexKey> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
     use serde_json::Value;
     use tokio::{sync::watch, time::timeout};
@@ -591,7 +591,7 @@ mod tests {
         store::StoredEvent,
     };
 
-    use super::{HubHandle, PublishedEvent};
+    use super::{HubHandle, IndexKey, PublishedEvent, event_index_keys, subscription_index_keys};
 
     #[tokio::test]
     async fn indexed_fanout_buffers_and_deduplicates_the_eose_handoff() {
@@ -656,6 +656,71 @@ mod tests {
 
         shutdown.send(true).unwrap();
         task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn full_send_queue_closes_only_its_connection() {
+        let (shutdown, receiver) = watch::channel(false);
+        let (hub, task) = HubHandle::start(32, 2, 128 * 1024, receiver);
+        let mut channels = hub.add_connection(1, 1).await.unwrap();
+        assert!(
+            hub.register(1, "sub".into(), 1, vec![Filter::default()])
+                .await
+                .unwrap()
+        );
+        hub.history_ready(1, "sub".into(), 1, 0, Vec::new()).await;
+        assert_eq!(
+            receive_json(&mut channels.outbound).await,
+            serde_json::json!(["EOSE", "sub"])
+        );
+        for id in ['a', 'b'] {
+            hub.publish(
+                PublishedEvent {
+                    event: Arc::new(event(id, 10, 1)),
+                    ingest_seq: Some(i64::from(id as u8)),
+                },
+                100,
+            )
+            .await
+            .unwrap();
+        }
+        timeout(Duration::from_secs(1), channels.close.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(*channels.close.borrow());
+        shutdown.send(true).unwrap();
+        task.await.unwrap();
+    }
+
+    #[test]
+    fn subscription_index_covers_every_exact_selector_and_the_broad_lane() {
+        let filter = Filter {
+            ids: Some(vec!["a".repeat(64)]),
+            authors: Some(vec!["c".repeat(64)]),
+            kinds: Some(vec![1]),
+            tags: BTreeMap::from([('p', vec!["d".repeat(64)])]),
+            ..Filter::default()
+        };
+        let keys = subscription_index_keys(&[filter]);
+        assert!(keys.contains(&IndexKey::Id("a".repeat(64))));
+        assert!(keys.contains(&IndexKey::Author("c".repeat(64))));
+        assert!(keys.contains(&IndexKey::Kind(1)));
+        assert!(keys.contains(&IndexKey::Tag('p', "d".repeat(64))));
+        assert!(!keys.contains(&IndexKey::Broad));
+        assert_eq!(
+            subscription_index_keys(&[Filter::default()]),
+            std::collections::HashSet::from([IndexKey::Broad])
+        );
+
+        let mut indexed_event = event('a', 10, 1);
+        indexed_event.tags = vec![crate::domain::Tag::new(vec!["p".into(), "d".repeat(64)])];
+        let event_keys = event_index_keys(&indexed_event);
+        assert!(event_keys.contains(&IndexKey::Broad));
+        assert!(event_keys.contains(&IndexKey::Id("a".repeat(64))));
+        assert!(event_keys.contains(&IndexKey::Author("c".repeat(64))));
+        assert!(event_keys.contains(&IndexKey::Kind(1)));
+        assert!(event_keys.contains(&IndexKey::Tag('p', "d".repeat(64))));
     }
 
     async fn receive_json(receiver: &mut tokio::sync::mpsc::Receiver<String>) -> Value {

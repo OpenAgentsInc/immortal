@@ -62,12 +62,12 @@ The WebSocket protocol server.
 - [x] Query cancel on client disconnect; bounded per-connection send
       queues; graceful shutdown
 
-## M4 — Conformance
+## M4 — Conformance (done)
 
-- [ ] Per-NIP fixture suite wired into CI; every M1–M3 behavior covered
-- [ ] Multi-process proof: two processes, one Postgres — cross-delivery,
+- [x] Per-NIP fixture suite wired into CI; every M1–M3 behavior covered
+- [x] Multi-process proof: two processes, one Postgres — cross-delivery,
       `ingest_seq` gap catch-up, kill-one chaos, fail-closed on gap
-- [ ] Load proof with published numbers (events/sec, connect p99,
+- [x] Load proof with published numbers (events/sec, connect p99,
       REQ-to-EOSE p99)
 
 ## M5 — Deployment kit

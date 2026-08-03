@@ -188,6 +188,47 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   Postgres deployment run passed the M2 store contract, the two-gateway M3
   contract, and a real binary startup/health/NIP-11/SIGTERM smoke test.
 
+### 2026-08-03 — Codex 5.6 Sol (Extra High), M4 Conformance
+
+- Began M4 from commit `3e920ee` on a clean `main`, current with
+  `origin/main`. Scope: wire every implemented NIP and M1–M3 invariant into
+  CI, prove multi-process recovery and failure behavior with actual relay
+  binaries, and publish repeatable events/sec, connect-p99, and
+  REQ-to-EOSE-p99 numbers.
+- Dependency decision: M4 uses only the existing allowlisted dependency tree.
+  The proof harnesses use the relay's own `tokio-tungstenite`,
+  `tokio-postgres`, cryptography, and JSON stack; no approval or new crate is
+  required.
+- Added a durable notification cursor. `LISTEN` becomes current before the
+  startup high-water sample; every later notification advances through a
+  bounded prepared catch-up query. Missing positions caused by an omitted
+  notification or a rolled-back/deleted row are safe, while an unprovable or
+  greater-than-4,096-position gap closes clients and exits non-zero.
+- Added an actual-process proof using two independently spawned Immortal
+  binaries and one Postgres database. It verifies cross-process delivery,
+  replays an intentionally unnotified committed row, kills one relay and
+  proves the survivor remains current, then injects an unbounded gap and
+  proves fail-closed connection teardown and non-zero exit.
+- Expanded M3 coverage for NOTICE, malformed signatures, filter and
+  subscription limits, oversized frames, query cancellation, every
+  subscription-index lane, and send-queue overflow. Added a coverage matrix
+  and a GitHub Actions workflow that runs formatting, warnings-denied Clippy,
+  every pinned fixture/static test, fresh-Postgres contracts, process chaos,
+  the load proof, and the binary deployment smoke test.
+- Published the five-run optimized workstation baseline: 6,849.89 committed
+  events/sec median, 0.41 ms WebSocket-connect p99 median, and 2.12 ms
+  REQ-to-EOSE p99 median for ten historical events. The committed report names
+  samples, ranges, hardware, durable Postgres settings, exclusions, and the
+  exact reproduction command rather than presenting the result as a
+  production capacity promise.
+- Milestone-close verification passed formatting, locked all-target checks and
+  tests, Clippy with warnings denied, rustdoc with warnings denied, optimized
+  build, shell syntax, workflow-YAML parsing, and `git diff --check`. The final
+  durable disposable-Postgres run passed M2 storage, expanded M3 gateway, M4
+  two-binary gap/chaos, five-run release load, and actual binary
+  startup/health/NIP-11/SIGTERM contracts; its independent load sample stayed
+  within the published baseline ranges.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the live M2/M3 and binary deployment suites against disposable databases.
+# Run the live M2–M4 and binary deployment suites against disposable databases.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -30,7 +30,7 @@ trap cleanup EXIT INT TERM
 
 initdb -D "${data_dir}" -A trust --no-locale -E UTF8 >/dev/null
 pg_ctl -D "${data_dir}" \
-  -o "-F -c listen_addresses='' -c unix_socket_directories='${socket_dir}'" \
+  -o "-c listen_addresses='' -c unix_socket_directories='${socket_dir}'" \
   -w start >/dev/null
 
 database_user="$(id -un)"
@@ -43,6 +43,16 @@ createdb -h "${socket_dir}" -U "${database_user}" immortal_gateway_test
 IMMORTAL_TEST_DATABASE_URL="host=${socket_dir} user=${database_user} dbname=immortal_gateway_test" \
   IMMORTAL_TEST_ALLOW_DESTRUCTIVE=1 \
   cargo test --locked --test gateway_postgres -- --nocapture
+
+createdb -h "${socket_dir}" -U "${database_user}" immortal_conformance_test
+IMMORTAL_TEST_DATABASE_URL="host=${socket_dir} user=${database_user} dbname=immortal_conformance_test" \
+  IMMORTAL_TEST_ALLOW_DESTRUCTIVE=1 \
+  cargo test --locked --test multiprocess_postgres -- --nocapture
+
+createdb -h "${socket_dir}" -U "${database_user}" immortal_load_test
+IMMORTAL_TEST_DATABASE_URL="host=${socket_dir} user=${database_user} dbname=immortal_load_test" \
+  IMMORTAL_TEST_ALLOW_DESTRUCTIVE=1 \
+  cargo test --locked --release --test load_postgres -- --ignored --nocapture
 
 createdb -h "${socket_dir}" -U "${database_user}" immortal_deploy_test
 cargo build --locked

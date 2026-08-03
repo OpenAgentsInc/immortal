@@ -41,16 +41,24 @@ enum DbRequest {
         cancel: watch::Receiver<bool>,
         response: oneshot::Sender<Result<HistoryResult, StoreError>>,
     },
-    EventByIngest {
-        ingest_seq: i64,
+    CatchUp {
+        after: i64,
+        through: i64,
         now: u64,
-        response: oneshot::Sender<Result<Option<StoredEvent>, StoreError>>,
+        limit: usize,
+        response: oneshot::Sender<Result<CatchUpResult, StoreError>>,
     },
 }
 
 #[derive(Debug)]
 pub struct HistoryResult {
     pub high_water: i64,
+    pub events: Vec<StoredEvent>,
+}
+
+#[derive(Debug)]
+pub struct CatchUpResult {
+    pub latest: i64,
     pub events: Vec<StoredEvent>,
 }
 
@@ -136,15 +144,19 @@ impl DbPool {
         result.await.map_err(|_| StoreError::ConnectionClosed)?
     }
 
-    pub async fn event_by_ingest_seq(
+    pub async fn catch_up(
         &self,
-        ingest_seq: i64,
+        after: i64,
+        through: i64,
         now: u64,
-    ) -> Result<Option<StoredEvent>, StoreError> {
+        limit: usize,
+    ) -> Result<CatchUpResult, StoreError> {
         let (response, result) = oneshot::channel();
-        self.send(DbRequest::EventByIngest {
-            ingest_seq,
+        self.send(DbRequest::CatchUp {
+            after,
+            through,
             now,
+            limit,
             response,
         })?;
         result.await.map_err(|_| StoreError::ConnectionClosed)?
@@ -191,17 +203,31 @@ async fn handle_request(store: &mut Store, request: DbRequest) -> bool {
             let _ = response.send(result);
             fatal
         }
-        DbRequest::EventByIngest {
-            ingest_seq,
+        DbRequest::CatchUp {
+            after,
+            through,
             now,
+            limit,
             response,
         } => {
-            let result = store.event_by_ingest_seq(ingest_seq, now).await;
+            let result = catch_up(store, after, through, now, limit).await;
             let fatal = result.as_ref().is_err_and(is_fatal);
             let _ = response.send(result);
             fatal
         }
     }
+}
+
+async fn catch_up(
+    store: &Store,
+    after: i64,
+    through: i64,
+    now: u64,
+    limit: usize,
+) -> Result<CatchUpResult, StoreError> {
+    let latest = store.latest_ingest_seq().await?;
+    let events = store.events_after(after, through, now, limit).await?;
+    Ok(CatchUpResult { latest, events })
 }
 
 async fn query_history(

@@ -24,3 +24,7 @@ names the NIP that owns the behavior.
 
 Fixture data is committed rather than generated so a specification or
 implementation change produces a reviewable diff.
+
+The complete fixture layer runs in `.github/workflows/conformance.yml` on each
+pull request and push to `main`. `docs/conformance/README.md` maps every M1–M3
+contract to its fixture, unit, live-Postgres, or process-level proof.

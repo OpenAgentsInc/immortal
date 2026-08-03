@@ -74,6 +74,12 @@ taken at that point. This makes durable sequence order equal commit order, so
 the gateway can use a sampled high-water mark as a race-free historical/live
 EOSE boundary.
 
+Each gateway establishes `LISTEN` before sampling its durable cursor. A later
+notification jump is recovered with the prepared, bounded `events_after`
+query, so a missed individual notification does not lose delivery. Gaps larger
+than 4,096 sequence positions, a cursor beyond the database high-water mark,
+or a failed catch-up make the process non-current and close its clients.
+
 ## Admission policy
 
 The singleton `relay_policy` row configures closed-membership mode, maximum

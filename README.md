@@ -59,10 +59,11 @@ TLS is the job of the reverse proxy (nginx or Caddy).
 
 ## Status
 
-M1 (the protocol domain), M2 (the Postgres store), and M3 (the HTTP/WebSocket
-gateway) are implemented with pinned fixtures and disposable-Postgres contract
-suites. The binary is a running Nostr relay; M4 adds the broader conformance,
-chaos, and load proof. See `docs/ROADMAP.md`.
+M1 through M4 are complete: the protocol domain, Postgres store, HTTP/WebSocket
+gateway, pinned per-NIP fixtures, CI conformance, actual-process chaos proof,
+and a published release-load baseline. The binary is a running Nostr relay;
+M5 packages the production deployment kit. See `docs/ROADMAP.md` and
+`docs/conformance/`.
 
 ## Quick start
 
