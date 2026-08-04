@@ -168,3 +168,51 @@ After the active local Postgres and conformance gate passes, NIP-11 advertises
 `mkt-swp:1` only when `IMMORTAL_RELAY_URL` enables authenticated recipient
 transport. That extension identifies the relay-observable v1 wire surface; it
 is not a client-engine, coordination-handler, wallet, or settlement claim.
+
+## M12 tbDEX compatibility decision (2026-08-04)
+
+Issue #16 harvests the hosted JSON schemas and protocol parse vectors from
+`TBD54566975/tbdex` protocol 1.0 at exact commit
+`7546a079bb860e7ede8125739b7970810a2df314`, Apache-2.0. This archived donor is
+not a fourth NIP source lane. The fixture record preserves the exact upstream
+paths and source-byte SHA-256 digests; the test-only fixture tree pins and
+replays those exact bytes while adapted cases use non-sensitive placeholder
+values. The pinned donor bytes remain client-only and are not compiled into
+the binary or admitted to relay state.
+
+Immortal adopts the balance, Cancel, Close, Offering, Order,
+OrderInstructions, OrderStatus, Quote, RFQ, and detached-RFQ field vocabulary
+as a transport-neutral compatibility audit. It does not adopt tbDEX DID, JOSE,
+HTTP, DWN, credential, custody, or settlement authority. Every harvested
+message has DID/JOSE authority that cannot become a NIP-01 signature, so the
+translator returns a deterministic non-executable audit with
+`tbdex_unrepresentable_authority`, a source digest, mapping revision, and
+complete dropped/defaulted/ambiguous-field lists. Balance, OrderInstructions,
+OrderStatus, and Close also carry `tbdex_unrepresentable_state` where the base
+cannot represent authority, sequence, evidence, or terminal truth. No target
+event, target signature, reservation, custody fact, or settlement fact is
+created.
+
+The adopted Cancel projection defaults only to `action=request`; a legacy
+request never becomes effective cancellation. OrderInstructions remains a
+distinct provider step, represented only as a candidate
+`Status state=funding_required`: instruction bytes stay in a direct protected
+channel while an executable profile must bind their digest, expiry,
+correlation, exact Order reference, sequence, and signer. The RFQ privacy
+fixture follows the protocol README's Digests/privateData rule: JCS over the
+JSON array `[salt, value]`, then SHA-256 and unpadded base64url. The independent
+implementation record is `TBD54566975/tbdex-rs` commit
+`c3d49855b4099fa663ca14c5c79e8b1e6cd8bc65`,
+`crates/tbdex/src/messages/rfq.rs::digest_private_data`, which constructs the
+same array and passes it through `serde_jcs`. The fixture verifies that shape
+as a positive/negative pair, rejects attached private data with no verified
+commitment, and accepts the deliberate detached form only after validating the
+full public envelope without persisting cleartext. This in-repo parser
+deliberately rejects private JSON
+numbers until it has a complete RFC 8785 number encoder; it fails closed
+instead of approximating JCS.
+
+This client-only compatibility surface allocates no event kind, changes no
+relay admission or Postgres state, adds no dependency, and changes no NIP-11
+advertisement. Its fixture is exported in the deterministic contract manifest
+for downstream SDK consumers.

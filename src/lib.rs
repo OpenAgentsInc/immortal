@@ -16,3 +16,4 @@ pub mod mkt_swp_verify;
 pub mod nip44;
 #[cfg(feature = "server")]
 pub mod store;
+pub mod tbdex;

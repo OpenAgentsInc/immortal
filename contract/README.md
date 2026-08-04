@@ -21,7 +21,10 @@ The artifact identifies the Immortal crate version and all three pinned NIP
 source commits. It describes relay-observable behavior and marks encrypted
 NIP-MKT client checks separately. The MKT-SWP section records its v1 Offering,
 evidence, kind-39610, privacy, and complete fixture-manifest contract while
-keeping `executable_profiles` empty.
+keeping `executable_profiles` empty. The client-scoped fixture set also
+includes the fail-closed tbDEX 1.0 legacy translation audit and its exact
+test-only nine-schema/ten-vector source replay. That audit emits no Nostr event
+and grants no source record NIP-MKT authority.
 
 ## Consumers
 

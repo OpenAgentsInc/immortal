@@ -140,6 +140,12 @@ recipient transport. The same gate advertises `mkt-swp:1` for its relay-
 observable v1 grammar; the executable-profile set remains empty until the
 client and coordination packets land.
 
+The transport-neutral client core also exposes a fail-closed
+[`tbDEX legacy translation audit`](docs/protocol/tbdex-legacy-translation.md).
+It harvests the archived tbDEX 1.0 schema/vector vocabulary while refusing
+DID/JOSE authority upgrades, retaining explicit translation losses, and
+verifying detached RFQ privacy commitments without persisting private data.
+
 `immortal contract` prints the deterministic machine contract used by SDK
 generators without connecting to Postgres or starting a service. The reviewed
 artifacts live under [`contract/`](contract/README.md); regenerate or verify

@@ -258,6 +258,126 @@
       "scope": "relay_and_client"
     },
     {
+      "path": "tests/fixtures/nipmkt/tbdex-legacy.json",
+      "sha256": "34b6a8ae5aca6b5b93968457ecfd4e3a6ff1e5eb5d9b423b7963961413df74b5",
+      "bytes": 15679,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/schemas/balance.schema.json",
+      "sha256": "03bcb0817a2ab3ddaa3a8a7111970a209654faad45addd860056b97d401e123c",
+      "bytes": 502,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/schemas/cancel.schema.json",
+      "sha256": "dc1a942698dd381f06edd9cde181b249a12be8b5a11376cbc6f8f88a3d8bed8b",
+      "bytes": 229,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/schemas/close.schema.json",
+      "sha256": "a67b0c004990b28da28a44b470faff18c61debaeaef0e1f742b075142d545e61",
+      "bytes": 276,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/schemas/offering.schema.json",
+      "sha256": "4f2b5f03e5160d305f752473e0aacf549493155e28ede057395559c031d8cf41",
+      "bytes": 6966,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/schemas/order.schema.json",
+      "sha256": "66ebe2189d3ec216d2c85da215386f693407c134c6725db9293a82ca7e51935d",
+      "bytes": 180,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/schemas/orderinstructions.schema.json",
+      "sha256": "79c2c9e3a9c4168d9ef9390fdcaa0880ca8f48418230fb90f85109915557f459",
+      "bytes": 835,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/schemas/orderstatus.schema.json",
+      "sha256": "2c37838a2621a811cdfc54e778aafb3521590d0d07b54db859244404ab4cb001",
+      "bytes": 675,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/schemas/quote.schema.json",
+      "sha256": "82f4c03b3a9bc848ee6ad7acc8cad8cf88ce20f38710ba5522cb3185bc491a5d",
+      "bytes": 1637,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/schemas/rfq.schema.json",
+      "sha256": "32d138fdb0a2c0d67c0c5c429fd8782f6c032c2404146c454001414ce4661a97",
+      "bytes": 1617,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/vectors/parse-balance.json",
+      "sha256": "2f9a2874e2d3214bc4bdab8eb33c0e5d4d3c6a03adedc8ae8aac9b929464b9b5",
+      "bytes": 1156,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/vectors/parse-cancel.json",
+      "sha256": "74a7ca59ae5e46d3a463b3be9d9344631b2dd4e0483d5936d8277f0760c4f470",
+      "bytes": 1764,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/vectors/parse-close.json",
+      "sha256": "eb1723908102d764930f97516f279977139d4d4069ed4d4f1630b1a10c1270ba",
+      "bytes": 1436,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/vectors/parse-offering.json",
+      "sha256": "d898f531745b6e2279adaf97b17df31e55f16607746e018c0488b86286178903",
+      "bytes": 5286,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/vectors/parse-order.json",
+      "sha256": "d884e1c08600b3a0839fd40d58b2187f3c8f0de48a0f6ca9acc0dfaba3ea7d85",
+      "bytes": 1347,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/vectors/parse-orderinstructions.json",
+      "sha256": "52cef62e0fea45892e607705f3b0bb1188bc95266b558be22122b5c3a1d2566b",
+      "bytes": 2162,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/vectors/parse-orderstatus.json",
+      "sha256": "e74fe76d8bc53deb53eefd091ce31d970015f36ade8f6ea8e71ca1961ff1fdbc",
+      "bytes": 1817,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/vectors/parse-quote.json",
+      "sha256": "c66bd8917ccaaa4e6cb89a4c1ef2aca142344bd0308aab3f7472b8e439fd076f",
+      "bytes": 2246,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/vectors/parse-rfq-omit-private-data.json",
+      "sha256": "df9f7875d490eff0d534ab92e4d949411b0220fa67c55441142de7d57d854866",
+      "bytes": 2085,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/tbdex-upstream/vectors/parse-rfq.json",
+      "sha256": "75318468e55c8afc661e2babf3f582dfd300ba18323a8893ebfcfa6f3c1785cd",
+      "bytes": 4891,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/nipmp/server.json",
       "sha256": "ebf1eee932f995236bfc58f6b32c7e18e433dd11ab2b26a78389e90d9c3cfa5f",
       "bytes": 345,

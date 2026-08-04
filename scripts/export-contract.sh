@@ -42,6 +42,8 @@ for path in sorted(fixture_root.rglob("*.json"), key=lambda item: item.relative_
     if (
         relative.endswith("nipmkt/client-only-cases.json")
         or relative.endswith("nipmkt/client-transport.json")
+        or relative.endswith("nipmkt/tbdex-legacy.json")
+        or "/nipmkt/tbdex-upstream/" in f"/{relative}"
         or relative.endswith("nip44/market-client.json")
     ):
         scope = "client"

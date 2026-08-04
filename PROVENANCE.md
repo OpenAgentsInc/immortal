@@ -46,6 +46,27 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   database, wallet, key, preimage, node credential, or settlement authority
   was added.
 
+### 2026-08-04 — Codex 5.6 Sol, M12 tbDEX compatibility / issue #16
+
+- Harvested the Apache-2.0 hosted schema vocabulary and all ten protocol parse
+  vectors from frozen `TBD54566975/tbdex` protocol 1.0 at commit
+  `7546a079bb860e7ede8125739b7970810a2df314`. The exact nine schema files and
+  ten parse-vector files are pinned under the test-only fixture tree with
+  their source paths and byte digests; the separate Immortal fixture uses
+  non-sensitive adapted values.
+- Added a bounded transport-neutral legacy translator that emits deterministic
+  provenance and complete mapped/dropped/defaulted/ambiguous-field accounting.
+  Historical DID/JOSE authority and unrepresentable payment/terminal states
+  produce machine refusals; no target event, signature, reservation, custody,
+  or settlement authority is created.
+- Added Cancel request-only and OrderInstructions protected-channel laws plus
+  exact-byte replay, closed nested-shape checks, complete optional-metadata
+  loss accounting, and attached, detached, mismatch, empty-commitment, and
+  unsupported-number RFQ privacy fixtures.
+  The JCS `[salt, value]` rule is corroborated against tbdex-rs v4.0.0 at
+  `c3d49855b4099fa663ca14c5c79e8b1e6cd8bc65`. No dependency, service,
+  database state, relay behavior, kind allocation, or NIP-11 claim was added.
+
 ### 2026-08-04 — Codex 5.6 Sol, M11 local NIP-MKT development / issue #9
 
 - Added the transport-neutral NIP-44 v2 and NIP-59 client core with bounded

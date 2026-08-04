@@ -82,6 +82,18 @@ names the NIP that owns the behavior.
   enforcement here is lower-hex shape plus tag/body equality; RFC 8785
   recomputation, bilateral agreement, lifecycle, funding, exit, and doomsday
   execution remain client/handler cases.
+- `nipmkt/tbdex-legacy.json` adapts the field vocabulary and parse-vector
+  shapes from `TBD54566975/tbdex` protocol 1.0 at commit
+  `7546a079bb860e7ede8125739b7970810a2df314`, Apache-2.0. It records the
+  exact upstream schema/vector paths and SHA-256 digests while replacing
+  example values with non-sensitive Immortal fixtures. The exact Apache-2.0
+  source bytes are pinned separately under `nipmkt/tbdex-upstream/schemas/`
+  and `nipmkt/tbdex-upstream/vectors/` for test-only, byte-for-byte replay;
+  they are client-scoped in the exported manifest and never compiled into the
+  product binary. The corpus proves
+  loss-accounted, non-executable projection audits, DID/JOSE refusal, and the
+  RFQ detached-private-data commitment pattern without copying source
+  credentials or payment details into the binary or relay state.
 - `nipae/`, `nipap/`, `niper/`, `nipmp/`, `nippl/`, `nipia/`, `nipdv/`,
   `nipwp/`, `nipcw/`, `niprs/`, and `nipgs/` each contain a committed server
   contract derived from the corresponding pinned Block text. They cover

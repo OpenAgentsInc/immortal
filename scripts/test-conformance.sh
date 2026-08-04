@@ -11,6 +11,7 @@ cargo test --locked --test mkt_immutability_model
 cargo test --locked --test mkt_common_fixtures
 cargo test --locked --test mkt_closing_fixtures
 cargo test --locked --test mkt_swp_profile
+cargo test --locked --test tbdex_legacy_fixtures
 ./scripts/test-swp-verification.sh
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets --features mkt-swp-verify -- -D warnings

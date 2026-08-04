@@ -1,0 +1,282 @@
+{
+  "schema": "openagents.immortal.tbdex-legacy-fixtures.v1",
+  "attribution": {
+    "project": "TBD54566975/tbdex",
+    "repository": "https://github.com/TBD54566975/tbdex",
+    "commit": "7546a079bb860e7ede8125739b7970810a2df314",
+    "protocol": "1.0",
+    "license": "Apache-2.0",
+    "notice": "Field vocabulary and vector shapes are adapted from the hosted tbDEX schemas and parse vectors. Fixture identities and source-byte digests preserve the frozen upstream record; example values here are non-sensitive Immortal replacements.",
+    "schema_root": "hosted/json-schemas",
+    "vector_root": "hosted/test-vectors/protocol/vectors"
+  },
+  "schema_harvest": [
+    {
+      "kind": "balance",
+      "path": "hosted/json-schemas/balance.schema.json",
+      "sha256": "03bcb0817a2ab3ddaa3a8a7111970a209654faad45addd860056b97d401e123c",
+      "required": ["currencyCode", "available"],
+      "optional": [],
+      "target_kind": null
+    },
+    {
+      "kind": "cancel",
+      "path": "hosted/json-schemas/cancel.schema.json",
+      "sha256": "dc1a942698dd381f06edd9cde181b249a12be8b5a11376cbc6f8f88a3d8bed8b",
+      "required": [],
+      "optional": ["reason"],
+      "target_kind": 39608
+    },
+    {
+      "kind": "close",
+      "path": "hosted/json-schemas/close.schema.json",
+      "sha256": "a67b0c004990b28da28a44b470faff18c61debaeaef0e1f742b075142d545e61",
+      "required": [],
+      "optional": ["reason", "success"],
+      "target_kind": 39609
+    },
+    {
+      "kind": "offering",
+      "path": "hosted/json-schemas/offering.schema.json",
+      "sha256": "4f2b5f03e5160d305f752473e0aacf549493155e28ede057395559c031d8cf41",
+      "required": ["description", "payin", "payout", "payoutUnitsPerPayinUnit", "cancellation"],
+      "optional": ["requiredClaims"],
+      "target_kind": 39601
+    },
+    {
+      "kind": "order",
+      "path": "hosted/json-schemas/order.schema.json",
+      "sha256": "66ebe2189d3ec216d2c85da215386f693407c134c6725db9293a82ca7e51935d",
+      "required": [],
+      "optional": [],
+      "target_kind": 39606
+    },
+    {
+      "kind": "orderinstructions",
+      "path": "hosted/json-schemas/orderinstructions.schema.json",
+      "sha256": "79c2c9e3a9c4168d9ef9390fdcaa0880ca8f48418230fb90f85109915557f459",
+      "required": ["payin", "payout"],
+      "optional": [],
+      "target_kind": 39607
+    },
+    {
+      "kind": "orderstatus",
+      "path": "hosted/json-schemas/orderstatus.schema.json",
+      "sha256": "2c37838a2621a811cdfc54e778aafb3521590d0d07b54db859244404ab4cb001",
+      "required": ["status"],
+      "optional": ["details"],
+      "target_kind": 39607
+    },
+    {
+      "kind": "quote",
+      "path": "hosted/json-schemas/quote.schema.json",
+      "sha256": "82f4c03b3a9bc848ee6ad7acc8cad8cf88ce20f38710ba5522cb3185bc491a5d",
+      "required": ["expiresAt", "payoutUnitsPerPayinUnit", "payin", "payout"],
+      "optional": [],
+      "target_kind": 39605
+    },
+    {
+      "kind": "rfq",
+      "path": "hosted/json-schemas/rfq.schema.json",
+      "sha256": "32d138fdb0a2c0d67c0c5c429fd8782f6c032c2404146c454001414ce4661a97",
+      "required": ["offeringId", "payin", "payout"],
+      "optional": ["claimsHash"],
+      "target_kind": 39604
+    }
+  ],
+  "parse_vector_harvest": [
+    {"kind": "balance", "path": "hosted/test-vectors/protocol/vectors/parse-balance.json", "sha256": "2f9a2874e2d3214bc4bdab8eb33c0e5d4d3c6a03adedc8ae8aac9b929464b9b5"},
+    {"kind": "cancel", "path": "hosted/test-vectors/protocol/vectors/parse-cancel.json", "sha256": "74a7ca59ae5e46d3a463b3be9d9344631b2dd4e0483d5936d8277f0760c4f470"},
+    {"kind": "close", "path": "hosted/test-vectors/protocol/vectors/parse-close.json", "sha256": "eb1723908102d764930f97516f279977139d4d4069ed4d4f1630b1a10c1270ba"},
+    {"kind": "offering", "path": "hosted/test-vectors/protocol/vectors/parse-offering.json", "sha256": "d898f531745b6e2279adaf97b17df31e55f16607746e018c0488b86286178903"},
+    {"kind": "order", "path": "hosted/test-vectors/protocol/vectors/parse-order.json", "sha256": "d884e1c08600b3a0839fd40d58b2187f3c8f0de48a0f6ca9acc0dfaba3ea7d85"},
+    {"kind": "orderinstructions", "path": "hosted/test-vectors/protocol/vectors/parse-orderinstructions.json", "sha256": "52cef62e0fea45892e607705f3b0bb1188bc95266b558be22122b5c3a1d2566b"},
+    {"kind": "orderstatus", "path": "hosted/test-vectors/protocol/vectors/parse-orderstatus.json", "sha256": "e74fe76d8bc53deb53eefd091ce31d970015f36ade8f6ea8e71ca1961ff1fdbc"},
+    {"kind": "quote", "path": "hosted/test-vectors/protocol/vectors/parse-quote.json", "sha256": "c66bd8917ccaaa4e6cb89a4c1ef2aca142344bd0308aab3f7472b8e439fd076f"},
+    {"kind": "rfq", "path": "hosted/test-vectors/protocol/vectors/parse-rfq.json", "sha256": "75318468e55c8afc661e2babf3f582dfd300ba18323a8893ebfcfa6f3c1785cd"},
+    {"kind": "rfq", "path": "hosted/test-vectors/protocol/vectors/parse-rfq-omit-private-data.json", "sha256": "df9f7875d490eff0d534ab92e4d949411b0220fa67c55441142de7d57d854866"}
+  ],
+  "translated_cases": [
+    {
+      "id": "balance-refused",
+      "source_vector": "hosted/test-vectors/protocol/vectors/parse-balance.json",
+      "target_kind": null,
+      "state_refusal": true,
+      "mapped_sources": [],
+      "defaulted_fields": [],
+      "required_ambiguous": "data.available -> independently proved capacity",
+      "input": {
+        "metadata": {"from": "did:example:provider", "kind": "balance", "id": "balance_fixture", "createdAt": "2024-01-01T00:00:00Z", "protocol": "1.0"},
+        "data": {"currencyCode": "USD", "available": "400.00"},
+        "signature": "eyJhbGciOiJFZERTQSJ9..fixture"
+      }
+    },
+    {
+      "id": "cancel-request-only",
+      "source_vector": "hosted/test-vectors/protocol/vectors/parse-cancel.json",
+      "target_kind": 39608,
+      "state_refusal": false,
+      "mapped_sources": ["data.reason"],
+      "defaulted_fields": ["action=request (a legacy Cancel has no immediate effect)"],
+      "required_ambiguous": "pre-Order legacy cancellation has no base target",
+      "input": {
+        "metadata": {"from": "did:example:requester", "to": "did:example:provider", "kind": "cancel", "id": "cancel_fixture", "exchangeId": "rfq_fixture", "createdAt": "2024-01-01T00:00:00Z", "protocol": "1.0"},
+        "data": {"reason": "fixture cancellation"},
+        "signature": "eyJhbGciOiJFZERTQSJ9..fixture"
+      }
+    },
+    {
+      "id": "close-state-refused",
+      "source_vector": "hosted/test-vectors/protocol/vectors/parse-close.json",
+      "target_kind": 39609,
+      "state_refusal": true,
+      "mapped_sources": ["data.reason"],
+      "defaulted_fields": ["outcome=completed (projection only)"],
+      "required_ambiguous": "terminal_at, evidence inventory, recovery, and loss accounting",
+      "input": {
+        "metadata": {"from": "did:example:provider", "to": "did:example:requester", "kind": "close", "id": "close_fixture", "exchangeId": "rfq_fixture", "createdAt": "2024-01-01T00:00:00Z", "protocol": "1.0"},
+        "data": {"reason": "fixture close", "success": true},
+        "signature": "eyJhbGciOiJFZERTQSJ9..fixture"
+      }
+    },
+    {
+      "id": "offering-vocabulary-only",
+      "source_vector": "hosted/test-vectors/protocol/vectors/parse-offering.json",
+      "target_kind": 39601,
+      "state_refusal": false,
+      "mapped_sources": ["data.description", "data.cancellation"],
+      "defaulted_fields": [],
+      "required_ambiguous": "currencyCode labels -> collision-resistant profile asset IDs",
+      "input": {
+        "metadata": {"from": "did:example:provider", "kind": "offering", "id": "offering_fixture", "createdAt": "2024-01-01T00:00:00Z", "protocol": "1.0"},
+        "data": {"description": "fixture corridor", "payin": {"currencyCode": "USD", "methods": [{"kind": "FIXTURE"}]}, "payout": {"currencyCode": "USDC", "methods": [{"kind": "FIXTURE", "estimatedSettlementTime": 0}]}, "payoutUnitsPerPayinUnit": "1.0", "cancellation": {"enabled": true}},
+        "signature": "eyJhbGciOiJFZERTQSJ9..fixture"
+      }
+    },
+    {
+      "id": "order-quote-reference-ambiguous",
+      "source_vector": "hosted/test-vectors/protocol/vectors/parse-order.json",
+      "target_kind": 39606,
+      "state_refusal": false,
+      "mapped_sources": [],
+      "defaulted_fields": [],
+      "required_ambiguous": "exchangeId -> exact accepted Quote event ID",
+      "input": {
+        "metadata": {"from": "did:example:requester", "to": "did:example:provider", "kind": "order", "id": "order_fixture", "exchangeId": "rfq_fixture", "createdAt": "2024-01-01T00:00:00Z", "protocol": "1.0"},
+        "data": {},
+        "signature": "eyJhbGciOiJFZERTQSJ9..fixture"
+      }
+    },
+    {
+      "id": "order-instructions-off-relay",
+      "source_vector": "hosted/test-vectors/protocol/vectors/parse-orderinstructions.json",
+      "target_kind": 39607,
+      "state_refusal": true,
+      "mapped_sources": [],
+      "defaulted_fields": ["state=funding_required (projection only; no execution authority)"],
+      "required_ambiguous": "instruction bytes -> digest, expiry, and direct-channel correlation",
+      "input": {
+        "metadata": {"from": "did:example:provider", "to": "did:example:requester", "kind": "orderinstructions", "id": "instructions_fixture", "exchangeId": "rfq_fixture", "createdAt": "2024-01-01T00:00:00Z", "protocol": "1.0"},
+        "data": {"payin": {"link": "https://invalid.example/fixture"}, "payout": {"instruction": "fixture only"}},
+        "signature": "eyJhbGciOiJFZERTQSJ9..fixture"
+      }
+    },
+    {
+      "id": "order-status-evidence-refused",
+      "source_vector": "hosted/test-vectors/protocol/vectors/parse-orderstatus.json",
+      "target_kind": 39607,
+      "state_refusal": true,
+      "mapped_sources": ["data.status"],
+      "defaulted_fields": [],
+      "required_ambiguous": "rail evidence rung and settlement authority",
+      "input": {
+        "metadata": {"from": "did:example:provider", "to": "did:example:requester", "kind": "orderstatus", "id": "status_fixture", "exchangeId": "rfq_fixture", "createdAt": "2024-01-01T00:00:00Z", "protocol": "1.0"},
+        "data": {"status": "PAYOUT_SETTLED", "details": "fixture claim"},
+        "signature": "eyJhbGciOiJFZERTQSJ9..fixture"
+      }
+    },
+    {
+      "id": "quote-indicative-no-reservation",
+      "source_vector": "hosted/test-vectors/protocol/vectors/parse-quote.json",
+      "target_kind": 39605,
+      "state_refusal": false,
+      "mapped_sources": ["data.expiresAt", "data.payin/payout"],
+      "defaulted_fields": ["quote=indicative (projection only)", "reservation=none (projection only)"],
+      "required_ambiguous": "custody, reversibility, recourse, and settlement evidence",
+      "input": {
+        "metadata": {"from": "did:example:provider", "to": "did:example:requester", "kind": "quote", "id": "quote_fixture", "exchangeId": "rfq_fixture", "createdAt": "2024-01-01T00:00:00Z", "protocol": "1.0"},
+        "data": {"expiresAt": "2024-01-01T00:01:00Z", "payoutUnitsPerPayinUnit": "1.0", "payin": {"currencyCode": "USD", "subtotal": "10", "fee": "0", "total": "10"}, "payout": {"currencyCode": "USDC", "subtotal": "10", "fee": "0", "total": "10"}},
+        "signature": "eyJhbGciOiJFZERTQSJ9..fixture"
+      }
+    },
+    {
+      "id": "rfq-private-commitments-only",
+      "source_vector": "hosted/test-vectors/protocol/vectors/parse-rfq.json",
+      "target_kind": 39604,
+      "state_refusal": false,
+      "mapped_sources": ["data.offeringId", "data.payin.amount", "data.*Hash"],
+      "defaulted_fields": [],
+      "required_ambiguous": "claimsHash -> MKT-PFI policy and presentation commitments",
+      "input": {
+        "metadata": {"from": "did:example:requester", "to": "did:example:provider", "kind": "rfq", "id": "rfq_fixture", "exchangeId": "rfq_fixture", "createdAt": "2024-01-01T00:00:00Z", "protocol": "1.0"},
+        "data": {"offeringId": "offering_fixture", "payin": {"kind": "FIXTURE", "amount": "10", "paymentDetailsHash": "ylWsqLVgz5v_XlsA-TX2rrPHRWRVgbO1NZBPs6bgCjo"}, "payout": {"kind": "FIXTURE"}},
+        "privateData": {"salt": "000102030405060708090a0b0c0d0e0f", "payin": {"paymentDetails": {"account_alias": "fixture-only", "routing_hint": "test"}}},
+        "signature": "eyJhbGciOiJFZERTQSJ9..fixture"
+      }
+    },
+    {
+      "id": "rfq-detached-private-data",
+      "source_vector": "hosted/test-vectors/protocol/vectors/parse-rfq-omit-private-data.json",
+      "target_kind": 39604,
+      "state_refusal": false,
+      "mapped_sources": ["data.offeringId", "data.payin.amount", "data.*Hash"],
+      "defaulted_fields": [],
+      "required_ambiguous": "claimsHash -> MKT-PFI policy and presentation commitments",
+      "input": {
+        "metadata": {"from": "did:example:requester", "to": "did:example:provider", "kind": "rfq", "id": "rfq_detached_fixture", "exchangeId": "rfq_detached_fixture", "createdAt": "2024-01-01T00:00:00Z", "protocol": "1.0"},
+        "data": {"offeringId": "offering_fixture", "payin": {"kind": "FIXTURE", "amount": "10", "paymentDetailsHash": "ylWsqLVgz5v_XlsA-TX2rrPHRWRVgbO1NZBPs6bgCjo"}, "payout": {"kind": "FIXTURE"}},
+        "signature": "eyJhbGciOiJFZERTQSJ9..fixture"
+      }
+    }
+  ],
+  "privacy_commitment": {
+    "numeric_private_data_policy": "tbdex_invalid_shape",
+    "positive": {
+      "metadata": {"from": "did:example:requester", "to": "did:example:provider", "kind": "rfq", "id": "rfq_private_fixture", "exchangeId": "rfq_private_fixture", "createdAt": "2024-01-01T00:00:00Z", "protocol": "1.0"},
+      "data": {
+        "offeringId": "offering_fixture",
+        "payin": {"kind": "FIXTURE", "amount": "10", "paymentDetailsHash": "ylWsqLVgz5v_XlsA-TX2rrPHRWRVgbO1NZBPs6bgCjo"},
+        "payout": {"kind": "FIXTURE", "paymentDetailsHash": "an-FBSXHjyTzug4GpAXSFvhM7QmpMcDoe1lAOS3dBvk"},
+        "claimsHash": "o80Zo6-lMR68OXMPlD9n7cz3n6xKfnjNo1r6rHyjoQM"
+      },
+      "privateData": {
+        "salt": "000102030405060708090a0b0c0d0e0f",
+        "payin": {"paymentDetails": {"account_alias": "fixture-only", "routing_hint": "test"}},
+        "payout": {"paymentDetails": {"destination_alias": "fixture-only"}},
+        "claims": ["credential-digest-only"]
+      },
+      "signature": "eyJhbGciOiJFZERTQSJ9..fixture"
+    },
+    "negative": {
+      "metadata": {"from": "did:example:requester", "to": "did:example:provider", "kind": "rfq", "id": "rfq_private_fixture", "exchangeId": "rfq_private_fixture", "createdAt": "2024-01-01T00:00:00Z", "protocol": "1.0"},
+      "data": {
+        "offeringId": "offering_fixture",
+        "payin": {"kind": "FIXTURE", "amount": "10", "paymentDetailsHash": "ylWsqLVgz5v_XlsA-TX2rrPHRWRVgbO1NZBPs6bgCjo"},
+        "payout": {"kind": "FIXTURE", "paymentDetailsHash": "an-FBSXHjyTzug4GpAXSFvhM7QmpMcDoe1lAOS3dBvk"},
+        "claimsHash": "o80Zo6-lMR68OXMPlD9n7cz3n6xKfnjNo1r6rHyjoQA"
+      },
+      "privateData": {
+        "salt": "000102030405060708090a0b0c0d0e0f",
+        "payin": {"paymentDetails": {"account_alias": "fixture-only", "routing_hint": "test"}},
+        "payout": {"paymentDetails": {"destination_alias": "fixture-only"}},
+        "claims": ["credential-digest-only"]
+      },
+      "signature": "eyJhbGciOiJFZERTQSJ9..fixture"
+    }
+  },
+  "fail_closed": {
+    "duplicate_member": "{\"metadata\":{},\"metadata\":{},\"data\":{},\"signature\":\"x\"}",
+    "unsupported_protocol": {"metadata": {"from": "did:example:a", "kind": "order", "id": "order_fixture", "protocol": "2.0"}, "data": {}, "signature": "x"},
+    "unknown_data_field": {"metadata": {"from": "did:example:a", "to": "did:example:b", "kind": "cancel", "id": "cancel_fixture", "exchangeId": "rfq_fixture", "createdAt": "2024-01-01T00:00:00Z", "protocol": "1.0"}, "data": {"authority": "invented"}, "signature": "x"}
+  }
+}
