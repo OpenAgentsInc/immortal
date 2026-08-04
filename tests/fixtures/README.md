@@ -90,10 +90,12 @@ names the NIP that owns the behavior.
   reserve, dispute, external-effect, and recovery authority client-only.
 - `nipmkt/swp-client-engine-v1.json` pins the transport-neutral requester
   engine: exact externally signed records, bilateral canonical contract
-  binding, all three swap flows, verify-before-fund refusals, per-signer
-  sequencing, wallet-owned claim/refund signing, idempotent external effects,
-  crash recovery, keyless pre-signed broadcast, and recursive custody
-  tripwires. It adds no relay-handler or settlement claim.
+  binding, distinct submarine/reverse/chain funding and exit topology, Quote
+  expiry and bounded Order selection, BOLT-11 expiry/final-CLTV checks, exact
+  hashlock/CLTV/CSV execution, local post-broadcast Bitcoin observation,
+  per-signer sequencing, wallet-owned claim/refund signing, idempotent external
+  effects, rail-ordered crash recovery, keyless pre-signed broadcast, and
+  recursive custody tripwires. It adds no relay-handler or settlement claim.
 - `nipmkt/tbdex-legacy.json` adapts the field vocabulary and parse-vector
   shapes from `TBD54566975/tbdex` protocol 1.0 at commit
   `7546a079bb860e7ede8125739b7970810a2df314`, Apache-2.0. It records the

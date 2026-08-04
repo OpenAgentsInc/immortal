@@ -21,9 +21,9 @@ use crate::{
         MKT_SWP_SWAP_CONTRACT_KIND, MktProfileSupport, Tag, validate_mkt_private_raw,
     },
     mkt_swp_verify::{
-        BitcoinNetwork, ScriptInstruction, Timelock, Transaction, parse_bolt11, parse_swap_script,
-        sha256, tagged_hash, tapleaf_hash, validate_timelock_ladder, verify_control_block,
-        verify_musig2_signature,
+        BitcoinNetwork, ScriptInstruction, Timelock, Transaction, check_cltv, check_csv,
+        parse_bolt11, parse_swap_script, sha256, tagged_hash, tapleaf_hash,
+        validate_timelock_ladder, verify_control_block, verify_musig2_signature, verify_preimage,
     },
 };
 
@@ -304,6 +304,7 @@ impl SwapRecordFactory {
         require_lower_hex_32(rfq_id, "RFQ event ID")?;
         if !matches!(policy.quote_class, "indicative" | "firm")
             || !matches!(policy.reservation, "none" | "soft" | "hard")
+            || policy.quote_class == "firm" && policy.reservation == "none"
         {
             return Err(SwapClientError::new(
                 "swp_contract_terms_mismatch",
@@ -787,7 +788,25 @@ impl ExitPackage {
         }
         let is_presigned = mode == "presigned";
         let package = Self { document };
-        package.unsigned_transaction()?;
+        let unsigned = package.unsigned_transaction()?;
+        let transaction = Transaction::parse(&unsigned).map_err(|error| {
+            SwapClientError::new(
+                "swp_exit_package_unusable",
+                format!("assembled exit transaction is invalid: {error}"),
+            )
+        })?;
+        validate_exit_leaf_template(&package, &transaction)?;
+        if is_presigned
+            && matches!(
+                parse_exit_leaf(&package)?.condition,
+                ExitLeafCondition::Hashlock(_)
+            )
+        {
+            return Err(SwapClientError::new(
+                "swp_exit_package_unusable",
+                "hashlock claims cannot be pre-signed before the preimage is released",
+            ));
+        }
         if is_presigned {
             package.presigned_transaction()?.ok_or_else(|| {
                 SwapClientError::new(
@@ -956,8 +975,6 @@ pub struct FundingVerificationInput {
     pub taproot_output_key: String,
     pub taproot_script: String,
     pub taproot_control_block: String,
-    pub confirmations: u32,
-    pub replacement_detected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -966,6 +983,8 @@ pub struct InvoiceVerificationInput {
     pub invoice: String,
     pub expected_network: String,
     pub expected_amount_msat: String,
+    pub observed_at: u64,
+    pub required_minimum_final_cltv_delta: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1139,8 +1158,54 @@ pub struct FundingAuthorizationRequest {
     pub order_id: String,
     pub quote_id: String,
     pub swap_type: SwapType,
-    pub funding_effect_id: String,
+    pub action: FundingAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FundingAction {
+    BroadcastBitcoin {
+        effect_id: String,
+        leg_id: String,
+        raw_transaction: String,
+    },
+    PayLightningInvoice {
+        effect_id: String,
+        leg_id: String,
+        invoice: String,
+    },
+}
+
+impl FundingAction {
+    pub fn effect_id(&self) -> &str {
+        match self {
+            Self::BroadcastBitcoin { effect_id, .. }
+            | Self::PayLightningInvoice { effect_id, .. } => effect_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BitcoinObservationRequest {
+    pub leg_id: String,
+    pub transaction_template_sha256: String,
+    pub output_index: u32,
+    pub amount: String,
+    pub script_pubkey: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalBitcoinObservation {
     pub raw_transaction: String,
+    pub confirmations: u32,
+    pub replacement_detected: bool,
+    pub competing_spend_detected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedBitcoinFunding {
+    pub leg_id: String,
+    pub transaction_id: String,
+    pub confirmations: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1268,6 +1333,7 @@ impl SwapSession<AwaitingVerification> {
     {
         let bound = BoundSession::from_records(&self.config, &self.signed_records)?;
         bound.verify_contract_terms()?;
+        bound.verify_requester_topology()?;
         input.timeout_ladder.validate()?;
         if input.timeout_ladder.swap_type() != bound.swap_type {
             return Err(SwapClientError::new(
@@ -1305,15 +1371,40 @@ impl SwapSession<AwaitingVerification> {
         verify_funding_input(&input, &bound)?;
         verify_invoice_input(&input, &bound)?;
         verify_exit_packages(&self.exit_packages, &bound)?;
-        let raw_transaction = input.funding.raw_transaction.clone();
-        let funding_effect_id = effect_id(&bound.order.id, "chain_fund", &bound.funding_leg_id)?;
+        let topology = requester_topology(bound.swap_type);
+        let funding_effect_id = effect_id(
+            &bound.order.id,
+            topology.funding_effect_role,
+            topology.funding_leg_id,
+        )?;
+        let action = match bound.swap_type {
+            SwapType::Submarine | SwapType::Chain => FundingAction::BroadcastBitcoin {
+                effect_id: funding_effect_id,
+                leg_id: topology.funding_leg_id.to_owned(),
+                raw_transaction: input.funding.raw_transaction.clone(),
+            },
+            SwapType::Reverse => FundingAction::PayLightningInvoice {
+                effect_id: funding_effect_id,
+                leg_id: topology.funding_leg_id.to_owned(),
+                invoice: input
+                    .invoice
+                    .as_ref()
+                    .ok_or_else(|| {
+                        SwapClientError::new(
+                            "swp_invoice_invalid",
+                            "reverse funding requires the verified invoice",
+                        )
+                    })?
+                    .invoice
+                    .clone(),
+            },
+        };
         let request = FundingAuthorizationRequest {
             session_id: self.config.session_id.clone(),
             order_id: bound.order.id.clone(),
             quote_id: bound.quote.id.clone(),
             swap_type: bound.swap_type,
-            funding_effect_id,
-            raw_transaction,
+            action,
         };
         wallet_authorize(&request).map_err(|error| {
             SwapClientError::new(
@@ -1431,6 +1522,46 @@ impl<State> SwapSession<State> {
         StatusProjection::from_records(&self.config, &self.signed_records)
     }
 
+    pub fn observe_bitcoin_funding_with<F>(
+        &self,
+        leg_id: &str,
+        mut local_adapter: F,
+    ) -> Result<VerifiedBitcoinFunding, SwapClientError>
+    where
+        F: FnMut(&BitcoinObservationRequest) -> Result<LocalBitcoinObservation, String>,
+    {
+        let bound = BoundSession::from_records(&self.config, &self.signed_records)?;
+        let contract = object(&bound.contract, "Swap Contract")?;
+        let verifier = verifier_for_leg(contract, leg_id)?;
+        let request = BitcoinObservationRequest {
+            leg_id: leg_id.to_owned(),
+            transaction_template_sha256: require_string(
+                verifier,
+                "funding_transaction_sha256",
+                None,
+                "swp_contract_terms_mismatch",
+            )?
+            .to_owned(),
+            output_index: required_u32(verifier, "output_index")?,
+            amount: require_string(verifier, "amount", None, "swp_contract_terms_mismatch")?
+                .to_owned(),
+            script_pubkey: require_string(
+                verifier,
+                "script_pubkey",
+                None,
+                "swp_contract_terms_mismatch",
+            )?
+            .to_owned(),
+        };
+        let observation = local_adapter(&request).map_err(|error| {
+            SwapClientError::new(
+                "swp_confirmation_insufficient",
+                format!("local Bitcoin adapter refused observation: {error}"),
+            )
+        })?;
+        verify_bitcoin_observation(verifier, &request, &observation)
+    }
+
     pub fn persist(&self) -> Result<Vec<u8>, SwapClientError> {
         let persisted = PersistedSwapSession {
             schema: SNAPSHOT_SCHEMA.to_owned(),
@@ -1475,42 +1606,42 @@ impl<State> SwapSession<State> {
                 code: "swp_unresolved_loss".to_owned(),
             });
         }
-        let refund = self
-            .exit_packages
-            .iter()
-            .find(|package| package.path().ok() == Some("refund"));
         match bound.swap_type {
             SwapType::Submarine if observation.counterparty_available => {
                 Ok(RecoveryAction::DirectCounterpartyCompletion)
             }
-            SwapType::Submarine => refund_action(refund, observation),
+            SwapType::Submarine => refund_action(
+                exit_package(&self.exit_packages, "source", "refund"),
+                observation,
+            ),
             SwapType::Reverse if observation.claim_observed => {
                 Ok(RecoveryAction::DirectCounterpartyCompletion)
             }
-            SwapType::Reverse => refund_action(refund, observation),
+            SwapType::Reverse if observation.claim_ready => {
+                claim_action(exit_package(&self.exit_packages, "destination", "claim"))
+            }
+            SwapType::Reverse => Ok(RecoveryAction::WaitForCounterparty),
             SwapType::Chain if observation.counterparty_available => {
                 Ok(RecoveryAction::DirectCounterpartyCompletion)
             }
-            SwapType::Chain => {
-                let mut ordered = self
-                    .exit_packages
-                    .iter()
-                    .filter(|package| package.path().ok() == Some("refund"))
-                    .map(|package| package.effect_id().map(str::to_owned))
-                    .collect::<Result<Vec<_>, _>>()?;
-                ordered.sort();
-                if ordered.is_empty() {
-                    Ok(RecoveryAction::ExplicitLoss {
-                        code: "swp_exit_package_missing".to_owned(),
-                    })
-                } else if observation.timeout_reached {
-                    Ok(RecoveryAction::OrderedUnilateralExits {
-                        effect_ids: ordered,
-                    })
-                } else {
-                    Ok(RecoveryAction::WaitForTimeout)
+            SwapType::Chain => match observation.chain_state {
+                Some(ChainRecoveryState::DestinationClaimable) => {
+                    claim_action(exit_package(&self.exit_packages, "destination", "claim"))
                 }
-            }
+                Some(ChainRecoveryState::DestinationFundedUnclaimed) => {
+                    Ok(RecoveryAction::WaitForDestinationRefund)
+                }
+                Some(
+                    ChainRecoveryState::DestinationNotFunded
+                    | ChainRecoveryState::DestinationRefundedFinal,
+                ) => refund_action(
+                    exit_package(&self.exit_packages, "source", "refund"),
+                    observation,
+                ),
+                None => Ok(RecoveryAction::ExplicitLoss {
+                    code: "swp_unresolved_loss".to_owned(),
+                }),
+            },
         }
     }
 }
@@ -1566,18 +1697,31 @@ impl KeylessEsploraExecutor {
 pub struct RecoveryObservation {
     pub counterparty_available: bool,
     pub timeout_reached: bool,
+    pub claim_ready: bool,
     pub claim_observed: bool,
     pub completed: bool,
     pub record_loss: bool,
     pub rail_state_unknown: bool,
+    pub chain_state: Option<ChainRecoveryState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChainRecoveryState {
+    DestinationNotFunded,
+    DestinationClaimable,
+    DestinationFundedUnclaimed,
+    DestinationRefundedFinal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecoveryAction {
     DirectCounterpartyCompletion,
     BroadcastPresigned { effect_id: String },
+    RequestWalletClaim { effect_id: String },
     RequestWalletRefund { effect_id: String },
-    OrderedUnilateralExits { effect_ids: Vec<String> },
+    WaitForCounterparty,
+    WaitForDestinationRefund,
     WaitForTimeout,
     Completed,
     ExplicitLoss { code: String },
@@ -1729,7 +1873,6 @@ struct BoundSession<'a> {
     contract_sha256: String,
     swap_type: SwapType,
     payment_hash: String,
-    funding_leg_id: String,
 }
 
 impl<'a> BoundSession<'a> {
@@ -1866,19 +2009,6 @@ impl<'a> BoundSession<'a> {
                 )
             })?;
         require_lower_hex_32(payment_hash, "Swap Contract payment hash")?;
-        let verifier = contract
-            .get("verifier_inputs")
-            .and_then(Value::as_array)
-            .and_then(|inputs| inputs.first())
-            .and_then(Value::as_object)
-            .ok_or_else(|| {
-                SwapClientError::new(
-                    "swp_contract_terms_mismatch",
-                    "Swap Contract has no verifier inputs",
-                )
-            })?;
-        let funding_leg_id =
-            require_string(verifier, "leg_id", None, "swp_contract_terms_mismatch")?;
         Ok(Self {
             quote,
             order,
@@ -1888,19 +2018,28 @@ impl<'a> BoundSession<'a> {
             contract_sha256: contract_sha256.to_owned(),
             swap_type,
             payment_hash: payment_hash.to_owned(),
-            funding_leg_id: funding_leg_id.to_owned(),
         })
     }
 
     fn verify_contract_terms(&self) -> Result<(), SwapClientError> {
+        let expiration = tag_value(self.quote, "expiration")?
+            .parse::<u64>()
+            .map_err(|_| {
+                SwapClientError::new("swp_quote_expired", "Quote expiration is invalid")
+            })?;
+        if expiration <= self.order.created_at {
+            return Err(SwapClientError::new(
+                "swp_quote_expired",
+                "Quote expired before Order acceptance",
+            ));
+        }
         let quote_content = parse_content(self.quote)?;
+        let quote_profile = object(
+            quote_content.get("mkt_swp").unwrap_or(&Value::Null),
+            "MKT-SWP Quote",
+        )?;
         let terms = object(
-            object(
-                quote_content.get("mkt_swp").unwrap_or(&Value::Null),
-                "MKT-SWP Quote",
-            )?
-            .get("terms")
-            .unwrap_or(&Value::Null),
+            quote_profile.get("terms").unwrap_or(&Value::Null),
             "MKT-SWP Quote terms",
         )?;
         let contract = object(&self.contract, "Swap Contract")?;
@@ -1936,12 +2075,381 @@ impl<'a> BoundSession<'a> {
                 "Order body does not accept the referenced Quote",
             ));
         }
+        verify_order_selection(quote_profile, order_profile, contract)?;
         Ok(())
+    }
+
+    fn verify_requester_topology(&self) -> Result<(), SwapClientError> {
+        verify_requester_topology(object(&self.contract, "Swap Contract")?, self.swap_type)
     }
 
     fn contract_ids(&self) -> [&str; 2] {
         [&self.requester_contract.id, &self.provider_contract.id]
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExitTopology {
+    leg_id: &'static str,
+    path: &'static str,
+    condition: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RequesterTopology {
+    funding_effect_role: &'static str,
+    funding_leg_id: &'static str,
+    bitcoin_verifier_leg_id: &'static str,
+    invoice_verifier_leg_id: Option<&'static str>,
+    legs: &'static [(&'static str, &'static str, &'static str, &'static str)],
+    exits: &'static [ExitTopology],
+}
+
+const SUBMARINE_LEGS: &[(&str, &str, &str, &str)] = &[
+    ("source", "bitcoin", "requester", "provider"),
+    ("lightning", "lightning", "provider", "requester"),
+];
+const SUBMARINE_EXITS: &[ExitTopology] = &[ExitTopology {
+    leg_id: "source",
+    path: "refund",
+    condition: "cltv",
+}];
+const REVERSE_LEGS: &[(&str, &str, &str, &str)] = &[
+    ("lightning", "lightning", "requester", "provider"),
+    ("destination", "bitcoin", "provider", "requester"),
+];
+const REVERSE_EXITS: &[ExitTopology] = &[ExitTopology {
+    leg_id: "destination",
+    path: "claim",
+    condition: "hashlock",
+}];
+const CHAIN_LEGS: &[(&str, &str, &str, &str)] = &[
+    ("source", "bitcoin", "requester", "provider"),
+    ("destination", "bitcoin", "provider", "requester"),
+];
+const CHAIN_EXITS: &[ExitTopology] = &[
+    ExitTopology {
+        leg_id: "source",
+        path: "refund",
+        condition: "csv",
+    },
+    ExitTopology {
+        leg_id: "destination",
+        path: "claim",
+        condition: "hashlock",
+    },
+];
+
+fn requester_topology(swap_type: SwapType) -> RequesterTopology {
+    match swap_type {
+        SwapType::Submarine => RequesterTopology {
+            funding_effect_role: "chain_fund",
+            funding_leg_id: "source",
+            bitcoin_verifier_leg_id: "source",
+            invoice_verifier_leg_id: Some("lightning"),
+            legs: SUBMARINE_LEGS,
+            exits: SUBMARINE_EXITS,
+        },
+        SwapType::Reverse => RequesterTopology {
+            funding_effect_role: "invoice_pay",
+            funding_leg_id: "lightning",
+            bitcoin_verifier_leg_id: "destination",
+            invoice_verifier_leg_id: Some("lightning"),
+            legs: REVERSE_LEGS,
+            exits: REVERSE_EXITS,
+        },
+        SwapType::Chain => RequesterTopology {
+            funding_effect_role: "chain_fund",
+            funding_leg_id: "source",
+            bitcoin_verifier_leg_id: "source",
+            invoice_verifier_leg_id: None,
+            legs: CHAIN_LEGS,
+            exits: CHAIN_EXITS,
+        },
+    }
+}
+
+fn verify_requester_topology(
+    contract: &Map<String, Value>,
+    swap_type: SwapType,
+) -> Result<(), SwapClientError> {
+    let topology = requester_topology(swap_type);
+    let legs = contract
+        .get("legs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            SwapClientError::new("swp_contract_terms_mismatch", "Swap Contract has no legs")
+        })?;
+    if legs.len() != topology.legs.len() {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Swap Contract has the wrong flow leg count",
+        ));
+    }
+    for (leg_id, rail, funding_role, receiving_role) in topology.legs {
+        let matching = legs.iter().filter(|leg| {
+            leg.get("leg_id").and_then(Value::as_str) == Some(*leg_id)
+                && leg.get("rail").and_then(Value::as_str) == Some(*rail)
+                && leg.get("funding_role").and_then(Value::as_str) == Some(*funding_role)
+                && leg.get("receiving_role").and_then(Value::as_str) == Some(*receiving_role)
+        });
+        if matching.count() != 1 {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "Swap Contract flow signer or leg topology is invalid",
+            ));
+        }
+    }
+    let effect_bindings = contract
+        .get("effect_bindings")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "Swap Contract has no effect bindings",
+            )
+        })?;
+    let mut expected_effects = vec![(topology.funding_effect_role, topology.funding_leg_id)];
+    expected_effects.extend(topology.exits.iter().map(|exit| {
+        (
+            if exit.path == "claim" {
+                "chain_claim"
+            } else {
+                "chain_refund"
+            },
+            exit.leg_id,
+        )
+    }));
+    for (role, leg_id) in expected_effects {
+        if !effect_bindings.iter().any(|binding| {
+            binding.get("role").and_then(Value::as_str) == Some(role)
+                && binding.get("leg_id").and_then(Value::as_str) == Some(leg_id)
+        }) {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "Swap Contract omits a requester external-effect binding",
+            ));
+        }
+    }
+    let commitments = contract
+        .get("exit_package_commitments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_exit_package_missing",
+                "Swap Contract has no exit commitments",
+            )
+        })?;
+    let requester_commitments = commitments
+        .iter()
+        .filter(|commitment| {
+            commitment.get("participant_role").and_then(Value::as_str) == Some("requester")
+        })
+        .collect::<Vec<_>>();
+    if requester_commitments.len() != topology.exits.len()
+        || topology.exits.iter().any(|exit| {
+            !requester_commitments.iter().any(|commitment| {
+                commitment.get("leg_id").and_then(Value::as_str) == Some(exit.leg_id)
+                    && commitment.get("path").and_then(Value::as_str) == Some(exit.path)
+            })
+        })
+    {
+        return Err(SwapClientError::new(
+            "swp_exit_package_missing",
+            "Swap Contract requester exits do not match the selected flow",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_order_selection(
+    quote: &Map<String, Value>,
+    order: &Map<String, Value>,
+    contract: &Map<String, Value>,
+) -> Result<(), SwapClientError> {
+    let quote_terms = object(
+        quote.get("terms").unwrap_or(&Value::Null),
+        "MKT-SWP Quote terms",
+    )?;
+    if order
+        .keys()
+        .any(|name| !matches!(name.as_str(), "accepted_quote_id" | "selection"))
+    {
+        return Err(SwapClientError::new(
+            "swp_order_selection_invalid",
+            "Order restates or changes a non-selectable Quote field",
+        ));
+    }
+    let selection = match order.get("selection") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(selection)) if selection.is_empty() => None,
+        Some(Value::Object(selection)) => Some(selection),
+        Some(_) => {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Order selection must be an object",
+            ));
+        }
+    };
+    let selectable = match quote.get("selectable") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(selectable))
+            if selectable.keys().all(|name| {
+                matches!(
+                    name.as_str(),
+                    "input_amount" | "fee_payer" | "confirmation_policy" | "public_receipt_consent"
+                )
+            }) =>
+        {
+            Some(selectable)
+        }
+        Some(_) => {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Quote selectable terms must be an object",
+            ));
+        }
+    };
+    for name in [
+        "fee_bps",
+        "provider_fee",
+        "miner_fee_budget",
+        "lightning_routing_fee_budget",
+        "amount_equation",
+    ] {
+        if quote_terms.get(name) != contract.get(name) {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                format!("Swap Contract changed non-selectable amount member {name}"),
+            ));
+        }
+    }
+    let Some(selection) = selection else {
+        if contract.get("order_selection").is_some_and(|value| {
+            !value.is_null() && value.as_object().is_none_or(|object| !object.is_empty())
+        }) {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Swap Contract records a selection absent from the Order",
+            ));
+        }
+        for name in ["input_amount", "output_amount"] {
+            if quote_terms.get(name) != contract.get(name) {
+                return Err(SwapClientError::new(
+                    "swp_order_selection_invalid",
+                    format!("Swap Contract changed unselected amount member {name}"),
+                ));
+            }
+        }
+        return Ok(());
+    };
+    let selectable = selectable.ok_or_else(|| {
+        SwapClientError::new(
+            "swp_order_selection_invalid",
+            "Quote permits no Order selection",
+        )
+    })?;
+    for (name, selected) in selection {
+        if !matches!(
+            name.as_str(),
+            "input_amount" | "fee_payer" | "confirmation_policy" | "public_receipt_consent"
+        ) {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Order selected a field outside the v1 allowlist",
+            ));
+        }
+        let offered = selectable.get(name).ok_or_else(|| {
+            SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Order selected a field not offered by the Quote",
+            )
+        })?;
+        let valid = if name == "input_amount" {
+            let selected = selected
+                .as_str()
+                .and_then(|value| canonical_amount(value).ok());
+            let range = offered.as_object();
+            match (selected, range) {
+                (Some(selected), Some(range)) => {
+                    let minimum = range
+                        .get("minimum")
+                        .and_then(Value::as_str)
+                        .and_then(|value| canonical_amount(value).ok());
+                    let maximum = range
+                        .get("maximum")
+                        .and_then(Value::as_str)
+                        .and_then(|value| canonical_amount(value).ok());
+                    matches!((minimum, maximum), (Some(minimum), Some(maximum)) if minimum <= selected && selected <= maximum)
+                }
+                _ => false,
+            }
+        } else {
+            offered
+                .as_array()
+                .is_some_and(|values| values.iter().any(|value| value == selected))
+        };
+        if !valid {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Order selection is outside the Quote's finite choices",
+            ));
+        }
+        if name != "input_amount" && contract.get(name) != Some(selected) {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Swap Contract does not freeze the selected Quote option",
+            ));
+        }
+    }
+    if contract.get("order_selection") != Some(&Value::Object(selection.clone())) {
+        return Err(SwapClientError::new(
+            "swp_order_selection_invalid",
+            "Swap Contract does not bind the exact Order selection",
+        ));
+    }
+    if let Some(selected_input) = selection.get("input_amount").and_then(Value::as_str) {
+        let input = canonical_amount(selected_input)?;
+        let provider_fee = contract_amount(contract, "provider_fee")?;
+        let miner_fee = contract_amount(contract, "miner_fee_budget")?;
+        let lightning_fee = contract_amount(contract, "lightning_routing_fee_budget")?;
+        let expected_output = input
+            .checked_sub(provider_fee)
+            .and_then(|amount| amount.checked_sub(miner_fee))
+            .and_then(|amount| amount.checked_sub(lightning_fee))
+            .ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_order_selection_invalid",
+                    "selected amount cannot satisfy the quoted amount equation",
+                )
+            })?;
+        if contract.get("input_amount").and_then(Value::as_str) != Some(selected_input)
+            || contract_amount(contract, "output_amount")? != expected_output
+            || !matches!(
+                contract.get("amount_equation").and_then(Value::as_str),
+                Some("input_minus_provider_and_quoted_fees" | "one_to_one_less_quoted_fees")
+            )
+        {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "selected amount does not reproduce the frozen output amount",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn contract_amount(contract: &Map<String, Value>, name: &str) -> Result<u64, SwapClientError> {
+    contract
+        .get(name)
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_order_selection_invalid",
+                format!("Swap Contract is missing {name}"),
+            )
+        })
+        .and_then(canonical_amount)
 }
 
 fn validate_session_material(
@@ -1997,6 +2505,123 @@ fn validate_session_material(
     }
     StatusProjection::from_records(config, records)?;
     Ok(())
+}
+
+fn verifier_for_leg<'a>(
+    contract: &'a Map<String, Value>,
+    leg_id: &str,
+) -> Result<&'a Map<String, Value>, SwapClientError> {
+    let verifiers = contract
+        .get("verifier_inputs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "Swap Contract has no verifier inputs",
+            )
+        })?;
+    let matches = verifiers
+        .iter()
+        .filter(|verifier| verifier.get("leg_id").and_then(Value::as_str) == Some(leg_id))
+        .collect::<Vec<_>>();
+    let [verifier] = matches.as_slice() else {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Swap Contract requires exactly one verifier for the flow leg",
+        ));
+    };
+    verifier.as_object().ok_or_else(|| {
+        SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Swap Contract verifier input is not an object",
+        )
+    })
+}
+
+fn verify_bitcoin_observation(
+    verifier: &Map<String, Value>,
+    request: &BitcoinObservationRequest,
+    observation: &LocalBitcoinObservation,
+) -> Result<VerifiedBitcoinFunding, SwapClientError> {
+    let raw = decode_hex(&observation.raw_transaction, "observed funding transaction")?;
+    if lower_hex(&sha256(&raw)) != request.transaction_template_sha256 {
+        return Err(SwapClientError::new(
+            "swp_terms_mismatch",
+            "local Bitcoin observation differs from the bound funding template",
+        ));
+    }
+    let transaction = Transaction::parse(&raw).map_err(|error| {
+        SwapClientError::new(
+            "swp_script_invalid",
+            format!("observed funding transaction is invalid: {error}"),
+        )
+    })?;
+    let output = transaction
+        .outputs
+        .get(usize::try_from(request.output_index).map_err(|_| {
+            SwapClientError::new(
+                "swp_terms_mismatch",
+                "observed output index is out of range",
+            )
+        })?)
+        .ok_or_else(|| {
+            SwapClientError::new("swp_terms_mismatch", "observed funding output is missing")
+        })?;
+    if output.value_sat != canonical_amount(&request.amount)?
+        || output.script_pubkey != decode_hex(&request.script_pubkey, "observed scriptPubKey")?
+    {
+        return Err(SwapClientError::new(
+            "swp_terms_mismatch",
+            "observed funding amount or script differs from the bound template",
+        ));
+    }
+    let minimum_confirmations = require_string(
+        verifier,
+        "minimum_confirmations",
+        None,
+        "swp_contract_terms_mismatch",
+    )?
+    .parse::<u32>()
+    .map_err(|_| {
+        SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "bound confirmation threshold is invalid",
+        )
+    })?;
+    if observation.confirmations < minimum_confirmations {
+        return Err(SwapClientError::new(
+            "swp_confirmation_insufficient",
+            "local Bitcoin adapter reports insufficient confirmations",
+        ));
+    }
+    let replacement_policy = require_string(
+        verifier,
+        "replacement_policy",
+        None,
+        "swp_contract_terms_mismatch",
+    )?;
+    if observation.replacement_detected && replacement_policy == "reject" {
+        return Err(SwapClientError::new(
+            "swp_rbf_policy_violation",
+            "local Bitcoin adapter reports a forbidden replacement",
+        ));
+    }
+    if observation.competing_spend_detected {
+        return Err(SwapClientError::new(
+            "swp_funding_reorged",
+            "local Bitcoin adapter reports a competing spend",
+        ));
+    }
+    Ok(VerifiedBitcoinFunding {
+        leg_id: request.leg_id.clone(),
+        transaction_id: lower_hex(&transaction.txid().map_err(|error| {
+            SwapClientError::new(
+                "swp_script_invalid",
+                format!("could not derive funding transaction ID: {error}"),
+            )
+        })?),
+        confirmations: observation.confirmations,
+    })
 }
 
 fn verify_funding_input(
@@ -2064,17 +2689,10 @@ fn verify_funding_input(
             "funding output does not pay the re-derived Taproot key",
         ));
     }
-    if input.minimum_confirmations == 0 || input.funding.confirmations < input.minimum_confirmations
-    {
+    if input.minimum_confirmations == 0 {
         return Err(SwapClientError::new(
             "swp_confirmation_insufficient",
-            "funding output has fewer confirmations than quoted",
-        ));
-    }
-    if input.funding.replacement_detected && input.replacement_policy == "reject" {
-        return Err(SwapClientError::new(
-            "swp_rbf_policy_violation",
-            "funding transaction was replaced under a reject policy",
+            "quoted confirmation threshold must be positive",
         ));
     }
     if !matches!(input.replacement_policy.as_str(), "reject" | "track") {
@@ -2084,14 +2702,8 @@ fn verify_funding_input(
         ));
     }
     let contract = object(&bound.contract, "Swap Contract")?;
-    let verifier = contract
-        .get("verifier_inputs")
-        .and_then(Value::as_array)
-        .and_then(|values| values.first())
-        .and_then(Value::as_object)
-        .ok_or_else(|| {
-            SwapClientError::new("swp_contract_terms_mismatch", "verifier input is missing")
-        })?;
+    let topology = requester_topology(bound.swap_type);
+    let verifier = verifier_for_leg(contract, topology.bitcoin_verifier_leg_id)?;
     let checks = [
         ("funding_transaction_sha256", lower_hex(&sha256(&raw))),
         ("amount", input.funding.expected_amount.clone()),
@@ -2164,21 +2776,47 @@ fn verify_invoice_input(
             "invoice network, amount, or payment hash differs from the Swap Contract",
         ));
     }
+    let expires_at = invoice
+        .timestamp
+        .checked_add(invoice.expiry_seconds)
+        .ok_or_else(|| SwapClientError::new("swp_invoice_invalid", "invoice expiry overflows"))?;
+    if invoice_input.observed_at >= expires_at
+        || invoice.minimum_final_cltv_delta < invoice_input.required_minimum_final_cltv_delta
+    {
+        return Err(SwapClientError::new(
+            "swp_invoice_invalid",
+            "invoice is expired or its final CLTV delta is below the quoted minimum",
+        ));
+    }
     let contract = object(&bound.contract, "Swap Contract")?;
-    let verifier = contract
-        .get("verifier_inputs")
-        .and_then(Value::as_array)
-        .and_then(|values| values.first())
-        .and_then(Value::as_object)
+    let invoice_leg = requester_topology(bound.swap_type)
+        .invoice_verifier_leg_id
         .ok_or_else(|| {
-            SwapClientError::new("swp_contract_terms_mismatch", "verifier input is missing")
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "selected flow has no invoice verifier leg",
+            )
         })?;
+    let verifier = verifier_for_leg(contract, invoice_leg)?;
     if verifier.get("invoice_sha256").and_then(Value::as_str)
         != Some(lower_hex(&sha256(invoice_input.invoice.as_bytes())).as_str())
         || verifier.get("invoice_amount_msat").and_then(Value::as_str)
             != Some(invoice_input.expected_amount_msat.as_str())
         || verifier.get("invoice_network").and_then(Value::as_str)
             != Some(invoice_input.expected_network.as_str())
+        || verifier
+            .get("invoice_expiry_seconds")
+            .and_then(Value::as_str)
+            != Some(invoice.expiry_seconds.to_string().as_str())
+        || verifier
+            .get("invoice_minimum_final_cltv_delta")
+            .and_then(Value::as_str)
+            != Some(
+                invoice_input
+                    .required_minimum_final_cltv_delta
+                    .to_string()
+                    .as_str(),
+            )
     {
         return Err(SwapClientError::new(
             "swp_contract_terms_mismatch",
@@ -2258,6 +2896,75 @@ fn verify_exit_packages(
         let leg = require_string(document, "leg_id", None, "swp_exit_package_mismatch")?;
         let path = package.path()?;
         let mode = package.mode()?;
+        let expected_exit = requester_topology(bound.swap_type)
+            .exits
+            .iter()
+            .find(|exit| exit.leg_id == leg && exit.path == path)
+            .ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_exit_package_mismatch",
+                    "exit package is not part of the requester flow topology",
+                )
+            })?;
+        let leaf = parse_exit_leaf(package)?;
+        let condition = match leaf.condition {
+            ExitLeafCondition::Hashlock(_) => "hashlock",
+            ExitLeafCondition::Cltv(_) => "cltv",
+            ExitLeafCondition::Csv(_) => "csv",
+        };
+        if condition != expected_exit.condition {
+            return Err(SwapClientError::new(
+                "swp_exit_package_mismatch",
+                "exit leaf condition differs from the selected flow topology",
+            ));
+        }
+        let verifier = verifier_for_leg(contract, leg)?;
+        let funding = object(
+            document.get("funding").unwrap_or(&Value::Null),
+            "exit funding",
+        )?;
+        let verification = object(
+            document.get("verification").unwrap_or(&Value::Null),
+            "exit verification",
+        )?;
+        for (package_member, verifier_member) in [
+            ("transaction_template_sha256", "funding_transaction_sha256"),
+            ("amount", "amount"),
+            ("script_pubkey", "script_pubkey"),
+        ] {
+            if funding.get(package_member) != verifier.get(verifier_member) {
+                return Err(SwapClientError::new(
+                    "swp_exit_package_mismatch",
+                    format!("exit funding member {package_member} differs from its leg verifier"),
+                ));
+            }
+        }
+        if funding.get("output_index") != verifier.get("output_index") {
+            return Err(SwapClientError::new(
+                "swp_exit_package_mismatch",
+                "exit funding output index differs from its leg verifier",
+            ));
+        }
+        for member in ["taproot_script", "taproot_control_block"] {
+            if verification.get(member) != verifier.get(member) {
+                return Err(SwapClientError::new(
+                    "swp_exit_package_mismatch",
+                    format!("exit verification member {member} differs from its leg verifier"),
+                ));
+            }
+        }
+        let package_payment_hash = object(
+            document.get("secret_commitments").unwrap_or(&Value::Null),
+            "exit secret commitments",
+        )?
+        .get("payment_hash")
+        .and_then(Value::as_str);
+        if package_payment_hash != Some(bound.payment_hash.as_str()) {
+            return Err(SwapClientError::new(
+                "swp_payment_hash_mismatch",
+                "exit package payment hash differs from the Swap Contract",
+            ));
+        }
         let effect_role = match path {
             "claim" => "chain_claim",
             "refund" => "chain_refund",
@@ -2350,6 +3057,209 @@ fn refund_action(
     }
 }
 
+fn exit_package<'a>(
+    packages: &'a [ExitPackage],
+    leg_id: &str,
+    path: &str,
+) -> Option<&'a ExitPackage> {
+    packages.iter().find(|package| {
+        package.path().ok() == Some(path)
+            && package.document().get("leg_id").and_then(Value::as_str) == Some(leg_id)
+    })
+}
+
+fn claim_action(package: Option<&ExitPackage>) -> Result<RecoveryAction, SwapClientError> {
+    let Some(package) = package else {
+        return Ok(RecoveryAction::ExplicitLoss {
+            code: "swp_exit_package_missing".to_owned(),
+        });
+    };
+    if package.mode()? == "presigned" {
+        return Err(SwapClientError::new(
+            "swp_exit_package_unusable",
+            "hashlock claim unexpectedly uses a pre-signed package",
+        ));
+    }
+    Ok(RecoveryAction::RequestWalletClaim {
+        effect_id: package.effect_id()?.to_owned(),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExitLeafCondition {
+    Hashlock([u8; 32]),
+    Cltv(u32),
+    Csv(u32),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ParsedExitLeaf {
+    signing_key: XOnlyPublicKey,
+    condition: ExitLeafCondition,
+}
+
+fn parse_exit_leaf(package: &ExitPackage) -> Result<ParsedExitLeaf, SwapClientError> {
+    let root = object(package.document(), "exit package")?;
+    let verification = object(
+        root.get("verification").unwrap_or(&Value::Null),
+        "exit verification",
+    )?;
+    let script = decode_hex(
+        require_string(
+            verification,
+            "taproot_script",
+            None,
+            "swp_exit_package_unusable",
+        )?,
+        "exit Taproot script",
+    )?;
+    let instructions = parse_swap_script(&script).map_err(|error| {
+        SwapClientError::new(
+            "swp_exit_package_unusable",
+            format!("exit Taproot script is invalid: {error}"),
+        )
+    })?;
+    let (key, condition) = match instructions.as_slice() {
+        [
+            ScriptInstruction::Opcode(0x82),
+            ScriptInstruction::Push(size),
+            ScriptInstruction::Opcode(0x88),
+            ScriptInstruction::Opcode(0xa8),
+            ScriptInstruction::Push(payment_hash),
+            ScriptInstruction::Opcode(0x88),
+            ScriptInstruction::Push(key),
+            ScriptInstruction::Opcode(0xac),
+        ] if size.as_slice() == [32] && payment_hash.len() == 32 && key.len() == 32 => {
+            let payment_hash: [u8; 32] = payment_hash.as_slice().try_into().map_err(|_| {
+                SwapClientError::new(
+                    "swp_exit_package_unusable",
+                    "hashlock payment hash has an invalid length",
+                )
+            })?;
+            (key, ExitLeafCondition::Hashlock(payment_hash))
+        }
+        [
+            ScriptInstruction::Push(value),
+            ScriptInstruction::Opcode(0xb1),
+            ScriptInstruction::Opcode(0x75),
+            ScriptInstruction::Push(key),
+            ScriptInstruction::Opcode(0xac),
+        ] if key.len() == 32 => (key, ExitLeafCondition::Cltv(script_number(value)?)),
+        [
+            ScriptInstruction::Push(value),
+            ScriptInstruction::Opcode(0xb2),
+            ScriptInstruction::Opcode(0x75),
+            ScriptInstruction::Push(key),
+            ScriptInstruction::Opcode(0xac),
+        ] if key.len() == 32 => (key, ExitLeafCondition::Csv(script_number(value)?)),
+        _ => {
+            return Err(SwapClientError::new(
+                "swp_exit_package_unusable",
+                "exit leaf is not an exact supported hashlock, CLTV, or CSV path",
+            ));
+        }
+    };
+    let signing_key = XOnlyPublicKey::from_byte_array(key.as_slice().try_into().map_err(|_| {
+        SwapClientError::new(
+            "swp_exit_package_unusable",
+            "exit signing key has an invalid length",
+        )
+    })?)
+    .map_err(|_| {
+        SwapClientError::new("swp_exit_package_unusable", "exit signing key is invalid")
+    })?;
+    let path = package.path()?;
+    match (path, condition) {
+        ("claim", ExitLeafCondition::Hashlock(payment_hash)) => {
+            let commitments = object(
+                root.get("secret_commitments").unwrap_or(&Value::Null),
+                "exit secret commitments",
+            )?;
+            if require_string(
+                commitments,
+                "payment_hash",
+                None,
+                "swp_exit_package_unusable",
+            )? != lower_hex(&payment_hash)
+            {
+                return Err(SwapClientError::new(
+                    "swp_payment_hash_mismatch",
+                    "claim leaf hash differs from the exit-package commitment",
+                ));
+            }
+        }
+        ("refund", ExitLeafCondition::Cltv(_) | ExitLeafCondition::Csv(_)) => {}
+        _ => {
+            return Err(SwapClientError::new(
+                "swp_exit_package_unusable",
+                "claim and refund paths use the wrong leaf condition",
+            ));
+        }
+    }
+    Ok(ParsedExitLeaf {
+        signing_key,
+        condition,
+    })
+}
+
+fn script_number(bytes: &[u8]) -> Result<u32, SwapClientError> {
+    if bytes.is_empty() || bytes.len() > 5 || bytes.last().is_some_and(|byte| byte & 0x80 != 0) {
+        return Err(SwapClientError::new(
+            "swp_exit_package_unusable",
+            "exit timelock must be a non-negative bounded script number",
+        ));
+    }
+    if bytes.last().is_some_and(|byte| byte & 0x7f == 0)
+        && (bytes.len() == 1 || bytes[bytes.len() - 2] & 0x80 == 0)
+    {
+        return Err(SwapClientError::new(
+            "swp_exit_package_unusable",
+            "exit timelock script number is not minimally encoded",
+        ));
+    }
+    let mut value = 0_u64;
+    for (index, byte) in bytes.iter().enumerate() {
+        value |= u64::from(*byte) << (index * 8);
+    }
+    u32::try_from(value)
+        .map_err(|_| SwapClientError::new("swp_exit_package_unusable", "exit timelock exceeds u32"))
+}
+
+fn validate_exit_leaf_template(
+    package: &ExitPackage,
+    transaction: &Transaction,
+) -> Result<(), SwapClientError> {
+    let [input] = transaction.inputs.as_slice() else {
+        return Err(SwapClientError::new(
+            "swp_exit_package_unusable",
+            "exit template must contain exactly one input",
+        ));
+    };
+    match parse_exit_leaf(package)?.condition {
+        ExitLeafCondition::Hashlock(_) => Ok(()),
+        ExitLeafCondition::Cltv(required) => {
+            if input.sequence == u32::MAX
+                || !check_cltv(Timelock::BlockHeight(required), transaction.lock_time)
+            {
+                return Err(SwapClientError::new(
+                    "swp_exit_package_unusable",
+                    "exit transaction does not satisfy its CLTV leaf",
+                ));
+            }
+            Ok(())
+        }
+        ExitLeafCondition::Csv(required) => {
+            if transaction.version < 2 || !check_csv(required, input.sequence) {
+                return Err(SwapClientError::new(
+                    "swp_exit_package_unusable",
+                    "exit transaction does not satisfy its CSV leaf",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
 fn validate_signed_transaction_matches(
     package: &ExitPackage,
     unsigned: &[u8],
@@ -2409,16 +3319,6 @@ fn validate_signed_transaction_matches(
             "wallet returned no Taproot script",
         )
     })?;
-    let signatures = input.witness[..input.witness.len() - 2]
-        .iter()
-        .filter(|item| item.len() == 64)
-        .collect::<Vec<_>>();
-    let [signature] = signatures.as_slice() else {
-        return Err(SwapClientError::new(
-            "swp_external_signature_invalid",
-            "wallet witness must contain exactly one default-SIGHASH Schnorr signature",
-        ));
-    };
     let root = object(package.document(), "exit package")?;
     let verification = object(
         root.get("verification").unwrap_or(&Value::Null),
@@ -2448,34 +3348,39 @@ fn validate_signed_transaction_matches(
             "wallet witness changed the bound Taproot path",
         ));
     }
-    let instructions = parse_swap_script(script).map_err(|error| {
-        SwapClientError::new(
-            "swp_external_signature_invalid",
-            format!("wallet returned an invalid Taproot script: {error}"),
-        )
-    })?;
-    let signing_keys = instructions
-        .windows(2)
-        .filter_map(|instructions| match instructions {
-            [
-                ScriptInstruction::Push(key),
-                ScriptInstruction::Opcode(opcode),
-            ] if key.len() == 32 && matches!(opcode, 0xac | 0xad) => key.as_slice().try_into().ok(),
-            _ => None,
-        })
-        .collect::<Vec<[u8; 32]>>();
-    let [signing_key] = signing_keys.as_slice() else {
-        return Err(SwapClientError::new(
-            "swp_external_signature_invalid",
-            "bound Taproot path must contain exactly one x-only signing key",
-        ));
+    let leaf = parse_exit_leaf(package)?;
+    let witness_stack = &input.witness[..input.witness.len() - 2];
+    let signature = match (leaf.condition, witness_stack) {
+        (ExitLeafCondition::Hashlock(payment_hash), [signature, preimage])
+            if signature.len() == 64 && preimage.len() == 32 =>
+        {
+            let preimage: [u8; 32] = preimage.as_slice().try_into().map_err(|_| {
+                SwapClientError::new(
+                    "swp_external_signature_invalid",
+                    "claim preimage has an invalid length",
+                )
+            })?;
+            if !verify_preimage(&preimage, &payment_hash) {
+                return Err(SwapClientError::new(
+                    "swp_external_signature_invalid",
+                    "claim witness does not satisfy the bound hashlock",
+                ));
+            }
+            signature
+        }
+        (ExitLeafCondition::Cltv(_) | ExitLeafCondition::Csv(_), [signature])
+            if signature.len() == 64 =>
+        {
+            validate_exit_leaf_template(package, &signed)?;
+            signature
+        }
+        _ => {
+            return Err(SwapClientError::new(
+                "swp_external_signature_invalid",
+                "wallet witness does not exactly satisfy the bound exit leaf",
+            ));
+        }
     };
-    let signing_key = XOnlyPublicKey::from_byte_array(*signing_key).map_err(|_| {
-        SwapClientError::new(
-            "swp_external_signature_invalid",
-            "bound Taproot signing key is invalid",
-        )
-    })?;
     let digest = taproot_exit_sighash(package, &signed)?;
     let signature: [u8; 64] = signature.as_slice().try_into().map_err(|_| {
         SwapClientError::new(
@@ -2483,7 +3388,7 @@ fn validate_signed_transaction_matches(
             "wallet Schnorr signature has an invalid length",
         )
     })?;
-    verify_musig2_signature(&signing_key, &digest, &signature).map_err(|error| {
+    verify_musig2_signature(&leaf.signing_key, &digest, &signature).map_err(|error| {
         SwapClientError::new(
             "swp_external_signature_invalid",
             format!("wallet Schnorr signature does not verify: {error}"),

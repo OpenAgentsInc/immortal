@@ -15,9 +15,12 @@ timestamp, kind, tags, content, event ID, signature, and MKT profile before
 accepting the returned event. It does not accept a signer that silently
 rewrites any requested byte.
 
-A session binds the RFQ, Quote, Order, and both participants' kind-39610 Swap
-Contracts. The two contracts must name the same order and quote, contain the
-same RFC 8785-compatible canonical digest, and agree with the Quote terms.
+A session binds the RFQ, unexpired Quote, Order, and both participants'
+kind-39610 Swap Contracts. The two contracts must name the same order and
+quote, contain the same RFC 8785-compatible canonical digest, and agree with
+the Quote terms. An Order may choose only the Quote's finite `input_amount`,
+`fee_payer`, `confirmation_policy`, and `public_receipt_consent` options; the
+contract freezes the exact selection and recomputed output amount.
 Status projection is maintained independently per signer. Sequence gaps and
 forks remain visible; signer-invalid states and lifecycle regressions fail
 closed. Conflicting mutual-close records remain separate evidence rather than
@@ -32,15 +35,21 @@ these checks pass:
 - the bilateral contracts and Quote remain bound to the same terms;
 - the submarine, reverse, or chain timeout ladder matches the contract and
   preserves the required safety margin;
-- the payment hash and amountful BOLT-11 network, amount, signature, and hash
-  coupling pass the owned issue-#10 verification primitives;
+- the payment hash and amountful BOLT-11 network, amount, signature, hash,
+  expiry, and minimum-final-CLTV coupling pass the owned issue-#10
+  verification primitives;
 - the Bitcoin transaction, output value, Taproot tree/control block,
   confirmation requirement, and RBF policy match the contract; and
 - every required claim or refund package is parseable and has an exact
   contract commitment.
 
-Only then does the engine pass a bounded `FundingAuthorizationRequest` to an
-embedding-wallet callback. A refusal leaves funding unauthorized. The
+Only then does the engine pass a flow-specific `FundingAuthorizationRequest`
+to an embedding-wallet callback: submarine and chain requesters authorize a
+Bitcoin funding-template broadcast on `source`; reverse requesters authorize
+payment of the verified invoice on `lightning`. Confirmation, replacement,
+and competing-spend facts are obtained later through an explicit local
+Bitcoin observation adapter and are not fields a funding caller can assert.
+A refusal leaves funding unauthorized. The
 authorized marker is private and is never serialized. Restoring a snapshot
 always revalidates its signed records, exit packages, and effect ledger and
 returns `AwaitingVerification`, so a persisted boolean cannot bypass the
@@ -61,20 +70,27 @@ that commits back to the event ID. The complete package must still contain
 the exact bilateral IDs and digest, and those bindings are revalidated before
 funding and after restore.
 
-The client assembles claim and refund transactions but delegates signatures
-to a wallet or external signer callback. The request includes the exact
-Taproot script-path sighash. It rejects a returned transaction if the version,
-lock time, inputs, outputs, non-witness serialization, script, or control
-block differs from the requested template, and verifies the returned Schnorr
-signature before accepting it. Pre-signed packages pass the same verification,
-require no key, and can be converted into a bounded public Esplora `POST /tx`
-request by `KeylessEsploraExecutor`.
+The client accepts only exact hashlock-claim, CLTV-refund, and CSV-refund
+Taproot leaves. It executes the leaf condition against the transaction and
+witness: claims require the committed 32-byte preimage and signer; CLTV and
+CSV refunds require the bound lock or delay and signer. Extra branches or
+stack elements fail closed. The client assembles claim and refund transactions
+but delegates signatures to a wallet or external signer callback. The request
+includes the exact Taproot script-path sighash. It rejects a returned
+transaction if the version, lock time, inputs, outputs, non-witness
+serialization, script, control block, or exact witness shape differs from the
+requested path. Pre-signed packages are restricted to timeout exits, pass the
+same verification, require no key, and can be converted into a bounded public
+Esplora `POST /tx` request by `KeylessEsploraExecutor`.
 
 External wallet, payment, and broadcast operations use deterministic effect
 IDs. Replaying the same result is idempotent; binding one effect ID to a
-different result fails closed. Recovery chooses direct completion, a
-pre-signed broadcast, a wallet refund, ordered chain exits, a timeout wait, or
-an explicit unresolved-loss result from supplied public observations.
+different result fails closed. Recovery is rail-specific. A reverse requester
+claims the destination output when it is claimable. A chain requester claims
+the destination first, waits while that output remains funded and unclaimed,
+and refunds the source only when the destination was never funded or its
+refund is final. Missing rail state becomes an explicit unresolved-loss
+result; effect-ID sorting never determines recovery order.
 
 ## Custody boundary
 

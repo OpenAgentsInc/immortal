@@ -301,13 +301,25 @@ primitives. Funding authority exists only after that verification and an
 embedding-wallet callback succeed. Restored snapshots always return to the
 unverified state.
 
+The requester flow is frozen per rail: submarine broadcasts `source` Bitcoin
+funding and retains a CLTV refund, reverse pays `lightning` and retains the
+`destination` hashlock claim, and chain broadcasts `source`, retains its CSV
+refund, and claims `destination`. Quote expiry is checked at Order acceptance;
+Order selection is limited to the four upstream-selectable fields. BOLT-11
+expiry and minimum-final-CLTV are parsed and bound before payment. Bitcoin
+confirmation, replacement, and competing-spend observations enter through an
+explicit local adapter after template authorization.
+
 Exit packages bind each executable claim or refund path and its public
 verification requirements. Their package digest commits the execution fields
 but excludes the two Swap Contract IDs and shared contract digest to avoid a
 circular event-ID commitment. The complete package still carries and
 revalidates those exact bilateral bindings. Wallet and external-signer
-callbacks own all signatures; a complete pre-signed exit can also produce a
-keyless public Esplora broadcast request for the doomsday path.
+callbacks own all signatures. Hashlock, CLTV, and CSV leaves are executed
+against exact witness and transaction conditions; only timeout exits may be
+pre-signed. A complete pre-signed timeout exit can also produce a keyless
+public Esplora broadcast request for the doomsday path. Chain recovery follows
+destination-then-source rail state and never effect-ID ordering.
 
 This adoption adds deterministic fixtures and machine-contract metadata but
 no dependency, server handler, database state, custody material, rail

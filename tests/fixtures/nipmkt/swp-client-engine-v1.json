@@ -19,6 +19,10 @@
     "payment_hash": "96c772a829fb7c780410f1d85cf12a89e8b3c78c0bac5fb47f62758bf961ec30",
     "invoice": "lnbc10u1p3unwfusp5t9r3yymhpfqculx78u027lxspgxcr2n2987mx2j55nnfs95nxnzqpp5jmrh92pfld78spqs78v9euf2385t83uvpwk9ldrlvf6ch7tpascqhp5zvkrmemgth3tufcvflmzjzfvjt023nazlhljz2n9hattj4f8jq8qxqyjw5qcqpjrzjqtc4fc44feggv7065fqe5m4ytjarg3repr5j9el35xhmtfexc42yczarjuqqfzqqqqqqqqlgqqqqqqgq9q9qxpqysgq079nkq507a5tw7xgttmj4u990j7wfggtrasah5gd4ywfr2pjcn29383tphp4t48gquelz9z78p4cq7ml3nrrphw5w6eckhjwmhezhnqpy6gyf0",
     "invoice_amount_msat": "1000000",
+    "invoice_timestamp": 1674164540,
+    "invoice_expiry_seconds": 604800,
+    "invoice_minimum_final_cltv_delta": 18,
+    "invoice_observed_at": 1674164600,
     "funding_transaction": "02000000010000000000000000000000000000000000000000000000000000000000000000ffffffff00ffffffff01a0860100000000002251202b57d284ad0470478797b9646c8cfef0a517c55830ba25a7345d1e8de51f5bcb00000000",
     "funding_output_index": 0,
     "funding_amount": "100000",
@@ -45,14 +49,41 @@
     {"name": "swp-v1-chain-regtest-cooperative", "swap_type": "chain", "terminal": "completed"},
     {"name": "swp-v1-chain-regtest-dual-refund", "swap_type": "chain", "terminal": "refunded"}
   ],
+  "flow_topologies": [
+    {
+      "name": "swp-v1-client-submarine-topology",
+      "swap_type": "submarine",
+      "requester_funding": {"role": "chain_fund", "leg_id": "source", "action": "broadcast_bitcoin"},
+      "requester_exits": [{"leg_id": "source", "path": "refund", "condition": "cltv"}]
+    },
+    {
+      "name": "swp-v1-client-reverse-topology",
+      "swap_type": "reverse",
+      "requester_funding": {"role": "invoice_pay", "leg_id": "lightning", "action": "pay_lightning_invoice"},
+      "requester_exits": [{"leg_id": "destination", "path": "claim", "condition": "hashlock"}]
+    },
+    {
+      "name": "swp-v1-client-chain-topology",
+      "swap_type": "chain",
+      "requester_funding": {"role": "chain_fund", "leg_id": "source", "action": "broadcast_bitcoin"},
+      "requester_exits": [
+        {"leg_id": "source", "path": "refund", "condition": "csv"},
+        {"leg_id": "destination", "path": "claim", "condition": "hashlock"}
+      ]
+    }
+  ],
   "verify_before_fund": [
     {"name": "swp-v1-client-verification-passed", "result": "funding_authorized"},
+    {"name": "swp-v1-client-prebroadcast-bitcoin-authorized", "result": "broadcast_bitcoin"},
+    {"name": "swp-v1-client-reverse-invoice-payment-authorized", "result": "pay_lightning_invoice"},
     {"name": "swp-v1-negative-contract-one-signer", "error": "swp_contract_missing"},
     {"name": "swp-v1-negative-contract-digest-fork", "error": "swp_contract_digest_mismatch"},
     {"name": "swp-v1-negative-contract-order-mismatch", "error": "swp_contract_terms_mismatch"},
     {"name": "swp-v1-negative-payment-hash", "error": "swp_payment_hash_mismatch"},
     {"name": "swp-v1-negative-invoice-network", "error": "swp_invoice_invalid"},
     {"name": "swp-v1-negative-invoice-amountless", "error": "swp_invoice_invalid"},
+    {"name": "swp-v1-negative-invoice-expired", "error": "swp_invoice_invalid"},
+    {"name": "swp-v1-negative-invoice-final-cltv", "error": "swp_invoice_invalid"},
     {"name": "swp-v1-negative-taproot-tree", "error": "swp_script_commitment_mismatch"},
     {"name": "swp-v1-negative-funding-amount", "error": "swp_terms_mismatch"},
     {"name": "swp-v1-negative-timeout-ladder", "error": "swp_timeout_ladder_unsafe"},
@@ -60,7 +91,9 @@
     {"name": "swp-v1-negative-insufficient-confirmations", "error": "swp_confirmation_insufficient"},
     {"name": "swp-v1-negative-missing-exit-package", "error": "swp_exit_package_missing"},
     {"name": "swp-v1-recovery-unusable-exit-package", "error": "swp_exit_package_unusable"},
-    {"name": "swp-v1-negative-restore-does-not-trust-authorized-bit", "error": "swp_funding_not_authorized"}
+    {"name": "swp-v1-negative-restore-does-not-trust-authorized-bit", "error": "swp_funding_not_authorized"},
+    {"name": "swp-v1-negative-quote-expired", "error": "swp_quote_expired"},
+    {"name": "swp-v1-negative-order-selection", "error": "swp_order_selection_invalid"}
   ],
   "sequencing": [
     {"name": "swp-v1-status-contiguous", "result": "advanced"},
@@ -74,7 +107,13 @@
     {"name": "swp-v1-client-wallet-sign-callback", "result": "signed_transaction_validated"},
     {"name": "swp-v1-client-wallet-sign-mutation", "error": "swp_external_signature_mismatch"},
     {"name": "swp-v1-replay-effect-after-crash", "result": "prior_result"},
-    {"name": "swp-v1-conflict-effect-binding", "error": "swp_external_effect_conflict"}
+    {"name": "swp-v1-conflict-effect-binding", "error": "swp_external_effect_conflict"},
+    {"name": "swp-v1-client-claim-hashlock-satisfied", "result": "signed_transaction_validated"},
+    {"name": "swp-v1-client-claim-hashlock-mismatch", "error": "swp_external_signature_invalid"},
+    {"name": "swp-v1-client-refund-cltv-satisfied", "result": "signed_transaction_validated"},
+    {"name": "swp-v1-client-refund-cltv-premature", "error": "swp_exit_package_unusable"},
+    {"name": "swp-v1-client-refund-csv-satisfied", "result": "signed_transaction_validated"},
+    {"name": "swp-v1-client-refund-csv-premature", "error": "swp_exit_package_unusable"}
   ],
   "recovery": [
     {"name": "swp-v1-client-crash-restore-revalidates", "result": "verification_required"},
@@ -82,7 +121,10 @@
     {"name": "swp-v1-doomsday-reverse-coordinator-gone", "action": "direct_complete_or_refund"},
     {"name": "swp-v1-doomsday-chain-counterparty-gone", "action": "ordered_unilateral_exits"},
     {"name": "swp-v1-doomsday-keyless-esplora-broadcast", "result": "public_post_request"},
-    {"name": "swp-v1-recovery-missing-signed-record", "error": "swp_unresolved_loss"}
+    {"name": "swp-v1-recovery-missing-signed-record", "error": "swp_unresolved_loss"},
+    {"name": "swp-v1-chain-recovery-claim-destination-first", "action": "claim_destination"},
+    {"name": "swp-v1-chain-recovery-wait-destination-refund", "action": "wait_destination_refund"},
+    {"name": "swp-v1-chain-recovery-source-refund-after-destination", "action": "refund_source"}
   ],
   "custody_tripwires": [
     {"member": "seed", "error": "swp_secret_material_forbidden"},
