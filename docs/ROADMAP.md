@@ -213,13 +213,13 @@ noncustodial handler role (routing, reservation accounting, timers) lands
 after the base. NIP-90 job kinds are frozen per
 `nips/openagents/NIP90-MIGRATION.md` — no new NIP-90 semantics land here.
 
-- [ ] Adoption decision recorded in `docs/protocol/source-lanes.md`: lane
+- [x] Adoption decision recorded in `docs/protocol/source-lanes.md`: lane
       `openagents`, identifier NIP-MKT, kinds `39600-39609`, with
       `39610-39699` reserved and unallocated
-- [ ] Repeat the registry-of-kinds and three-lane collision review of
+- [x] Repeat the registry-of-kinds and three-lane collision review of
       `39600-39699` at the pinned manifest commits (the spec requires the
       re-check before implementation)
-- [ ] Domain: public head validation — Provider Profile `39600`, Offering
+- [x] Domain: public head validation — Provider Profile `39600`, Offering
       `39601`, Profile Descriptor `39602` (required tags, status enums,
       16 KiB content bound) and Public Market Receipt `39603` (unique `d`,
       required `profile`/`outcome`/`x`/`role` tags, 4 KiB bound)

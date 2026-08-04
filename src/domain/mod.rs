@@ -12,6 +12,7 @@ mod event;
 mod expanded;
 mod filter;
 mod hex;
+mod mkt;
 mod openagents;
 mod replacement;
 mod timestamp;
@@ -38,6 +39,10 @@ pub use expanded::{
     parse_http_authorization_hash,
 };
 pub use filter::{Filter, matches_any, search_terms};
+pub use mkt::{
+    MKT_OFFERING_KIND, MKT_PROFILE_DESCRIPTOR_KIND, MKT_PROVIDER_PROFILE_KIND,
+    MKT_PUBLIC_RECEIPT_KIND, validate_mkt_public_event,
+};
 pub use openagents::{
     NostrAddress, OPENAGENTS_ORGANIZATION_KIND, OPENAGENTS_PROJECT_KIND,
     OPENAGENTS_PROJECT_STATUS_KIND, OPENAGENTS_PROJECT_UPDATE_KIND, OpenAgentsOrganization,

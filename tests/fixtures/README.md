@@ -39,6 +39,12 @@ names the NIP that owns the behavior.
   `d3bb7c51219e2473965ff6f576c1492b2aa99d31`. It pins the four Phase 0
   project-read kinds, invalid-tag boundaries, and the browser-neutral client
   EOSE/reconnect/fail-closed contract.
+- `nipmkt/public-heads.json` was written for Immortal from the pinned
+  OpenAgents NIP-MKT text at upstream commit
+  `b839dd43bad7915a35639b562d4d7ebf7d51c3f6`. It pins the relay-observable
+  required tags, identifier and enum boundaries, and content limits for the
+  four public discovery kinds without treating relay acceptance as proof of
+  provider capacity or settlement.
 - `nipae/`, `nipap/`, `niper/`, `nipmp/`, `nippl/`, `nipia/`, `nipdv/`,
   `nipwp/`, `nipcw/`, `niprs/`, and `nipgs/` each contain a committed server
   contract derived from the corresponding pinned Block text. They cover

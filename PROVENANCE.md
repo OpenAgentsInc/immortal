@@ -28,6 +28,26 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-04 — Codex 5.6 Sol, M10 NIP-MKT public discovery / issue #3
+
+- Began from `ad223aa` in the isolated worktree
+  `/Users/christopherdavid/work/immortal-codex-mkt` and repeated the required
+  `39600-39699` collision review against all three revisions in
+  `nips/manifest.json` plus `nostr-protocol/registry-of-kinds` commit
+  `2483e752146d171524dcb10dffd06de2aa271bf3`. No collision was present;
+  official kind `39701` remains outside the reservation.
+- Implemented strict public-admission validation for Provider Profile
+  `39600`, Offering `39601`, Market Profile Descriptor `39602`, and Public
+  Market Receipt `39603`, preserving ordinary NIP-01 addressable replacement
+  for all four kinds. The validators enforce required tag cardinality and
+  shape, identifiers and profile versions, enumerations, signer-bound provider
+  addresses, descriptor digests and retrieval URLs, and the specified content
+  byte limits.
+- Added the attributed `nipmkt/public-heads.json` corpus and focused fixture
+  tests for every required field, malformed tag, enumeration, digest, URL,
+  identifier, bound, and addressable-classification case. NIP-MKT remains
+  absent from NIP-11 until the M10 closing conformance gate in issue #7.
+
 ### 2026-08-04 — Codex 5.6 Sol (Extra High), Operation Diamond Hands Phase 0 / issue #1
 
 - Began from the then-current `origin/main` commit `5dfe786` in the isolated

@@ -29,6 +29,7 @@ use crate::domain::{
     Event, EventClass, Filter, GroupAction, GroupMetadata, IDENTITY_ARCHIVE_LIST_KIND,
     IDENTITY_ARCHIVED_KIND, IDENTITY_UNARCHIVED_KIND, IdentityArchiveRequest, RelaySigner,
     ReplacementDecision, Tag, compare_replacement_order, search_terms, validate_block_ingest,
+    validate_mkt_public_event,
 };
 
 pub use error::StoreError;
@@ -362,6 +363,7 @@ impl Store {
             event.validate_structure()?;
             event.validate_crypto()?;
             validate_block_ingest(event, now).map_err(crate::domain::DomainError::InvalidEvent)?;
+            validate_mkt_public_event(event).map_err(crate::domain::DomainError::InvalidEvent)?;
         } else {
             // Compatibility imports retain the exact signed preimage, but do
             // not retroactively impose server-side extensions adopted after

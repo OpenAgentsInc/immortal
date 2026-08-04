@@ -67,3 +67,21 @@ are implemented in any lane; existing NIP-90 material is read-compatibility
 only. The remaining `openagents` specifications stay implementation targets
 under the full-lane directive and enter the runtime through their own
 sequenced packets, each with the same fixture and conformance gate.
+
+### M10 collision re-review
+
+Before implementing the public discovery heads, the complete
+`39600-39699` range was reviewed again against each exact source commit in
+`nips/manifest.json` and the upstream registry-of-kinds:
+
+| Source | Reviewed revision | Result |
+| --- | --- | --- |
+| Official NIPs | `c53877571f96eb423661fc23c620d629d37b8f19` | No assignment in `39600-39699`; pinned NIP-B0 assigns `39701`. |
+| Block NIPs | `feccf4eabc23fdba94ce3537a194357ed17b197c` | No assignment in `39600-39699`. |
+| OpenAgents NIPs | `b839dd43bad7915a35639b562d4d7ebf7d51c3f6` | Only NIP-MKT claims the range: `39600-39609` for the base and `39610-39699` reserved and unallocated. |
+| [`nostr-protocol/registry-of-kinds`](https://github.com/nostr-protocol/registry-of-kinds) `schema.yaml` | `2483e752146d171524dcb10dffd06de2aa271bf3` | No entry in `39600-39699`; the nearest higher entry is `39701`. |
+
+The review found no collision. Immortal therefore admits NIP-MKT public kinds
+`39600-39603` under their pinned domain rules. It does not allocate any kind
+in `39610-39699`. The registry result is a review input, not a new pinned
+source lane; future profile allocations still require a fresh review.
