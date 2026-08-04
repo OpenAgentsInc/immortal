@@ -153,7 +153,7 @@ M6 reaches the NIP-29 item; does not wait for M7 or M8.
       membership rules onto the M2 policy pipeline
 - [ ] Shadow mode guide: run Immortal read-only beside the existing
       relay, replay traffic, diff responses
-- [ ] Cutover and rollback runbook addition in `docs/deployment/`:
+- [x] Cutover and rollback runbook addition in `docs/deployment/`:
       hostname switch, import, verify, roll back
 
 ## Standing rules

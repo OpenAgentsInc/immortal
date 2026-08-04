@@ -552,6 +552,53 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   serving them. The disposable-Postgres fixture now proves a valid legacy
   group event is retained, an expired event is terminally skipped, and neither
   weakens subsequent ordinary admission.
+- Pushed the final compatibility implementation as `9103bca`. Its exact tree
+  passed locked all-target tests, warnings-denied Clippy, formatting and diff
+  checks, plus the disposable-Postgres store, two-process fail-closed, and load
+  gates. The local production candidate measured 5,062.1 committed events/sec
+  median, 0.34 ms connect p99, and 2.49 ms REQ-to-EOSE p99. Google Cloud Build
+  `ccef31d9-389d-4028-baf8-8cded0d506c0` manually produced immutable image
+  digest `sha256:74c80c053d10ed644c3fd8aa3fa9e4011df06d2af72b787f7c5986102c5bbc42`;
+  no GitHub workflow or GitHub-billed automation ran.
+- Zero-traffic revision `openagents-nostr-relay-00016-fib` completed the final
+  compatibility pass with 950 rows scanned, 860 stored, 90 terminally expired,
+  and zero rejected. Its health endpoint, NIP-11 identity, `nak` client parse,
+  broad and per-kind history checks, private-kind access rules, and signed
+  publish/read all passed. Event
+  `9dd818b30ef4746df84e7f48d9161904f16d6e0d05f9c95729a8ea7dbf27c685`
+  was accepted and read back on the canary while remaining absent from the old
+  relay. The OpenAgents 30-second remote load proof passed with 996/996
+  publishes and 694/694 subscriptions: 33.1 and 23.0 operations/sec, 86.9/165.9
+  ms publish median/p99, 67.0/138.1 ms subscribe median/p99, and zero errors.
+- Final revision `openagents-nostr-relay-00017-nij` restored the normal
+  two-second startup probe on the same image and configuration. It reported an
+  empty import sweep (`scanned=0`, `rejected=0`), listened in about two seconds,
+  and received 100% of service traffic at approximately 2026-08-04 02:50 UTC.
+  The existing `relay.openagents.com` Cloud Run domain mapping, certificate,
+  and `relay CNAME ghs.googlehosted.com` record stayed Ready and were not
+  changed. The previous nostr-effect revision
+  `openagents-nostr-relay-00011-57g` remains deployed and Ready as the recorded
+  immediate rollback target; rollback may require replaying post-cutover
+  Immortal-only events as the runbook states. Temporary canary tags were
+  cleared after verification so their revision-level minimums cannot keep
+  extra paid instances warm; both revisions remain retained.
+- Canonical production verification passed `/health`, NIP-11 with Immortal's
+  software URL and preserved relay pubkey, WebSocket COUNT, NIP-42
+  pre-authentication, and a fresh signed publish/read. The post-cutover event is
+  `6da2b4313e15feeb75882515c0caff2761f39b3ade7f9653139809da533c301a`.
+  A second 30-second OpenAgents load proof through
+  `wss://relay.openagents.com` passed with 969/969 publishes and 677/677
+  subscriptions: 32.2 and 22.5 operations/sec, 88.3/236.7 ms publish
+  median/p99, 66.2/222.0 ms subscribe median/p99, and zero errors. No error log
+  entry was present for the final revision during deployment or either proof.
+- Database reconciliation after more than two tail intervals found 6,882
+  nostr-effect source rows and exactly 6,882 import-ledger rows: 6,792 stored,
+  90 expired, zero rejected, and zero unresolved. Immortal held 8,761 rows
+  after preserved history, live traffic, and acceptance/load events. The 919
+  source rows beyond the initial 5,963-row drain were admitted by bounded tail
+  sweeps while nostr-effect was still serving. The pre-cutover backup operation
+  `49b5afb5-6dae-47d4-a273-d73200000032` remains `DONE`; automated backups and
+  seven-day point-in-time recovery were also confirmed enabled.
 
 ## Rules
 

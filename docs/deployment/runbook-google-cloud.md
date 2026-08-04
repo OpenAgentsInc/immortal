@@ -252,10 +252,24 @@ structured `nostr-effect import sweep` log is a cutover blocker.
    IMMORTAL_TRUST_PROXY=true
    ```
 
-3. Test the tag URL: `/health`, NIP-11, WebSocket upgrade, authenticated
+   Inspect how the old process assembled its Postgres connection before
+   reusing its environment. An authority-less Node URL such as
+   `postgresql:///database` is not a valid `tokio-postgres` URL even when the
+   old process combined it with separate `PGHOST` and `PGUSER` variables. In
+   that case, keep the password in Secret Manager and give Immortal the native
+   values directly: `PGHOST=/cloudsql/<CONNECTION_NAME>`, `PGUSER=<ROLE>`,
+   `PGDATABASE=<DATABASE>`, and `PGPASSWORD` from the existing secret. Do not
+   read or rewrite the secret just to manufacture a new URL.
+
+3. Test the tag URL: `/health`, NIP-11, WebSocket upgrade, signed public
    publish/read, broad historical COUNT, and the remote load gate. Confirm the
    startup import reached an empty sweep with zero rejected events. `expired`
-   is an expected terminal count, not a rejection.
+   is an expected terminal count, not a rejection. A normal NIP-42 client signs
+   the tag hostname into its authentication event, while this deployment must
+   validate the canonical `IMMORTAL_RELAY_URL`; therefore run the ordinary
+   NIP-42 client proof after the canonical hostname is promoted. Do not change
+   the relay identity just to make pre-authentication against a temporary tag
+   URL pass.
 4. Route 100% to the Immortal revision in one traffic update. Do not edit DNS.
    Wait at least two import-sweep intervals, then compare the legacy source
    count, import-ledger count, and rejection count. Verify the custom hostname
