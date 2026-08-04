@@ -7,10 +7,9 @@ so that becoming a network participant means *run this binary and it
 works*, not *integrate this library*. Every new product is built under
 the same just-the-basics Rust principles as the relay.
 
-This document analyzes what that means, what must change, and in what
-order. The rule and layout changes proposed here land with the
-implementation packets that need them, not before; until a packet lands,
-the current `AGENTS.md` text remains binding as written.
+This document analyzes what that means, what changes, and in what order.
+The workspace and successor rules landed in the first migration packet;
+later product behavior still lands only with its implementation packet.
 
 ## 1. Why the expansion is necessary
 
@@ -55,8 +54,8 @@ own conformance corpus, shared audited primitives.
 
 ## 3. The principles, restated per product
 
-The relay's rules generalize. Proposed successor text for each rule,
-to be applied to `AGENTS.md` in the first migration packet:
+The relay's rules generalize. `AGENTS.md` applies these principles to each
+workspace product:
 
 1. **One binary and one Postgres database per product.** No product
    adds a broker, cache, sync engine, or second database. The provider
@@ -75,7 +74,7 @@ to be applied to `AGENTS.md` in the first migration packet:
    practice by #10: the Nostr primitives rule now also covers Bitcoin
    and Lightning primitives (tagged hashes, taproot key/tree logic,
    script and control-block verification, bolt11 parsing live in
-   `src/mkt_swp_verify.rs` today). The provider adds the authoring
+   `crates/immortal-core/src/mkt_swp_verify.rs`). The provider adds the authoring
    side — transaction construction, sighash, schnorr signing, PSBT-free
    in-repo serialization — fixture-tested against upstream BIP-341/342
    and bolt11 vectors. No `rust-bitcoin`, no third-party Nostr crate.
@@ -159,11 +158,10 @@ refused by a named decision above, not by omission.
 
 ## 5. Repository mechanics: workspace, not feature flags
 
-The current single crate with feature gates cannot express the custody
-boundary: a `server`-featured build links relay, coordination, client,
-and (eventually) wallet code into one dependency tree, and "the relay
-contains no spend code" becomes a code-review claim instead of a build
-fact. A Cargo workspace makes it structural:
+The former single crate with feature gates could not express the custody
+boundary: a `server`-featured build linked relay, coordination, and client
+code into one dependency tree, so "the relay contains no spend code" was a
+code-review claim. The Cargo workspace makes it structural:
 
 ```
 Cargo.toml                 workspace root (virtual manifest)
@@ -188,10 +186,12 @@ Invariants of the conversion:
   gating) so the openagents contract/SDK lane (M11) is unaffected.
 - Each crate carries its own allowlist header; the workspace
   `Cargo.toml` uses `workspace.dependencies` so versions pin once.
-- The provider gets its own `immortal-provider contract` export so the
-  conformance-and-SDK pattern (M11) applies to it from day one.
-- Fixture corpora split per crate; the relay's existing corpus moves
-  untouched.
+- The provider gets its own `immortal-provider contract` export with the
+  first runnable provider-rails packet, so the conformance-and-SDK pattern
+  (M11) applies before funded deployment.
+- Test ownership splits by crate. The canonical fixture corpus remains at
+  the byte-identical root `tests/fixtures/` paths used by the exported
+  manifest.
 
 ## 6. What the provider daemon must contain (v1 scope)
 
@@ -240,7 +240,7 @@ reservation ledger (operator policy, not daemon authority).
 | Surface | Change |
 | --- | --- |
 | `AGENTS.md` | Rewrite rules per §3 (per-product phrasing, per-crate allowlists, custody-boundary rule). Lands with the workspace conversion packet |
-| `Cargo.toml` / `src/` | Workspace conversion per §5; code moves, no behavior change; full conformance rerun proves it |
+| `Cargo.toml` / `crates/` | Workspace conversion per §5; code moves, no behavior change; full conformance rerun proves it |
 | `README.md` | Repo identity: hardened infrastructure for the open swap network; one section per product with its one-line "run it" promise |
 | `docs/ROADMAP.md` | A provider-runtime subledger *inside M12* (M13 is already the market-extension ledger): #24 workspace conversion, #25 provider rails, plus the #14/#15/#18/#19 re-scopes below |
 | Issue #14 | Superseded in one respect: the funded daemon now lives *in this repo* as `immortal-provider`. The library/daemon split survives as crate-internal structure; the no-spend actor becomes `--no-spend` mode |

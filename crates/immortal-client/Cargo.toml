@@ -1,0 +1,24 @@
+[package]
+name = "immortal-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Transport-neutral and browser-safe Immortal client engines"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["mkt-swp-verify"]
+mkt-swp-verify = ["immortal-core/mkt-swp-verify"]
+mkt-swp-fixture-probe = ["mkt-swp-verify"]
+
+# Owner-approved allowlist: secp256k1, sha2, serde, serde_json.
+[dependencies]
+immortal-core.workspace = true
+secp256k1.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

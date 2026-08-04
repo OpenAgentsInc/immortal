@@ -22,7 +22,7 @@ in place.
 - [x] First inspiration review (nostr-rs-relay)
 - [x] Deployment docs (`docs/deployment/`)
 
-## M1 — Domain (`src/domain/`) (done)
+## M1 — Domain (`crates/immortal-core/src/domain/`) (done)
 
 The NIP-01 primitives, written from `nips/official/01.md`, with fixtures.
 
@@ -39,7 +39,7 @@ The NIP-01 primitives, written from `nips/official/01.md`, with fixtures.
       nostr-rs-relay tests (MIT, attributed), replacement and deletion
       races
 
-## M2 — Store (`src/store/`) (done)
+## M2 — Store (`crates/immortal-relay/src/store/`) (done)
 
 Postgres owns everything. One admission transaction.
 
@@ -55,7 +55,7 @@ Postgres owns everything. One admission transaction.
       timestamp bounds — all configurable
 - [x] Prepared statements only; least-privilege role documented
 
-## M3 — Gateway (`src/gateway/`) (done)
+## M3 — Gateway (`crates/immortal-relay/src/gateway/`) (done)
 
 The WebSocket protocol server.
 
@@ -360,12 +360,14 @@ path; #16/#17 are the tbDEX lane and can run beside it; #18 then #19
 close the program. Profiles and rails beyond the Boltz-class replacement
 are the M13 ledger below.
 
-Current M12 status: #9, #10, upstream #9311, #11, #12, #13, #16, and #17 are
-complete. The pinned relay exposes the MKT-SWP and MKT-PFI v1 observable
-contracts, verification primitives, transport-neutral SWP client, and the
-off-by-default exact-conformance coordination handler without claiming PFI
-external authority or an executable profile. Provider packets follow the
-dependency table above and the subledger below.
+Current M12 status: #9, #10, upstream #9311, #11, #12, #13, #16, #17, and
+the #24 workspace conversion are complete. The pinned relay exposes the
+MKT-SWP and MKT-PFI v1 observable contracts and the off-by-default
+exact-conformance coordination handler without claiming PFI external
+authority or an executable profile. Verification primitives and the
+transport-neutral SWP client now live in their own wasm-safe workspace
+crates. Provider packets follow the dependency table above and the subledger
+below.
 
 ### M12 provider-runtime subledger (2026-08-04)
 

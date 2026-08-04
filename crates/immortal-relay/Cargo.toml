@@ -1,0 +1,28 @@
+[package]
+name = "immortal-relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A hardened Nostr relay. One binary, one Postgres. Nothing else."
+
+[lib]
+name = "immortal"
+path = "src/lib.rs"
+
+[[bin]]
+name = "immortal"
+path = "src/main.rs"
+
+# Owner-approved allowlist: tokio, tokio-tungstenite, tokio-postgres,
+# secp256k1, sha2, serde, serde_json.
+[dependencies]
+immortal-core = { workspace = true, features = ["mkt-swp-verify", "server"] }
+secp256k1.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-postgres.workspace = true
+tokio-tungstenite.workspace = true

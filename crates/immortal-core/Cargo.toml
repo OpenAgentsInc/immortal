@@ -1,0 +1,23 @@
+[package]
+name = "immortal-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure protocol and verification primitives for Immortal products"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["mkt-swp-verify"]
+mkt-swp-verify = []
+server = []
+
+# Owner-approved allowlist: secp256k1, sha2, serde, serde_json.
+[dependencies]
+secp256k1.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

@@ -318,9 +318,35 @@ dependencies = [
 ]
 
 [[package]]
-name = "immortal"
+name = "immortal-client"
 version = "0.0.1"
 dependencies = [
+ "immortal-core",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "immortal-core"
+version = "0.0.1"
+dependencies = [
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "immortal-provider"
+version = "0.0.1"
+
+[[package]]
+name = "immortal-relay"
+version = "0.0.1"
+dependencies = [
+ "immortal-core",
  "secp256k1",
  "serde",
  "serde_json",

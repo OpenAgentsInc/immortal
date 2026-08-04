@@ -37,25 +37,25 @@ database_user="$(id -un)"
 createdb -h "${socket_dir}" -U "${database_user}" immortal_test
 IMMORTAL_TEST_DATABASE_URL="host=${socket_dir} user=${database_user} dbname=immortal_test" \
   IMMORTAL_TEST_ALLOW_DESTRUCTIVE=1 \
-  cargo test --locked --test store_postgres -- --nocapture
+  cargo test --locked -p immortal-relay --test store_postgres -- --nocapture
 
 createdb -h "${socket_dir}" -U "${database_user}" immortal_gateway_test
 IMMORTAL_TEST_DATABASE_URL="host=${socket_dir} user=${database_user} dbname=immortal_gateway_test" \
   IMMORTAL_TEST_ALLOW_DESTRUCTIVE=1 \
-  cargo test --locked --test gateway_postgres -- --nocapture
+  cargo test --locked -p immortal-relay --test gateway_postgres -- --nocapture
 
 createdb -h "${socket_dir}" -U "${database_user}" immortal_conformance_test
 IMMORTAL_TEST_DATABASE_URL="host=${socket_dir} user=${database_user} dbname=immortal_conformance_test" \
   IMMORTAL_TEST_ALLOW_DESTRUCTIVE=1 \
-  cargo test --locked --test multiprocess_postgres -- --nocapture
+  cargo test --locked -p immortal-relay --test multiprocess_postgres -- --nocapture
 
 createdb -h "${socket_dir}" -U "${database_user}" immortal_load_test
 IMMORTAL_TEST_DATABASE_URL="host=${socket_dir} user=${database_user} dbname=immortal_load_test" \
   IMMORTAL_TEST_ALLOW_DESTRUCTIVE=1 \
-  cargo test --locked --release --test load_postgres -- --ignored --nocapture
+  cargo test --locked --release -p immortal-relay --test load_postgres -- --ignored --nocapture
 
 createdb -h "${socket_dir}" -U "${database_user}" immortal_deploy_test
-cargo build --locked
+cargo build --locked -p immortal-relay --bin immortal
 relay_log="${cluster_dir}/relay.log"
 DATABASE_URL="host=${socket_dir} user=${database_user} dbname=immortal_deploy_test" \
   IMMORTAL_PORT=0 \

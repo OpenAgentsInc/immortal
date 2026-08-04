@@ -86,7 +86,7 @@ else
   fi
 fi
 
-cargo build --locked
+cargo build --locked -p immortal-relay --bin immortal
 echo "dev-relay: relay ${relay_url} (Ctrl-C removes disposable state)"
 echo "dev-relay: curl -fsS http://127.0.0.1:${relay_port}/health"
 echo "dev-relay: curl -fsS -H 'Accept: application/nostr+json' http://127.0.0.1:${relay_port}/"

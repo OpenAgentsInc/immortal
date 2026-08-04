@@ -7,10 +7,10 @@ RUN apt-get update \
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY migrations ./migrations
+COPY crates ./crates
 COPY nips ./nips
-COPY tests/fixtures ./tests/fixtures
-COPY src ./src
-RUN cargo build --locked --release \
+COPY tests ./tests
+RUN cargo build --locked --release -p immortal-relay --bin immortal \
     && strip target/release/immortal
 
 FROM debian:13-slim

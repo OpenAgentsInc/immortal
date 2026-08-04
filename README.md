@@ -29,6 +29,13 @@ The products:
 - **The client engine** (library): the verify-before-fund swap engine
   wallets embed, and the source of the generated TypeScript SDK.
 
+The virtual Cargo workspace makes those roles explicit:
+`crates/immortal-core` owns shared pure primitives,
+`crates/immortal-client` owns wallet-embedded client engines,
+`crates/immortal-relay` builds the existing `immortal` binary, and
+`crates/immortal-provider` is the provider-daemon shell filled by the
+provider runtime packets.
+
 The expansion from single relay to this monorepo is a recorded owner
 decision with a full migration analysis: see
 [`docs/MONOREPO.md`](docs/MONOREPO.md). The role-by-role infrastructure
@@ -83,10 +90,9 @@ TLS is the job of the reverse proxy (nginx or Caddy).
    pubkey. Fail closed.
 3. **Simple.** One binary per product, each with its own owner-approved
    dependency allowlist (seven direct dependencies for the relay; see
-   `AGENTS.md`). Today this is one crate whose non-`server` feature
-   build exposes the transport-neutral client library; the planned
-   workspace split (`docs/MONOREPO.md`, issue #24) makes the custody
-   boundary between relay and provider a build fact.
+   `AGENTS.md`). The workspace split (`docs/MONOREPO.md`, issue #24)
+   makes the custody boundary between relay and provider a build fact;
+   the transport-neutral client and core remain separate wasm-safe crates.
 4. **Easy to deploy.** A new Debian server, Postgres from the package
    manager, and this binary make a relay in minutes.
 5. **Locally proved.** Conformance and deployment acceptance run manually;

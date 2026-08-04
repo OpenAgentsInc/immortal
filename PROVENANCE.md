@@ -956,6 +956,25 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 - Documented the OpenAgents TypeScript SDK/web and Omega Rust consumers while
   preserving their transport and relay-enforcement boundaries.
 
+### 2026-08-04 — Codex 5.6 Sol, workspace custody-boundary conversion
+
+- Converted the single package into a virtual Cargo workspace with separate
+  `immortal-core`, `immortal-client`, `immortal-relay`, and
+  `immortal-provider` shell crates. The relay package still builds the
+  `immortal` library and binary names and retains its CLI, configuration,
+  migrations, NIP-11 behavior, and deployment target paths.
+- Moved pure domain, NIP-44, market wrapping, and MKT-SWP verification into
+  the wasm-safe core; moved the project reader, swap engine, and tbDEX audit
+  into the wasm-safe client; and kept gateway, store, coordination, and
+  contract export in the relay. The relay dependency tree has no client or
+  provider edge.
+- Kept the canonical root fixture corpus and both tracked contract artifacts
+  byte-identical, rewrote local gates and deployment build contexts for the
+  workspace, and generalized the agent rules to per-product allowlists and a
+  structural custody boundary. This packet adds no protocol behavior,
+  dependency version, service, database, secret, advertisement, or GitHub
+  automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

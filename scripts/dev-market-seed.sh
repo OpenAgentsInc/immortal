@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if ! test -x target/debug/immortal; then
-  cargo build --locked
+  cargo build --locked -p immortal-relay --bin immortal
 fi
 
 IMMORTAL_DEV_RELAY_URL="${IMMORTAL_DEV_RELAY_URL:-ws://127.0.0.1:18080}" \

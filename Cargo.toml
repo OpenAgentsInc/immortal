@@ -1,33 +1,29 @@
-[package]
-name = "immortal"
+[workspace]
+members = [
+    "crates/immortal-core",
+    "crates/immortal-client",
+    "crates/immortal-relay",
+    "crates/immortal-provider",
+]
+default-members = ["crates/immortal-relay"]
+resolver = "2"
+
+[workspace.package]
 version = "0.0.1"
 edition = "2024"
 rust-version = "1.85"
 license = "CC0-1.0"
-description = "A hardened Nostr relay. One Rust binary, one Postgres. Nothing else."
 repository = "https://github.com/OpenAgentsInc/immortal"
 
-[[bin]]
-name = "immortal"
-path = "src/main.rs"
-required-features = ["server"]
-
-[features]
-default = ["server"]
-server = ["dep:tokio", "dep:tokio-postgres", "dep:tokio-tungstenite", "mkt-swp-verify"]
-mkt-swp-verify = []
-mkt-swp-fixture-probe = ["mkt-swp-verify"]
-
-# Dependency policy: additions require owner sign-off recorded in AGENTS.md.
-# Allowlist: tokio, tokio-tungstenite, tokio-postgres, secp256k1, sha2,
-# serde, serde_json. Dependencies land with the packet that uses them.
-[dependencies]
+# Dependency versions are pinned once for the per-crate owner-approved allowlists.
+[workspace.dependencies]
 secp256k1 = { version = "0.31.1", features = ["recovery"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
+tokio = { version = "1.53.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-postgres = "0.7.18"
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1.53.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"], optional = true }
-tokio-postgres = { version = "0.7.18", optional = true }
-tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"], optional = true }
+immortal-core = { path = "crates/immortal-core", default-features = false }
+immortal-client = { path = "crates/immortal-client" }

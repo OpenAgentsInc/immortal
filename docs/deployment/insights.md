@@ -305,7 +305,7 @@ has a relay-shaped twin.
   proxy speaks `wss://`; the binary listens on a private address. Plain
   `ws://` is exposed only on localhost for debugging.
 - Typed parsing at the boundary: incoming frames parse through
-  `serde_json` into strict domain types in `src/domain/` (owned Nostr
+  `serde_json` into strict domain types in `crates/immortal-core/src/domain/` (owned Nostr
   primitives, AGENTS.md rule 3) before any logic runs. Unknown or oversized
   input is rejected early — the ch. 6 insight applied to the relay's only
   untrusted input.

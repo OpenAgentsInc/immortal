@@ -14,7 +14,7 @@ temporary=$(mktemp -d "${TMPDIR:-/tmp}/immortal-contract.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 
 cd "$root"
-cargo build --locked --bin immortal >/dev/null
+cargo build --locked -p immortal-relay --bin immortal >/dev/null
 
 write_manifest() {
     destination=$1

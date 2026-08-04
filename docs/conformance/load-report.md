@@ -2,7 +2,7 @@
 
 This report publishes the first reproducible Immortal load baseline. It is a
 local single-box measurement, not a capacity promise. The committed harness
-is `tests/load_postgres.rs`; `scripts/test-postgres.sh` creates its fresh
+is `crates/immortal-relay/tests/load_postgres.rs`; `scripts/test-postgres.sh` creates its fresh
 database and runs it in Cargo's optimized release profile.
 
 ## Result — 2026-08-03

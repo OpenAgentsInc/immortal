@@ -1,0 +1,15 @@
+[package]
+name = "immortal-provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Provider daemon shell for the Immortal swap network"
+
+[lib]
+path = "src/provider.rs"
+
+# Owner-approved allowlist: tokio, tokio-tungstenite, tokio-postgres,
+# secp256k1, sha2, serde, serde_json. This shell uses none yet.
+[dependencies]

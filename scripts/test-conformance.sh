@@ -5,19 +5,19 @@ set -eu
 cd "$(dirname "$0")/.."
 
 cargo fmt --all -- --check
-cargo check --locked --all-targets
-cargo test --locked --test mkt_fixtures
-cargo test --locked --test mkt_immutability_model
-cargo test --locked --test mkt_common_fixtures
-cargo test --locked --test mkt_closing_fixtures
-cargo test --locked --test mkt_swp_profile
-cargo test --locked --test mkt_pfi_profile
-cargo test --locked --test tbdex_legacy_fixtures
+cargo check --locked --workspace --all-targets
+cargo test --locked -p immortal-core --test mkt_fixtures
+cargo test --locked -p immortal-core --test mkt_immutability_model
+cargo test --locked -p immortal-core --test mkt_common_fixtures
+cargo test --locked -p immortal-core --test mkt_closing_fixtures
+cargo test --locked -p immortal-core --test mkt_swp_profile
+cargo test --locked -p immortal-core --test mkt_pfi_profile
+cargo test --locked -p immortal-client --test tbdex_legacy_fixtures
 ./scripts/test-swp-verification.sh
-cargo test --locked --test mkt_swp_coordination
-cargo test --locked --all-targets
-cargo clippy --locked --all-targets --features mkt-swp-verify -- -D warnings
-RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps --features mkt-swp-verify
+cargo test --locked -p immortal-relay --test mkt_swp_coordination
+cargo test --locked --workspace --all-targets
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps --all-features
 
 sh -n deploy/backup/immortal-backup
 sh -n scripts/test-debian.sh

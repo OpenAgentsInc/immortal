@@ -32,7 +32,7 @@ runuser -u postgres -- psql --set=ON_ERROR_STOP=1 --command \
     "CREATE ROLE immortal LOGIN PASSWORD 'immortal_acceptance_only';"
 runuser -u postgres -- createdb --owner=immortal immortal
 
-cargo build --locked --release
+cargo build --locked --release -p immortal-relay --bin immortal
 
 useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin immortal
 usermod --append --groups immortal postgres
