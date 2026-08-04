@@ -82,6 +82,8 @@ pub struct GatewayConfig {
     pub db_connections: usize,
     pub shutdown_grace: Duration,
     pub expiration_sweep: Duration,
+    pub import_nostr_effect: bool,
+    pub legacy_import_sweep: Duration,
     pub media: Option<MediaConfig>,
     pub limits: GatewayLimits,
     pub identity: RelayIdentity,
@@ -101,6 +103,8 @@ impl GatewayConfig {
             db_connections: 4,
             shutdown_grace: Duration::from_secs(10),
             expiration_sweep: Duration::from_secs(60),
+            import_nostr_effect: false,
+            legacy_import_sweep: Duration::from_secs(10),
             media: None,
             limits: GatewayLimits::default(),
             identity: RelayIdentity::default(),
@@ -132,6 +136,9 @@ impl GatewayConfig {
             Duration::from_secs(parse_or("IMMORTAL_SHUTDOWN_GRACE_SECONDS", "10")?);
         config.expiration_sweep =
             Duration::from_secs(parse_or("IMMORTAL_EXPIRATION_SWEEP_SECONDS", "60")?);
+        config.import_nostr_effect = parse_bool("IMMORTAL_IMPORT_NOSTR_EFFECT", false)?;
+        config.legacy_import_sweep =
+            Duration::from_secs(parse_or("IMMORTAL_LEGACY_IMPORT_SWEEP_SECONDS", "10")?);
         let media_root = optional_string("IMMORTAL_MEDIA_ROOT")?;
         let cloud_base_url = optional_string("IMMORTAL_MEDIA_CLOUD_BASE_URL")?;
         let max_blob_bytes = parse_or("IMMORTAL_MEDIA_MAX_BLOB_BYTES", "10485760")?;
@@ -206,6 +213,13 @@ impl GatewayConfig {
         if self.expiration_sweep.is_zero() || self.expiration_sweep > Duration::from_secs(86_400) {
             return Err(config(
                 "IMMORTAL_EXPIRATION_SWEEP_SECONDS must be between 1 and 86400",
+            ));
+        }
+        if self.legacy_import_sweep.is_zero()
+            || self.legacy_import_sweep > Duration::from_secs(3_600)
+        {
+            return Err(config(
+                "IMMORTAL_LEGACY_IMPORT_SWEEP_SECONDS must be between 1 and 3600",
             ));
         }
         if !(1_024..=16_777_216).contains(&self.limits.max_frame_bytes) {

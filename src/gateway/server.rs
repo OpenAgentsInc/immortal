@@ -108,7 +108,21 @@ impl Gateway {
             None => None,
         };
         let challenge_secret = read_process_secret()?;
-        let (migration_store, _) = Store::connect_with_report(&config.database_url).await?;
+        let (mut migration_store, _) = Store::connect_with_report(&config.database_url).await?;
+        if config.import_nostr_effect {
+            let mut total = crate::store::LegacyImportReport::default();
+            loop {
+                let report = migration_store
+                    .import_nostr_effect_events(unix_now(), config.relay_signer.as_ref())
+                    .await?;
+                let done = report.is_empty();
+                total.merge(&report);
+                if done {
+                    break;
+                }
+            }
+            print_legacy_import_report("startup", &total);
+        }
         let policy = migration_store.relay_policy().await?;
         let mut notifications =
             NotificationListener::connect(&config.database_url, NOTIFICATION_QUEUE_CAPACITY)
@@ -158,6 +172,46 @@ impl Gateway {
                 }
             }
         }));
+        if config.import_nostr_effect {
+            let mut import_store = Store::connect_verified(&config.database_url).await?;
+            let import_signer = config.relay_signer.clone();
+            let import_shutdown = shutdown.clone();
+            let import_current = Arc::clone(&current);
+            let mut import_stop = shutdown_receiver.clone();
+            let import_interval = config.legacy_import_sweep;
+            background.push(tokio::spawn(async move {
+                let mut interval = tokio::time::interval(import_interval);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                // Startup already drained the source; do not immediately run
+                // a redundant first interval tick.
+                interval.tick().await;
+                loop {
+                    tokio::select! {
+                        changed = import_stop.changed() => {
+                            if changed.is_err() || *import_stop.borrow() {
+                                break;
+                            }
+                        }
+                        _ = interval.tick() => {
+                            match import_store
+                                .import_nostr_effect_events(unix_now(), import_signer.as_ref())
+                                .await
+                            {
+                                Ok(report) => {
+                                    if !report.is_empty() {
+                                        print_legacy_import_report("tail", &report);
+                                    }
+                                }
+                                Err(_) => {
+                                    fail_process(&import_current, &import_shutdown);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }));
+        }
         let (hub, hub_task) = HubHandle::start(
             HUB_COMMAND_CAPACITY,
             (config.limits.send_queue_capacity.saturating_sub(1) / 2).max(1),
@@ -363,6 +417,22 @@ impl Gateway {
             Ok(())
         }
     }
+}
+
+fn print_legacy_import_report(phase: &str, report: &crate::store::LegacyImportReport) {
+    println!(
+        "{}",
+        serde_json::json!({
+            "level": "info",
+            "message": "nostr-effect import sweep",
+            "phase": phase,
+            "scanned": report.scanned,
+            "stored": report.stored,
+            "duplicate": report.duplicate,
+            "ephemeral": report.ephemeral,
+            "rejected": report.rejected,
+        })
+    );
 }
 
 impl ShutdownHandle {

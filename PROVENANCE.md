@@ -486,6 +486,41 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   `json!` import and one redundant-closure lint; both were fixed before the
   complete clean reruns.
 
+### 2026-08-03 — Codex 5.6 Sol (Extra High), OpenAgents production replacement
+
+- Accepted the owner-directed production deployment and hostname cutover from
+  the completed Block server lane on clean `main` at `a8f3cf9`, current with
+  `origin/main`. Identity for this pass: Codex GPT-5.6 Sol, Extra High.
+- Read the Immortal Google Cloud runbook and the OpenAgents production relay,
+  Google Cloud, DNS, release, and authority runbooks. Inspected the live
+  environment without exporting secrets: project `openagentsgemini`, region
+  `us-central1`, Cloud Run service `openagents-nostr-relay`, Cloud SQL instance
+  `khala-sync-pg`, and the existing Cloud Run custom-domain mapping behind
+  `relay.openagents.com`. The existing service revision remains the rollback
+  target; the hostname is staying on the same Cloud Run service, so this pass
+  uses revision traffic instead of a DNS or certificate mutation.
+- Queried the public relay protocol before mutation. The nostr-effect relay
+  returned 946 signed stored events across 43 kinds, from 2026-07-26 through
+  2026-08-03. A blind binary flip would leave those rows in nostr-effect's
+  `public.events` table and present an empty Immortal store, so preserving the
+  history is a release gate.
+- Added migration 6 and an explicitly enabled nostr-effect compatibility
+  importer. It uses bounded prepared reads, decodes legacy JSONB tags, passes
+  every event through Immortal's normal cryptographic and stateful admission,
+  and records an outcome per source ID in an additive Postgres ledger. Startup
+  drains before socket bind; bounded tail sweeps close the write race while
+  the old revision remains live. Import errors fail the process closed, and a
+  nonzero rejected count blocks production promotion. No source row is
+  changed, no dependency or service was added, and no secret value entered the
+  repository or command output.
+- Added static and disposable-Postgres coverage for migration idempotency and
+  a signed legacy event's one-time admission. Ordinary all-target tests,
+  warnings-denied Clippy, formatting, and diff checks passed before the live
+  database gate and production canary. Updated M9 and the Google Cloud runbook
+  with the no-DNS, no-GitHub-automation shadow/cutover/rollback procedure.
+- Production mutation, canary evidence, traffic promotion, canonical-domain
+  verification, and final commit hashes are recorded below as they complete.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

@@ -218,6 +218,52 @@ starts. If the failed revision applied a migration, restore the pre-upgrade
 Cloud SQL backup or use point-in-time recovery before routing to the old
 revision. Release notes must state migration and rollback compatibility.
 
+### A.9 Replace a nostr-effect revision without changing DNS
+
+When nostr-effect and Immortal use the same Cloud SQL database and Cloud Run
+service, keep the existing custom-domain mapping and DNS records. Deploying a
+no-traffic Immortal revision and then changing Cloud Run revision traffic is
+faster and more reversible than moving the hostname or certificate.
+
+The legacy source table is `public.events`. Migration 6 creates only an
+Immortal-owned import ledger; it does not alter or delete that source table.
+Set `IMMORTAL_IMPORT_NOSTR_EFFECT=true` only for this migration. On startup,
+Immortal drains the legacy table in bounded batches before it binds the
+listener. It then checks for newly arrived legacy rows every ten seconds by
+default. Every source event keeps its ID and signature and passes through the
+normal admission transaction. A nonzero `rejected` count in the structured
+`nostr-effect import sweep` log is a cutover blocker.
+
+1. Create an on-demand Cloud SQL backup and record the current service,
+   revision, image digest, domain mapping, and traffic allocation.
+2. Deploy the candidate to the same service with `--no-traffic` and a tag.
+   Reuse the existing Cloud SQL attachment, runtime service account, database
+   secret, and relay-signing secret. Add these environment values:
+
+   ```text
+   IMMORTAL_IMPORT_NOSTR_EFFECT=true
+   IMMORTAL_LEGACY_IMPORT_SWEEP_SECONDS=10
+   IMMORTAL_RELAY_URL=wss://relay.example.com
+   IMMORTAL_TRUST_PROXY=true
+   ```
+
+3. Test the tag URL: `/health`, NIP-11, WebSocket upgrade, authenticated
+   publish/read, broad historical COUNT, and the remote load gate. Confirm the
+   startup import reached an empty sweep with zero rejected events.
+4. Route 100% to the Immortal revision in one traffic update. Do not edit DNS.
+   Wait at least two import-sweep intervals, then compare the legacy source
+   count, import-ledger count, and rejection count. Verify the custom hostname
+   again, including a newly signed publish/read round trip.
+5. Keep the nostr-effect revision deployed as the immediate rollback target.
+   A rollback routes 100% traffic to that recorded revision. Because migration
+   6 is additive, the old process can continue using `public.events`; events
+   accepted only by Immortal after cutover are not copied backward, so decide
+   whether to replay them before a prolonged rollback.
+
+After the legacy revision has been quiescent for the retention window, deploy
+a new Immortal revision with `IMMORTAL_IMPORT_NOSTR_EFFECT=false`. Retain the
+source table and ledger until the owner separately approves their removal.
+
 Backups: Cloud SQL automated backups + point-in-time recovery:
 
 ```sh

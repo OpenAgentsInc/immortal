@@ -19,6 +19,7 @@ pub enum StoreError {
     InvalidLimit(usize),
     Serialization(String),
     CorruptRow(String),
+    LegacyImport(String),
 }
 
 impl fmt::Display for StoreError {
@@ -44,6 +45,7 @@ impl fmt::Display for StoreError {
             }
             Self::Serialization(reason) => write!(f, "event serialization failed: {reason}"),
             Self::CorruptRow(reason) => write!(f, "stored event is corrupt: {reason}"),
+            Self::LegacyImport(reason) => write!(f, "legacy relay import failed: {reason}"),
         }
     }
 }

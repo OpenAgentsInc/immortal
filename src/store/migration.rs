@@ -56,6 +56,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "block_server_handlers",
         sql: include_str!("../../migrations/0005_block_server_handlers.sql"),
     },
+    Migration {
+        version: 6,
+        name: "nostr_effect_import",
+        sql: include_str!("../../migrations/0006_nostr_effect_import.sql"),
+    },
 ];
 
 type AppliedMigrations = BTreeMap<i64, (String, String)>;

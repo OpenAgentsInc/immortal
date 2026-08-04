@@ -42,6 +42,18 @@ const LISTEN_EPHEMERAL_SQL: &str = "LISTEN immortal_ephemeral";
 const EPHEMERAL_CHUNK_BYTES: usize = 3_500;
 const EPHEMERAL_MAX_BYTES: usize = 1_048_576;
 const EPHEMERAL_MAX_ASSEMBLIES: usize = 256;
+const NOSTR_EFFECT_SOURCE_EXISTS_SQL: &str = "SELECT to_regclass('public.events') IS NOT NULL";
+const NOSTR_EFFECT_PENDING_SQL: &str = r#"
+SELECT source.id, source.pubkey, source.created_at, source.kind,
+       source.tags::text, source.content, source.sig
+FROM public.events source
+LEFT JOIN nostr_effect_import_ledger imported ON imported.event_id = source.id
+WHERE imported.event_id IS NULL
+ORDER BY source.created_at ASC,
+         CASE WHEN source.kind = 9007 THEN 0 ELSE 1 END ASC,
+         source.id DESC
+LIMIT 1000
+"#;
 
 /// A successfully committed admission or a protocol-level refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,6 +195,30 @@ pub enum MediaDeleteOutcome {
     NotOwned,
     OwnerRemoved,
     BlobRemoved(MediaRecord),
+}
+
+/// One bounded compatibility-import sweep from nostr-effect's event table.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LegacyImportReport {
+    pub scanned: usize,
+    pub stored: usize,
+    pub duplicate: usize,
+    pub ephemeral: usize,
+    pub rejected: usize,
+}
+
+impl LegacyImportReport {
+    pub fn is_empty(&self) -> bool {
+        self.scanned == 0
+    }
+
+    pub fn merge(&mut self, other: &Self) {
+        self.scanned += other.scanned;
+        self.stored += other.stored;
+        self.duplicate += other.duplicate;
+        self.ephemeral += other.ephemeral;
+        self.rejected += other.rejected;
+    }
 }
 
 /// One database connection and its complete prepared-statement set.
@@ -702,6 +738,75 @@ impl Store {
             .await?;
         transaction.commit().await?;
         Ok(AdmissionOutcome::Stored { ingest_seq })
+    }
+
+    /// Import at most 1,000 unprocessed rows from nostr-effect's legacy
+    /// `public.events` table. Every decodable event uses the ordinary signed
+    /// admission transaction; the source table is never modified. A durable
+    /// per-ID ledger makes repeated and overlapping sweeps idempotent.
+    pub async fn import_nostr_effect_events(
+        &mut self,
+        now: u64,
+        relay_signer: Option<&RelaySigner>,
+    ) -> Result<LegacyImportReport, StoreError> {
+        self.ensure_current()?;
+        let source_exists = self.client.prepare(NOSTR_EFFECT_SOURCE_EXISTS_SQL).await?;
+        if !self
+            .client
+            .query_one(&source_exists, &[])
+            .await?
+            .get::<_, bool>(0)
+        {
+            return Err(StoreError::LegacyImport(
+                "public.events does not exist".to_owned(),
+            ));
+        }
+        // This statement is deliberately prepared only after the optional
+        // source table has been proven to exist. Preparing it at every Store
+        // connection would make normal fresh deployments fail closed.
+        let pending = self.client.prepare(NOSTR_EFFECT_PENDING_SQL).await?;
+        let rows = self.client.query(&pending, &[]).await?;
+        let mut report = LegacyImportReport::default();
+        for row in rows {
+            report.scanned += 1;
+            let source_id = row.get::<_, String>(0);
+            let ledger_outcome = match decode_nostr_effect_event(&row) {
+                Ok(event) => match self.admit_with_signer(&event, now, relay_signer).await {
+                    Ok(AdmissionOutcome::Stored { .. }) => {
+                        report.stored += 1;
+                        "stored"
+                    }
+                    Ok(AdmissionOutcome::Duplicate) => {
+                        report.duplicate += 1;
+                        "duplicate"
+                    }
+                    Ok(AdmissionOutcome::Ephemeral) => {
+                        report.ephemeral += 1;
+                        "ephemeral"
+                    }
+                    Ok(AdmissionOutcome::Rejected(_))
+                    | Err(StoreError::Domain(_))
+                    | Err(StoreError::TimestampOutOfRange { .. })
+                    | Err(StoreError::Serialization(_))
+                    | Err(StoreError::CorruptRow(_)) => {
+                        report.rejected += 1;
+                        "rejected"
+                    }
+                    Err(error) => return Err(error),
+                },
+                Err(_) => {
+                    report.rejected += 1;
+                    "rejected"
+                }
+            };
+            self.client
+                .execute(
+                    &self.statements.record_nostr_effect_import,
+                    &[&source_id, &ledger_outcome],
+                )
+                .await?;
+        }
+        Ok(report)
     }
 
     pub async fn event_by_id(&self, id: &str, now: u64) -> Result<Option<StoredEvent>, StoreError> {
@@ -1609,6 +1714,36 @@ impl Store {
         transaction.commit().await?;
         Ok(result)
     }
+}
+
+fn decode_nostr_effect_event(row: &Row) -> Result<Event, StoreError> {
+    let created_at = row.get::<_, i64>(2);
+    let created_at = u64::try_from(created_at)
+        .map_err(|_| StoreError::CorruptRow("legacy event has negative created_at".to_owned()))?;
+    let kind = row.get::<_, i32>(3);
+    let kind = u16::try_from(kind)
+        .map_err(|_| StoreError::CorruptRow("legacy event kind is out of range".to_owned()))?;
+    let tags_json = row.get::<_, String>(4);
+    let tags = match serde_json::from_str::<Vec<Tag>>(&tags_json) {
+        Ok(tags) => tags,
+        Err(_) => {
+            let encoded = serde_json::from_str::<String>(&tags_json).map_err(|error| {
+                StoreError::CorruptRow(format!("legacy event tags are not an array: {error}"))
+            })?;
+            serde_json::from_str::<Vec<Tag>>(&encoded).map_err(|error| {
+                StoreError::CorruptRow(format!("legacy event tags are not an array: {error}"))
+            })?
+        }
+    };
+    Ok(Event {
+        id: row.get(0),
+        pubkey: row.get(1),
+        created_at,
+        kind,
+        tags,
+        content: row.get(5),
+        sig: row.get(6),
+    })
 }
 
 fn decode_media_row(row: Row) -> Result<MediaRecord, StoreError> {

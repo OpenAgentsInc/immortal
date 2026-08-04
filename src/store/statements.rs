@@ -427,6 +427,11 @@ RETURNING group_id
 "#;
 const LIST_DM_HIDDEN_SQL: &str =
     "SELECT group_id FROM dm_hidden WHERE viewer_pubkey = $1 ORDER BY group_id LIMIT 10000";
+const RECORD_NOSTR_EFFECT_IMPORT_SQL: &str = r#"
+INSERT INTO nostr_effect_import_ledger (event_id, outcome)
+VALUES ($1, $2)
+ON CONFLICT DO NOTHING
+"#;
 
 #[derive(Clone)]
 pub(crate) struct Statements {
@@ -504,6 +509,7 @@ pub(crate) struct Statements {
     pub insert_dm_hidden: Statement,
     pub delete_dm_hidden: Statement,
     pub list_dm_hidden: Statement,
+    pub record_nostr_effect_import: Statement,
 }
 
 impl Statements {
@@ -583,6 +589,7 @@ impl Statements {
             insert_dm_hidden: client.prepare(INSERT_DM_HIDDEN_SQL).await?,
             delete_dm_hidden: client.prepare(DELETE_DM_HIDDEN_SQL).await?,
             list_dm_hidden: client.prepare(LIST_DM_HIDDEN_SQL).await?,
+            record_nostr_effect_import: client.prepare(RECORD_NOSTR_EFFECT_IMPORT_SQL).await?,
         })
     }
 }

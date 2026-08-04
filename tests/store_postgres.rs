@@ -27,7 +27,7 @@ async fn m2_store_contract_against_postgres() {
     }
 
     let (mut store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![1, 2, 3, 4, 5]);
+    assert_eq!(report.applied_versions, vec![1, 2, 3, 4, 5, 6]);
     assert!(store.is_current());
 
     let (_second_store, report) = Store::connect_with_report(&database_url).await.unwrap();
@@ -39,6 +39,8 @@ async fn m2_store_contract_against_postgres() {
     if database_url.contains("dbname=immortal_test") {
         least_privilege_runtime(&database_url).await;
     }
+
+    nostr_effect_import_is_idempotent(&database_url, &mut store).await;
 
     let mut listener = NotificationListener::connect(&database_url, 64)
         .await
@@ -190,6 +192,75 @@ async fn m2_store_contract_against_postgres() {
     );
     assert!(listener.is_current());
     migration_hash_drift_fails_closed(&database_url).await;
+}
+
+async fn nostr_effect_import_is_idempotent(database_url: &str, store: &mut Store) {
+    let (client, connection) = tokio_postgres::connect(database_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    client
+        .batch_execute(
+            r#"
+CREATE TABLE events (
+    id text PRIMARY KEY,
+    pubkey text NOT NULL,
+    created_at bigint NOT NULL,
+    kind integer NOT NULL,
+    tags jsonb NOT NULL,
+    content text NOT NULL,
+    sig text NOT NULL,
+    d_tag text
+)
+"#,
+        )
+        .await
+        .unwrap();
+    let event = signed_event(99, 99, 1, vec![], "legacy event");
+    let tags = serde_json::to_string(&event.tags).unwrap();
+    let insert = client
+        .prepare(
+            r#"
+INSERT INTO events (id, pubkey, created_at, kind, tags, content, sig, d_tag)
+VALUES ($1, $2, $3, $4, $5::text::jsonb, $6, $7, NULL)
+"#,
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            &insert,
+            &[
+                &event.id,
+                &event.pubkey,
+                &(event.created_at as i64),
+                &i32::from(event.kind),
+                &tags,
+                &event.content,
+                &event.sig,
+            ],
+        )
+        .await
+        .unwrap();
+
+    let report = store.import_nostr_effect_events(NOW, None).await.unwrap();
+    assert_eq!(report.scanned, 1);
+    assert_eq!(report.stored, 1);
+    assert_eq!(
+        store
+            .event_by_id(&event.id, NOW)
+            .await
+            .unwrap()
+            .unwrap()
+            .event,
+        event
+    );
+    assert!(
+        store
+            .import_nostr_effect_events(NOW, None)
+            .await
+            .unwrap()
+            .is_empty(),
+        "ledger makes the compatibility import idempotent"
+    );
 }
 
 async fn replacement_race(database_url: &str, store: &mut Store) {

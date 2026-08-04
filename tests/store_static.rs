@@ -74,3 +74,18 @@ fn block_migrations_contain_identity_and_derived_state() {
         );
     }
 }
+
+#[test]
+fn legacy_import_migration_contains_a_bounded_idempotency_ledger() {
+    let sql = include_str!("../migrations/0006_nostr_effect_import.sql");
+    for required in [
+        "CREATE TABLE nostr_effect_import_ledger",
+        "event_id text COLLATE \"C\" PRIMARY KEY",
+        "outcome IN ('stored', 'duplicate', 'ephemeral', 'rejected')",
+    ] {
+        assert!(
+            sql.contains(required),
+            "import migration is missing {required:?}"
+        );
+    }
+}

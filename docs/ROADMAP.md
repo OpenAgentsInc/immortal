@@ -142,6 +142,10 @@ M6 reaches the NIP-29 item; does not wait for M7 or M8.
 - [ ] Signed-event bulk import: JSONL in, idempotent, preserves ids and
       signatures, replays replacement and deletion rules in `ingest_seq`
       order
+- [x] nostr-effect compatibility import: explicitly enabled, bounded prepared
+      reads from its existing `public.events` table; normal signed admission;
+      durable per-event ledger; startup drain plus bounded tail sweeps during
+      a traffic cutover
 - [ ] NIP-11 parity configuration: name, description, pubkey, limits,
       and supported-NIP list fully operator-configurable
 - [ ] Policy parity checklist: map an existing relay's allow/block and
