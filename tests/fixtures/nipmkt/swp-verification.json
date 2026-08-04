@@ -1,0 +1,81 @@
+{
+  "schema": "openagents.mkt-swp.verification-fixtures.v1",
+  "sources": {
+    "taproot": "BIP-341 wallet-test-vectors.json, bitcoin/bips master",
+    "musig2": "BIP-327 key_agg_vectors.json, bitcoin/bips master",
+    "bolt11": "BOLT 11 payment-encoding.md valid donation example, lightning/bolts master",
+    "transaction": "Immortal synthetic bounded transaction fixture"
+  },
+  "transaction": {
+    "raw": "02000000010000000000000000000000000000000000000000000000000000000000000000ffffffff00ffffffff01e803000000000000015100000000",
+    "txid": "01ad9060b520de616acd41a1077489645f5989ebbffb00fd377b6b035dfe5748",
+    "version": 2,
+    "input_count": 1,
+    "output_count": 1,
+    "output_value": 1000
+  },
+  "witness_transaction": {
+    "raw": "020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff00ffffffff01e803000000000000015101010100000000",
+    "txid": "01ad9060b520de616acd41a1077489645f5989ebbffb00fd377b6b035dfe5748",
+    "wtxid": "e6915ee370bc1e4f14f33eb6ef990e2822f0c981baec204200e59cbd98f9a622"
+  },
+  "taproot": {
+    "internal_key": "d6889cb081036e0faefa3a35157ad71086b123b2b144b649798b494c300a961d",
+    "tweak": "b86e7be8f39bab32a6f2c0443abbc210f0edac0e2c53d501b36b64437d9c6c70",
+    "output_key": "53a1f6e454df1aa2776a2814a721372d6258050de330b3c6d10ee8f4e0dda343"
+  },
+  "taproot_script_path": {
+    "internal_key": "187791b6f712a8ea41c8ecdd0ee77fab3e85263b37e1ec18a3651926b3a6cf27",
+    "script": "20d85a959b0290bf19bb89ed43c916be835475d013da4b362117393e25a48229b8ac",
+    "leaf_version": 192,
+    "leaf_hash": "5b75adecf53548f3ec6ad7d78383bf84cc57b55a3127c72b9a2481752dd88b21",
+    "output_key": "147c9c57132f6e7ecddba9800bb0c4449251c92a1e60371ee77557b6620f3ea3",
+    "control_block": "c1187791b6f712a8ea41c8ecdd0ee77fab3e85263b37e1ec18a3651926b3a6cf27"
+  },
+  "musig2": {
+    "pubkeys": [
+      "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "03dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba659",
+      "023590a94e768f8e1815c2f24b4d80a8e3149316c3518ce7b7ad338368d038ca66"
+    ],
+    "aggregate": "90539eede565f5d054f32cc0c220126889ed1e5d193baf15aef344fe59d4610c"
+  },
+  "musig2_partial": {
+    "pubkeys": [
+      "03935f972da013f80ae011890fa89b67a27b7be6ccb24d3274d18b2d4067f261a9",
+      "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "02dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba661"
+    ],
+    "public_nonces": [
+      "0337c87821afd50a8644d820a8f3e02e499c931865c2360fb43d0a0d20dafe07ea0287bf891d2a6deaebadc909352aa9405d1428c15f4b75f04dae642a95c2548480",
+      "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "032de2662628c90b03f5e720284eb52ff7d71f4284f627b68a853d78c78e1ffe9303e4c5524e83ffe1493b9077cf1ca6beb2090c93d930321071ad40b2f44e599046"
+    ],
+    "signer_index": 0,
+    "message": "f95466d086770e689964664219266fe5ed215c92ae20bab5c9d79addddf3c0cf",
+    "partial_signature": "012abbcb52b3016ac03ad82395a1a415c48b93def78718e62a7a90052fe224fb",
+    "invalid_partial_signature": "fed54434ad4cfe953fc527dc6a5e5be8f6234907b7c187559557ce87a0541c46"
+  },
+  "schnorr_final": {
+    "public_key": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+    "message": "0000000000000000000000000000000000000000000000000000000000000000",
+    "signature": "e907831f80848d1069a5371b402410364bdf1c5f8307b0084c55f1ce2dca821525f66a4a85ea8b71e482a74f382d2ce5ebeee8fdb2172f477df4900d310536c0"
+  },
+  "bolt11": {
+    "invoice": "lnbc1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq9qrsgq357wnc5r2ueh7ck6q93dj32dlqnls087fxdwk8qakdyafkq3yap9us6v52vjjsrvywa6rt52cm9r9zqt8r2t7mlcwspyetp5h2tztugp9lfyql",
+    "network": "bitcoin",
+    "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+    "amount_msat": null,
+    "timestamp": 1496314658
+  },
+  "preimage": {
+    "value": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "sha256": "630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd"
+  },
+  "negative": {
+    "noncanonical_transaction": "02000000fd010000",
+    "truncated_control_block": "c0",
+    "invalid_invoice_checksum": "lnbc1pvjluez",
+    "invalid_timelock_ladder": [144, 144]
+  }
+}

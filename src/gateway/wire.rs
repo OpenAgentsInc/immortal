@@ -55,17 +55,16 @@ pub fn parse_client_message(input: &str) -> Result<ClientMessage, WireError> {
                 let id = value.get("id").and_then(Value::as_str).map(str::to_owned);
                 Some((id, kind))
             });
-        if let Some((event_id, kind)) = header
-            && is_mkt_private_kind(kind)
-            && raw_event.len() > MKT_MAX_PRIVATE_EVENT_BYTES
-        {
-            return Err(WireError {
-                event_id,
-                subscription_id: None,
-                reason: format!(
-                    "private MKT signed record exceeds {MKT_MAX_PRIVATE_EVENT_BYTES} raw bytes"
-                ),
-            });
+        if let Some((event_id, kind)) = header {
+            if is_mkt_private_kind(kind) && raw_event.len() > MKT_MAX_PRIVATE_EVENT_BYTES {
+                return Err(WireError {
+                    event_id,
+                    subscription_id: None,
+                    reason: format!(
+                        "private MKT signed record exceeds {MKT_MAX_PRIVATE_EVENT_BYTES} raw bytes"
+                    ),
+                });
+            }
         }
     }
     let value = serde_json::from_str::<Value>(input).map_err(|_| wire("malformed JSON"))?;

@@ -15,13 +15,13 @@
         "lane": "block",
         "repo": "https://github.com/block/buzz",
         "subdir": "docs/nips",
-        "commit": "feccf4eabc23fdba94ce3537a194357ed17b197c"
+        "commit": "d0af845a1d489ab3fce6a73adbb0e82ebb4b0fa1"
       },
       {
         "lane": "openagents",
         "repo": "https://github.com/OpenAgentsInc/openagents",
         "subdir": "docs/nips",
-        "commit": "b839dd43bad7915a35639b562d4d7ebf7d51c3f6"
+        "commit": "f62eab5569d9e8a7b807a78094dd51bc36a4d31b"
       }
     ]
   },

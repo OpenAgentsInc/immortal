@@ -18,13 +18,13 @@
         "lane": "block",
         "repo": "https://github.com/block/buzz",
         "subdir": "docs/nips",
-        "commit": "feccf4eabc23fdba94ce3537a194357ed17b197c"
+        "commit": "d0af845a1d489ab3fce6a73adbb0e82ebb4b0fa1"
       },
       {
         "lane": "openagents",
         "repo": "https://github.com/OpenAgentsInc/openagents",
         "subdir": "docs/nips",
-        "commit": "b839dd43bad7915a35639b562d4d7ebf7d51c3f6"
+        "commit": "f62eab5569d9e8a7b807a78094dd51bc36a4d31b"
       }
     ]
   },
@@ -243,6 +243,12 @@
       "path": "tests/fixtures/nipmkt/relay-closing.json",
       "sha256": "7e8c1f8444bdaa433be90d8087218ffa910d1f4103bc75649d09ddf587c9339a",
       "bytes": 5868,
+      "scope": "relay_and_client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/swp-verification.json",
+      "sha256": "6fbb94a8423f7a756618d10cc2eb4b61632b1e9ec0155368a40b5d8038b3f9c3",
+      "bytes": 4436,
       "scope": "relay_and_client"
     },
     {

@@ -104,3 +104,28 @@ precedence exception was created. After the full local M10 conformance gate
 passed, NIP-11 began advertising the nonnumeric `nip-mkt` extension only when
 `IMMORTAL_RELAY_URL` enables NIP-42 recipient authentication. That extension
 means base discovery and wrapped transport, not an executable profile.
+
+## M12 verification decision (2026-08-04)
+
+The pre-profile sync at Immortal commit `553ef643e122a58a24603fe14d1b5c62b6868e27`
+advances the OpenAgents lane to `f62eab5569d9e8a7b807a78094dd51bc36a4d31b`
+and NIP-MKT v0.1. Immortal adopts its profile-neutral vocabulary rules for
+asset-ID pairs, decimal-string amounts, disabled sides, fee promises, pinned
+price feeds, future EVM-leg terms, and covenant reserve proof classes as input
+to the MKT-SWP/MKT-PFI drafts. The sync allocates no profile kind, enables no
+executable profile, and changes no NIP-11 advertisement. The generated
+contract and fixture manifest record the new source revision.
+
+Issue #10 adopts verification algorithms and vectors directly from BIP-340,
+BIP-341, BIP-342, BIP-327, and BOLT-11. They are primary rail specifications,
+not a fourth NIP source lane and not an allocation in `39610-39699`.
+
+Immortal implements the bounded, public-data subset needed to verify a future
+MKT-SWP profile: transaction and swap-script structure, Taproot commitments,
+MuSig2 aggregate keys and final signatures, invoice signatures and hash
+coupling, and timelock relations. Wallet signing, secret nonces, preimage
+custody, node credentials, chain indexing, broadcast, payment, and finality
+remain with external wallets and rail authorities. The feature does not change
+NIP-11 advertisement and does not make an MKT-SWP revision executable; that
+adoption waits for its upstream profile, collision review, fixtures, and local
+conformance gate.

@@ -69,6 +69,11 @@ names the NIP that owns the behavior.
   is the structured M11 consumer manifest for supersession, reservation,
   sequence, wrapper/inner, evidence, recovery, authorization, expiry, and
   settlement cases that Immortal deliberately does not claim to enforce.
+- `nipmkt/swp-verification.json` pins the MKT-SWP client/handler verification
+  foundation to primary BIP-341, BIP-327, and BOLT-11 vectors plus bounded
+  transaction, preimage, and timelock cases. The module verifies public
+  artifacts only and never accepts wallet keys, preimages for storage, node
+  credentials, or broadcast authority.
 - `nipae/`, `nipap/`, `niper/`, `nipmp/`, `nippl/`, `nipia/`, `nipdv/`,
   `nipwp/`, `nipcw/`, `niprs/`, and `nipgs/` each contain a committed server
   contract derived from the corresponding pinned Block text. They cover

@@ -10,9 +10,10 @@ cargo test --locked --test mkt_fixtures
 cargo test --locked --test mkt_immutability_model
 cargo test --locked --test mkt_common_fixtures
 cargo test --locked --test mkt_closing_fixtures
+./scripts/test-swp-verification.sh
 cargo test --locked --all-targets
-cargo clippy --locked --all-targets -- -D warnings
-RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps
+cargo clippy --locked --all-targets --features mkt-swp-verify -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps --features mkt-swp-verify
 
 sh -n deploy/backup/immortal-backup
 sh -n scripts/test-debian.sh

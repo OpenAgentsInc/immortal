@@ -379,11 +379,12 @@ impl Store {
             return Ok(AdmissionOutcome::Rejected(AdmissionRejection::AuthEvent));
         }
         let immutable_mkt = is_mkt_private_kind(event.kind);
-        if !immutable_mkt
-            && let Some(expiration) = event.expiration()
-            && expiration <= now
-        {
-            return Err(crate::domain::DomainError::ExpiredEvent { expiration, now }.into());
+        if !immutable_mkt {
+            if let Some(expiration) = event.expiration() {
+                if expiration <= now {
+                    return Err(crate::domain::DomainError::ExpiredEvent { expiration, now }.into());
+                }
+            }
         }
         let created_at = pg_i64(event.created_at, "created_at")?;
         let expires_at = event
@@ -450,11 +451,12 @@ impl Store {
                 .map_err(|error| crate::domain::DomainError::InvalidEvent(error.to_string()))?;
         }
 
-        if immutable_mkt
-            && let Some(expiration) = event.expiration()
-            && expiration <= now
-        {
-            return Err(crate::domain::DomainError::ExpiredEvent { expiration, now }.into());
+        if immutable_mkt {
+            if let Some(expiration) = event.expiration() {
+                if expiration <= now {
+                    return Err(crate::domain::DomainError::ExpiredEvent { expiration, now }.into());
+                }
+            }
         }
 
         let policy_row = transaction
@@ -750,32 +752,34 @@ impl Store {
         }
 
         let mut replaced_event_id = None;
-        if !immutable_mkt && let Some(address) = &replacement {
-            let address_kind = i32::from(address.kind);
-            let params: &[&(dyn ToSql + Sync)] =
-                &[&address_kind, &address.pubkey, &address.identifier];
-            if let Some(row) = transaction.query_opt(&statements.head, params).await? {
-                let current_id = row.get::<_, String>(0);
-                let current_created_at = row.get::<_, i64>(1);
-                let current_created_at = u64::try_from(current_created_at).map_err(|_| {
-                    StoreError::CorruptRow("replaceable head has negative timestamp".to_owned())
-                })?;
-                match compare_replacement_order(
-                    current_created_at,
-                    &current_id,
-                    event.created_at,
-                    &event.id,
-                ) {
-                    ReplacementDecision::KeepCurrent => {
-                        transaction.commit().await?;
-                        return Ok(AdmissionOutcome::Rejected(AdmissionRejection::Superseded));
-                    }
-                    ReplacementDecision::Duplicate => {
-                        transaction.commit().await?;
-                        return Ok(AdmissionOutcome::Duplicate);
-                    }
-                    ReplacementDecision::ReplaceCurrent => {
-                        replaced_event_id = Some(current_id);
+        if !immutable_mkt {
+            if let Some(address) = &replacement {
+                let address_kind = i32::from(address.kind);
+                let params: &[&(dyn ToSql + Sync)] =
+                    &[&address_kind, &address.pubkey, &address.identifier];
+                if let Some(row) = transaction.query_opt(&statements.head, params).await? {
+                    let current_id = row.get::<_, String>(0);
+                    let current_created_at = row.get::<_, i64>(1);
+                    let current_created_at = u64::try_from(current_created_at).map_err(|_| {
+                        StoreError::CorruptRow("replaceable head has negative timestamp".to_owned())
+                    })?;
+                    match compare_replacement_order(
+                        current_created_at,
+                        &current_id,
+                        event.created_at,
+                        &event.id,
+                    ) {
+                        ReplacementDecision::KeepCurrent => {
+                            transaction.commit().await?;
+                            return Ok(AdmissionOutcome::Rejected(AdmissionRejection::Superseded));
+                        }
+                        ReplacementDecision::Duplicate => {
+                            transaction.commit().await?;
+                            return Ok(AdmissionOutcome::Duplicate);
+                        }
+                        ReplacementDecision::ReplaceCurrent => {
+                            replaced_event_id = Some(current_id);
+                        }
                     }
                 }
             }
@@ -852,20 +856,22 @@ impl Store {
             transaction.execute(&statements.insert_tag, params).await?;
         }
 
-        if !immutable_mkt && let Some(address) = &replacement {
-            let address_kind = i32::from(address.kind);
-            let params: &[&(dyn ToSql + Sync)] = &[
-                &address_kind,
-                &address.pubkey,
-                &address.identifier,
-                &event.id,
-                &created_at,
-            ];
-            transaction.execute(&statements.upsert_head, params).await?;
-            if let Some(old_id) = replaced_event_id {
-                transaction
-                    .execute(&statements.delete_event, &[&old_id])
-                    .await?;
+        if !immutable_mkt {
+            if let Some(address) = &replacement {
+                let address_kind = i32::from(address.kind);
+                let params: &[&(dyn ToSql + Sync)] = &[
+                    &address_kind,
+                    &address.pubkey,
+                    &address.identifier,
+                    &event.id,
+                    &created_at,
+                ];
+                transaction.execute(&statements.upsert_head, params).await?;
+                if let Some(old_id) = replaced_event_id {
+                    transaction
+                        .execute(&statements.delete_event, &[&old_id])
+                        .await?;
+                }
             }
         }
 

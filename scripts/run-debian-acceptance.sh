@@ -36,7 +36,7 @@ esac
     sh -c '
         mkdir /work
         cp /source/Cargo.toml /source/Cargo.lock /work/
-        cp -R /source/src /source/migrations /source/tests /source/scripts /source/deploy /work/
+        cp -R /source/src /source/migrations /source/tests /source/scripts /source/deploy /source/nips /work/
         cd /work
         IMMORTAL_DEBIAN_ACCEPTANCE=1 ./scripts/test-debian.sh
     '
