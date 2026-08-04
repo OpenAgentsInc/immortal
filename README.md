@@ -1,7 +1,8 @@
 # Immortal
 
-Hardened Rust infrastructure for the open swap network. Each product is
-one binary and one Postgres database. Nothing else.
+Hardened Rust infrastructure for the open swap network: one binary and one
+Postgres database per product. The provider connects to operator-declared
+rail nodes.
 
 License: CC0-1.0. Public domain.
 
@@ -20,12 +21,13 @@ The products:
   protocol family — discovery heads, gift-wrapped negotiation
   transport, and the optional no-spend swap coordination handler. It
   never holds funds, spend keys, or unreleased preimages.
-- **The provider daemon** (`immortal-provider`, in progress): the
-  runnable liquidity-provider daemon for the swap network — Offerings,
-  RFQ intake, signed Quotes, reservation accounting, and settlement
-  execution against the operator's own bitcoind and Lightning node.
-  This is the binary that holds the operator's money; it is a different
-  program run by a different party than the relay.
+- **The provider daemon** (`immortal-provider`): the runnable
+  liquidity-provider daemon for the swap network. Its no-spend mode publishes
+  Offerings, receives RFQs, signs complete Quotes and bilateral contracts,
+  persists recovery history, and closes mutually cancelled sessions without
+  funding. Issue #25 adds settlement against the operator's bitcoind and
+  Lightning node. That funded mode holds the operator's money and remains a
+  different program run by a different party than the relay.
 - **The client engine** (library): the verify-before-fund swap engine
   wallets embed, and the source of the generated TypeScript SDK.
 
@@ -33,8 +35,8 @@ The virtual Cargo workspace makes those roles explicit:
 `crates/immortal-core` owns shared pure primitives,
 `crates/immortal-client` owns wallet-embedded client engines,
 `crates/immortal-relay` builds the existing `immortal` binary, and
-`crates/immortal-provider` is the provider-daemon shell filled by the
-provider runtime packets.
+`crates/immortal-provider` owns the provider session engine and no-spend
+daemon; the funded rail executors land in the next provider packet.
 
 The expansion from single relay to this monorepo is a recorded owner
 decision with a full migration analysis: see
@@ -200,8 +202,10 @@ them with `scripts/export-contract.sh` after every protocol sync or adoption
 change.
 
 For local NIP-MKT development, `scripts/dev-relay.sh` starts a loopback relay
-and disposable Postgres, while `scripts/dev-market-seed.sh` drives a wrapped
-RFQ through Close exchange between two throwaway actors. See the
+and disposable Postgres, `scripts/dev-market-seed.sh` drives a wrapped RFQ
+through Close between two throwaway actors, and
+`scripts/test-dev-market-provider.sh` proves the separate no-spend provider
+through restart and all three swap shapes. See the
 [`local development runbook`](docs/deployment/runbook-local-dev.md).
 
 ## Quick start

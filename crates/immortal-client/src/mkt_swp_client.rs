@@ -42,7 +42,7 @@ pub struct SwapClientError {
 }
 
 impl SwapClientError {
-    fn new(code: &'static str, detail: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, detail: impl Into<String>) -> Self {
         Self {
             code,
             detail: detail.into(),
@@ -260,6 +260,21 @@ pub struct SwapRecordFactory {
     config: SwapClientConfig,
 }
 
+#[derive(Clone, Copy)]
+enum QuoteMode {
+    Indicative,
+    Soft,
+}
+
+impl QuoteMode {
+    fn tags(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Indicative => ("indicative", "none"),
+            Self::Soft => ("firm", "soft"),
+        }
+    }
+}
+
 impl SwapRecordFactory {
     pub fn new(config: SwapClientConfig) -> Result<Self, SwapClientError> {
         config.validate()?;
@@ -294,6 +309,42 @@ impl SwapRecordFactory {
         )
     }
 
+    pub fn indicative_quote(
+        &self,
+        created_at: u64,
+        distinct: &str,
+        rfq_id: &str,
+        expiration: u64,
+        mkt_swp: Value,
+    ) -> Result<MktSigningRequest, SwapClientError> {
+        self.quote_with_policy(
+            created_at,
+            distinct,
+            rfq_id,
+            expiration,
+            QuoteMode::Indicative,
+            mkt_swp,
+        )
+    }
+
+    pub fn soft_quote(
+        &self,
+        created_at: u64,
+        distinct: &str,
+        rfq_id: &str,
+        expiration: u64,
+        mkt_swp: Value,
+    ) -> Result<MktSigningRequest, SwapClientError> {
+        self.quote_with_policy(
+            created_at,
+            distinct,
+            rfq_id,
+            expiration,
+            QuoteMode::Soft,
+            mkt_swp,
+        )
+    }
+
     pub fn quote(
         &self,
         created_at: u64,
@@ -303,22 +354,42 @@ impl SwapRecordFactory {
         policy: QuotePolicy<'_>,
         mkt_swp: Value,
     ) -> Result<MktSigningRequest, SwapClientError> {
+        let mode = match (policy.quote_class, policy.reservation) {
+            ("indicative", "none") => QuoteMode::Indicative,
+            ("firm", "soft") => QuoteMode::Soft,
+            ("firm", "hard") => {
+                return Err(SwapClientError::new(
+                    "swp_reservation_unconfirmed",
+                    "hard Quote construction requires the provider reserve gate",
+                ));
+            }
+            _ => {
+                return Err(SwapClientError::new(
+                    "swp_contract_terms_mismatch",
+                    "unknown Quote class or reservation",
+                ));
+            }
+        };
+        self.quote_with_policy(created_at, distinct, rfq_id, expiration, mode, mkt_swp)
+    }
+
+    fn quote_with_policy(
+        &self,
+        created_at: u64,
+        distinct: &str,
+        rfq_id: &str,
+        expiration: u64,
+        policy: QuoteMode,
+        mkt_swp: Value,
+    ) -> Result<MktSigningRequest, SwapClientError> {
         require_lower_hex_32(rfq_id, "RFQ event ID")?;
-        if !matches!(policy.quote_class, "indicative" | "firm")
-            || !matches!(policy.reservation, "none" | "soft" | "hard")
-            || policy.quote_class == "firm" && policy.reservation == "none"
-        {
-            return Err(SwapClientError::new(
-                "swp_contract_terms_mismatch",
-                "unknown Quote class or reservation",
-            ));
-        }
+        let (quote_class, reservation) = policy.tags();
         let mut tags = self.common_tags(ParticipantRole::Provider, distinct, "MKT-SWP Quote")?;
         tags.extend([
             Tag::new(vec!["e".into(), rfq_id.into(), String::new(), "rfq".into()]),
             Tag::new(vec!["expiration".into(), expiration.to_string()]),
-            Tag::new(vec!["quote".into(), policy.quote_class.into()]),
-            Tag::new(vec!["reservation".into(), policy.reservation.into()]),
+            Tag::new(vec!["quote".into(), quote_class.into()]),
+            Tag::new(vec!["reservation".into(), reservation.into()]),
         ]);
         self.request(
             ParticipantRole::Provider,
@@ -614,6 +685,98 @@ impl SwapRecordFactory {
             ]),
             Tag::new(vec!["alt".into(), alt.into()]),
         ])
+    }
+}
+
+/// Narrow cross-crate bridge used by `immortal-provider` to share the
+/// requester's fail-closed MKT-SWP validation without duplicating it.
+#[doc(hidden)]
+pub mod provider_support {
+    use serde_json::{Map, Value};
+
+    use super::{Event, StatusProjection, SwapClientConfig, SwapClientError};
+
+    pub fn error(code: &'static str, detail: impl Into<String>) -> SwapClientError {
+        SwapClientError::new(code, detail)
+    }
+
+    pub fn canonical_json(value: &Value) -> Result<Vec<u8>, SwapClientError> {
+        super::canonical_json(value)
+    }
+
+    pub fn reject_custody_material(value: &Value) -> Result<(), SwapClientError> {
+        super::reject_custody_material(value)
+    }
+
+    pub fn require_lower_hex_32(value: &str, label: &str) -> Result<(), SwapClientError> {
+        super::require_lower_hex_32(value, label)
+    }
+
+    pub fn status_projection(
+        config: &SwapClientConfig,
+        records: &[Event],
+    ) -> Result<StatusProjection, SwapClientError> {
+        StatusProjection::from_records(config, records)
+    }
+
+    pub fn require_contiguous_status(projection: &StatusProjection) -> Result<(), SwapClientError> {
+        projection.require_contiguous()
+    }
+
+    pub fn require_signer_status_contiguous(
+        projection: &StatusProjection,
+        signer: &str,
+    ) -> Result<(), SwapClientError> {
+        projection.require_signer_contiguous(signer)
+    }
+
+    pub fn validate_no_spend_loss_accounting(
+        loss: &Map<String, Value>,
+        reservation_released: u64,
+    ) -> Result<(), SwapClientError> {
+        super::validate_no_spend_loss_accounting(loss, reservation_released)
+    }
+
+    pub fn validate_quote_profile(
+        profile: &Value,
+        reservation_class: &str,
+    ) -> Result<(), SwapClientError> {
+        let profile = super::object(profile, "MKT-SWP Quote profile")?;
+        super::validate_provider_quote_profile(profile, reservation_class)
+    }
+
+    pub fn validate_quote_against_rfq(
+        rfq: &Event,
+        profile: &Value,
+        quote_class: &str,
+        created_at: u64,
+        expiration: u64,
+    ) -> Result<(), SwapClientError> {
+        let profile = super::object(profile, "MKT-SWP Quote profile")?;
+        super::validate_quote_against_rfq(rfq, profile, quote_class, created_at, expiration)
+    }
+
+    pub fn validate_order_selection(
+        quote_profile: &Map<String, Value>,
+        order_profile: &Map<String, Value>,
+    ) -> Result<(), SwapClientError> {
+        super::validate_order_selection(quote_profile, order_profile)
+    }
+
+    pub fn validate_order_acceptance_deadline(
+        quote_profile: &Map<String, Value>,
+        quote_expiration: u64,
+        order_created_at: u64,
+    ) -> Result<(), SwapClientError> {
+        super::validate_order_acceptance_deadline(quote_profile, quote_expiration, order_created_at)
+    }
+
+    pub fn validate_contract_candidate(
+        config: &SwapClientConfig,
+        records: &[Event],
+        contract: &Value,
+    ) -> Result<(), SwapClientError> {
+        super::validate_provider_contract_candidate(config, records, contract)
     }
 }
 
@@ -1562,6 +1725,12 @@ impl SwapSession<AwaitingVerification> {
             funding_request: None,
             _state: PhantomData,
         })
+    }
+
+    pub fn validate_negotiated_terms(&self) -> Result<(), SwapClientError> {
+        let bound = BoundSession::from_records(&self.config, &self.signed_records)?;
+        bound.verify_contract_terms()?;
+        bound.verify_requester_topology()
     }
 
     pub fn restore(bytes: &[u8]) -> Result<Self, SwapClientError> {
@@ -2806,7 +2975,10 @@ pub struct StatusProjection {
 }
 
 impl StatusProjection {
-    fn from_records(config: &SwapClientConfig, records: &[Event]) -> Result<Self, SwapClientError> {
+    pub(crate) fn from_records(
+        config: &SwapClientConfig,
+        records: &[Event],
+    ) -> Result<Self, SwapClientError> {
         let mut streams: BTreeMap<String, BTreeMap<u64, Vec<String>>> = BTreeMap::new();
         let mut status_events: BTreeMap<String, BTreeMap<u64, Vec<&Event>>> = BTreeMap::new();
         let mut close_records = Vec::new();
@@ -2993,7 +3165,7 @@ impl StatusProjection {
         Ok(())
     }
 
-    fn require_signer_contiguous(&self, signer: &str) -> Result<(), SwapClientError> {
+    pub(crate) fn require_signer_contiguous(&self, signer: &str) -> Result<(), SwapClientError> {
         if self.forks.contains_key(signer) {
             return Err(SwapClientError::new(
                 "swp_status_fork",
@@ -3209,175 +3381,20 @@ impl<'a> BoundSession<'a> {
             quote_profile.get("terms").unwrap_or(&Value::Null),
             "MKT-SWP Quote terms",
         )?;
+        validate_provider_quote_profile(quote_profile, tag_value(self.quote, "reservation")?)?;
         let contract = object(&self.contract, "Swap Contract")?;
-        let rfq_content = parse_content(self.rfq)?;
-        let rfq_profile = object(
-            rfq_content.get("mkt_swp").unwrap_or(&Value::Null),
-            "MKT-SWP RFQ",
-        )?;
-        let constraints = object(
-            rfq_profile.get("constraints").unwrap_or(&Value::Null),
-            "MKT-SWP RFQ constraints",
-        )?;
-        for member in ["swap_type", "asset_pair", "payment_hash"] {
-            if constraints.get(member) != terms.get(member) {
-                return Err(SwapClientError::new(
-                    "swp_contract_terms_mismatch",
-                    format!("Quote member {member} weakens the RFQ constraint"),
-                ));
-            }
-        }
-        let quoted_input = contract_amount(terms, "input_amount")?;
-        let amount_allowed = match (
-            constraints.get("input_amount"),
-            constraints.get("input_amount_range"),
-        ) {
-            (Some(Value::String(amount)), None) => canonical_amount(amount)? == quoted_input,
-            (None, Some(Value::Object(range))) => {
-                let minimum = canonical_amount(require_string(
-                    range,
-                    "minimum",
-                    None,
-                    "swp_contract_terms_mismatch",
-                )?)?;
-                let maximum = canonical_amount(require_string(
-                    range,
-                    "maximum",
-                    None,
-                    "swp_contract_terms_mismatch",
-                )?)?;
-                minimum <= quoted_input && quoted_input <= maximum
-            }
-            _ => false,
-        };
-        let maximum_total_fee = canonical_amount(require_string(
-            constraints,
-            "maximum_total_fee",
-            None,
-            "swp_contract_terms_mismatch",
-        )?)?;
-        let quoted_total_fee = contract_amount(terms, "maximum_total_fee")?;
-        let requested_confirmation = object(
-            constraints
-                .get("confirmation_policy")
-                .unwrap_or(&Value::Null),
-            "RFQ confirmation policy",
-        )?;
-        let quoted_confirmation = object(
-            terms.get("confirmation_policy").unwrap_or(&Value::Null),
-            "Quote confirmation policy",
-        )?;
-        let requested_minimum = canonical_amount(require_string(
-            requested_confirmation,
-            "minimum_confirmations",
-            None,
-            "swp_contract_terms_mismatch",
-        )?)?;
-        let quoted_minimum = canonical_amount(require_string(
-            quoted_confirmation,
-            "minimum_confirmations",
-            None,
-            "swp_contract_terms_mismatch",
-        )?)?;
-        let requested_reorg = canonical_amount(require_string(
-            requested_confirmation,
-            "reorg_safety_blocks",
-            None,
-            "swp_contract_terms_mismatch",
-        )?)?;
-        let quoted_reorg = canonical_amount(require_string(
-            quoted_confirmation,
-            "reorg_safety_blocks",
-            None,
-            "swp_contract_terms_mismatch",
-        )?)?;
-        let script_modes = constraints
-            .get("allowed_script_modes")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                SwapClientError::new(
-                    "swp_contract_terms_mismatch",
-                    "RFQ has no allowed script modes",
-                )
+        let quote_expiration = tag_value(self.quote, "expiration")?
+            .parse::<u64>()
+            .map_err(|_| {
+                SwapClientError::new("swp_quote_expired", "Quote expiration is invalid")
             })?;
-        let desired_completion = constraints
-            .get("desired_completion_time")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| {
-                SwapClientError::new(
-                    "swp_contract_terms_mismatch",
-                    "RFQ desired completion time is invalid",
-                )
-            })?;
-        let expected_invoice = terms
-            .get("verifier_inputs")
-            .and_then(Value::as_array)
-            .and_then(|verifiers| {
-                verifiers.iter().find(|verifier| {
-                    verifier.get("leg_id").and_then(Value::as_str) == Some("lightning")
-                })
-            })
-            .and_then(|verifier| verifier.get("invoice_sha256"));
-        let invoice_matches = match expected_invoice {
-            Some(invoice) => constraints.get("invoice_sha256") == Some(invoice),
-            None => matches!(constraints.get("invoice_sha256"), Some(Value::Null)),
-        };
-        let requester_public_keys = requester_public_keys_from_terms(terms)?;
-        if !amount_allowed
-            || quoted_total_fee > maximum_total_fee
-            || quoted_minimum < requested_minimum
-            || quoted_reorg < requested_reorg
-            || ["zero_confirmation", "rbf", "replacement"]
-                .iter()
-                .any(|member| {
-                    quoted_confirmation.get(*member) != requested_confirmation.get(*member)
-                })
-            || !script_modes
-                .iter()
-                .any(|mode| mode == terms.get("script_mode").unwrap_or(&Value::Null))
-            || terms
-                .get("desired_completion_time")
-                .and_then(Value::as_u64)
-                .is_none_or(|completion| completion > desired_completion)
-            || constraints
-                .get("firm_quote_required")
-                .and_then(Value::as_bool)
-                == Some(true)
-                && tag_value(self.quote, "quote")? != "firm"
-            || !invoice_matches
-            || constraints.get("requester_public_keys") != Some(&requester_public_keys)
-        {
-            return Err(SwapClientError::new(
-                "swp_contract_terms_mismatch",
-                "Quote weakens an RFQ amount, fee, policy, script, timing, or commitment constraint",
-            ));
-        }
-        let bitcoin_verifiers = terms
-            .get("verifier_inputs")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                SwapClientError::new(
-                    "swp_contract_terms_mismatch",
-                    "Quote has no verifier inputs",
-                )
-            })?
-            .iter()
-            .filter(|verifier| verifier.get("funding_transaction_sha256").is_some());
-        for verifier in bitcoin_verifiers {
-            if verifier.get("minimum_confirmations")
-                != quoted_confirmation.get("minimum_confirmations")
-                || verifier.get("replacement_policy") != quoted_confirmation.get("replacement")
-                || verifier.get("zero_confirmation") != quoted_confirmation.get("zero_confirmation")
-                || verifier.get("rbf_policy") != quoted_confirmation.get("rbf")
-                || verifier.get("reorg_safety_blocks")
-                    != quoted_confirmation.get("reorg_safety_blocks")
-            {
-                return Err(SwapClientError::new(
-                    "swp_contract_terms_mismatch",
-                    "Quote weakens the RFQ confirmation or replacement policy",
-                ));
-            }
-        }
+        validate_quote_against_rfq(
+            self.rfq,
+            quote_profile,
+            tag_value(self.quote, "quote")?,
+            self.quote.created_at,
+            quote_expiration,
+        )?;
         for member in [
             "swap_type",
             "asset_pair",
@@ -3429,6 +3446,7 @@ impl<'a> BoundSession<'a> {
                 "Order body does not accept the referenced Quote",
             ));
         }
+        validate_order_acceptance_deadline(quote_profile, quote_expiration, self.order.created_at)?;
         verify_order_selection(quote_profile, order_profile, contract)?;
         Ok(())
     }
@@ -4091,11 +4109,157 @@ fn verify_leg_execution_fields(
     Ok(())
 }
 
+fn validate_order_acceptance_deadline(
+    quote: &Map<String, Value>,
+    quote_expiration: u64,
+    order_created_at: u64,
+) -> Result<(), SwapClientError> {
+    let mut deadline = quote_expiration;
+    if let Some(reservation) = quote.get("reservation_terms") {
+        let reservation = object(reservation, "Quote reservation terms")?;
+        let reservation_expiration = reservation
+            .get("reservation_expires_at")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_quote_expired",
+                    "Quote reservation expiration is invalid",
+                )
+            })?;
+        deadline = deadline.min(reservation_expiration);
+        match reservation.get("profile_timeout_at") {
+            None | Some(Value::Null) => {}
+            Some(Value::Number(timeout)) => {
+                let timeout = timeout.as_u64().ok_or_else(|| {
+                    SwapClientError::new("swp_quote_expired", "Quote profile timeout is invalid")
+                })?;
+                deadline = deadline.min(timeout);
+            }
+            Some(_) => {
+                return Err(SwapClientError::new(
+                    "swp_quote_expired",
+                    "Quote profile timeout is invalid",
+                ));
+            }
+        }
+    }
+    if order_created_at > deadline {
+        return Err(SwapClientError::new(
+            "swp_quote_expired",
+            "Order was created after the Quote's effective acceptance deadline",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_order_selection(
+    quote: &Map<String, Value>,
+    order: &Map<String, Value>,
+) -> Result<(), SwapClientError> {
+    if order
+        .keys()
+        .any(|name| !matches!(name.as_str(), "accepted_quote_id" | "selection"))
+    {
+        return Err(SwapClientError::new(
+            "swp_order_selection_invalid",
+            "Order restates or changes a non-selectable Quote field",
+        ));
+    }
+    let selection = match order.get("selection") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(selection)) if selection.is_empty() => None,
+        Some(Value::Object(selection)) => Some(selection),
+        Some(_) => {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Order selection must be an object",
+            ));
+        }
+    };
+    let selectable = match quote.get("selectable") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(selectable))
+            if selectable.keys().all(|name| {
+                matches!(
+                    name.as_str(),
+                    "input_amount" | "fee_payer" | "confirmation_policy" | "public_receipt_consent"
+                )
+            }) =>
+        {
+            Some(selectable)
+        }
+        Some(_) => {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Quote selectable terms must be an object",
+            ));
+        }
+    };
+    let Some(selection) = selection else {
+        return Ok(());
+    };
+    let selectable = selectable.ok_or_else(|| {
+        SwapClientError::new(
+            "swp_order_selection_invalid",
+            "Quote permits no Order selection",
+        )
+    })?;
+    for (name, selected) in selection {
+        if !matches!(
+            name.as_str(),
+            "input_amount" | "fee_payer" | "confirmation_policy" | "public_receipt_consent"
+        ) {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Order selected a field outside the v1 allowlist",
+            ));
+        }
+        let offered = selectable.get(name).ok_or_else(|| {
+            SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Order selected a field not offered by the Quote",
+            )
+        })?;
+        let valid = if name == "input_amount" {
+            let selected = selected
+                .as_str()
+                .and_then(|value| canonical_amount(value).ok());
+            let range = offered.as_object();
+            match (selected, range) {
+                (Some(selected), Some(range)) => {
+                    let minimum = range
+                        .get("minimum")
+                        .and_then(Value::as_str)
+                        .and_then(|value| canonical_amount(value).ok());
+                    let maximum = range
+                        .get("maximum")
+                        .and_then(Value::as_str)
+                        .and_then(|value| canonical_amount(value).ok());
+                    matches!((minimum, maximum), (Some(minimum), Some(maximum)) if minimum <= selected && selected <= maximum)
+                }
+                _ => false,
+            }
+        } else {
+            offered
+                .as_array()
+                .is_some_and(|values| values.iter().any(|value| value == selected))
+        };
+        if !valid {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Order selection is outside the Quote's finite choices",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn verify_order_selection(
     quote: &Map<String, Value>,
     order: &Map<String, Value>,
     contract: &Map<String, Value>,
 ) -> Result<(), SwapClientError> {
+    validate_order_selection(quote, order)?;
     let quote_terms = object(
         quote.get("terms").unwrap_or(&Value::Null),
         "MKT-SWP Quote terms",
@@ -4309,6 +4473,741 @@ fn verify_amount_equation(contract: &Map<String, Value>) -> Result<(), SwapClien
         ));
     }
     Ok(())
+}
+
+fn validate_provider_quote_profile(
+    profile: &Map<String, Value>,
+    reservation_class: &str,
+) -> Result<(), SwapClientError> {
+    reject_custody_material(&Value::Object(profile.clone()))?;
+    if let Some(critical) = profile.get("critical") {
+        let critical = critical
+            .as_array()
+            .filter(|members| members.len() <= 32)
+            .ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_unsupported_critical_member",
+                    "Quote critical members must be a bounded array",
+                )
+            })?;
+        let mut names = BTreeSet::new();
+        for member in critical {
+            let member = member.as_str().filter(|member| {
+                !member.is_empty()
+                    && member.len() <= 64
+                    && member.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || matches!(byte, b'_' | b'-')
+                    })
+            });
+            let Some(member) = member else {
+                return Err(SwapClientError::new(
+                    "swp_unsupported_critical_member",
+                    "Quote critical member name is invalid",
+                ));
+            };
+            if !names.insert(member)
+                || !matches!(member, "terms" | "reservation_terms" | "selectable")
+            {
+                return Err(SwapClientError::new(
+                    "swp_unsupported_critical_member",
+                    "Quote names an unsupported critical member",
+                ));
+            }
+        }
+    }
+    let terms = object(
+        profile.get("terms").unwrap_or(&Value::Null),
+        "MKT-SWP Quote terms",
+    )?;
+    let swap_type = match terms.get("swap_type").and_then(Value::as_str) {
+        Some("submarine") => SwapType::Submarine,
+        Some("reverse") => SwapType::Reverse,
+        Some("chain") => SwapType::Chain,
+        _ => {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "Quote has an unsupported swap type",
+            ));
+        }
+    };
+    for member in [
+        "asset_pair",
+        "payment_hash",
+        "input_amount",
+        "output_amount",
+        "fee_bps",
+        "provider_fee",
+        "miner_fee_budget",
+        "lightning_routing_fee_budget",
+        "maximum_total_fee",
+        "confirmation_policy",
+        "script_mode",
+        "desired_completion_time",
+        "clock_skew_seconds",
+        "amount_equation",
+        "rounding",
+        "fee_payer",
+        "legs",
+        "timeout_ladder",
+        "verifier_inputs",
+        "recovery",
+        "reservation_commitment",
+        "cancellation",
+        "evidence_requirements",
+        "price_feed",
+        "evm_leg",
+    ] {
+        if !terms.contains_key(member) {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                format!("Quote terms omit {member}"),
+            ));
+        }
+    }
+    require_lower_hex_32(
+        require_string(terms, "payment_hash", None, "swp_payment_hash_mismatch")?,
+        "Quote payment hash",
+    )?;
+    verify_amount_equation(terms)?;
+    if !terms
+        .get("reservation_commitment")
+        .and_then(Value::as_object)
+        .is_some_and(Map::is_empty)
+        || !matches!(
+            terms.get("fee_payer").and_then(Value::as_str),
+            Some("requester" | "provider")
+        )
+    {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Quote reservation placeholder or fee payer is invalid",
+        ));
+    }
+    if canonical_amount(require_string(
+        terms,
+        "maximum_total_fee",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)? != contract_amount(terms, "provider_fee")?
+        .checked_add(contract_amount(terms, "miner_fee_budget")?)
+        .and_then(|fee| {
+            fee.checked_add(contract_amount(terms, "lightning_routing_fee_budget").ok()?)
+        })
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "Quote maximum fee calculation overflows",
+            )
+        })?
+    {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Quote maximum total fee differs from its fee components",
+        ));
+    }
+    if terms.get("script_mode").and_then(Value::as_str) != Some("taproot-musig2-script-exit")
+        || terms
+            .get("desired_completion_time")
+            .and_then(Value::as_u64)
+            .is_none_or(|value| value == 0)
+        || canonical_amount(require_string(
+            terms,
+            "clock_skew_seconds",
+            None,
+            "swp_contract_terms_mismatch",
+        )?)? > 120
+        || !terms.get("price_feed").is_some_and(Value::is_null)
+        || !terms.get("evm_leg").is_some_and(Value::is_null)
+    {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Quote script, timing, price-feed, or EVM policy is invalid",
+        ));
+    }
+    let confirmation = object(
+        terms.get("confirmation_policy").unwrap_or(&Value::Null),
+        "Quote confirmation policy",
+    )?;
+    for member in ["minimum_confirmations", "reorg_safety_blocks"] {
+        canonical_amount(require_string(
+            confirmation,
+            member,
+            None,
+            "swp_contract_terms_mismatch",
+        )?)?;
+    }
+    if !matches!(
+        confirmation
+            .get("zero_confirmation")
+            .and_then(Value::as_str),
+        Some("forbidden" | "allowed")
+    ) || !matches!(
+        confirmation.get("rbf").and_then(Value::as_str),
+        Some("reject" | "track")
+    ) || !matches!(
+        confirmation.get("replacement").and_then(Value::as_str),
+        Some("reject" | "track")
+    ) {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Quote confirmation policy is invalid",
+        ));
+    }
+    let timeout_ladder: TimeoutLadder =
+        serde_json::from_value(terms.get("timeout_ladder").cloned().unwrap_or(Value::Null))
+            .map_err(|error| {
+                SwapClientError::new(
+                    "swp_timeout_ladder_unsafe",
+                    format!("Quote timeout ladder is invalid: {error}"),
+                )
+            })?;
+    timeout_ladder.validate()?;
+    if timeout_ladder.swap_type() != swap_type {
+        return Err(SwapClientError::new(
+            "swp_timeout_ladder_unsafe",
+            "Quote timeout ladder belongs to another swap type",
+        ));
+    }
+    validate_quote_recovery_policy(terms)?;
+    validate_quote_cancellation_and_evidence(terms)?;
+    validate_quote_selectable(profile)?;
+    let topology = requester_topology(swap_type);
+    let mut topology_terms = terms.clone();
+    topology_terms.insert(
+        "effect_bindings".into(),
+        Value::Array(
+            std::iter::once(json!({
+                "role":topology.funding_effect_role,
+                "leg_id":topology.funding_leg_id
+            }))
+            .chain(topology.exits.iter().map(|exit| {
+                json!({
+                    "role":if exit.path == "claim" { "chain_claim" } else { "chain_refund" },
+                    "leg_id":exit.leg_id
+                })
+            }))
+            .collect(),
+        ),
+    );
+    topology_terms.insert(
+        "exit_package_commitments".into(),
+        Value::Array(
+            topology
+                .exits
+                .iter()
+                .map(|exit| {
+                    json!({
+                        "participant_role":"requester",
+                        "leg_id":exit.leg_id,
+                        "path":exit.path
+                    })
+                })
+                .collect(),
+        ),
+    );
+    verify_requester_topology(&topology_terms, swap_type)?;
+    validate_quote_reservation(profile, terms, reservation_class)
+}
+
+fn validate_quote_against_rfq(
+    rfq: &Event,
+    profile: &Map<String, Value>,
+    quote_class: &str,
+    created_at: u64,
+    expiration: u64,
+) -> Result<(), SwapClientError> {
+    let terms = object(
+        profile.get("terms").unwrap_or(&Value::Null),
+        "MKT-SWP Quote terms",
+    )?;
+    let rfq_content = parse_content(rfq)?;
+    let rfq_profile = object(
+        rfq_content.get("mkt_swp").unwrap_or(&Value::Null),
+        "MKT-SWP RFQ",
+    )?;
+    let constraints = object(
+        rfq_profile.get("constraints").unwrap_or(&Value::Null),
+        "MKT-SWP RFQ constraints",
+    )?;
+    let rfq_expiration = tag_value(rfq, "expiration")?
+        .parse::<u64>()
+        .map_err(|_| SwapClientError::new("swp_quote_expired", "RFQ expiration is invalid"))?;
+    if !matches!(quote_class, "indicative" | "firm")
+        || created_at > expiration
+        || expiration > rfq_expiration
+    {
+        return Err(SwapClientError::new(
+            "swp_quote_expired",
+            "Quote lifetime is invalid or exceeds its RFQ",
+        ));
+    }
+    for member in ["swap_type", "asset_pair", "payment_hash"] {
+        if constraints.get(member) != terms.get(member) {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                format!("Quote member {member} weakens the RFQ constraint"),
+            ));
+        }
+    }
+    let quoted_input = contract_amount(terms, "input_amount")?;
+    let amount_allowed = match (
+        constraints.get("input_amount"),
+        constraints.get("input_amount_range"),
+    ) {
+        (Some(Value::String(amount)), None) => canonical_amount(amount)? == quoted_input,
+        (None, Some(Value::Object(range))) => {
+            let minimum = canonical_amount(require_string(
+                range,
+                "minimum",
+                None,
+                "swp_contract_terms_mismatch",
+            )?)?;
+            let maximum = canonical_amount(require_string(
+                range,
+                "maximum",
+                None,
+                "swp_contract_terms_mismatch",
+            )?)?;
+            minimum <= quoted_input && quoted_input <= maximum
+        }
+        _ => false,
+    };
+    let maximum_total_fee = canonical_amount(require_string(
+        constraints,
+        "maximum_total_fee",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let quoted_total_fee = contract_amount(terms, "maximum_total_fee")?;
+    let requested_confirmation = object(
+        constraints
+            .get("confirmation_policy")
+            .unwrap_or(&Value::Null),
+        "RFQ confirmation policy",
+    )?;
+    let quoted_confirmation = object(
+        terms.get("confirmation_policy").unwrap_or(&Value::Null),
+        "Quote confirmation policy",
+    )?;
+    let requested_minimum = canonical_amount(require_string(
+        requested_confirmation,
+        "minimum_confirmations",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let quoted_minimum = canonical_amount(require_string(
+        quoted_confirmation,
+        "minimum_confirmations",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let requested_reorg = canonical_amount(require_string(
+        requested_confirmation,
+        "reorg_safety_blocks",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let quoted_reorg = canonical_amount(require_string(
+        quoted_confirmation,
+        "reorg_safety_blocks",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let script_modes = constraints
+        .get("allowed_script_modes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "RFQ has no allowed script modes",
+            )
+        })?;
+    let desired_completion = constraints
+        .get("desired_completion_time")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "RFQ desired completion time is invalid",
+            )
+        })?;
+    let expected_invoice = terms
+        .get("verifier_inputs")
+        .and_then(Value::as_array)
+        .and_then(|verifiers| {
+            verifiers.iter().find(|verifier| {
+                verifier.get("leg_id").and_then(Value::as_str) == Some("lightning")
+            })
+        })
+        .and_then(|verifier| verifier.get("invoice_sha256"));
+    let invoice_matches = match expected_invoice {
+        Some(invoice) => constraints.get("invoice_sha256") == Some(invoice),
+        None => matches!(constraints.get("invoice_sha256"), Some(Value::Null)),
+    };
+    let requester_public_keys = requester_public_keys_from_terms(terms)?;
+    if !amount_allowed
+        || quoted_total_fee > maximum_total_fee
+        || quoted_minimum < requested_minimum
+        || quoted_reorg < requested_reorg
+        || ["zero_confirmation", "rbf", "replacement"]
+            .iter()
+            .any(|member| quoted_confirmation.get(*member) != requested_confirmation.get(*member))
+        || !script_modes
+            .iter()
+            .any(|mode| mode == terms.get("script_mode").unwrap_or(&Value::Null))
+        || terms
+            .get("desired_completion_time")
+            .and_then(Value::as_u64)
+            .is_none_or(|completion| completion > desired_completion)
+        || constraints
+            .get("firm_quote_required")
+            .and_then(Value::as_bool)
+            == Some(true)
+            && quote_class != "firm"
+        || !invoice_matches
+        || constraints.get("requester_public_keys") != Some(&requester_public_keys)
+    {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Quote weakens an RFQ amount, fee, policy, script, timing, or commitment constraint",
+        ));
+    }
+    let bitcoin_verifiers = terms
+        .get("verifier_inputs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "Quote has no verifier inputs",
+            )
+        })?
+        .iter()
+        .filter(|verifier| verifier.get("funding_transaction_sha256").is_some());
+    for verifier in bitcoin_verifiers {
+        if verifier.get("minimum_confirmations") != quoted_confirmation.get("minimum_confirmations")
+            || verifier.get("replacement_policy") != quoted_confirmation.get("replacement")
+            || verifier.get("zero_confirmation") != quoted_confirmation.get("zero_confirmation")
+            || verifier.get("rbf_policy") != quoted_confirmation.get("rbf")
+            || verifier.get("reorg_safety_blocks") != quoted_confirmation.get("reorg_safety_blocks")
+        {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "Quote weakens the RFQ confirmation or replacement policy",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_quote_cancellation_and_evidence(
+    terms: &Map<String, Value>,
+) -> Result<(), SwapClientError> {
+    let cancellation = object(
+        terms.get("cancellation").unwrap_or(&Value::Null),
+        "Quote cancellation policy",
+    )?;
+    let evidence = object(
+        terms.get("evidence_requirements").unwrap_or(&Value::Null),
+        "Quote evidence requirements",
+    )?;
+    if cancellation.len() != 1
+        || cancellation
+            .get("effective_before_external_effect")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || evidence.len() != 1
+        || !matches!(
+            evidence.get("minimum_rung").and_then(Value::as_str),
+            Some("pledged" | "reserved" | "measured" | "verified" | "paid" | "settled")
+        )
+    {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Quote cancellation or evidence policy is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_quote_selectable(profile: &Map<String, Value>) -> Result<(), SwapClientError> {
+    let Some(selectable) = profile.get("selectable") else {
+        return Ok(());
+    };
+    let selectable = object(selectable, "Quote selectable terms")?;
+    if selectable.keys().any(|member| {
+        !matches!(
+            member.as_str(),
+            "input_amount" | "fee_payer" | "confirmation_policy" | "public_receipt_consent"
+        )
+    }) {
+        return Err(SwapClientError::new(
+            "swp_order_selection_invalid",
+            "Quote contains an unsupported selectable member",
+        ));
+    }
+    if let Some(range) = selectable.get("input_amount") {
+        let range = object(range, "Quote selectable input amount")?;
+        let minimum = canonical_amount(require_string(
+            range,
+            "minimum",
+            None,
+            "swp_order_selection_invalid",
+        )?)?;
+        let maximum = canonical_amount(require_string(
+            range,
+            "maximum",
+            None,
+            "swp_order_selection_invalid",
+        )?)?;
+        if range.len() != 2 || minimum > maximum {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Quote selectable input range is invalid",
+            ));
+        }
+    }
+    for member in ["fee_payer", "confirmation_policy", "public_receipt_consent"] {
+        if selectable.get(member).is_some_and(|choices| {
+            choices
+                .as_array()
+                .is_none_or(|choices| choices.is_empty() || choices.len() > 16)
+        }) {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                format!("Quote selectable {member} choices are invalid"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_quote_recovery_policy(terms: &Map<String, Value>) -> Result<(), SwapClientError> {
+    let recovery = object(
+        terms.get("recovery").unwrap_or(&Value::Null),
+        "Quote recovery policy",
+    )?;
+    if recovery.get("channel").and_then(Value::as_str) != Some("direct_or_relay_agnostic") {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Quote recovery channel is unsupported",
+        ));
+    }
+    let exit = object(
+        recovery.get("exit_policy").unwrap_or(&Value::Null),
+        "Quote exit policy",
+    )?;
+    let earliest = canonical_amount(require_string(
+        exit,
+        "earliest_broadcast_height",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let latest = canonical_amount(require_string(
+        exit,
+        "latest_safe_broadcast_height",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let maximum_fee = canonical_amount(require_string(
+        exit,
+        "maximum_fee",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    if earliest > latest
+        || maximum_fee > contract_amount(terms, "miner_fee_budget")?
+        || exit
+            .get("target_blocks")
+            .and_then(Value::as_u64)
+            .is_none_or(|blocks| blocks == 0)
+        || exit.get("bump_mode").and_then(Value::as_str) != Some("cpfp")
+    {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Quote exit policy is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_quote_reservation(
+    profile: &Map<String, Value>,
+    terms: &Map<String, Value>,
+    reservation_class: &str,
+) -> Result<(), SwapClientError> {
+    if reservation_class == "none" {
+        if profile
+            .get("reservation_terms")
+            .is_some_and(|value| !value.is_null())
+        {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "non-reserving Quote carries reservation terms",
+            ));
+        }
+        return Ok(());
+    }
+    if !matches!(reservation_class, "soft" | "hard") {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Quote reservation class is invalid",
+        ));
+    }
+    let reservation = object(
+        profile.get("reservation_terms").unwrap_or(&Value::Null),
+        "Quote reservation terms",
+    )?;
+    require_lower_hex_32(
+        require_string(
+            reservation,
+            "reservation_id",
+            None,
+            "swp_contract_terms_mismatch",
+        )?,
+        "reservation ID",
+    )?;
+    let capacity_bucket = require_string(
+        reservation,
+        "capacity_bucket_id",
+        None,
+        "swp_contract_terms_mismatch",
+    )?;
+    if capacity_bucket.is_empty()
+        || capacity_bucket.len() > 64
+        || !capacity_bucket
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| match byte {
+                b'a'..=b'z' | b'0'..=b'9' => true,
+                b'.' | b'_' | b'-' => index > 0,
+                _ => false,
+            })
+    {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "reservation capacity bucket is invalid",
+        ));
+    }
+    let assets = terms
+        .get("asset_pair")
+        .and_then(Value::as_array)
+        .filter(|assets| assets.len() == 2)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "Quote has no ordered asset pair",
+            )
+        })?;
+    let reserved_amount = canonical_amount(require_string(
+        reservation,
+        "reserved_amount",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let committed = canonical_amount(require_string(
+        reservation,
+        "handler_committed_capacity",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    canonical_amount(require_string(
+        reservation,
+        "allocation_sequence",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let proof_class = require_string(
+        reservation,
+        "proof_class",
+        None,
+        "swp_contract_terms_mismatch",
+    )?;
+    reservation_proof_strength(reservation_class, proof_class)?;
+    require_lower_hex_32(
+        require_string(
+            reservation,
+            "capacity_commitment_sha256",
+            None,
+            "swp_contract_terms_mismatch",
+        )?,
+        "capacity commitment digest",
+    )?;
+    let proof_ref = require_string(
+        reservation,
+        "proof_ref",
+        None,
+        "swp_contract_terms_mismatch",
+    )?;
+    if proof_ref.is_empty()
+        || proof_ref.len() > 512
+        || proof_ref.contains('@')
+        || proof_ref.contains('?')
+        || proof_ref.chars().any(char::is_control)
+        || reservation
+            .get("reservation_expires_at")
+            .and_then(Value::as_u64)
+            .is_none_or(|expiration| expiration == 0)
+        || reservation.get("reserved_asset_id") != assets.get(1)
+        || reserved_amount < contract_amount(terms, "output_amount")?
+        || committed < reserved_amount
+    {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "reservation does not cover the Quote output or expiry",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_provider_contract_candidate(
+    config: &SwapClientConfig,
+    records: &[Event],
+    contract: &Value,
+) -> Result<(), SwapClientError> {
+    reject_custody_material(contract)?;
+    let quote = exactly_one(records, MKT_QUOTE_KIND, "swp_contract_terms_mismatch")?;
+    let order = exactly_one(records, MKT_ORDER_KIND, "swp_contract_terms_mismatch")?;
+    if records.iter().any(|record| {
+        record.kind == MKT_SWP_SWAP_CONTRACT_KIND && record.pubkey == config.provider_pubkey
+    }) {
+        return Err(SwapClientError::new(
+            "swp_idempotency_conflict",
+            "provider Swap Contract already exists",
+        ));
+    }
+    let request = SwapRecordFactory::new(config.clone())?.swap_contract(
+        ParticipantRole::Provider,
+        records
+            .iter()
+            .map(|record| record.created_at)
+            .max()
+            .unwrap_or_default()
+            .saturating_add(1),
+        &lower_hex(&sha256(
+            format!("provider-contract-candidate:{}", config.session_id).as_bytes(),
+        )),
+        SwapContractReferences {
+            order_id: &order.id,
+            quote_id: &quote.id,
+            accepted_status_id: None,
+        },
+        contract.clone(),
+    )?;
+    let mut candidate = records.to_vec();
+    candidate.push(Event {
+        id: request.expected_event_id,
+        pubkey: request.pubkey,
+        created_at: request.created_at,
+        kind: request.kind,
+        tags: request.tags,
+        content: request.content,
+        sig: "00".repeat(64),
+    });
+    let bound = BoundSession::from_records(config, &candidate)?;
+    bound.verify_contract_terms()?;
+    bound.verify_requester_topology()
 }
 
 fn contract_amount(contract: &Map<String, Value>, name: &str) -> Result<u64, SwapClientError> {
@@ -5172,6 +6071,67 @@ fn validate_loss_accounting(
             .is_some_and(|evidence| !evidence.is_empty()),
         has_unknown: !unknown_fields.is_empty(),
     })
+}
+
+pub(crate) fn validate_no_spend_loss_accounting(
+    loss: &Map<String, Value>,
+    reservation_released: u64,
+) -> Result<(), SwapClientError> {
+    let allowed = BTreeSet::from([
+        "input_asset_id",
+        "output_asset_id",
+        "input_committed",
+        "input_recovered",
+        "output_received",
+        "provider_fee_paid",
+        "miner_fee_paid",
+        "lightning_routing_fee_paid",
+        "guarantee_recovery_received",
+        "principal_unresolved",
+        "reservation_released",
+        "evidence_refs",
+        "unknown_fields",
+    ]);
+    if loss.keys().any(|field| !allowed.contains(field.as_str()))
+        || loss.get("input_asset_id").and_then(Value::as_str).is_none()
+        || loss
+            .get("output_asset_id")
+            .and_then(Value::as_str)
+            .is_none()
+        || [
+            "input_committed",
+            "input_recovered",
+            "output_received",
+            "provider_fee_paid",
+            "miner_fee_paid",
+            "lightning_routing_fee_paid",
+            "guarantee_recovery_received",
+            "principal_unresolved",
+        ]
+        .iter()
+        .any(|field| loss.get(*field).and_then(Value::as_str) != Some("0"))
+        || loss
+            .get("reservation_released")
+            .and_then(Value::as_str)
+            .map(canonical_amount)
+            .transpose()?
+            != Some(reservation_released)
+        || loss
+            .get("evidence_refs")
+            .and_then(Value::as_array)
+            .is_none_or(|references| !references.is_empty())
+        || loss
+            .get("unknown_fields")
+            .and_then(Value::as_array)
+            .is_none_or(|fields| !fields.is_empty())
+        || loss.len() != allowed.len()
+    {
+        return Err(SwapClientError::new(
+            "swp_unresolved_loss",
+            "no-spend Close requires exact balanced zero loss accounting",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_bound_close_evidence(
@@ -8284,7 +9244,7 @@ fn swp_profile_support() -> [MktProfileSupport<'static>; 1] {
     }]
 }
 
-fn canonical_json(value: &Value) -> Result<Vec<u8>, SwapClientError> {
+pub(crate) fn canonical_json(value: &Value) -> Result<Vec<u8>, SwapClientError> {
     let mut output = Vec::new();
     write_canonical_json(value, &mut output)?;
     Ok(output)
@@ -8351,7 +9311,7 @@ fn write_canonical_json(value: &Value, output: &mut Vec<u8>) -> Result<(), SwapC
     Ok(())
 }
 
-fn reject_custody_material(value: &Value) -> Result<(), SwapClientError> {
+pub(crate) fn reject_custody_material(value: &Value) -> Result<(), SwapClientError> {
     match value {
         Value::Object(object) => {
             for (name, child) in object {
@@ -10362,7 +11322,7 @@ fn parsed_authority_host(authority: &str) -> Result<&str, SwapClientError> {
     Ok(host)
 }
 
-fn require_lower_hex_32(value: &str, label: &str) -> Result<(), SwapClientError> {
+pub(crate) fn require_lower_hex_32(value: &str, label: &str) -> Result<(), SwapClientError> {
     if value.len() == 64
         && value
             .bytes()

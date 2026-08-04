@@ -362,3 +362,33 @@ wrapper identity. This is an API adoption of the existing M10 transport lane,
 not a new protocol source: browser and GPUI identity services can fulfill the
 plan without exporting raw secret bytes, while `MarketSigner` remains the
 deterministic fixture/development adapter.
+
+## M12 MKT-SWP provider-session decision (2026-08-04)
+
+Issue #14 implements the provider role of the same pinned OpenAgents MKT-SWP
+v1 text at `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`. It allocates no kind and
+does not change the collision result from issue #11: `39610` remains the sole
+Swap Contract kind, with the rest of the reserved ranges unallocated here.
+
+The provider engine shares the requester engine's complete Quote and Swap
+Contract validators. It creates indicative, soft-reserved, and hard-reserved
+Quotes; a hard Quote cannot be signed until an embedding reservation callback
+returns an exact durable confirmation. Reserve and release requests have
+stable effect IDs and replay bindings. Signed session ingestion requires one
+immutable RFQ, Quote, and Order, one contract per participant with identical
+terms, signer-local lifecycle claims, and exact no-spend loss accounting.
+Status gaps, forks, and invalid transitions remain visible without becoming
+authority.
+
+The executable `immortal-provider --no-spend` mode is a persistent NIP-59
+actor for loopback development. It recovers provider-addressed self-wraps,
+reconstructs bounded sessions, and completes submarine, reverse, and chain
+negotiations through mutual cancellation and a zero-loss Close. It has no
+funding, wallet, rail, node, database, or settlement capability. The funded
+rail process and its deterministic provider contract export remain issue #25.
+
+This packet adds no dependency to the relay, changes no relay CLI or contract
+JSON, does not advertise a new NIP-11 extension, and leaves the relay's
+executable-profile set unchanged. Provider fixture scope is recorded
+separately in the shared fixture manifest. No source-lane precedence
+exception was created.

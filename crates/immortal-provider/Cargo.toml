@@ -5,11 +5,30 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Provider daemon shell for the Immortal swap network"
+description = "MKT-SWP provider sessions and no-spend daemon for the Immortal swap network"
 
 [lib]
 path = "src/provider.rs"
 
+[features]
+default = ["no-spend"]
+no-spend = ["dep:tokio", "dep:tokio-tungstenite"]
+mkt-swp-fixture-probe = []
+
+[[bin]]
+name = "immortal-provider"
+path = "src/main.rs"
+required-features = ["no-spend"]
+
 # Owner-approved allowlist: tokio, tokio-tungstenite, tokio-postgres,
-# secp256k1, sha2, serde, serde_json. This shell uses none yet.
+# secp256k1, sha2, serde, serde_json.
 [dependencies]
+immortal-client.workspace = true
+immortal-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }

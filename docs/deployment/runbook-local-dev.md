@@ -87,6 +87,35 @@ IMMORTAL_DEV_RELAY_URL=ws://127.0.0.1:19090 ./scripts/dev-market-seed.sh
 The seed command refuses non-loopback and `wss://` targets so throwaway local
 traffic cannot be sent to a production relay by mistake.
 
+## Run the no-spend provider
+
+With `scripts/dev-relay.sh` running, start the separate provider process with
+a development-only Nostr identity key:
+
+```sh
+IMMORTAL_PROVIDER_IDENTITY_SECRET='<64-lower-hex-development-secret>' \
+IMMORTAL_PROVIDER_RELAY_URL='ws://127.0.0.1:18080' \
+  ./scripts/dev-market-provider.sh
+```
+
+The URL must resolve to loopback. The identity signs provider records but is
+not a wallet or custody key. The process publishes its Provider Profile and
+Offering, answers complete RFQs, stores its own NIP-59 recovery wraps in the
+relay, and resumes those sessions after restart. Ctrl-C stops only the
+provider process.
+
+Run the reproducible separate-process proof with:
+
+```sh
+./scripts/test-dev-market-provider.sh
+```
+
+The script creates and removes a disposable relay/Postgres instance, builds
+and launches `immortal-provider --no-spend`, restarts that process, and drives
+submarine, reverse, and chain sessions through bilateral contracts, mutual
+cancellation, and provider-authored zero-loss Close records. It performs no
+funding, payment, wallet, node, or broadcast action.
+
 ## Point clients at the relay
 
 Set the client relay URL to `ws://127.0.0.1:18080`. NIP-42 authentication is

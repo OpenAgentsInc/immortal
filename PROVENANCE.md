@@ -28,6 +28,23 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-04 — Codex 5.6 Sol, M12 MKT-SWP provider sessions / issue #14
+
+- Implemented the transport-neutral provider engine in
+  `crates/immortal-provider`: rotating discovery requests, complete
+  indicative/soft/hard Quote construction, reserve-before-hard-signing and
+  release callbacks with exact replay, bilateral contract binding, Status
+  projection, mutual cancellation, and exact no-spend Close accounting.
+- Added bounded custody-free snapshots and provider self-recovery, plus the
+  `immortal-provider --no-spend` actor for all three swap shapes. The actor
+  signs no funding action and owns no wallet, rail, node credential, database,
+  preimage, or settlement authority; funded execution remains issue #25.
+- Added a closed 30-case provider fixture, production requester reconstruction
+  of provider negotiations, native/no-default/zero-import WASM conformance,
+  separate provider fixture-manifest scope, and the relay dependency-tree
+  boundary check. Relay CLI, contract JSON, NIP-11, executable profiles, and
+  Postgres behavior remain unchanged.
+
 ### 2026-08-04 — Codex 5.6 Sol, M12 coordination handler / issue #13
 
 - Implemented the optional, exact-conformance MKT-SWP handler in the existing

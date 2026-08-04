@@ -1,0 +1,197 @@
+{
+  "schema": "openagents.mkt-swp.provider-engine-fixtures.v1",
+  "source": {
+    "lane": "openagents",
+    "commit": "a7f5522c0a7430f9f5b1cfa09477dae2d16d3682",
+    "specification": "nips/openagents/MKT-SWP.md",
+    "issue": "OpenAgentsInc/immortal#14",
+    "profile": "mkt-swp",
+    "version": 1,
+    "scope": "transport-neutral provider sessions and bounded no-spend actor flows"
+  },
+  "discovery": [
+    {
+      "name": "swp-v1-provider-profile-publish",
+      "record": "profile",
+      "rotation": 0
+    },
+    {
+      "name": "swp-v1-provider-profile-rotate",
+      "record": "profile",
+      "rotation": 1
+    },
+    {
+      "name": "swp-v1-provider-offering-publish",
+      "record": "offering",
+      "rotation": 0
+    },
+    {
+      "name": "swp-v1-provider-offering-rotate",
+      "record": "offering",
+      "rotation": 1
+    }
+  ],
+  "flows": [
+    {
+      "name": "swp-v1-provider-submarine-no-spend",
+      "swap_type": "submarine",
+      "quote_class": "firm",
+      "reservation": "soft",
+      "records": ["rfq", "quote", "order", "swap_contract", "status", "cancel", "close"],
+      "terminal": "cancelled",
+      "external_spend_effects": 0
+    },
+    {
+      "name": "swp-v1-provider-reverse-no-spend",
+      "swap_type": "reverse",
+      "quote_class": "firm",
+      "reservation": "soft",
+      "records": ["rfq", "quote", "order", "swap_contract", "status", "cancel", "close"],
+      "terminal": "cancelled",
+      "external_spend_effects": 0
+    },
+    {
+      "name": "swp-v1-provider-chain-no-spend",
+      "swap_type": "chain",
+      "quote_class": "firm",
+      "reservation": "soft",
+      "records": ["rfq", "quote", "order", "swap_contract", "status", "cancel", "close"],
+      "terminal": "cancelled",
+      "external_spend_effects": 0
+    }
+  ],
+  "reservation_effects": [
+    {
+      "name": "swp-v1-provider-hard-reserve-confirmed",
+      "operation": "reserve",
+      "replay": "same_result",
+      "signing_request": true
+    },
+    {
+      "name": "swp-v1-provider-hard-reserve-rejected",
+      "operation": "reserve",
+      "replay": "same_error",
+      "signing_request": false,
+      "error": "swp_reservation_unconfirmed"
+    },
+    {
+      "name": "swp-v1-provider-hard-reserve-mismatched",
+      "operation": "reserve",
+      "replay": "same_error",
+      "signing_request": false,
+      "error": "swp_reservation_confirmation_invalid"
+    },
+    {
+      "name": "swp-v1-provider-release-on-cancel",
+      "operation": "release",
+      "cause": "effective_cancel",
+      "replay": "same_result"
+    },
+    {
+      "name": "swp-v1-provider-release-on-expiry",
+      "operation": "release",
+      "cause": "reservation_expired",
+      "replay": "same_result"
+    },
+    {
+      "name": "swp-v1-provider-release-on-close",
+      "operation": "release",
+      "cause": "terminal_close",
+      "replay": "same_result"
+    }
+  ],
+  "evidence": [
+    {
+      "name": "swp-v1-provider-status-private-evidence",
+      "publication": "private",
+      "valid": true
+    },
+    {
+      "name": "swp-v1-provider-status-public-evidence",
+      "publication": "public_reference",
+      "valid": true
+    },
+    {
+      "name": "swp-v1-provider-status-public-evidence-malformed",
+      "publication": "public_reference",
+      "valid": false,
+      "error": "swp_evidence_invalid"
+    }
+  ],
+  "negative": [
+    {
+      "name": "swp-v1-provider-rfq-wrong-author",
+      "mutation": "rfq_author",
+      "error": "swp_contract_signer_invalid"
+    },
+    {
+      "name": "swp-v1-provider-quote-rfq-mismatch",
+      "mutation": "quote_rfq_constraints",
+      "error": "swp_contract_terms_mismatch"
+    },
+    {
+      "name": "swp-v1-provider-order-not-selected",
+      "mutation": "order_quote_reference",
+      "error": "swp_contract_terms_mismatch"
+    },
+    {
+      "name": "swp-v1-provider-order-indicative",
+      "mutation": "order_indicative",
+      "error": "swp_contract_terms_mismatch"
+    },
+    {
+      "name": "swp-v1-provider-second-order",
+      "mutation": "second_order",
+      "error": "swp_idempotency_conflict"
+    },
+    {
+      "name": "swp-v1-provider-second-requester-contract",
+      "mutation": "second_contract",
+      "error": "swp_idempotency_conflict"
+    },
+    {
+      "name": "swp-v1-provider-order-after-expiry",
+      "mutation": "order_created_at",
+      "error": "swp_quote_expired"
+    },
+    {
+      "name": "swp-v1-provider-status-wrong-role",
+      "mutation": "status_signer",
+      "retained": true,
+      "projection": "invalid_claim"
+    },
+    {
+      "name": "swp-v1-provider-status-sequence-gap",
+      "mutation": "status_sequence",
+      "retained": true,
+      "projection": "gap"
+    },
+    {
+      "name": "swp-v1-provider-status-transition-regression",
+      "mutation": "status_state",
+      "retained": true,
+      "projection": "invalid_claim"
+    },
+    {
+      "name": "swp-v1-provider-status-fork",
+      "mutation": "status_distinct",
+      "retained": true,
+      "projection": "fork"
+    },
+    {
+      "name": "swp-v1-provider-snapshot-custody-member",
+      "mutation": "snapshot_seed",
+      "error": "swp_secret_material_forbidden"
+    },
+    {
+      "name": "swp-v1-provider-history-over-bound",
+      "mutation": "signed_records",
+      "error": "swp_provider_history_exceeded"
+    },
+    {
+      "name": "swp-v1-provider-effect-id-conflict",
+      "mutation": "effect_request",
+      "error": "swp_idempotency_conflict"
+    }
+  ]
+}

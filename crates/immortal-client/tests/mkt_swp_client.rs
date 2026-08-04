@@ -17,7 +17,7 @@ use immortal_client::{
         LocalLightningProgress, LocalLightningReadiness, LocalRailEvidence,
         LocalRecoveryObservation, MktSigningRequest, ParticipantRole, QuotePolicy, RecoveryAction,
         StatusState, SwapClientConfig, SwapContractReferences, SwapRecordFactory, SwapSession,
-        SwapType, TimeoutLadder, VerifyBeforeFundInput,
+        SwapType, TimeoutLadder, VerifyBeforeFundInput, provider_support,
     },
     mkt_swp_verify::{
         Transaction, TransactionInput, TransactionOutput, musig2_aggregate_key, sha256,
@@ -178,15 +178,11 @@ fn deterministic_record_factory_covers_all_private_base_records() {
     );
     let quote = signed(
         factory
-            .quote(
+            .soft_quote(
                 101,
                 &"02".repeat(32),
                 &rfq.id,
                 1_000,
-                QuotePolicy {
-                    quote_class: "firm",
-                    reservation: "soft",
-                },
                 json!({"terms": base_terms(&fixture, SwapType::Submarine)}),
             )
             .unwrap(),
@@ -285,6 +281,44 @@ fn deterministic_record_factory_covers_all_private_base_records() {
     assert_eq!(
         request.verify_signed(changed).unwrap_err().code,
         "swp_external_signature_mismatch"
+    );
+}
+
+#[test]
+fn legacy_quote_api_preserves_safe_source_compatibility() {
+    let fixture = fixture();
+    let setup = Setup::new(&fixture);
+    let factory = SwapRecordFactory::new(setup.config).unwrap();
+    let soft = factory
+        .quote(
+            101,
+            &"02".repeat(32),
+            &"03".repeat(32),
+            1_000,
+            QuotePolicy {
+                quote_class: "firm",
+                reservation: "soft",
+            },
+            json!({"terms":{}}),
+        )
+        .unwrap();
+    assert_eq!(soft.kind, 39_605);
+    assert_eq!(
+        factory
+            .quote(
+                101,
+                &"04".repeat(32),
+                &"05".repeat(32),
+                1_000,
+                QuotePolicy {
+                    quote_class: "firm",
+                    reservation: "hard",
+                },
+                json!({"terms":{}}),
+            )
+            .unwrap_err()
+            .code,
+        "swp_reservation_unconfirmed"
     );
 }
 
@@ -453,6 +487,94 @@ fn flow_contracts_freeze_distinct_requester_topologies() {
             .collect::<BTreeSet<_>>();
         assert_eq!(exits, expected);
     }
+}
+
+#[test]
+fn provider_quote_extensions_acceptance_deadline_and_order_selection_are_checked() {
+    let fixture = fixture();
+    let setup = Setup::new(&fixture);
+    let factory = SwapRecordFactory::new(setup.config).unwrap();
+    let mut profile = provider_quote_profile(&fixture, 200);
+    profile["future_extension"] = json!({"retained":true});
+    provider_support::validate_quote_profile(&profile, "soft").unwrap();
+
+    profile["critical"] = json!(["future_extension"]);
+    assert_eq!(
+        provider_support::validate_quote_profile(&profile, "soft")
+            .unwrap_err()
+            .code,
+        "swp_unsupported_critical_member"
+    );
+    profile.as_object_mut().unwrap().remove("critical");
+
+    let terms = &profile["terms"];
+    let rfq = signed(
+        factory
+            .rfq(
+                100,
+                &"31".repeat(32),
+                300,
+                json!({
+                    "constraints":{
+                        "swap_type":terms["swap_type"],
+                        "asset_pair":terms["asset_pair"],
+                        "input_amount":terms["input_amount"],
+                        "maximum_total_fee":terms["maximum_total_fee"],
+                        "confirmation_policy":terms["confirmation_policy"],
+                        "allowed_script_modes":["taproot-musig2-script-exit"],
+                        "desired_completion_time":terms["desired_completion_time"],
+                        "firm_quote_required":true,
+                        "payment_hash":terms["payment_hash"],
+                        "invoice_sha256":verifier_inputs_for(terms, "lightning")["invoice_sha256"],
+                        "requester_public_keys":requester_public_keys(terms)
+                    }
+                }),
+            )
+            .unwrap(),
+        &setup.requester,
+    );
+    provider_support::validate_quote_against_rfq(&rfq, &profile, "firm", 101, 250).unwrap();
+    provider_support::validate_order_acceptance_deadline(profile.as_object().unwrap(), 250, 200)
+        .unwrap();
+    assert_eq!(
+        provider_support::validate_order_acceptance_deadline(
+            profile.as_object().unwrap(),
+            250,
+            201,
+        )
+        .unwrap_err()
+        .code,
+        "swp_quote_expired"
+    );
+    profile["reservation_terms"]["profile_timeout_at"] = json!(150);
+    assert_eq!(
+        provider_support::validate_order_acceptance_deadline(
+            profile.as_object().unwrap(),
+            250,
+            151,
+        )
+        .unwrap_err()
+        .code,
+        "swp_quote_expired"
+    );
+
+    let quote_profile = json!({
+        "terms":{},
+        "selectable":{"input_amount":{"minimum":"10","maximum":"20"}}
+    });
+    let invalid_order = json!({
+        "accepted_quote_id":"32".repeat(32),
+        "selection":{"input_amount":"21"}
+    });
+    assert_eq!(
+        provider_support::validate_order_selection(
+            quote_profile.as_object().unwrap(),
+            invalid_order.as_object().unwrap(),
+        )
+        .unwrap_err()
+        .code,
+        "swp_order_selection_invalid"
+    );
 }
 
 #[test]
@@ -3000,15 +3122,11 @@ fn build_session_with_options(
     }
     let quote = signed(
         factory
-            .quote(
+            .soft_quote(
                 101,
                 &"12".repeat(32),
                 &rfq.id,
                 options.quote_expiration,
-                QuotePolicy {
-                    quote_class: "firm",
-                    reservation: "soft",
-                },
                 quote_profile,
             )
             .unwrap(),
@@ -3371,6 +3489,25 @@ fn base_terms(fixture: &Value, swap_type: SwapType) -> Value {
         "evidence_requirements":{"minimum_rung":"verified"},
         "price_feed":null,
         "evm_leg":null
+    })
+}
+
+fn provider_quote_profile(fixture: &Value, reservation_expires_at: u64) -> Value {
+    let terms = base_terms(fixture, SwapType::Submarine);
+    json!({
+        "terms":terms.clone(),
+        "reservation_terms":{
+            "reservation_id":"ab".repeat(32),
+            "capacity_bucket_id":"test-capacity",
+            "reserved_asset_id":terms["asset_pair"][1],
+            "reserved_amount":terms["output_amount"],
+            "handler_committed_capacity":terms["output_amount"],
+            "allocation_sequence":"1",
+            "proof_class":"provider_signed",
+            "proof_ref":"provider-signed:test-capacity:1",
+            "capacity_commitment_sha256":"cd".repeat(32),
+            "reservation_expires_at":reservation_expires_at
+        }
     })
 }
 

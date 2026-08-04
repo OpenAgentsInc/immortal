@@ -262,11 +262,11 @@ Each step keeps the tree green and the deployed relay upgradeable:
    `README.md` rewrites land here.
 2. **Provider crate, no-spend first.** `immortal-provider` embedding
    the session logic (#14's scope, relocated), `--no-spend` actor
-   parity with the seeded dev-market actor, provider contract export,
-   session fixtures.
+   parity with the seeded dev-market actor, and session fixtures.
 3. **Rails.** bitcoind RPC client + poller; CLN client; wallet and
    script-path claim/refund construction over the in-repo primitives;
-   watchtower; reservation ledger against real Postgres.
+   watchtower; reservation ledger against real Postgres; deterministic
+   provider contract export.
 4. **Lab.** #18 executes with two funded `immortal-provider` instances
    (independent keys), multiple relays, and the failure matrix, on
    regtest.
@@ -278,6 +278,8 @@ Sequencing note: step 1 is pure motion and the only step that touches
 the relay; steps 2-3 are where the new engineering lives; nothing in
 steps 2-5 can regress the relay because the crates share only
 `immortal-core`, whose changes remain fixture-gated.
+The issue order is #24 → #14 → #25 → #15; the compatibility facade is
+verified against the funded provider process rather than preceding it.
 
 ## 9. What this deliberately does not change
 
