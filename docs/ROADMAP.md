@@ -387,6 +387,30 @@ rerun is green.
 | [#18](https://github.com/OpenAgentsInc/immortal/issues/18) | Adversarial lab consuming both shipped binaries (re-scoped) | #25 |
 | [#19](https://github.com/OpenAgentsInc/immortal/issues/19) | Closing packet + `runbook-provider-debian.md` (re-scoped) | #18 |
 
+### M12 Boltz-parity ledger (2026-08-04)
+
+Owner direction: full parity with the Boltz-class operation, not only
+minimal replacement capability. These packets close the gaps between the
+subledger above and what Boltz actually shipped: cooperative settlement
+economics, quoting, rail breadth, and the operational minimum-network
+claim. The Liquid rail (#27) sits in the M13 table below but is
+sequenced first among extensions for commercial parity.
+
+| Issue | Packet | Depends on |
+| --- | --- | --- |
+| [#28](https://github.com/OpenAgentsInc/immortal/issues/28) | Provider pricing and quoting policy engine: configurable spread, miner-fee pass-through, dynamic min/max from the reservation ledger, deterministic derivation fixtures | #14, #25 |
+| [#26](https://github.com/OpenAgentsInc/immortal/issues/26) | MuSig2 cooperative key-path settlement: BIP-327 primitives (owner-gated dependency decision), cooperative claim over MKT-SWP transport, script-path fallback law unchanged | #25 |
+| [#29](https://github.com/OpenAgentsInc/immortal/issues/29) | LND provider rail via REST behind the `rustls` feature: pinned cert, macaroons, native hold invoices, mixed CLN/LND lab pairs | #25 |
+| [#30](https://github.com/OpenAgentsInc/immortal/issues/30) | 0-conf acceptance policy: opt-in, direction-bounded, RBF/conflict downgrade, explicit non-confirmed status vocabulary | #25, #18 |
+| [#31](https://github.com/OpenAgentsInc/immortal/issues/31) | Second operator-independent relay deployment: infrastructure-independent host, own identity and backups, relay-set docs; operator independence honestly deferred to recruitment | — |
+
+The production user-facing swap surface is tracked downstream as
+[openagents#9324](https://github.com/OpenAgentsInc/openagents/issues/9324)
+(live-network swap UI on the SDK, gated on #18 and a funded provider).
+Existing Boltz API consumers reach the network through the facade (#15)
+without new client software; a standalone boltz-client-style CLI is
+deliberately not scheduled.
+
 ## M13 — Market extension ledger (post-replacement)
 
 The issue-backed extensions that grow the market after M12's replacement
@@ -401,6 +425,7 @@ lanes.
 | Issue | Packet | Depends on |
 | --- | --- | --- |
 | [openagents#9312](https://github.com/OpenAgentsInc/openagents/issues/9312) | Draft MKT-P2P, MKT-MINT, and MKT-LSP profile NIPs upstream; decide the intent-market shape (Arkade solver model); shared vocabulary harvest (asset-id pairs, decimal-string amounts, price-feed pinning) | — |
+| [#27](https://github.com/OpenAgentsInc/immortal/issues/27) | Liquid rail: elementsd leg for BTC↔L-BTC swaps — provider RPC client, bounded confidential-transaction handling, client-engine Liquid legs, elementsd in the lab. First among extensions: core Boltz volume | M12 #25, #18 |
 | [#20](https://github.com/OpenAgentsInc/immortal/issues/20) | Ark rail leg: VTXO/operator/exit verification, pre-signed exit packages as the doomsday-drill shape, covenant-reserve evidence, arkd in the lab | M12 #10, #12, #13 |
 | [#21](https://github.com/OpenAgentsInc/immortal/issues/21) | Adopt MKT-P2P: Mostro/NIP-69 bridge, bonds, disputes, per-trade key rotation | 9312 |
 | [#22](https://github.com/OpenAgentsInc/immortal/issues/22) | Adopt MKT-MINT: Cashu NUTs / Fedimint gateway quotes, NIP-87 cross-reference, custody disclosure | 9312 |
