@@ -253,8 +253,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/swp-client-engine-v1.json",
-      "sha256": "02a6f4be33cd28b1391bc8230052183db64fe04dbfa70dc257b8220486de4fdc",
-      "bytes": 16101,
+      "sha256": "a475e70c8b1f173336deec09ccddf38eab83eeaf3600a9ccbbf261cf38946e68",
+      "bytes": 14530,
       "scope": "client"
     },
     {
@@ -262,6 +262,12 @@
       "sha256": "d5d991d864b4d9ea1ae6eec4cbe94f04b53c91ce25ac3595a1696049fbf00cc8",
       "bytes": 5728,
       "scope": "relay_and_client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/swp-full-sessions-v1.json",
+      "sha256": "28ea72d1ad2c86cdd342cbb29ee43f1141ed0b513dc7a90aa34ba4cc2c094c0a",
+      "bytes": 209865,
+      "scope": "client"
     },
     {
       "path": "tests/fixtures/nipmkt/swp-profile-v1.json",

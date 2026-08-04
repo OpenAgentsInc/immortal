@@ -60,6 +60,10 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 - Added the deterministic client fixture, machine-contract export, protocol
   and source-lane decisions, and native/no-default/WASM/manual conformance
   coverage. The relay executable-profile and NIP-11 claims remain unchanged.
+- Closed the client audit with snapshot-v2 typed effect-request replay,
+  funding-gated crash-restorable terminal observations, signer-local Close
+  ancestry, balanced unknown-loss bounds, reverse-refund recovery branches,
+  and a 62-case production-API replay corpus backed by exact sessions.
 
 ### 2026-08-04 — Codex 5.6 Sol, M12 MKT-SWP relay adoption / issue #11
 

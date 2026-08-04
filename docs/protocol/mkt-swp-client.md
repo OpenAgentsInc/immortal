@@ -121,11 +121,15 @@ restricted to IPv4, IPv6, or `localhost` loopback; remote endpoints require
 HTTPS.
 
 External wallet, payment, and broadcast operations use deterministic effect
-IDs. The snapshot stores only the exact request digest, external identifier,
-and result digest. After restart, a matching funding or wallet-signing result
+IDs. Snapshot schema v2 stores each bounded typed public request beside a
+result row containing its exact request digest, external identifier, and
+result digest. After restart, a matching funding or wallet-signing result
 suppresses the callback and returns the prior operation; binding one effect ID
-to a different request or result fails closed. Recovery observations bind the
-session, Order, and canonical per-rail digest before any action is selected.
+to a different request or result fails closed. Terminal rail and reverse
+Lightning-disposition observations require the exact durable funding request
+and effect. Their typed requests remain restorable in the crash window before
+a Status, Cancel, or Close cites them. Recovery observations bind the session,
+Order, and canonical per-rail digest before any action is selected.
 Recovery is rail-specific. A reverse requester claims the destination output
 when it is claimable. A chain requester claims
 the destination first, waits while that output remains funded and unclaimed,
@@ -140,7 +144,10 @@ Status, Close, recursive custody, and persisted-effect checks without dropping
 the effect ledger. Recovery refuses completion on a gap, fork, invalid Status
 ancestry, explicit loss, unknown rail state, or contradictory observations.
 An unpaid-final invoice plus an unfunded reverse destination terminates as
-cancelled instead of waiting indefinitely.
+cancelled instead of waiting indefinitely. A refunded reverse destination is
+cancelled only with an unpaid-final invoice, waits only while payment is
+pending and the counterparty is available, and otherwise reports explicit
+loss.
 
 ## Custody boundary
 
@@ -167,9 +174,14 @@ Run its native/no-default/WASM gate with:
 ./scripts/test-swp-verification.sh
 ```
 
-The deterministic 126-case client corpus is
-`tests/fixtures/nipmkt/swp-client-engine-v1.json`. Its closed-world replay
-builds and validates all six completed/refunded flow sessions through the same
-library code on native and in a zero-import WASM probe. The probe-only feature
-does not enter ordinary client or server builds. The full repository gate is
-`./scripts/test-conformance.sh`.
+The deterministic 62-case client corpus is
+`tests/fixtures/nipmkt/swp-client-engine-v1.json`, backed by exact serialized
+sessions in `tests/fixtures/nipmkt/swp-full-sessions-v1.json`. Its closed-world
+replay executes the production client APIs for all six completed/refunded
+flows, every requester topology, the bounded verification-refusal set,
+sequencing, effect crash windows, cancellation, balanced loss, and recovery.
+The 20 custody tripwires independently execute the recursive production
+validator. The nameset and every expected error, result, and action are pinned;
+drift fails replay on native and in the zero-import WASM probe. The probe-only
+feature does not enter ordinary client or server builds. The full repository
+gate is `./scripts/test-conformance.sh`.

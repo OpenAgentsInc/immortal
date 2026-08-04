@@ -28,7 +28,7 @@ use crate::{
     },
 };
 
-const SNAPSHOT_SCHEMA: &str = "openagents.mkt-swp.client-snapshot.v1";
+const SNAPSHOT_SCHEMA: &str = "openagents.mkt-swp.client-snapshot.v2";
 const EXIT_SCHEMA: &str = "openagents.mkt-swp.exit.v1";
 const MAX_SIGNED_RECORDS: usize = 512;
 const MAX_EXIT_PACKAGES: usize = 16;
@@ -1108,6 +1108,9 @@ pub struct LocalLightningReadiness {
     pub state: LightningReadinessState,
 }
 
+type LightningReadinessAdapter<'a> =
+    dyn FnMut(&LightningReadinessRequest) -> Result<LocalLightningReadiness, String> + 'a;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LightningProgressRequest {
     pub order_id: String,
@@ -1522,6 +1525,7 @@ pub struct SwapSession<State> {
     signed_records: Vec<Event>,
     exit_packages: Vec<ExitPackage>,
     external_effects: BTreeMap<String, ExternalEffectResult>,
+    external_effect_requests: BTreeMap<String, ExternalEffectRequest>,
     funding_request: Option<FundingAuthorizationRequest>,
     _state: PhantomData<State>,
 }
@@ -1534,6 +1538,8 @@ struct PersistedSwapSession {
     signed_records: Vec<Event>,
     exit_packages: Vec<ExitPackage>,
     external_effects: Vec<ExternalEffectResult>,
+    #[serde(default)]
+    external_effect_requests: Vec<ExternalEffectRequest>,
     #[serde(default)]
     funding_request: Option<FundingAuthorizationRequest>,
 }
@@ -1552,6 +1558,7 @@ impl SwapSession<AwaitingVerification> {
             signed_records,
             exit_packages,
             external_effects: BTreeMap::new(),
+            external_effect_requests: BTreeMap::new(),
             funding_request: None,
             _state: PhantomData,
         })
@@ -1596,7 +1603,9 @@ impl SwapSession<AwaitingVerification> {
                 request,
             )?;
         }
-        if persisted.external_effects.len() > MAX_EXTERNAL_EFFECTS {
+        if persisted.external_effects.len() > MAX_EXTERNAL_EFFECTS
+            || persisted.external_effect_requests.len() > MAX_EXTERNAL_EFFECTS
+        {
             return Err(SwapClientError::new(
                 "swp_unresolved_loss",
                 "persisted swap snapshot has too many external effects",
@@ -1621,6 +1630,40 @@ impl SwapSession<AwaitingVerification> {
                     ));
                 }
             }
+        }
+        let mut external_effect_requests = BTreeMap::new();
+        for request in persisted.external_effect_requests {
+            let effect_id = request.effect_id().to_owned();
+            if external_effect_requests
+                .insert(effect_id.clone(), request)
+                .is_some()
+            {
+                return Err(SwapClientError::new(
+                    "swp_external_effect_conflict",
+                    "persisted effect ID has multiple typed requests",
+                ));
+            }
+        }
+        if external_effect_requests.len() != external_effects.len() {
+            return Err(SwapClientError::new(
+                "swp_external_effect_conflict",
+                "persisted effect ledger lacks an exact typed request",
+            ));
+        }
+        for (effect_id, effect) in &external_effects {
+            let request = external_effect_requests.get(effect_id).ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_external_effect_conflict",
+                    "persisted effect has no exact typed request",
+                )
+            })?;
+            validate_effect_request_binding(
+                &persisted.config,
+                &persisted.signed_records,
+                &persisted.exit_packages,
+                request,
+                effect,
+            )?;
         }
         let bound = BoundSession::from_records(&persisted.config, &persisted.signed_records)?;
         let topology = requester_topology(bound.swap_type);
@@ -1649,9 +1692,9 @@ impl SwapSession<AwaitingVerification> {
             &persisted.signed_records,
             &external_effects,
         )?;
-        validate_persisted_effect_sources(
-            &persisted.config,
-            &persisted.signed_records,
+        validate_post_funding_effects(
+            persisted.funding_request.as_ref(),
+            &external_effect_requests,
             &external_effects,
         )?;
         Ok(Self {
@@ -1659,6 +1702,7 @@ impl SwapSession<AwaitingVerification> {
             signed_records: persisted.signed_records,
             exit_packages: persisted.exit_packages,
             external_effects,
+            external_effect_requests,
             funding_request: persisted.funding_request,
             _state: PhantomData,
         })
@@ -1678,6 +1722,7 @@ impl SwapSession<AwaitingVerification> {
             signed_records: self.signed_records,
             exit_packages: self.exit_packages,
             external_effects: self.external_effects,
+            external_effect_requests: self.external_effect_requests,
             funding_request: self.funding_request,
             _state: PhantomData,
         })
@@ -1710,9 +1755,7 @@ impl SwapSession<AwaitingVerification> {
     fn verify_before_fund_inner<F>(
         self,
         input: VerifyBeforeFundInput,
-        mut observe_lightning: Option<
-            &mut dyn FnMut(&LightningReadinessRequest) -> Result<LocalLightningReadiness, String>,
-        >,
+        mut observe_lightning: Option<&mut LightningReadinessAdapter<'_>>,
         mut wallet_authorize: F,
     ) -> Result<SwapSession<FundingAuthorized>, SwapClientError>
     where
@@ -1844,6 +1887,7 @@ impl SwapSession<AwaitingVerification> {
             signed_records: self.signed_records,
             exit_packages: self.exit_packages,
             external_effects: self.external_effects,
+            external_effect_requests: self.external_effect_requests,
             funding_request: Some(request),
             _state: PhantomData::<FundingAuthorized>,
         })
@@ -1934,6 +1978,7 @@ impl SwapSession<FundingAuthorized> {
             signed_records: self.signed_records,
             exit_packages: self.exit_packages,
             external_effects: self.external_effects,
+            external_effect_requests: self.external_effect_requests,
             funding_request: self.funding_request,
             _state: PhantomData::<ReversePaymentObserved>,
         })
@@ -2153,6 +2198,7 @@ impl<State> SwapSession<State> {
             }
             ExternalEffectRequest::WalletSigning(_)
             | ExternalEffectRequest::EsploraBroadcast(_)
+            | ExternalEffectRequest::RailEvidence(_)
             | ExternalEffectRequest::LightningDisposition(_)
                 if self.funding_request.is_none() =>
             {
@@ -2162,6 +2208,16 @@ impl<State> SwapSession<State> {
                 ));
             }
             _ => {}
+        }
+        if matches!(
+            request,
+            ExternalEffectRequest::RailEvidence(_) | ExternalEffectRequest::LightningDisposition(_)
+        ) {
+            require_exact_funding_effect(
+                self.funding_request.as_ref(),
+                &self.external_effect_requests,
+                &self.external_effects,
+            )?;
         }
         validate_effect(&effect)?;
         validate_effect_request_binding(
@@ -2193,6 +2249,8 @@ impl<State> SwapSession<State> {
             ));
         }
         let effect_id = effect.effect_id.clone();
+        self.external_effect_requests
+            .insert(effect_id.clone(), request.clone());
         self.external_effects.insert(effect_id.clone(), effect);
         self.external_effects.get(&effect_id).ok_or_else(|| {
             SwapClientError::new("swp_external_effect_conflict", "effect insertion failed")
@@ -2255,6 +2313,11 @@ impl<State> SwapSession<State> {
     where
         F: FnMut(&RailObservationRequest) -> Result<LocalRailEvidence, String>,
     {
+        require_exact_funding_effect(
+            self.funding_request.as_ref(),
+            &self.external_effect_requests,
+            &self.external_effects,
+        )?;
         let bound = BoundSession::from_records(&self.config, &self.signed_records)?;
         let observation_request = rail_observation_request(&bound, leg_id, outcome)?;
         let observation = observe(&observation_request).map_err(|error| {
@@ -2406,6 +2469,7 @@ impl<State> SwapSession<State> {
             signed_records: self.signed_records.clone(),
             exit_packages: self.exit_packages.clone(),
             external_effects: self.external_effects.values().cloned().collect(),
+            external_effect_requests: self.external_effect_requests.values().cloned().collect(),
             funding_request: self.funding_request.clone(),
         };
         let value = serde_json::to_value(&persisted).map_err(|error| {
@@ -2536,7 +2600,17 @@ impl<State> SwapSession<State> {
                 if observation.chain_state
                     == Some(ChainRecoveryState::DestinationRefundedFinal) =>
             {
-                Ok(RecoveryAction::DirectCounterpartyCompletion)
+                match observation.lightning_state {
+                    Some(LightningRecoveryState::UnpaidFinal) => Ok(RecoveryAction::Cancelled),
+                    Some(LightningRecoveryState::Pending) if observation.counterparty_available => {
+                        Ok(RecoveryAction::WaitForCounterparty)
+                    }
+                    Some(LightningRecoveryState::Paid)
+                    | Some(LightningRecoveryState::Pending)
+                    | None => Ok(RecoveryAction::ExplicitLoss {
+                        code: "swp_unresolved_loss".to_owned(),
+                    }),
+                }
             }
             SwapType::Reverse
                 if observation.chain_state == Some(ChainRecoveryState::DestinationNotFunded)
@@ -2760,6 +2834,14 @@ impl StatusProjection {
             .ok_or_else(|| {
                 SwapClientError::new("swp_status_transition_invalid", "Status has no swp_state")
             })?;
+            let declared_base_state = tag_value(event, "state")?;
+            if base_state_for(swp_state) != Some(declared_base_state) {
+                invalid_claims.insert(
+                    event.id.clone(),
+                    "swp_status_transition_invalid: base state tag does not match the MKT-SWP state"
+                        .to_owned(),
+                );
+            }
             if !state_allowed_for_swap(role, swp_state, swap_type) {
                 invalid_claims.insert(
                     event.id.clone(),
@@ -2906,6 +2988,35 @@ impl StatusProjection {
             return Err(SwapClientError::new(
                 "swp_status_transition_invalid",
                 "one signer has an unauthorized or invalid Status claim",
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_signer_contiguous(&self, signer: &str) -> Result<(), SwapClientError> {
+        if self.forks.contains_key(signer) {
+            return Err(SwapClientError::new(
+                "swp_status_fork",
+                "Close signer has conflicting Status records at one sequence",
+            ));
+        }
+        if self.gaps.contains_key(signer) {
+            return Err(SwapClientError::new(
+                "swp_status_gap",
+                "Close signer has a missing Status sequence",
+            ));
+        }
+        let signer_has_invalid_claim = self
+            .streams
+            .get(signer)
+            .into_iter()
+            .flat_map(BTreeMap::values)
+            .flatten()
+            .any(|event_id| self.invalid_claims.contains_key(event_id));
+        if signer_has_invalid_claim {
+            return Err(SwapClientError::new(
+                "swp_status_transition_invalid",
+                "Close signer has an unauthorized or invalid Status ancestor",
             ));
         }
         Ok(())
@@ -4141,13 +4252,13 @@ fn verify_order_selection(
             ));
         }
     }
-    if let Some(selected_input) = selection.get("input_amount").and_then(Value::as_str)
-        && contract.get("input_amount").and_then(Value::as_str) != Some(selected_input)
-    {
-        return Err(SwapClientError::new(
-            "swp_order_selection_invalid",
-            "Swap Contract does not bind the selected input amount",
-        ));
+    if let Some(selected_input) = selection.get("input_amount").and_then(Value::as_str) {
+        if contract.get("input_amount").and_then(Value::as_str) != Some(selected_input) {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Swap Contract does not bind the selected input amount",
+            ));
+        }
     }
     verify_amount_equation(contract)
 }
@@ -4468,8 +4579,7 @@ fn effective_cancellation(records: &[Event]) -> Result<Option<&Event>, SwapClien
         })?;
     if tag_value(request, "action")? != "request"
         || accepted.pubkey == request.pubkey
-        || effective.pubkey != request.pubkey
-        || accepted.pubkey == effective.pubkey
+        || (effective.pubkey != request.pubkey && effective.pubkey != accepted.pubkey)
     {
         return Err(SwapClientError::new(
             "swp_cancel_ineffective",
@@ -4614,7 +4724,7 @@ fn validate_lifecycle(
         )?;
         match outcome {
             "completed" | "refunded" => {
-                status_projection.require_contiguous()?;
+                status_projection.require_signer_contiguous(&close.pubkey)?;
                 let status_id = profile
                     .get("status_id")
                     .and_then(Value::as_str)
@@ -4914,6 +5024,7 @@ fn validate_loss_accounting(
     if unknown_fields
         .iter()
         .any(|field| !numeric_fields.contains(field))
+        || unknown_fields.contains("input_committed")
         || (matches!(
             outcome,
             "completed" | "rejected" | "cancelled" | "expired" | "refunded"
@@ -4992,6 +5103,26 @@ fn validate_loss_accounting(
         .and_then(|value| value.checked_add(miner_fee))
         .and_then(|value| value.checked_add(lightning_fee))
         .and_then(|value| value.checked_add(unresolved));
+    let failure_balance_valid =
+        if matches!(outcome, "failed" | "disputed" | "unresolved") && input_committed > 0 {
+            let known_accounted = accounted_input.unwrap_or(u64::MAX);
+            let unknown_fee_capacity = [
+                ("provider_fee_paid", maximum_provider_fee),
+                ("miner_fee_paid", maximum_miner_fee),
+                ("lightning_routing_fee_paid", maximum_lightning_fee),
+            ]
+            .into_iter()
+            .filter_map(|(field, maximum)| unknown_fields.contains(field).then_some(maximum))
+            .try_fold(0_u64, u64::checked_add);
+            known_accounted == input_committed
+                || (known_accounted < input_committed
+                    && (unknown_fields.contains("principal_unresolved")
+                        || unknown_fee_capacity
+                            .and_then(|capacity| known_accounted.checked_add(capacity))
+                            .is_some_and(|maximum_accounted| maximum_accounted >= input_committed)))
+        } else {
+            true
+        };
     if input_committed > maximum_input
         || provider_fee > maximum_provider_fee
         || miner_fee > maximum_miner_fee
@@ -5007,10 +5138,7 @@ fn validate_loss_accounting(
                 .is_none_or(|recovered| recovered < input_committed.saturating_sub(provider_fee))
                 || unresolved != 0
                 || accounted_input != Some(input_committed)))
-        || (matches!(outcome, "failed" | "disputed" | "unresolved")
-            && input_committed > 0
-            && unknown_fields.is_empty()
-            && accounted_input != Some(input_committed))
+        || !failure_balance_valid
         || (matches!(outcome, "cancelled" | "rejected" | "expired")
             && (input_committed != 0
                 || input_recovered != 0
@@ -7649,65 +7777,56 @@ fn validate_effect_row_binding(
     Ok(())
 }
 
-fn validate_persisted_effect_sources(
-    config: &SwapClientConfig,
-    records: &[Event],
+fn require_exact_funding_effect(
+    funding_request: Option<&FundingAuthorizationRequest>,
+    requests: &BTreeMap<String, ExternalEffectRequest>,
     effects: &BTreeMap<String, ExternalEffectResult>,
 ) -> Result<(), SwapClientError> {
-    let bound = BoundSession::from_records(config, records)?;
-    let contract = object(&bound.contract, "Swap Contract")?;
-    for leg in contract
-        .get("legs")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
+    let funding_request = funding_request.ok_or_else(|| {
+        SwapClientError::new(
+            "swp_funding_not_authorized",
+            "terminal observation has no verified persisted funding authorization",
+        )
+    })?;
+    let typed_request = ExternalEffectRequest::Funding(funding_request.clone());
+    let effect_id = funding_request.action.effect_id();
+    let persisted_request = requests.get(effect_id).ok_or_else(|| {
+        SwapClientError::new(
+            "swp_funding_not_authorized",
+            "terminal observation requires the exact persisted funding request",
+        )
+    })?;
+    let effect = effects.get(effect_id).ok_or_else(|| {
+        SwapClientError::new(
+            "swp_funding_not_authorized",
+            "terminal observation requires a durably recorded funding effect",
+        )
+    })?;
+    if persisted_request != &typed_request
+        || effect.order_id != funding_request.order_id
+        || effect.effect_id != effect_id
+        || effect.request_sha256 != typed_request.sha256()?
     {
-        let Some(leg_id) = leg.get("leg_id").and_then(Value::as_str) else {
-            continue;
-        };
-        for outcome in ["completed", "refunded"] {
-            let evidence_effect = effect_id(
-                &bound.order.id,
-                &format!("terminal_evidence_{outcome}"),
-                leg_id,
-            )?;
-            if effects.contains_key(&evidence_effect)
-                && !records.iter().any(|event| {
-                    event.kind == MKT_CLOSE_KIND
-                        && tag_value(event, "outcome").ok() == Some(outcome)
-                })
-            {
-                return Err(SwapClientError::new(
-                    "swp_external_effect_conflict",
-                    "persisted terminal evidence has no signed Close source for recomputation",
-                ));
-            }
-        }
+        return Err(SwapClientError::new(
+            "swp_external_effect_conflict",
+            "persisted funding effect differs from its verified authorization",
+        ));
     }
-    if bound.swap_type == SwapType::Reverse {
-        let disposition_effect = effect_id(
-            &bound.order.id,
-            "lightning_disposition",
-            requester_topology(bound.swap_type).funding_leg_id,
-        )?;
-        if effects.contains_key(&disposition_effect) {
-            let has_signed_source = records.iter().any(|event| {
-                if !matches!(event.kind, MKT_CANCEL_KIND | MKT_CLOSE_KIND) {
-                    return false;
-                }
-                parse_content(event)
-                    .ok()
-                    .and_then(|content| content.get("mkt_swp").cloned())
-                    .and_then(|profile| profile.get("lightning_disposition").cloned())
-                    .is_some()
-            });
-            if !has_signed_source {
-                return Err(SwapClientError::new(
-                    "swp_external_effect_conflict",
-                    "persisted Lightning disposition has no signed terminal source",
-                ));
-            }
-        }
+    Ok(())
+}
+
+fn validate_post_funding_effects(
+    funding_request: Option<&FundingAuthorizationRequest>,
+    requests: &BTreeMap<String, ExternalEffectRequest>,
+    effects: &BTreeMap<String, ExternalEffectResult>,
+) -> Result<(), SwapClientError> {
+    if requests.values().any(|request| {
+        matches!(
+            request,
+            ExternalEffectRequest::RailEvidence(_) | ExternalEffectRequest::LightningDisposition(_)
+        )
+    }) {
+        require_exact_funding_effect(funding_request, requests, effects)?;
     }
     Ok(())
 }
@@ -8405,6 +8524,8 @@ pub mod fixture_replay {
     use crate::market::MarketSigner;
 
     const MANIFEST: &str = include_str!("../tests/fixtures/nipmkt/swp-client-engine-v1.json");
+    const FULL_SESSION_FIXTURES: &str =
+        include_str!("../tests/fixtures/nipmkt/swp-full-sessions-v1.json");
     const SECTIONS: [&str; 8] = [
         "record_construction",
         "flows",
@@ -8416,7 +8537,7 @@ pub mod fixture_replay {
         "lifecycle",
     ];
     const CASE_NAMESET_SHA256: &str =
-        "121cbe1013284c829eae5413f4c41311f3fd2c65608cdedcf3157f820baaea3f";
+        "b33c5547a211da6ab7d202c8e7fa959ad13dab1d137c3a68cfbb86b4cffd9325";
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ReplaySummary {
@@ -8452,7 +8573,12 @@ pub mod fixture_replay {
     impl std::error::Error for ReplayFailure {}
 
     pub fn replay_embedded_manifest() -> Result<ReplaySummary, ReplayFailure> {
-        let manifest: Value = serde_json::from_str(MANIFEST)
+        replay_manifest_bytes(MANIFEST.as_bytes())
+    }
+
+    #[doc(hidden)]
+    pub fn replay_manifest_bytes(manifest: &[u8]) -> Result<ReplaySummary, ReplayFailure> {
+        let manifest: Value = serde_json::from_slice(manifest)
             .map_err(|error| ReplayFailure::new(10, format!("manifest JSON: {error}")))?;
         if manifest.get("schema").and_then(Value::as_str)
             != Some("openagents.mkt-swp.client-engine-fixtures.v1")
@@ -8529,6 +8655,30 @@ pub mod fixture_replay {
                     "custody tripwire is empty or duplicated",
                 ));
             }
+            let expected_error = tripwire
+                .get("error")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ReplayFailure::new(63, "custody tripwire has no error"))?;
+            let mut body = serde_json::Map::new();
+            body.insert(member.to_owned(), Value::String("forbidden".to_owned()));
+            match reject_custody_material(&Value::Object(body)) {
+                Err(error) if error.code == expected_error => {}
+                Err(error) => {
+                    return Err(ReplayFailure::new(
+                        64,
+                        format!(
+                            "custody tripwire {member} returned {}, expected {expected_error}",
+                            error.code
+                        ),
+                    ));
+                }
+                Ok(()) => {
+                    return Err(ReplayFailure::new(
+                        65,
+                        format!("custody tripwire {member} was accepted"),
+                    ));
+                }
+            }
         }
         Ok(ReplaySummary {
             cases,
@@ -8590,6 +8740,13 @@ pub mod fixture_replay {
         Ok(())
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum CaseOutcome {
+        Result(&'static str),
+        Error(&'static str),
+        Action(&'static str),
+    }
+
     fn replay_case(
         section: &str,
         entry: &Value,
@@ -8602,155 +8759,70 @@ pub mod fixture_replay {
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| format!("{section} fixture case has no name"))?;
-        replay_section_law(section, name, object)?;
-        match section {
+        let outcome = match section {
             "record_construction" => {
-                if let Some(error) = object.get("error").and_then(Value::as_str) {
-                    if !error.starts_with("swp_") {
-                        return Err("record construction case has an invalid error".to_owned());
-                    }
-                    return Ok(());
-                }
-                let kind = object
-                    .get("kind")
-                    .and_then(Value::as_u64)
-                    .ok_or_else(|| "record construction case has no kind".to_owned())?;
-                if !(39_604..=39_610).contains(&kind)
-                    || !matches!(
-                        object.get("author").and_then(Value::as_str),
-                        Some("requester" | "provider")
-                    )
-                {
-                    return Err("record construction case has invalid kind or author".to_owned());
-                }
+                return Err(format!("{name} has no production replay implementation"));
             }
             "flows" => {
                 let swap_type =
                     required_choice(object, "swap_type", &["submarine", "reverse", "chain"])?;
-                let outcome = required_choice(object, "terminal", &["completed", "refunded"])?;
-                replay_terminal_flow(swap_type, outcome)?;
-                flow_outcomes.insert((swap_type.to_owned(), outcome.to_owned()));
+                let terminal = required_choice(object, "terminal", &["completed", "refunded"])?;
+                build_terminal_flow(swap_type, terminal)?;
+                flow_outcomes.insert((swap_type.to_owned(), terminal.to_owned()));
+                return Ok(());
             }
             "flow_topologies" => {
-                required_choice(object, "swap_type", &["submarine", "reverse", "chain"])?;
-                let funding = object
-                    .get("requester_funding")
-                    .and_then(Value::as_object)
-                    .ok_or_else(|| "flow topology has no requester funding".to_owned())?;
-                required_choice(
-                    funding,
-                    "action",
-                    &["broadcast_bitcoin", "pay_lightning_invoice"],
-                )?;
-                if object
-                    .get("requester_exits")
-                    .and_then(Value::as_array)
-                    .is_none_or(|exits| exits.is_empty())
-                {
-                    return Err("flow topology has no requester exit".to_owned());
-                }
+                replay_topology_law(object)?;
+                return Ok(());
             }
-            _ => {
-                let expected = ["result", "error", "action"]
-                    .into_iter()
-                    .filter_map(|member| object.get(member).and_then(Value::as_str))
-                    .collect::<Vec<_>>();
-                if expected.len() != 1 || expected[0].is_empty() {
-                    return Err(format!(
-                        "{section} case has no single executable expectation"
-                    ));
-                }
-                if object.contains_key("error") && !expected[0].starts_with("swp_") {
-                    return Err(format!("{section} negative case has an invalid error code"));
-                }
-            }
-        }
-        Ok(())
+            "verify_before_fund" => replay_verify_before_fund_case(object)?,
+            "sequencing" => replay_sequencing_case(object)?,
+            "external_effects" => replay_external_effect_case(object)?,
+            "recovery" => replay_recovery_case(object)?,
+            "lifecycle" => replay_lifecycle_case(object)?,
+            _ => return Err(format!("fixture section {section} is not executable")),
+        };
+        assert_case_outcome(name, object, outcome)
     }
 
-    fn replay_section_law(
-        section: &str,
+    fn assert_case_outcome(
         name: &str,
         object: &serde_json::Map<String, Value>,
+        actual: CaseOutcome,
     ) -> Result<(), String> {
-        match section {
-            "record_construction" => {
-                if let Some(kind) = object.get("kind").and_then(Value::as_u64) {
-                    let allocated = [
-                        MKT_RFQ_KIND,
-                        MKT_QUOTE_KIND,
-                        MKT_ORDER_KIND,
-                        MKT_STATUS_KIND,
-                        MKT_CANCEL_KIND,
-                        MKT_CLOSE_KIND,
-                        MKT_SWP_SWAP_CONTRACT_KIND,
-                    ];
-                    if !allocated
-                        .contains(&u16::try_from(kind).map_err(|_| "fixture kind exceeds u16")?)
-                    {
-                        return Err(format!("{name} does not exercise an allocated record kind"));
-                    }
-                }
-            }
-            "flows" => {}
-            "flow_topologies" => replay_topology_law(object)?,
-            "verify_before_fund" => {
-                let raw = decode_hex(
-                    "02000000010000000000000000000000000000000000000000000000000000000000000000ffffffff00ffffffff010100000000000000015100000000",
-                    "fixture verification transaction",
-                )
-                .map_err(|error| error.to_string())?;
-                Transaction::parse(&raw)
-                    .map_err(|error| format!("{name} transaction law: {error}"))?;
-                if name.contains("order-") {
-                    canonical_amount("100").map_err(|error| error.to_string())?;
-                }
-            }
-            "sequencing" => {
-                let mut projection = StatusProjection {
-                    streams: BTreeMap::new(),
-                    gaps: BTreeMap::new(),
-                    forks: BTreeMap::new(),
-                    close_records: Vec::new(),
-                    invalid_claims: BTreeMap::new(),
-                    last_valid_status: BTreeMap::new(),
-                };
-                let expected = object.get("error").and_then(Value::as_str);
-                if expected == Some("swp_status_gap") {
-                    projection.gaps.insert("fixture".to_owned(), vec![0]);
-                } else if expected == Some("swp_status_fork") {
-                    projection.forks.insert("fixture".to_owned(), vec![0]);
-                } else if matches!(
-                    expected,
-                    Some("swp_status_transition_invalid" | "swp_status_signer_invalid")
-                ) {
-                    projection.invalid_claims.insert(
-                        "fixture".to_owned(),
-                        expected.unwrap_or_default().to_owned(),
-                    );
-                }
-                match (projection.require_contiguous(), expected) {
-                    (Ok(()), None) | (Err(_), Some(_)) => {}
-                    _ => return Err(format!("{name} did not execute its Status projection law")),
-                }
-            }
-            "external_effects" => {
-                let order_id = "11".repeat(32);
-                let first = effect_id(&order_id, "fixture-effect", "source")
-                    .map_err(|error| error.to_string())?;
-                let replay = effect_id(&order_id, "fixture-effect", "source")
-                    .map_err(|error| error.to_string())?;
-                let conflict = effect_id(&order_id, "fixture-effect", "destination")
-                    .map_err(|error| error.to_string())?;
-                if first != replay || first == conflict {
-                    return Err(format!("{name} failed deterministic effect identity"));
-                }
-            }
-            "recovery" => replay_recovery_law(name)?,
-            "lifecycle" => replay_lifecycle_law(name)?,
-            _ => return Err(format!("fixture section {section} is not executable")),
+        let expected = ["result", "error", "action"]
+            .into_iter()
+            .filter_map(|member| {
+                object
+                    .get(member)
+                    .and_then(Value::as_str)
+                    .map(|value| (member, value))
+            })
+            .collect::<Vec<_>>();
+        let [expected] = expected.as_slice() else {
+            return Err(format!("{name} has no single executable expectation"));
+        };
+        let matches = match (expected.0, actual) {
+            ("result", CaseOutcome::Result(actual))
+            | ("error", CaseOutcome::Error(actual))
+            | ("action", CaseOutcome::Action(actual)) => expected.1 == actual,
+            _ => false,
+        };
+        if matches {
+            Ok(())
+        } else {
+            Err(format!(
+                "{name} returned {actual:?}, expected {} {}",
+                expected.0, expected.1
+            ))
         }
-        Ok(())
+    }
+
+    fn error_outcome<T>(result: Result<T, SwapClientError>) -> Result<CaseOutcome, String> {
+        match result {
+            Ok(_) => Err("negative fixture unexpectedly succeeded".to_owned()),
+            Err(error) => Ok(CaseOutcome::Error(error.code)),
+        }
     }
 
     fn replay_topology_law(object: &serde_json::Map<String, Value>) -> Result<(), String> {
@@ -8769,12 +8841,31 @@ pub mod fixture_replay {
             SwapType::Reverse => "pay_lightning_invoice",
             SwapType::Submarine | SwapType::Chain => "broadcast_bitcoin",
         };
+        let declared_exits = object
+            .get("requester_exits")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "topology fixture has no requester exits".to_owned())?
+            .iter()
+            .map(|exit| {
+                let exit = exit
+                    .as_object()
+                    .ok_or_else(|| "topology exit is not an object".to_owned())?;
+                Ok((
+                    required_choice(exit, "leg_id", &["source", "destination"])?,
+                    required_choice(exit, "path", &["claim", "refund"])?,
+                    required_choice(exit, "condition", &["hashlock", "cltv", "csv"])?,
+                ))
+            })
+            .collect::<Result<BTreeSet<_>, String>>()?;
+        let executable_exits = topology
+            .exits
+            .iter()
+            .map(|exit| (exit.leg_id, exit.path, exit.condition))
+            .collect::<BTreeSet<_>>();
         if funding.get("leg_id").and_then(Value::as_str) != Some(topology.funding_leg_id)
+            || funding.get("role").and_then(Value::as_str) != Some(topology.funding_effect_role)
             || funding.get("action").and_then(Value::as_str) != Some(expected_action)
-            || object
-                .get("requester_exits")
-                .and_then(Value::as_array)
-                .is_none_or(|exits| exits.len() != topology.exits.len())
+            || declared_exits != executable_exits
         {
             return Err(
                 "topology fixture differs from the executable requester topology".to_owned(),
@@ -8783,57 +8874,1055 @@ pub mod fixture_replay {
         Ok(())
     }
 
-    fn replay_recovery_law(name: &str) -> Result<(), String> {
-        if name.contains("plaintext-non-loopback") {
-            if validate_esplora_url("http://192.168.1.10/api").is_ok() {
-                return Err("non-loopback plaintext recovery endpoint was accepted".to_owned());
+    fn replay_verify_before_fund_case(
+        object: &serde_json::Map<String, Value>,
+    ) -> Result<CaseOutcome, String> {
+        let mutation = object
+            .get("mutation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "verify-before-fund case has no mutation".to_owned())?;
+        let (group, key) = match mutation {
+            "selection_outside" => ("specialized", "selection_outside"),
+            "expired_quote" => ("specialized", "expired_quote"),
+            "reverse_adapter_missing"
+            | "reverse_readiness_mismatch"
+            | "reverse_readiness_expired" => ("flows", "reverse"),
+            _ => ("flows", "submarine"),
+        };
+        let (session, mut input) = load_fixture_session(group, key)?;
+        match mutation {
+            "payment_hash" => {
+                input.payment_hash = "ff".repeat(32);
+                error_outcome(session.verify_before_fund(input, |_| Ok(())))
             }
-        } else if name.contains("loopback-http") {
-            validate_esplora_url("http://127.0.0.1:3002/api").map_err(|error| error.to_string())?;
+            "taproot_script" => {
+                input.funding.taproot_script = "51".to_owned();
+                error_outcome(session.verify_before_fund(input, |_| Ok(())))
+            }
+            "zero_confirmations" | "replaceable_funding" => {
+                let raw_transaction = input.funding.raw_transaction.clone();
+                let authorized = session
+                    .verify_before_fund(input, |_| Ok(()))
+                    .map_err(|error| format!("fixture authorization: {error}"))?;
+                error_outcome(
+                    authorized.observe_bitcoin_funding_with("source", |request| {
+                        if request.transaction_template_sha256
+                            != lower_hex(&sha256(
+                                &decode_hex(&raw_transaction, "fixture funding transaction")
+                                    .map_err(|error| error.to_string())?,
+                            ))
+                        {
+                            return Err("Bitcoin observation request digest differs".to_owned());
+                        }
+                        Ok(LocalBitcoinObservation {
+                            raw_transaction: raw_transaction.clone(),
+                            confirmations: u32::from(mutation == "replaceable_funding"),
+                            replacement_detected: mutation == "replaceable_funding",
+                            competing_spend_detected: false,
+                        })
+                    }),
+                )
+            }
+            "fund_deadline_reached" => {
+                input.timeout_ladder = TimeoutLadder::Submarine {
+                    current_height: 110,
+                    fund_last: 110,
+                    claim_last: 120,
+                    refund_first: 140,
+                    chain_finality_blocks: 1,
+                    broadcast_safety_blocks: 2,
+                    reorg_safety_blocks: 6,
+                    invoice_expiration_time: 2_000,
+                    claim_expected_time: 1_000,
+                };
+                error_outcome(session.verify_before_fund(input, |_| Ok(())))
+            }
+            "amountless_invoice" => {
+                let fixture: Value = serde_json::from_str(include_str!(
+                    "../tests/fixtures/nipmkt/swp-verification.json"
+                ))
+                .map_err(|error| format!("verification fixture JSON: {error}"))?;
+                input
+                    .invoice
+                    .as_mut()
+                    .ok_or_else(|| "submarine fixture has no invoice".to_owned())?
+                    .invoice = fixture["bolt11"]["invoice"]
+                    .as_str()
+                    .ok_or_else(|| "amountless invoice fixture is missing".to_owned())?
+                    .to_owned();
+                error_outcome(session.verify_before_fund(input, |_| Ok(())))
+            }
+            "provider_contract_missing" | "rfq_missing" => {
+                let mut records = session.signed_records().to_vec();
+                if mutation == "provider_contract_missing" {
+                    records.retain(|event| {
+                        event.kind != MKT_SWP_SWAP_CONTRACT_KIND
+                            || event.pubkey == session.config().requester_pubkey
+                    });
+                } else {
+                    records.retain(|event| event.kind != MKT_RFQ_KIND);
+                }
+                let session = SwapSession::from_signed_records(
+                    session.config().clone(),
+                    records,
+                    session.exit_packages().to_vec(),
+                )
+                .map_err(|error| format!("mutated fixture session: {error}"))?;
+                error_outcome(session.verify_before_fund(input, |_| Ok(())))
+            }
+            "snapshot_seed" => {
+                let mut snapshot: Value =
+                    serde_json::from_slice(&session.persist().map_err(|error| error.to_string())?)
+                        .map_err(|error| format!("fixture snapshot JSON: {error}"))?;
+                snapshot
+                    .as_object_mut()
+                    .ok_or_else(|| "fixture snapshot is not an object".to_owned())?
+                    .insert("seed".to_owned(), Value::String("forbidden".to_owned()));
+                error_outcome(SwapSession::<AwaitingVerification>::restore(
+                    &serde_json::to_vec(&snapshot)
+                        .map_err(|error| format!("fixture snapshot JSON: {error}"))?,
+                ))
+            }
+            "selection_outside" | "expired_quote" => {
+                error_outcome(session.verify_before_fund(input, |_| Ok(())))
+            }
+            "expired_invoice" => {
+                let invoice = input
+                    .invoice
+                    .as_mut()
+                    .ok_or_else(|| "submarine fixture has no invoice".to_owned())?;
+                invoice.observed_at = invoice.observed_at.saturating_add(1_000_000);
+                error_outcome(session.verify_before_fund(input, |_| Ok(())))
+            }
+            "minimum_final_cltv" => {
+                let invoice = input
+                    .invoice
+                    .as_mut()
+                    .ok_or_else(|| "submarine fixture has no invoice".to_owned())?;
+                invoice.required_minimum_final_cltv_delta =
+                    invoice.required_minimum_final_cltv_delta.saturating_add(1);
+                error_outcome(session.verify_before_fund(input, |_| Ok(())))
+            }
+            "funding_amount" => {
+                input.funding.expected_amount = "99999".to_owned();
+                error_outcome(session.verify_before_fund(input, |_| Ok(())))
+            }
+            "invoice_network" => {
+                input
+                    .invoice
+                    .as_mut()
+                    .ok_or_else(|| "submarine fixture has no invoice".to_owned())?
+                    .expected_network = "testnet".to_owned();
+                error_outcome(session.verify_before_fund(input, |_| Ok(())))
+            }
+            "exit_package_missing" => {
+                let session = SwapSession::from_signed_records(
+                    session.config().clone(),
+                    session.signed_records().to_vec(),
+                    Vec::new(),
+                )
+                .map_err(|error| format!("exit-free fixture session: {error}"))?;
+                error_outcome(session.verify_before_fund(input, |_| Ok(())))
+            }
+            "reverse_adapter_missing" => {
+                error_outcome(session.verify_before_fund(input, |_| Ok(())))
+            }
+            "reverse_readiness_mismatch" | "reverse_readiness_expired" => {
+                error_outcome(session.verify_before_fund_with_lightning(
+                    input,
+                    |request| {
+                        Ok(LocalLightningReadiness {
+                            invoice_sha256: request.invoice_sha256.clone(),
+                            payment_hash: if mutation == "reverse_readiness_mismatch" {
+                                "ff".repeat(32)
+                            } else {
+                                request.payment_hash.clone()
+                            },
+                            observed_at: if mutation == "reverse_readiness_expired" {
+                                request.invoice_expires_at
+                            } else {
+                                request.invoice_expires_at.saturating_sub(1)
+                            },
+                            state: LightningReadinessState::Acceptable,
+                        })
+                    },
+                    |_| Ok(()),
+                ))
+            }
+            "contract_digest_fork"
+            | "contract_order_mismatch"
+            | "rfq_constraint_weakened"
+            | "leg_execution_field" => replay_contract_refusal(session, input, mutation),
+            "exit_funding_txid"
+            | "exit_hidden_taproot_sibling"
+            | "exit_signing_key"
+            | "exit_lock_value"
+            | "exit_internal_key"
+            | "exit_verifier_digest"
+            | "recovery_package_unusable"
+            | "exit_package_malformed" => replay_exit_package_refusal(mutation),
+            "persisted_funding_effect_conflict" => {
+                replay_persisted_funding_conflict(session, input)
+            }
+            "effective_cancel_before_fund" => {
+                let session = fixture_effectively_cancelled_session(session)?;
+                error_outcome(session.verify_before_fund(input, |_| Ok(())))
+            }
+            _ => Err(format!("unknown verify-before-fund mutation {mutation}")),
+        }
+    }
+
+    fn replay_contract_refusal(
+        session: SwapSession<AwaitingVerification>,
+        input: VerifyBeforeFundInput,
+        mutation: &str,
+    ) -> Result<CaseOutcome, String> {
+        let requester = fixture_signer(b"requester")?;
+        let provider = fixture_signer(b"provider")?;
+        let factory =
+            SwapRecordFactory::new(session.config().clone()).map_err(|error| error.to_string())?;
+        let order_id = fixture_order_id(&session)?;
+        let quote_id = session
+            .signed_records()
+            .iter()
+            .find(|event| event.kind == MKT_QUOTE_KIND)
+            .map(|event| event.id.clone())
+            .ok_or_else(|| "fixture session has no Quote".to_owned())?;
+        let mut records = session.signed_records().to_vec();
+        if mutation == "rfq_constraint_weakened" {
+            let index = records
+                .iter()
+                .position(|event| event.kind == MKT_RFQ_KIND)
+                .ok_or_else(|| "fixture session has no RFQ".to_owned())?;
+            let original = records[index].clone();
+            let mut content = parse_content(&original).map_err(|error| error.to_string())?;
+            content["mkt_swp"]["constraints"]["maximum_total_fee"] =
+                Value::String("999999".to_owned());
+            records[index] = requester.sign(
+                original.created_at,
+                original.kind,
+                original.tags,
+                serde_json::to_string(&content)
+                    .map_err(|error| format!("mutated RFQ JSON: {error}"))?,
+            );
         } else {
-            let observation = LocalRecoveryObservation {
-                session_id: "22".repeat(32),
-                order_id: "33".repeat(32),
-                binding_sha256: "44".repeat(32),
-                current_height: 1,
-                source_funding_confirmation_height: None,
-                counterparty_available: false,
-                completed: false,
-                record_loss: false,
-                rail_state_unknown: false,
-                lightning_state: Some(LightningRecoveryState::UnpaidFinal),
-                chain_state: Some(ChainRecoveryState::DestinationNotFunded),
+            let requester_index = records
+                .iter()
+                .position(|event| {
+                    event.kind == MKT_SWP_SWAP_CONTRACT_KIND && event.pubkey == requester.pubkey()
+                })
+                .ok_or_else(|| "fixture requester contract is missing".to_owned())?;
+            let provider_index = records
+                .iter()
+                .position(|event| {
+                    event.kind == MKT_SWP_SWAP_CONTRACT_KIND && event.pubkey == provider.pubkey()
+                })
+                .ok_or_else(|| "fixture provider contract is missing".to_owned())?;
+            let original = records[requester_index].clone();
+            let content = parse_content(&original).map_err(|error| error.to_string())?;
+            let contract = content["mkt_swp"]["contract"].clone();
+            let (contract, contract_order_id, replace_requester) = match mutation {
+                "contract_digest_fork" => {
+                    let mut contract = contract;
+                    contract["clock_skew_seconds"] = Value::String("61".to_owned());
+                    (contract, order_id.clone(), false)
+                }
+                "contract_order_mismatch" => {
+                    let mut contract = contract;
+                    let different_order = "ef".repeat(32);
+                    contract["order_id"] = Value::String(different_order.clone());
+                    (contract, different_order, true)
+                }
+                "leg_execution_field" => {
+                    let mut contract = contract;
+                    contract["legs"][0]["refund_lock_value"] = Value::String("141".to_owned());
+                    (contract, order_id.clone(), true)
+                }
+                _ => return Err(format!("unknown contract mutation {mutation}")),
             };
-            if recovery_observation_is_contradictory(SwapType::Reverse, &observation) {
-                return Err(format!(
-                    "{name} treated the no-fund terminal state as contradictory"
+            let make_contract = |role, signer: &MarketSigner, original: &Event| {
+                fixture_signed(
+                    factory
+                        .swap_contract(
+                            role,
+                            original.created_at,
+                            tag_value(original, "d").map_err(|error| error.to_string())?,
+                            SwapContractReferences {
+                                order_id: &contract_order_id,
+                                quote_id: &quote_id,
+                                accepted_status_id: None,
+                            },
+                            contract.clone(),
+                        )
+                        .map_err(|error| error.to_string())?,
+                    signer,
+                )
+            };
+            if replace_requester {
+                records[requester_index] =
+                    make_contract(ParticipantRole::Requester, &requester, &original)?;
+            }
+            let original_provider = records[provider_index].clone();
+            records[provider_index] =
+                make_contract(ParticipantRole::Provider, &provider, &original_provider)?;
+        }
+        let session = match SwapSession::from_signed_records(
+            session.config().clone(),
+            records,
+            session.exit_packages().to_vec(),
+        ) {
+            Ok(session) => session,
+            Err(error) => return Ok(CaseOutcome::Error(error.code)),
+        };
+        error_outcome(session.verify_before_fund(input, |_| Ok(())))
+    }
+
+    fn replay_exit_package_refusal(mutation: &str) -> Result<CaseOutcome, String> {
+        let fixture_key = if matches!(
+            mutation,
+            "exit_hidden_taproot_sibling"
+                | "exit_signing_key"
+                | "exit_internal_key"
+                | "recovery_package_unusable"
+        ) {
+            "reverse"
+        } else {
+            "submarine"
+        };
+        let (session, input) = load_fixture_session("flows", fixture_key)?;
+        let mut document = session
+            .exit_packages()
+            .first()
+            .ok_or_else(|| "fixture session has no exit package".to_owned())?
+            .document()
+            .clone();
+        match mutation {
+            "exit_funding_txid" => {
+                document["funding"]["transaction_id"] = Value::String("00".repeat(32));
+            }
+            "exit_hidden_taproot_sibling" => {
+                let control = document["verification"]["taproot_control_block"]
+                    .as_str()
+                    .ok_or_else(|| "fixture exit has no control block".to_owned())?;
+                document["verification"]["taproot_control_block"] =
+                    Value::String(format!("{control}{}", "00".repeat(32)));
+            }
+            "exit_signing_key" => {
+                let script = document["verification"]["taproot_script"]
+                    .as_str()
+                    .ok_or_else(|| "fixture exit has no Taproot script".to_owned())?;
+                let prefix_end = script
+                    .len()
+                    .checked_sub(68)
+                    .ok_or_else(|| "fixture Taproot script is too short".to_owned())?;
+                document["verification"]["taproot_script"] = Value::String(format!(
+                    "{}20{}ac",
+                    &script[..prefix_end],
+                    "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
                 ));
             }
+            "exit_lock_value" => {
+                document["exit"]["lock_time"] = json!(141);
+            }
+            "exit_internal_key" => {
+                let control = document["verification"]["taproot_control_block"]
+                    .as_str()
+                    .ok_or_else(|| "fixture exit has no control block".to_owned())?;
+                let suffix = control
+                    .get(66..)
+                    .ok_or_else(|| "fixture control block is too short".to_owned())?;
+                document["verification"]["taproot_control_block"] = Value::String(format!(
+                    "{}{}{}",
+                    &control[..2],
+                    "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+                    suffix
+                ));
+            }
+            "exit_verifier_digest" => {
+                document["verification"]["verifier_digest"] = Value::String("ff".repeat(32));
+            }
+            "recovery_package_unusable" => {
+                document["funding"]["transaction_id"] = Value::Null;
+                document["funding"]["transaction_template"] = Value::Null;
+            }
+            "exit_package_malformed" => {
+                document
+                    .as_object_mut()
+                    .ok_or_else(|| "fixture exit is not an object".to_owned())?
+                    .remove("schema");
+            }
+            _ => return Err(format!("unknown exit-package mutation {mutation}")),
         }
+        let package = match ExitPackage::parse(document) {
+            Ok(package) => package,
+            Err(error) => return Ok(CaseOutcome::Error(error.code)),
+        };
+        let mut packages = session.exit_packages().to_vec();
+        let first = packages
+            .first_mut()
+            .ok_or_else(|| "fixture session has no mutable exit package".to_owned())?;
+        *first = package;
+        let session = match SwapSession::from_signed_records(
+            session.config().clone(),
+            session.signed_records().to_vec(),
+            packages,
+        ) {
+            Ok(session) => session,
+            Err(error) => return Ok(CaseOutcome::Error(error.code)),
+        };
+        if fixture_key == "reverse" {
+            error_outcome(session.verify_before_fund_with_lightning(
+                input,
+                |request| {
+                    Ok(LocalLightningReadiness {
+                        invoice_sha256: request.invoice_sha256.clone(),
+                        payment_hash: request.payment_hash.clone(),
+                        observed_at: request.invoice_expires_at.saturating_sub(1),
+                        state: LightningReadinessState::Acceptable,
+                    })
+                },
+                |_| Ok(()),
+            ))
+        } else {
+            error_outcome(session.verify_before_fund(input, |_| Ok(())))
+        }
+    }
+
+    fn replay_persisted_funding_conflict(
+        session: SwapSession<AwaitingVerification>,
+        input: VerifyBeforeFundInput,
+    ) -> Result<CaseOutcome, String> {
+        let mut session = session
+            .verify_before_fund(input.clone(), |_| Ok(()))
+            .map_err(|error| format!("fixture authorization: {error}"))?;
+        record_fixture_funding_effect(&mut session, "submarine")?;
+        let effect_id = session
+            .funding_request()
+            .map_err(|error| error.to_string())?
+            .action
+            .effect_id()
+            .to_owned();
+        let effect = session
+            .external_effects
+            .get_mut(&effect_id)
+            .ok_or_else(|| "fixture session has no funding effect".to_owned())?;
+        effect.request_sha256 = "ff".repeat(32);
+        let session = SwapSession::<AwaitingVerification> {
+            config: session.config,
+            signed_records: session.signed_records,
+            exit_packages: session.exit_packages,
+            external_effects: session.external_effects,
+            external_effect_requests: session.external_effect_requests,
+            funding_request: None,
+            _state: PhantomData,
+        };
+        error_outcome(session.verify_before_fund(input, |_| Ok(())))
+    }
+
+    fn replay_sequencing_case(
+        object: &serde_json::Map<String, Value>,
+    ) -> Result<CaseOutcome, String> {
+        let operation = object
+            .get("operation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "sequencing case has no operation".to_owned())?;
+        match operation {
+            "signed_status_base_state_mismatch" => {
+                let (mut session, _) = load_fixture_session("flows", "submarine")?;
+                let requester = fixture_signer(b"requester")?;
+                let factory = SwapRecordFactory::new(session.config().clone())
+                    .map_err(|error| error.to_string())?;
+                let order_id = fixture_order_id(&session)?;
+                let request = factory
+                    .status(
+                        ParticipantRole::Requester,
+                        700,
+                        &fixture_distinct("status", "base-mismatch", 0),
+                        &order_id,
+                        StatusState {
+                            sequence: 0,
+                            previous: None,
+                            base_state: "completed",
+                            swp_state: "completed",
+                        },
+                        Default::default(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let mut tags = request.tags.clone();
+                let state = tags
+                    .iter_mut()
+                    .find(|tag| tag.name() == Some("state"))
+                    .and_then(|tag| tag.0.get_mut(1))
+                    .ok_or_else(|| "signed Status fixture has no state tag".to_owned())?;
+                *state = "awaiting_input".to_owned();
+                let event = requester.sign(request.created_at, request.kind, tags, request.content);
+                session
+                    .ingest_signed_record(event)
+                    .map_err(|error| format!("signed Status ingestion: {error}"))?;
+                error_outcome(session.recovery_action_with(|request| {
+                    Ok(LocalRecoveryObservation {
+                        session_id: request.session_id.clone(),
+                        order_id: request.order_id.clone(),
+                        binding_sha256: request.binding_sha256.clone(),
+                        current_height: 800,
+                        source_funding_confirmation_height: Some(700),
+                        counterparty_available: false,
+                        completed: true,
+                        record_loss: false,
+                        rail_state_unknown: false,
+                        lightning_state: Some(LightningRecoveryState::Paid),
+                        chain_state: None,
+                    })
+                }))
+            }
+            "close_signer_local_other_gap" => {
+                let mut session = build_terminal_flow("submarine", "completed")?;
+                let provider = fixture_signer(b"provider")?;
+                let factory = SwapRecordFactory::new(session.config().clone())
+                    .map_err(|error| error.to_string())?;
+                let order_id = fixture_order_id(&session)?;
+                let gap = fixture_signed(
+                    factory
+                        .status(
+                            ParticipantRole::Provider,
+                            905,
+                            &fixture_distinct("provider", "gap", 1),
+                            &order_id,
+                            StatusState {
+                                sequence: 1,
+                                previous: Some(&"78".repeat(32)),
+                                base_state: "accepted",
+                                swp_state: "accepted",
+                            },
+                            Default::default(),
+                        )
+                        .map_err(|error| error.to_string())?,
+                    &provider,
+                )?;
+                session
+                    .ingest_signed_record(gap)
+                    .map_err(|error| format!("other-signer gap ingestion: {error}"))?;
+                Ok(CaseOutcome::Result("accepted"))
+            }
+            _ => Err(format!("unknown sequencing operation {operation}")),
+        }
+    }
+
+    fn replay_external_effect_case(
+        object: &serde_json::Map<String, Value>,
+    ) -> Result<CaseOutcome, String> {
+        let operation = object
+            .get("operation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "external-effect case has no operation".to_owned())?;
+        match operation {
+            "terminal_evidence_before_funding" => {
+                let (session, _) = load_fixture_session("flows", "submarine")?;
+                error_outcome(session.verify_terminal_rail_evidence_with(
+                    "source",
+                    "completed",
+                    fixture_rail_evidence,
+                ))
+            }
+            "terminal_evidence_without_funding_effect" => {
+                let (session, input) = load_fixture_session("flows", "submarine")?;
+                let session = session
+                    .verify_before_fund(input, |_| Ok(()))
+                    .map_err(|error| format!("fixture authorization: {error}"))?;
+                error_outcome(session.verify_terminal_rail_evidence_with(
+                    "source",
+                    "completed",
+                    fixture_rail_evidence,
+                ))
+            }
+            "rail_evidence_orphan_restore" => {
+                let (session, input) = load_fixture_session("flows", "submarine")?;
+                let mut session = session
+                    .verify_before_fund(input, |_| Ok(()))
+                    .map_err(|error| format!("fixture authorization: {error}"))?;
+                record_fixture_funding_effect(&mut session, "submarine")?;
+                let verified = session
+                    .verify_terminal_rail_evidence_with(
+                        "source",
+                        "completed",
+                        fixture_rail_evidence,
+                    )
+                    .map_err(|error| format!("fixture rail evidence: {error}"))?;
+                session
+                    .record_external_effect(&verified.request, verified.result)
+                    .map_err(|error| format!("fixture rail effect: {error}"))?;
+                SwapSession::<AwaitingVerification>::restore(
+                    &session.persist().map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| format!("orphan rail restore: {error}"))?;
+                Ok(CaseOutcome::Result("restored"))
+            }
+            "lightning_disposition_orphan_restore" => {
+                let (session, input) = load_fixture_session("flows", "reverse")?;
+                let mut session = authorize_fixture_reverse(session, input)?;
+                record_fixture_funding_effect(&mut session, "reverse")?;
+                let disposition = session
+                    .verify_reverse_no_fund_with(|request| {
+                        Ok(LocalLightningDisposition {
+                            invoice_sha256: request.invoice_sha256.clone(),
+                            payment_hash: request.payment_hash.clone(),
+                            observed_at: 800,
+                            view_sha256: "86".repeat(32),
+                            state: LightningDispositionState::UnpaidFinal,
+                            principal_moved: false,
+                            external_identifier: "fixture:reverse:unpaid-final".to_owned(),
+                        })
+                    })
+                    .map_err(|error| format!("fixture Lightning disposition: {error}"))?;
+                session
+                    .record_external_effect(&disposition.request, disposition.result)
+                    .map_err(|error| format!("fixture disposition effect: {error}"))?;
+                SwapSession::<AwaitingVerification>::restore(
+                    &session.persist().map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| format!("orphan disposition restore: {error}"))?;
+                Ok(CaseOutcome::Result("restored"))
+            }
+            "reverse_progress_before_funding_effect" | "reverse_progress_terminal_state" => {
+                let (session, input) = load_fixture_session("flows", "reverse")?;
+                let mut session = authorize_fixture_reverse(session, input)?;
+                if operation == "reverse_progress_terminal_state" {
+                    record_fixture_funding_effect(&mut session, "reverse")?;
+                }
+                error_outcome(session.observe_reverse_payment_with(|request| {
+                    Ok(LocalLightningProgress {
+                        invoice_sha256: request.invoice_sha256.clone(),
+                        payment_hash: request.payment_hash.clone(),
+                        observed_at: 800,
+                        view_sha256: "92".repeat(32),
+                        state: if operation == "reverse_progress_terminal_state" {
+                            LightningProgressState::Settled
+                        } else {
+                            LightningProgressState::PaymentPending
+                        },
+                    })
+                }))
+            }
+            _ => Err(format!("unknown external-effect operation {operation}")),
+        }
+    }
+
+    fn replay_recovery_case(
+        object: &serde_json::Map<String, Value>,
+    ) -> Result<CaseOutcome, String> {
+        let (session, _) = load_fixture_session("flows", "reverse")?;
+        let lightning_state = match object
+            .get("lightning_state")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "recovery case has no Lightning state".to_owned())?
+        {
+            "unpaid_final" => LightningRecoveryState::UnpaidFinal,
+            "paid" => LightningRecoveryState::Paid,
+            "pending" => LightningRecoveryState::Pending,
+            state => return Err(format!("unknown recovery Lightning state {state}")),
+        };
+        let counterparty_available = object
+            .get("counterparty_available")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| "recovery case has no availability flag".to_owned())?;
+        let action = session
+            .recovery_action_with(|request| {
+                Ok(LocalRecoveryObservation {
+                    session_id: request.session_id.clone(),
+                    order_id: request.order_id.clone(),
+                    binding_sha256: request.binding_sha256.clone(),
+                    current_height: 800,
+                    source_funding_confirmation_height: Some(700),
+                    counterparty_available,
+                    completed: false,
+                    record_loss: false,
+                    rail_state_unknown: false,
+                    lightning_state: Some(lightning_state),
+                    chain_state: Some(ChainRecoveryState::DestinationRefundedFinal),
+                })
+            })
+            .map_err(|error| format!("fixture recovery: {error}"))?;
+        Ok(CaseOutcome::Action(match action {
+            RecoveryAction::Cancelled => "cancelled",
+            RecoveryAction::ExplicitLoss { .. } => "explicit_loss",
+            RecoveryAction::WaitForCounterparty => "wait_for_counterparty",
+            action => return Err(format!("unexpected fixture recovery action {action:?}")),
+        }))
+    }
+
+    fn replay_lifecycle_case(
+        object: &serde_json::Map<String, Value>,
+    ) -> Result<CaseOutcome, String> {
+        let operation = object
+            .get("operation")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "lifecycle case has no operation".to_owned())?;
+        match operation {
+            "cancel_acceptor_effective" | "cancel_outsider_effective" => {
+                replay_cancellation_case(operation)
+            }
+            "loss_accounting" => replay_loss_case(
+                object
+                    .get("mutation")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "loss case has no mutation".to_owned())?,
+            ),
+            _ => Err(format!("unknown lifecycle operation {operation}")),
+        }
+    }
+
+    fn load_fixture_session(
+        group: &str,
+        key: &str,
+    ) -> Result<(SwapSession<AwaitingVerification>, VerifyBeforeFundInput), String> {
+        let fixtures: Value = serde_json::from_str(FULL_SESSION_FIXTURES)
+            .map_err(|error| format!("full-session fixture JSON: {error}"))?;
+        if fixtures.get("schema").and_then(Value::as_str)
+            != Some("openagents.mkt-swp.full-session-fixtures.v1")
+        {
+            return Err("full-session fixture schema is unsupported".to_owned());
+        }
+        let fixture = fixtures
+            .get(group)
+            .and_then(|entries| entries.get(key))
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("full-session fixture is missing {group}.{key}"))?;
+        let snapshot = serde_json::to_vec(
+            fixture
+                .get("snapshot")
+                .ok_or_else(|| format!("{group}.{key} snapshot is missing"))?,
+        )
+        .map_err(|error| format!("full-session snapshot JSON: {error}"))?;
+        let input = serde_json::from_value(
+            fixture
+                .get("verification")
+                .cloned()
+                .ok_or_else(|| format!("{group}.{key} verification input is missing"))?,
+        )
+        .map_err(|error| format!("full-session verification input: {error}"))?;
+        let session = SwapSession::<AwaitingVerification>::restore(&snapshot)
+            .map_err(|error| format!("full-session restore: {error}"))?;
+        Ok((session, input))
+    }
+
+    fn authorize_fixture_reverse(
+        session: SwapSession<AwaitingVerification>,
+        input: VerifyBeforeFundInput,
+    ) -> Result<SwapSession<FundingAuthorized>, String> {
+        session
+            .verify_before_fund_with_lightning(
+                input,
+                |request| {
+                    Ok(LocalLightningReadiness {
+                        invoice_sha256: request.invoice_sha256.clone(),
+                        payment_hash: request.payment_hash.clone(),
+                        observed_at: request.invoice_expires_at.saturating_sub(1),
+                        state: LightningReadinessState::Acceptable,
+                    })
+                },
+                |_| Ok(()),
+            )
+            .map_err(|error| format!("fixture reverse authorization: {error}"))
+    }
+
+    fn record_fixture_funding_effect(
+        session: &mut SwapSession<FundingAuthorized>,
+        swap_name: &str,
+    ) -> Result<(), String> {
+        let funding = session
+            .funding_request()
+            .map_err(|error| error.to_string())?
+            .clone();
+        let request = ExternalEffectRequest::Funding(funding.clone());
+        let effect = ExternalEffectResult {
+            order_id: funding.order_id,
+            effect_id: request.effect_id().to_owned(),
+            request_sha256: request.sha256().map_err(|error| error.to_string())?,
+            external_identifier: format!("fixture:{swap_name}:funding"),
+            result_sha256: "91".repeat(32),
+        };
+        session
+            .record_external_effect(&request, effect)
+            .map_err(|error| format!("fixture funding effect: {error}"))?;
         Ok(())
     }
 
-    fn replay_lifecycle_law(name: &str) -> Result<(), String> {
-        let authority = json!({
-            "mode":"local",
-            "pubkeys":[],
-            "adapter_sha256":"55".repeat(32),
-        });
-        validate_evidence_authority(&authority).map_err(|error| error.to_string())?;
-        let reference = json!({
-            "class":"lightning_payment",
-            "rung":"verified",
-            "rail":"lightning",
-            "reference":"66".repeat(32),
-            "artifact_sha256":"77".repeat(32),
-            "producer_pubkey":"88".repeat(32),
+    fn fixture_rail_evidence(
+        request: &RailObservationRequest,
+    ) -> Result<LocalRailEvidence, String> {
+        let requester = fixture_signer(b"requester")?;
+        let transaction_id = "b0".repeat(32);
+        Ok(LocalRailEvidence {
+            artifact_sha256: "a0".repeat(32),
+            observed_at: 800,
+            view: "fixture terminal rail evidence".to_owned(),
+            settlement_reference: if request.rail == "bitcoin" {
+                if request.evidence_class == "bitcoin_spend" {
+                    format!("{transaction_id}:0")
+                } else {
+                    transaction_id
+                }
+            } else {
+                request.reference.clone()
+            },
+            verifier_pubkey: None,
+            producer_pubkey: requester.pubkey().to_owned(),
+            external_identifier: "fixture:terminal-evidence".to_owned(),
+        })
+    }
+
+    fn fixture_order_id<State>(session: &SwapSession<State>) -> Result<String, String> {
+        session
+            .signed_records()
+            .iter()
+            .find(|event| event.kind == MKT_ORDER_KIND)
+            .map(|event| event.id.clone())
+            .ok_or_else(|| "fixture session has no Order".to_owned())
+    }
+
+    fn fixture_effectively_cancelled_session(
+        mut session: SwapSession<AwaitingVerification>,
+    ) -> Result<SwapSession<AwaitingVerification>, String> {
+        let requester = fixture_signer(b"requester")?;
+        let provider = fixture_signer(b"provider")?;
+        let factory =
+            SwapRecordFactory::new(session.config().clone()).map_err(|error| error.to_string())?;
+        let order_id = fixture_order_id(&session)?;
+        let request = fixture_signed(
+            factory
+                .cancel(
+                    ParticipantRole::Requester,
+                    700,
+                    &fixture_distinct("cancel", "request", 2),
+                    &order_id,
+                    Cancellation {
+                        action: "request",
+                        reason: "user_request",
+                        request_id: None,
+                        accepted_id: None,
+                    },
+                    json!({}),
+                )
+                .map_err(|error| error.to_string())?,
+            &requester,
+        )?;
+        session
+            .ingest_signed_record(request.clone())
+            .map_err(|error| format!("fixture cancellation request: {error}"))?;
+        let accepted = fixture_signed(
+            factory
+                .cancel(
+                    ParticipantRole::Provider,
+                    701,
+                    &fixture_distinct("cancel", "accepted", 2),
+                    &order_id,
+                    Cancellation {
+                        action: "accepted",
+                        reason: "user_request",
+                        request_id: Some(&request.id),
+                        accepted_id: None,
+                    },
+                    json!({}),
+                )
+                .map_err(|error| error.to_string())?,
+            &provider,
+        )?;
+        session
+            .ingest_signed_record(accepted.clone())
+            .map_err(|error| format!("fixture cancellation acceptance: {error}"))?;
+        let effective = fixture_signed(
+            factory
+                .cancel(
+                    ParticipantRole::Provider,
+                    702,
+                    &fixture_distinct("cancel", "effective", 2),
+                    &order_id,
+                    Cancellation {
+                        action: "effective",
+                        reason: "user_request",
+                        request_id: Some(&request.id),
+                        accepted_id: Some(&accepted.id),
+                    },
+                    json!({}),
+                )
+                .map_err(|error| error.to_string())?,
+            &provider,
+        )?;
+        session
+            .ingest_signed_record(effective)
+            .map_err(|error| format!("fixture effective cancellation: {error}"))?;
+        Ok(session)
+    }
+
+    fn replay_cancellation_case(operation: &str) -> Result<CaseOutcome, String> {
+        let (mut session, _) = load_fixture_session("flows", "submarine")?;
+        let requester = fixture_signer(b"requester")?;
+        let provider = fixture_signer(b"provider")?;
+        let factory =
+            SwapRecordFactory::new(session.config().clone()).map_err(|error| error.to_string())?;
+        let order_id = fixture_order_id(&session)?;
+        let request = fixture_signed(
+            factory
+                .cancel(
+                    ParticipantRole::Requester,
+                    700,
+                    &fixture_distinct("cancel", "request", 0),
+                    &order_id,
+                    Cancellation {
+                        action: "request",
+                        reason: "user_request",
+                        request_id: None,
+                        accepted_id: None,
+                    },
+                    json!({}),
+                )
+                .map_err(|error| error.to_string())?,
+            &requester,
+        )?;
+        session
+            .ingest_signed_record(request.clone())
+            .map_err(|error| format!("cancellation request ingestion: {error}"))?;
+        let accepted = fixture_signed(
+            factory
+                .cancel(
+                    ParticipantRole::Provider,
+                    701,
+                    &fixture_distinct("cancel", "accepted", 0),
+                    &order_id,
+                    Cancellation {
+                        action: "accepted",
+                        reason: "user_request",
+                        request_id: Some(&request.id),
+                        accepted_id: None,
+                    },
+                    json!({}),
+                )
+                .map_err(|error| error.to_string())?,
+            &provider,
+        )?;
+        session
+            .ingest_signed_record(accepted.clone())
+            .map_err(|error| format!("cancellation acceptance ingestion: {error}"))?;
+        let effective_request = factory
+            .cancel(
+                ParticipantRole::Provider,
+                702,
+                &fixture_distinct("cancel", "effective", 0),
+                &order_id,
+                Cancellation {
+                    action: "effective",
+                    reason: "user_request",
+                    request_id: Some(&request.id),
+                    accepted_id: Some(&accepted.id),
+                },
+                json!({}),
+            )
+            .map_err(|error| error.to_string())?;
+        let effective = if operation == "cancel_acceptor_effective" {
+            fixture_signed(effective_request, &provider)?
+        } else {
+            let outsider = fixture_signer(b"cancel-outsider")?;
+            outsider.sign(
+                effective_request.created_at,
+                effective_request.kind,
+                effective_request.tags,
+                effective_request.content,
+            )
+        };
+        match session.ingest_signed_record(effective) {
+            Ok(true) if operation == "cancel_acceptor_effective" => {
+                Ok(CaseOutcome::Result("accepted"))
+            }
+            Ok(_) => Err("cancellation fixture returned an unexpected replay result".to_owned()),
+            Err(error) => Ok(CaseOutcome::Error(error.code)),
+        }
+    }
+
+    fn replay_loss_case(mutation: &str) -> Result<CaseOutcome, String> {
+        let (mut session, _) = load_fixture_session("flows", "submarine")?;
+        let requester = fixture_signer(b"requester")?;
+        let factory =
+            SwapRecordFactory::new(session.config().clone()).map_err(|error| error.to_string())?;
+        let order_id = fixture_order_id(&session)?;
+        let bound = BoundSession::from_records(&session.config, &session.signed_records)
+            .map_err(|error| format!("fixture bound session: {error}"))?;
+        let contract =
+            object(&bound.contract, "fixture Swap Contract").map_err(|error| error.to_string())?;
+        let assets = contract
+            .get("asset_pair")
+            .and_then(Value::as_array)
+            .filter(|assets| assets.len() == 2)
+            .ok_or_else(|| "fixture contract has no asset pair".to_owned())?;
+        let verifier = verifier_for_leg(contract, "source")
+            .map_err(|error| format!("fixture source verifier: {error}"))?;
+        let funding_transaction =
+            require_string(verifier, "funding_transaction", None, "swp_unresolved_loss")
+                .map_err(|error| error.to_string())?;
+        let transaction = Transaction::parse(
+            &decode_hex(funding_transaction, "fixture funding transaction")
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("fixture funding transaction: {error}"))?;
+        let evidence = json!({
+            "class":"replacement",
+            "rung":"measured",
+            "rail":"bitcoin",
+            "reference":lower_hex(&transaction.txid().map_err(|error| error.to_string())?),
+            "artifact_sha256":verifier.get("funding_transaction_sha256"),
+            "producer_pubkey":requester.pubkey(),
             "verifier_pubkey":null,
-            "verifier_policy":"mkt-swp-lightning-v1",
-            "observed_at":1,
-            "view":format!("fixture-lifecycle-{name}"),
+            "verifier_policy":verifier.get("verifier_policy"),
+            "observed_at":800,
+            "view":"fixture-height:800"
         });
-        validate_mkt_swp_evidence_reference(&reference)
-            .map_err(|error| format!("{name} evidence law: {error}"))
+        let input_amount = fixture_string(contract, "input_amount")?;
+        let mut loss = json!({
+            "input_asset_id":assets[0],
+            "output_asset_id":assets[1],
+            "input_committed":input_amount,
+            "input_recovered":"0",
+            "output_received":"0",
+            "provider_fee_paid":"0",
+            "miner_fee_paid":"0",
+            "lightning_routing_fee_paid":"0",
+            "guarantee_recovery_received":"0",
+            "principal_unresolved":"0",
+            "reservation_released":"0",
+            "evidence_refs":[evidence],
+            "unknown_fields":[],
+        });
+        let (outcome, unknown_field) = match mutation {
+            "vanished_principal" => ("failed", None),
+            "unknown_output_received" => ("unresolved", Some("output_received")),
+            "unknown_miner_fee_paid" => ("unresolved", Some("miner_fee_paid")),
+            "unknown_input_committed_failed" => ("failed", Some("input_committed")),
+            "unknown_input_committed_disputed" => ("disputed", Some("input_committed")),
+            "unknown_input_committed_unresolved" => ("unresolved", Some("input_committed")),
+            _ => return Err(format!("unknown loss mutation {mutation}")),
+        };
+        if let Some(unknown_field) = unknown_field {
+            loss.as_object_mut()
+                .ok_or_else(|| "fixture loss is not an object".to_owned())?
+                .remove(unknown_field);
+            loss["unknown_fields"] = json!([unknown_field]);
+        }
+        let close = fixture_signed(
+            factory
+                .close(
+                    ParticipantRole::Requester,
+                    810,
+                    &fixture_distinct("loss", mutation, 0),
+                    &order_id,
+                    CloseOutcome {
+                        outcome,
+                        terminal_at: 810,
+                    },
+                    json!({"loss_accounting":loss}),
+                )
+                .map_err(|error| error.to_string())?,
+            &requester,
+        )?;
+        error_outcome(session.ingest_signed_record(close))
     }
 
     fn required_choice<'a>(
@@ -8853,143 +9942,136 @@ pub mod fixture_replay {
         Ok(value)
     }
 
-    fn replay_terminal_flow(swap_name: &str, outcome: &str) -> Result<(), String> {
-        let manifest: Value =
-            serde_json::from_str(MANIFEST).map_err(|error| format!("manifest JSON: {error}"))?;
-        let deterministic = manifest
-            .get("deterministic_session")
-            .and_then(Value::as_object)
-            .ok_or_else(|| "deterministic session is missing".to_owned())?;
-        let requester = fixture_signer(b"requester")?;
-        let provider = fixture_signer(b"provider")?;
-        let session_id = fixture_string(deterministic, "session_id")?;
-        let offering_id = fixture_string(deterministic, "offering_id")?;
-        let payment_hash = fixture_string(deterministic, "payment_hash")?;
-        let funding_transaction = fixture_string(deterministic, "funding_transaction")?;
-        let invoice = fixture_string(deterministic, "invoice")?;
-        let config = SwapClientConfig {
-            session_id: session_id.to_owned(),
-            requester_pubkey: requester.pubkey().to_owned(),
-            provider_pubkey: provider.pubkey().to_owned(),
-            offering_address: format!("39601:{}:{offering_id}", provider.pubkey()),
-        };
-        let factory = SwapRecordFactory::new(config.clone()).map_err(|error| error.to_string())?;
-        let rfq = fixture_signed(
-            factory
-                .rfq(
-                    100,
-                    &"a1".repeat(32),
-                    1_000,
-                    json!({"constraints":{"swap_type":[swap_name]}}),
-                )
-                .map_err(|error| error.to_string())?,
-            &requester,
-        )?;
-        let quote = fixture_signed(
-            factory
-                .quote(
-                    101,
-                    &"a2".repeat(32),
-                    &rfq.id,
-                    1_000,
-                    QuotePolicy {
-                        quote_class: "firm",
-                        reservation: "soft",
+    fn build_terminal_flow(
+        swap_name: &str,
+        outcome: &str,
+    ) -> Result<SwapSession<FundingAuthorized>, String> {
+        let (session, verification) = load_fixture_session("flows", swap_name)?;
+        let mut authorized = if swap_name == "reverse" {
+            session
+                .verify_before_fund_with_lightning(
+                    verification,
+                    |request| {
+                        Ok(LocalLightningReadiness {
+                            invoice_sha256: request.invoice_sha256.clone(),
+                            payment_hash: request.payment_hash.clone(),
+                            observed_at: request.invoice_expires_at.saturating_sub(1),
+                            state: LightningReadinessState::Acceptable,
+                        })
                     },
-                    json!({"terms":{"swap_type":swap_name}}),
+                    |_| Ok(()),
                 )
-                .map_err(|error| error.to_string())?,
-            &provider,
-        )?;
-        let order = fixture_signed(
-            factory
-                .order(
-                    102,
-                    &"a3".repeat(32),
-                    &quote.id,
-                    json!({"accepted_quote_id":quote.id}),
-                )
-                .map_err(|error| error.to_string())?,
-            &requester,
-        )?;
-        let leg_specs: &[(&str, &str)] = match swap_name {
-            "submarine" => &[("source", "bitcoin"), ("lightning", "lightning")],
-            "reverse" => &[("lightning", "lightning"), ("destination", "bitcoin")],
-            "chain" => &[("source", "bitcoin"), ("destination", "bitcoin")],
-            _ => return Err("fixture flow has an unknown swap type".to_owned()),
+                .map_err(|error| format!("verify-before-fund: {error}"))?
+        } else {
+            session
+                .verify_before_fund(verification, |_| Ok(()))
+                .map_err(|error| format!("verify-before-fund: {error}"))?
         };
-        let legs = leg_specs
-            .iter()
-            .map(|(leg_id, rail)| {
-                json!({
-                    "leg_id":leg_id,
-                    "rail":rail,
-                    "verifier_policy":if *rail == "bitcoin" { "mkt-swp-bitcoin-v1" } else { "mkt-swp-lightning-v1" },
+        let funding_request = ExternalEffectRequest::Funding(
+            authorized
+                .funding_request()
+                .map_err(|error| error.to_string())?
+                .clone(),
+        );
+        let funding_effect = ExternalEffectResult {
+            order_id: authorized
+                .funding_request()
+                .map_err(|error| error.to_string())?
+                .order_id
+                .clone(),
+            effect_id: funding_request.effect_id().to_owned(),
+            request_sha256: funding_request
+                .sha256()
+                .map_err(|error| error.to_string())?,
+            external_identifier: format!("fixture:{swap_name}:funding"),
+            result_sha256: "91".repeat(32),
+        };
+        authorized
+            .record_external_effect(&funding_request, funding_effect)
+            .map_err(|error| format!("funding effect: {error}"))?;
+        if swap_name == "reverse" {
+            authorized
+                .clone()
+                .observe_reverse_payment_with(|request| {
+                    Ok(LocalLightningProgress {
+                        invoice_sha256: request.invoice_sha256.clone(),
+                        payment_hash: request.payment_hash.clone(),
+                        observed_at: 1,
+                        view_sha256: "92".repeat(32),
+                        state: LightningProgressState::PaymentPending,
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
-        let verifier_inputs = leg_specs
+                .map_err(|error| format!("reverse payment progression: {error}"))?;
+        }
+        replay_recovery_before_terminal(&authorized, swap_name, outcome)?;
+
+        let bound = BoundSession::from_records(&authorized.config, &authorized.signed_records)
+            .map_err(|error| format!("bound full-session fixture: {error}"))?;
+        let contract = object(&bound.contract, "fixture Swap Contract")
+            .map_err(|error| error.to_string())?
+            .clone();
+        let order_id = bound.order.id.clone();
+        let leg_ids = contract
+            .get("legs")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "fixture contract has no legs".to_owned())?
             .iter()
-            .map(|(leg_id, rail)| {
-                if *rail == "bitcoin" {
-                    json!({
-                        "leg_id":leg_id,
-                        "verifier_policy":"mkt-swp-bitcoin-v1",
-                        "evidence_authority":{"mode":"local","pubkeys":[],"adapter_sha256":"ad".repeat(32)},
-                        "funding_transaction":funding_transaction,
-                        "output_index":0,
-                    })
-                } else {
-                    json!({
-                        "leg_id":leg_id,
-                        "verifier_policy":"mkt-swp-lightning-v1",
-                        "evidence_authority":{"mode":"local","pubkeys":[],"adapter_sha256":"ad".repeat(32)},
-                        "invoice_sha256":lower_hex(&sha256(invoice.as_bytes())),
-                    })
-                }
+            .map(|leg| {
+                leg.get("leg_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| "fixture contract leg has no ID".to_owned())
             })
-            .collect::<Vec<_>>();
-        let contract = json!({
-            "swap_type":swap_name,
-            "order_id":order.id,
-            "asset_pair":["bitcoin:regtest:btc","lightning:regtest:btc"],
-            "payment_hash":payment_hash,
-            "input_amount":"100",
-            "output_amount":"90",
-            "provider_fee":"0",
-            "miner_fee_budget":"0",
-            "lightning_routing_fee_budget":"0",
-            "legs":legs,
-            "verifier_inputs":verifier_inputs,
-            "reservation_commitment":{},
-        });
-        let requester_contract = fixture_contract(
-            &factory,
-            &requester,
-            ParticipantRole::Requester,
-            103,
-            &"a4".repeat(32),
-            &order,
-            &quote,
-            &contract,
-        )?;
-        let provider_contract = fixture_contract(
-            &factory,
-            &provider,
-            ParticipantRole::Provider,
-            104,
-            &"a5".repeat(32),
-            &order,
-            &quote,
-            &contract,
-        )?;
+            .collect::<Result<Vec<_>, _>>()?;
+        let requester = fixture_signer(b"requester")?;
+        let mut evidence_refs = Vec::with_capacity(leg_ids.len());
+        for (index, leg_id) in leg_ids.iter().enumerate() {
+            let verified = authorized
+                .verify_terminal_rail_evidence_with(leg_id, outcome, |request| {
+                    let settlement_transaction = format!("{:02x}", 176 + index).repeat(32);
+                    Ok(LocalRailEvidence {
+                        artifact_sha256: format!("{:02x}", 160 + index).repeat(32),
+                        observed_at: 800,
+                        view: format!("fixture {swap_name} {} {outcome}", request.rail),
+                        settlement_reference: if request.rail == "bitcoin" {
+                            if request.evidence_class == "bitcoin_spend" {
+                                format!("{settlement_transaction}:0")
+                            } else {
+                                settlement_transaction
+                            }
+                        } else {
+                            request.reference.clone()
+                        },
+                        verifier_pubkey: None,
+                        producer_pubkey: requester.pubkey().to_owned(),
+                        external_identifier: format!(
+                            "fixture:{swap_name}:{outcome}:{}",
+                            request.rail
+                        ),
+                    })
+                })
+                .map_err(|error| format!("terminal evidence: {error}"))?;
+            authorized
+                .record_external_effect(&verified.request, verified.result)
+                .map_err(|error| format!("terminal evidence effect: {error}"))?;
+            evidence_refs.push(verified.evidence_reference);
+        }
+        authorized = SwapSession::<AwaitingVerification>::restore(
+            &authorized.persist().map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("orphan evidence crash restore: {error}"))?
+        .resume_funding_authorized()
+        .map_err(|error| format!("resume after evidence crash: {error}"))?;
+
+        let factory =
+            SwapRecordFactory::new(authorized.config.clone()).map_err(|error| error.to_string())?;
         let status = fixture_signed(
             factory
                 .status(
                     ParticipantRole::Requester,
-                    200,
-                    &"a6".repeat(32),
-                    &order.id,
+                    900,
+                    &fixture_distinct(swap_name, outcome, 0),
+                    &order_id,
                     StatusState {
                         sequence: 0,
                         previous: None,
@@ -9001,19 +10083,26 @@ pub mod fixture_replay {
                 .map_err(|error| error.to_string())?,
             &requester,
         )?;
-        let (effects, evidence_refs) = fixture_terminal_evidence(
-            &config,
-            &order,
-            &contract,
-            leg_specs,
-            payment_hash,
-            outcome,
-            requester.pubkey(),
-        )?;
+        authorized
+            .ingest_signed_record(status.clone())
+            .map_err(|error| format!("terminal Status ingestion: {error}"))?;
+        let assets = contract
+            .get("asset_pair")
+            .and_then(Value::as_array)
+            .filter(|assets| assets.len() == 2)
+            .ok_or_else(|| "fixture contract has no asset pair".to_owned())?;
+        let input_amount = fixture_string(&contract, "input_amount")?;
+        let output_amount = fixture_string(&contract, "output_amount")?;
+        let reservation_released = contract
+            .get("reservation_commitment")
+            .and_then(Value::as_object)
+            .and_then(|reservation| reservation.get("reserved_amount"))
+            .and_then(Value::as_str)
+            .unwrap_or("0");
         let mut loss = json!({
-            "input_asset_id":"bitcoin:regtest:btc",
-            "output_asset_id":"lightning:regtest:btc",
-            "input_committed":"100",
+            "input_asset_id":assets[0],
+            "output_asset_id":assets[1],
+            "input_committed":input_amount,
             "input_recovered":"0",
             "output_received":"0",
             "provider_fee_paid":"0",
@@ -9021,176 +10110,141 @@ pub mod fixture_replay {
             "lightning_routing_fee_paid":"0",
             "guarantee_recovery_received":"0",
             "principal_unresolved":"0",
-            "reservation_released":"0",
+            "reservation_released":reservation_released,
             "evidence_refs":evidence_refs,
             "unknown_fields":[],
         });
         if outcome == "completed" {
-            loss["output_received"] = json!("90");
+            loss["output_received"] = json!(output_amount);
         } else {
-            loss["input_recovered"] = json!("100");
+            loss["input_recovered"] = json!(input_amount);
         }
         let close = fixture_signed(
             factory
                 .close(
                     ParticipantRole::Requester,
-                    210,
-                    &"a7".repeat(32),
-                    &order.id,
+                    910,
+                    &fixture_distinct(swap_name, outcome, 1),
+                    &order_id,
                     CloseOutcome {
                         outcome,
-                        terminal_at: 210,
+                        terminal_at: 910,
                     },
                     json!({"status_id":status.id,"loss_accounting":loss}),
                 )
                 .map_err(|error| error.to_string())?,
             &requester,
         )?;
-        let records = vec![
-            rfq,
-            quote,
-            order,
-            requester_contract,
-            provider_contract,
-            status,
-            close,
-        ];
-        validate_session_material(&config, &records, &[]).map_err(|error| error.to_string())?;
-        validate_lifecycle(&config, &records, &effects).map_err(|error| error.to_string())
-    }
-
-    fn fixture_terminal_evidence(
-        config: &SwapClientConfig,
-        order: &Event,
-        contract: &Value,
-        leg_specs: &[(&str, &str)],
-        payment_hash: &str,
-        outcome: &str,
-        producer_pubkey: &str,
-    ) -> Result<(BTreeMap<String, ExternalEffectResult>, Vec<Value>), String> {
-        let contract = contract
-            .as_object()
-            .ok_or_else(|| "fixture contract is not an object".to_owned())?;
-        let mut effects = BTreeMap::new();
-        let mut evidence_refs = Vec::new();
-        for (index, (leg_id, rail)) in leg_specs.iter().enumerate() {
-            let verifier = verifier_for_leg(contract, leg_id).map_err(|error| error.to_string())?;
-            let authority = verifier
-                .get("evidence_authority")
-                .ok_or_else(|| "fixture verifier authority is missing".to_owned())?;
-            let authority_sha256 = lower_hex(&sha256(
-                &canonical_json(authority).map_err(|error| error.to_string())?,
-            ));
-            let (class, source_reference, rung) = terminal_evidence_identity(
-                contract,
-                &order.id,
-                payment_hash,
-                leg_id,
-                rail,
-                outcome,
-            )
-            .map_err(|error| error.to_string())?;
-            let settlement_transaction = format!("{:02x}", 192 + index).repeat(32);
-            let reference = match (*rail, outcome) {
-                ("bitcoin", "completed") => format!("{settlement_transaction}:0"),
-                ("bitcoin", "refunded") => settlement_transaction,
-                ("lightning", _) => payment_hash.to_owned(),
-                _ => return Err("fixture rail/outcome is unsupported".to_owned()),
-            };
-            let view = format!("fixture-local-{outcome}-{leg_id}");
-            let artifact_sha256 = format!("{:02x}", 208 + index).repeat(32);
-            let verifier_policy = verifier
-                .get("verifier_policy")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "fixture verifier policy is missing".to_owned())?;
-            let evidence = json!({
-                "class":class,
-                "rung":rung,
-                "rail":rail,
-                "reference":reference,
-                "artifact_sha256":artifact_sha256,
-                "producer_pubkey":producer_pubkey,
-                "verifier_pubkey":null,
-                "verifier_policy":verifier_policy,
-                "observed_at":190,
-                "view":view,
-            });
-            validate_mkt_swp_evidence_reference(&evidence)
-                .map_err(|error| format!("fixture terminal evidence: {error}"))?;
-            let evidence_sha256 = lower_hex(&sha256(
-                &canonical_json(&evidence).map_err(|error| error.to_string())?,
-            ));
-            let effect_id = effect_id(&order.id, &format!("terminal_evidence_{outcome}"), leg_id)
-                .map_err(|error| error.to_string())?;
-            let request = ExternalEffectRequest::RailEvidence(RailEvidenceRequest {
-                effect_id: effect_id.clone(),
-                session_id: config.session_id.clone(),
-                order_id: order.id.clone(),
-                leg_id: (*leg_id).to_owned(),
-                outcome: outcome.to_owned(),
-                rail: (*rail).to_owned(),
-                evidence_class: class,
-                source_reference,
-                reference,
-                artifact_sha256,
-                rung,
-                verifier_policy: verifier_policy.to_owned(),
-                verifier_authority_sha256: authority_sha256,
-                observed_at: 190,
-                view_sha256: lower_hex(&sha256(view.as_bytes())),
-                finality_state: if outcome == "completed" {
-                    "settled".to_owned()
-                } else {
-                    "refunded_final".to_owned()
-                },
-                evidence_reference_sha256: evidence_sha256.clone(),
-            });
-            effects.insert(
-                effect_id.clone(),
-                ExternalEffectResult {
-                    order_id: order.id.clone(),
-                    effect_id,
-                    request_sha256: request.sha256().map_err(|error| error.to_string())?,
-                    external_identifier: format!("fixture:{outcome}:{leg_id}"),
-                    result_sha256: evidence_sha256,
-                },
-            );
-            evidence_refs.push(evidence);
+        authorized
+            .ingest_signed_record(close)
+            .map_err(|error| format!("terminal Close ingestion: {error}"))?;
+        if outcome == "completed" {
+            let recovery = authorized
+                .recovery_action_with(|request| {
+                    Ok(LocalRecoveryObservation {
+                        session_id: request.session_id.clone(),
+                        order_id: request.order_id.clone(),
+                        binding_sha256: request.binding_sha256.clone(),
+                        current_height: 1_000,
+                        source_funding_confirmation_height: Some(800),
+                        counterparty_available: false,
+                        completed: true,
+                        record_loss: false,
+                        rail_state_unknown: false,
+                        lightning_state: (swap_name != "chain")
+                            .then_some(LightningRecoveryState::Paid),
+                        chain_state: (swap_name != "submarine")
+                            .then_some(ChainRecoveryState::DestinationFundedUnclaimed),
+                    })
+                })
+                .map_err(|error| format!("terminal recovery: {error}"))?;
+            if recovery != RecoveryAction::Completed {
+                return Err("completed flow did not reach completed recovery".to_owned());
+            }
         }
-        Ok((effects, evidence_refs))
+        Ok(authorized)
     }
 
-    fn fixture_contract(
-        factory: &SwapRecordFactory,
-        signer: &MarketSigner,
-        role: ParticipantRole,
-        created_at: u64,
-        distinct: &str,
-        order: &Event,
-        quote: &Event,
-        contract: &Value,
-    ) -> Result<Event, String> {
-        fixture_signed(
-            factory
-                .swap_contract(
-                    role,
-                    created_at,
-                    distinct,
-                    SwapContractReferences {
-                        order_id: &order.id,
-                        quote_id: &quote.id,
-                        accepted_status_id: None,
-                    },
-                    contract.clone(),
-                )
-                .map_err(|error| error.to_string())?,
-            signer,
-        )
+    fn replay_recovery_before_terminal<State>(
+        session: &SwapSession<State>,
+        swap_name: &str,
+        outcome: &str,
+    ) -> Result<(), String> {
+        let action = session
+            .recovery_action_with(|request| {
+                let (counterparty_available, lightning_state, chain_state) =
+                    match (swap_name, outcome) {
+                        ("submarine", "completed") => {
+                            (true, Some(LightningRecoveryState::Pending), None)
+                        }
+                        ("submarine", "refunded") => {
+                            (false, Some(LightningRecoveryState::UnpaidFinal), None)
+                        }
+                        ("reverse", "completed") => (
+                            false,
+                            Some(LightningRecoveryState::Pending),
+                            Some(ChainRecoveryState::DestinationClaimable),
+                        ),
+                        ("reverse", "refunded") => (
+                            false,
+                            Some(LightningRecoveryState::UnpaidFinal),
+                            Some(ChainRecoveryState::DestinationNotFunded),
+                        ),
+                        ("chain", "completed") => {
+                            (false, None, Some(ChainRecoveryState::DestinationClaimable))
+                        }
+                        ("chain", "refunded") => (
+                            false,
+                            None,
+                            Some(ChainRecoveryState::DestinationRefundedFinal),
+                        ),
+                        _ => return Err("unsupported fixture recovery flow".to_owned()),
+                    };
+                Ok(LocalRecoveryObservation {
+                    session_id: request.session_id.clone(),
+                    order_id: request.order_id.clone(),
+                    binding_sha256: request.binding_sha256.clone(),
+                    current_height: 1_000,
+                    source_funding_confirmation_height: Some(800),
+                    counterparty_available,
+                    completed: false,
+                    record_loss: false,
+                    rail_state_unknown: false,
+                    lightning_state,
+                    chain_state,
+                })
+            })
+            .map_err(|error| format!("pre-terminal recovery: {error}"))?;
+        let expected = match (swap_name, outcome) {
+            ("submarine", "completed") => {
+                matches!(action, RecoveryAction::DirectCounterpartyCompletion)
+            }
+            ("submarine", "refunded") | ("chain", "refunded") => {
+                matches!(action, RecoveryAction::BroadcastPresigned { .. })
+            }
+            ("reverse", "completed") | ("chain", "completed") => {
+                matches!(action, RecoveryAction::RequestWalletClaim { .. })
+            }
+            ("reverse", "refunded") => matches!(action, RecoveryAction::Cancelled),
+            _ => false,
+        };
+        if !expected {
+            return Err(format!(
+                "{swap_name} {outcome} fixture returned the wrong recovery action: {action:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    fn fixture_distinct(swap_name: &str, outcome: &str, stage: u8) -> String {
+        lower_hex(&sha256(
+            format!("immortal-mkt-swp-fixture:{swap_name}:{outcome}:{stage}").as_bytes(),
+        ))
     }
 
     fn fixture_signer(label: &[u8]) -> Result<MarketSigner, String> {
         let key: [u8; 32] =
-            Sha256::digest([b"immortal-mkt-swp-fixture-replay:".as_slice(), label].concat()).into();
+            Sha256::digest([b"immortal-mkt-swp-test-only:".as_slice(), label].concat()).into();
         MarketSigner::from_secret_bytes(key)
     }
 

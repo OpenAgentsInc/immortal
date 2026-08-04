@@ -336,6 +336,26 @@ use the contract-pinned local or external verifier authority. Failure,
 dispute, and unresolved outcomes retain their distinct section-15 accounting
 bases.
 
+The closing audit also requires the incoming base `state` to match the
+profile `swp_state`, evaluates Close ancestry only on the Close signer's
+stream, and permits either consenting participant to author the effective
+Cancel. Snapshot schema v2 persists every typed effect request beside its
+result row. Rail and Lightning-disposition evidence therefore requires an
+exact durable funding effect while remaining crash-restorable before a signed
+terminal record cites it. Unknown failure accounting can cover only its
+contract-bounded fee capacity and cannot hide principal; reverse destination
+refund recovery branches on the observed Lightning disposition instead of
+claiming counterparty completion.
+
+The exported client corpus was narrowed from descriptive proxy names to 62
+closed-world cases that invoke production validators and actions, backed by
+exact serialized sessions. It covers all six terminal flows, all bounded
+verify-before-fund refusals, the two-stage reverse gate, sequencing, both
+orphan-effect crash windows, cancellation, loss, and recovery. Twenty custody
+tripwires separately invoke the recursive production validator. No source-lane
+precedence exception, kind allocation, dependency, or relay advertisement was
+added.
+
 Client transport now exposes typed callback requests for event signing and
 NIP-44 encryption/decryption for both the participant and one-time NIP-59
 wrapper identity. This is an API adoption of the existing M10 transport lane,
