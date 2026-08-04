@@ -22,6 +22,32 @@ The sync script preserves that file, and an upstream-provided README
 (the `openagents` lane) always replaces the local copy. The manifest
 file count records upstream files only.
 
+## Implementation mandate
+
+Every specification pinned in all three lanes is part of Immortal's active
+implementation target. The lane is not a reading list or an à-la-carte
+backlog. We implement each spec's applicable roles across the one crate's
+domain, relay/server, transport-neutral client, operator, provider, or
+executor surfaces. If an upstream NIP is client-only, completion means a
+fixture-backed client implementation rather than pretending the relay serves
+it. If a feature is optional or configuration-dependent, it stays fail-closed
+and absent from NIP-11 until its configured path is executable.
+
+Pinned deprecated or unrecommended NIPs are still implemented for exact
+compatibility and regression coverage. They do not become the foundation for
+new protocol design: NIP-90, for example, remains readable and interoperable
+while new markets use focused microstandards. When Boltz-, tbDEX-, or other
+noncustodial market behavior has no adequate primitive in the three lanes, we
+write a narrowly scoped OpenAgents NIP, pin it through this process, and add
+its fixtures before runtime adoption.
+
+The ceiling is the noncustodial boundary, not “relay transport only.” Immortal
+may validate, coordinate, route, reserve provider-signed capacity, verify
+evidence, run protocol timers, and expose compatibility surfaces while
+keeping spend authority, funds, wallet/provider secrets, and final settlement
+truth outside the relay. The complete execution plan is in
+[`docs/ROADMAP.md`](../docs/ROADMAP.md).
+
 ## How the sync works
 
 1. Run `./scripts/sync-nips.sh`.
@@ -47,6 +73,9 @@ implementation starts.
 4. A synced upstream change becomes normative for the implementation only
    after review and a fixture update. The sync itself never changes the
    implementation.
+5. Keep an explicit ledger for every pinned specification. No file is silently
+   ignored because its role is client-side, optional, deprecated, or not yet
+   represented by a server handler.
 
 ## Precedence
 

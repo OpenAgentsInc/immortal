@@ -5,6 +5,11 @@ one Postgres database, and no external protocol service. The pinned official
 specifications under `nips/official/` are normative; the limits and deliberate
 subsets below are part of Immortal's public contract.
 
+This page records the M6 deployed surface. Its subsets and absent handlers are
+not permanent scope decisions: the protocol-totality program in the roadmap
+targets every NIP in all three pinned lanes while preserving fail-closed
+advertisement until each path is implemented and fixture-proved.
+
 ## Expiration and protected events
 
 - NIP-40 events at or past their `expiration` timestamp are rejected. Reads
@@ -100,7 +105,8 @@ relays; relay selection is a client responsibility. Operators should keep
 relay lists compact because the normal event, content, tag-count, and frame
 limits apply.
 
-NIP-77 remains a draft to watch and does not add a sync engine or wire verb in
-M6. NIP-91 is not present in the pinned official source lane, so AND filters
-are not advertised or implemented. See `source-lanes.md` for the recorded
-lane decisions.
+NIP-77 did not add a sync engine or wire verb in M6; it is now an explicit
+full-official-lane implementation target. NIP-91 was not present in the pinned
+official source lane, so M6 could not advertise or implement it; it enters the
+same process if a future reviewed sync pins it. See `source-lanes.md` for the
+recorded lane decisions and their 2026-08-04 supersession.

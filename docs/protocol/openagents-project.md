@@ -29,7 +29,8 @@ are present. Events from another signer never become project truth.
 
 NIP-OT and NIP-PG are proposal names, not numeric official NIP identifiers.
 The relay therefore does not add them to NIP-11 `supported_nips`. NIP-BT is
-postponed and outside this contract.
+postponed and outside this stood-down project contract, but remains in the
+full OpenAgents-lane implementation target after the first liquidity slice.
 
 ## Subscription and bounds
 

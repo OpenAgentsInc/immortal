@@ -57,7 +57,7 @@ execution profiles are available.
   icon. Every process reads it from Postgres when serving NIP-11, so no cache
   or restart is needed.
 
-## Relay semantics and deliberate boundaries
+## Relay semantics and current deployment boundaries
 
 - **NIP-CW:** the WebSocket profile uses the specification's safe degradation:
   `top_level`, `include_summaries`, `include_aux`, and `before_id` are parsed
@@ -78,6 +78,13 @@ execution profiles are available.
   advertised` before storage. NIP-PL is not advertised; accepting such a
   lease without decrypting and atomically materializing executable state would
   violate the specification.
+
+These are honest facts about the current deployed configuration, not a scope
+ceiling. Under the protocol-totality roadmap, Immortal will implement the
+optional NIP-CW query surface and a complete NIP-PL executor path inside the
+one binary and one Postgres boundary. Until the implementation, fixtures,
+configuration, and actual transport acceptance proof exist, the current
+fail-closed behavior and non-advertisement remain mandatory.
 
 NIP-11 always advertises `nip-mp`, `nip-oa`, and `nip-rs`. With NIP-42
 configured it also advertises `nip-aa`, `nip-ae`, `nip-am`, `nip-ao`, `nip-ap`,

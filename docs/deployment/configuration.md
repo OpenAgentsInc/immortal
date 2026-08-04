@@ -94,8 +94,11 @@ contract and deliberate NIP-29 subset are in
 The Block extension handlers need no additional service or database. NIP-AO
 uses the dedicated observer rates below. NIP-IA and NIP-DV require
 `IMMORTAL_RELAY_SECRET_KEY` because their derived state is relay-signed;
-NIP-WP requires `IMMORTAL_MANAGEMENT_PUBKEY`. Immortal does not configure or
-advertise a NIP-PL push executor. See `docs/protocol/block-nips.md`.
+NIP-WP requires `IMMORTAL_MANAGEMENT_PUBKEY`. The current release does not
+configure or advertise a NIP-PL push executor; its handler fails closed. This
+is a deployment-state statement, not a scope decision: the full-lane roadmap
+requires an in-binary executor and its configuration after fixtures and a
+manual platform-transport acceptance proof. See `docs/protocol/block-nips.md`.
 
 TLS terminates at the reverse proxy. The binary itself never speaks TLS and
 has no certificate configuration.

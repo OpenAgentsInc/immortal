@@ -28,7 +28,7 @@ and operator surface are the best field notes available.
 | Single-letter tag indexing rule (`single_char_tagname`, `build_index`) | `src/event.rs` | Same rule feeds our `nostr_indexed_tag` rows |
 | Future-timestamp rejection (`reject_future_seconds`) | `src/event.rs`, `[options]` | Same check in admission; ours is a hard config value, not optional |
 | Filter matching semantics (`interested_in_event`, `ids_match`, `tag_match`, `kind_match`) | `src/subscription.rs` | Same semantics in `domain/`, minus prefix matching (removed from NIP-01). Port their unit-test cases as fixtures |
-| NIP-91 AND-operator filters (`TagOperand`) | `src/subscription.rs` | Watch item: they implement draft NIP-91. Track it in our NIP ladder; do not implement until it stabilizes upstream |
+| NIP-91 AND-operator filters (`TagOperand`) | `src/subscription.rs` | Historical watch item: NIP-91 was absent from the M6 pin. Under protocol totality, implement its exact behavior if/when it enters the pinned official lane, with fixtures before advertisement. |
 | `is_scraper` heuristic — flag subscriptions with no meaningful constraints | `src/subscription.rs` | Adopt the idea as a query-budget class: unconstrained REQs get the strictest budget |
 | Query abandonment on client disconnect (oneshot `abandon_query_rx`, checked every 100 rows) | `src/repo/sqlite.rs` | Adopt the pattern with tokio-postgres: cancel historical queries when the socket closes, check the cancel token between result pages |
 | Slow-query shedding with client sampling (`slow_first_event`) | `src/repo/sqlite.rs` | Adopt the principle inside our query budgets: a filter class that is measurably slow gets degraded service before it degrades the relay |
@@ -50,9 +50,9 @@ and operator surface are the best field notes available.
 | SQLite as primary store | Owner decision: Postgres, one store |
 | Prefix matching for ids/authors | Removed from current NIP-01 |
 | NIP-26 delegation (`src/delegation.rs`) | Unrecommended upstream; disabled in their own build |
-| NIP-05 verification subsystem (`src/nip05.rs`, 658 lines) | Needs outbound HTTP (hyper/reqwest) — outside the allowlist. If ever wanted, it is an owner sign-off decision |
+| Upstream NIP-05 subsystem copied as-is (`src/nip05.rs`, 658 lines) | The behavior is now in Immortal's official-lane target, but the upstream hyper/reqwest implementation is outside the allowlist. Design it against Immortal's existing stack or obtain and record separate dependency approval; do not silently import the subsystem. |
 | gRPC authorization plugin (`tonic`/`prost`, `src/nauthz.rs`) | A second running service; AGENTS.md rule 1 |
-| Pay-to-relay subsystem | External Lightning dependency; not this binary's job |
+| Upstream pay-to-relay subsystem copied as-is | Its external Lightning dependency and operator policy do not fit Immortal. The pinned official payment and paid-relay NIP behaviors remain protocol-totality targets; implement their noncustodial contracts against owned boundaries rather than importing this subsystem. |
 | `config` crate + TOML file hierarchy | Our configuration is environment variables only |
 | `tracing`/`tracing-subscriber`/`console-subscriber` stack | Outside the allowlist; we log line-oriented JSON to stdout |
 | `r2d2` connection pooling | tokio-postgres manages its own connections |
@@ -67,6 +67,8 @@ and operator surface are the best field notes available.
    as environment variables.
 3. Implement query-cancel-on-disconnect and bounded send queues in the
    gateway milestone; both get chaos fixtures.
-4. Add NIP-91 to the NIP ladder as "watch".
-5. Ask the owner whether NIP-05 verification is ever in scope (it would
-   need an HTTP client dependency).
+4. Add NIP-91 to the implementation ledger when it enters the pinned official
+   lane; keep it unadvertised until its exact pinned fixtures pass.
+5. Implement NIP-05 verification under the full-official-lane directive.
+   Resolve outbound HTTPS within the existing dependency contract or seek and
+   record explicit owner approval for a new dependency before coding it.

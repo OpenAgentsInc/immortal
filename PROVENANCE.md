@@ -723,6 +723,36 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   owner decision. The repository-wide ban on GitHub workflows and
   GitHub-billed automation remains unchanged.
 
+### 2026-08-04 — Codex 5.6 Sol (Extra High), protocol-totality and Liquidity Market directive
+
+- Accepted the owner directive that every specification pinned across
+  Immortal's official, Block, and OpenAgents lanes is active implementation
+  scope. Earlier deferrals, current fail-closed handlers, client-only role
+  classifications, and non-advertisement remain honest deployment facts but
+  no longer express permanent scope exclusions.
+- Defined role-correct completion: relay NIPs receive domain/server handlers;
+  client NIPs receive transport-neutral native/browser implementations; and
+  operator, provider, or executor profiles receive bounded configured behavior
+  in the one binary where required. Deprecated or unrecommended NIPs such as
+  NIP-90 retain full pinned compatibility and fixtures while new products use
+  focused successor microstandards.
+- Read OpenAgents Episode 213 and made the product hierarchy explicit: Agent
+  Markets is the five-market umbrella; the **OpenAgents Liquidity Market** is
+  this product lane; NIP-MKT is the planned negotiated-market fabric; and the
+  first technical system is a multi-provider noncustodial Bitcoin liquidity
+  network. Companion OpenAgents documentation commit: `d345ad3c34`.
+- Expanded the roadmap through the noncustodial Boltz/tbDEX boundary:
+  discovery, Offering/RFQ/Quote/Order/Status/Close, signed reservations,
+  routing, script/invoice and public-evidence verification, timers, recovery,
+  disputes, and compatibility APIs belong in scope. Funds, spend authority,
+  wallet/LP secrets, node and bank credentials, and final settlement authority
+  remain with independent clients, providers, and rails.
+- Updated the README, NIP source contract, source-lane decision record, Block
+  handler contract, Buzz adaptation, and deployment wording. This pass changes
+  documentation and owner intent only: it adds no runtime behavior,
+  dependency, service, database, secret, GitHub workflow, or GitHub-billed
+  automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

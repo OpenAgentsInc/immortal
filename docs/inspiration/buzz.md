@@ -46,7 +46,7 @@ semantics from the pinned specifications and reference handlers.
 | --- | --- |
 | SQLx, Redis pub/sub, object-storage services, and Buzz's service topology | Immortal permits one binary, one Postgres database, and its fixed dependency allowlist. |
 | Buzz database modules or migrations copied literally | Their schema, tenant model, SQLx types, and service boundaries do not match Immortal's prepared `tokio-postgres` store. |
-| NIP-PL executor descriptor, lease decryption, platform credentials, and APNs/FCM/UnifiedPush dispatch | No executor key or transport is configured or advertised. Persisting an undecryptable, unexecutable lease would violate NIP-PL's atomic acceptance contract, so the handler refuses it. |
+| NIP-PL executor descriptor, lease decryption, platform credentials, and APNs/FCM/UnifiedPush dispatch in the M6 release | No executor key or transport is configured or advertised in that release. Persisting an undecryptable, unexecutable lease would violate NIP-PL's atomic acceptance contract, so the current handler correctly refuses it. The full-lane roadmap now requires this surface to be implemented in-binary and fixture-proved. |
 | NIP-CW HTTP `/query` and materialized overlay service | Immortal's public contract is WebSocket NIP-01. The NIP explicitly permits safe degradation there; extension fields are discarded and the standard filter is served. |
 | GitHub Actions or GitHub-billed conformance | Repository invariant prohibits both; all checks run through committed local scripts. |
 
@@ -54,8 +54,9 @@ semantics from the pinned specifications and reference handlers.
 
 1. Keep every Block fixture pinned to the reviewed commit and re-review before a
    future NIP sync changes runtime behavior.
-2. Do not advertise NIP-PL unless the owner approves an in-binary executor
-   design that can satisfy encryption, transactional lease state, and an
-   actual non-GitHub platform-transport acceptance proof.
+2. Implement the now owner-approved NIP-PL in-binary executor design with
+   encryption, transactional lease state, and an actual non-GitHub
+   platform-transport acceptance proof. Do not advertise it before that proof
+   passes.
 3. Revisit NIP-CW only if Immortal intentionally adds its optional HTTP query
    surface without adding a service.

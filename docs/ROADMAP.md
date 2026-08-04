@@ -123,6 +123,70 @@ as early as possible.
 - [x] Blossom endpoint (NIP-B7, NIP-98 auth, NIP-94 metadata): filesystem
       storage default, one optional cloud-storage adapter
 
+## Immediate program — protocol totality and noncustodial markets
+
+**Owner directive, 2026-08-04:** implement every specification pinned under
+`nips/official/`, `nips/block/`, and `nips/openagents/`. This program starts
+now and runs alongside M8 and M9; those milestones are not prerequisites.
+Earlier per-NIP deferrals and phrases such as “client-only,” “not currently
+advertised,” or “compatibility-only” describe a deployment state or the
+correct surface, not a permanent exclusion from implementation.
+
+Product vocabulary follows OpenAgents Episode 213: this work delivers the
+**OpenAgents Liquidity Market**, one of five interlocking Agent Markets. The
+shared protocol layer is the NIP-MKT negotiated-market fabric; the first
+technical system is a multi-provider noncustodial Bitcoin liquidity network.
+It is not limited to a decentralized exchange and does not pool funds.
+
+“Every” means every applicable role, not dishonest NIP-11 advertising. A
+relay protocol gets domain and server handlers; a client protocol gets the
+transport-neutral native/browser client behavior; operator, provider, and
+executor profiles get bounded one-binary handlers where the specification
+requires them. Each lands with a pinned decision, fixture corpus, negative
+cases, live contract where applicable, documentation, and manual conformance.
+Only behavior executable under the active configuration is advertised.
+Deprecated or unrecommended NIPs—including NIP-90—receive complete pinned
+compatibility and regression coverage, while new products use focused
+successor microstandards.
+
+- [ ] Build a generated three-lane implementation ledger: every pinned file,
+      role, event kind/message, dependency, privacy law, authority, current
+      coverage, missing handler, fixture, and advertisement condition
+- [ ] Finish the complete official lane, including relay, HTTP, client,
+      encryption, discovery, wallet, payment, media, sync, and compatibility
+      surfaces supported by the pinned texts
+- [ ] Finish the complete Block lane, including the optional NIP-CW HTTP
+      profile and a fully executable NIP-PL lease/decryption/dispatch path in
+      this binary; retain fail-closed non-advertisement until each is usable
+- [ ] Finish the complete OpenAgents lane, including the five hardening
+      families and NIP-BT after the first liquidity slice; the earlier BT
+      postponement is sequencing, not cancellation
+- [ ] Draft, review, pin, and implement focused OpenAgents market NIPs:
+      negotiated-market base plus atomic-swap, P2P, credentialed-PFI,
+      mint/federation, LSP, and later risk/guarantee profiles; do not extend
+      NIP-90 for new market semantics
+- [ ] Absorb the noncustodial Boltz/tbDEX surface: provider profiles and
+      discovery, Offering/RFQ/Quote/Order/Status/Close, signed quote
+      reservation, multi-provider routing, privacy and credential policy,
+      script/invoice verification, chain/LN evidence, timeout/refund
+      recovery, monitoring, disputes/recourse, and Boltz REST/WebSocket plus
+      tbDEX message compatibility where interoperability justifies it
+- [ ] Prove browser and native clients, at least two independently keyed
+      providers, multiple relays, partitions, crashes, duplicate/conflicting
+      messages, reorg/RBF, noncooperation, refund, and secret-leak rejection
+      in a manual adversarial regtest lab
+
+The noncustodial boundary is strict but deliberately ambitious. Immortal may
+compute, validate, index, coordinate, route, reserve signed provider capacity,
+run timers, publish relay-owned derived state, and automate recovery. It may
+hold only relay/operator keys and encrypted coordination state required by a
+pinned protocol. Spend authority, user/LP balances, wallet seeds, private
+claim/refund keys, unreleased preimages, NWC secrets or node macaroons, bank
+credentials, and final settlement authority remain with clients, providers,
+or the underlying rail. All of this still obeys one binary, one Postgres,
+prepared SQL, bounded work, fail-closed operation, and no GitHub workflows or
+GitHub-billed automation.
+
 ## M8 — Hardening and formal work
 
 - [ ] Formal model of the admission/replacement/deletion state machine;
@@ -139,7 +203,8 @@ as early as possible.
 deploy `/dh`, or continue Phase 1 without a new owner decision. The generic
 OT/PG validation, NIP-11-pinned client, bounded signer, browser transport, and
 GPUI/wasm build infrastructure remain available for unrelated future use.
-NIP-BT credits remain postponed.
+NIP-BT credits remain postponed for this stood-down program and the first
+liquidity slice; they remain part of the full OpenAgents-lane target above.
 
 ### Phase 0 — read-only project surface
 

@@ -75,6 +75,32 @@ ownership/authentication, observer and turn traffic, private agent data,
 reminders, projects, identity/DM/workspace commands, and relay state. See
 `docs/ROADMAP.md`, `docs/conformance/`, and `docs/deployment/`.
 
+The current feature list is a deployment snapshot, not Immortal's scope
+ceiling. The immediate protocol-totality program targets **every specification
+currently pinned in all three lanes** under `nips/`: official, Block, and
+OpenAgents. That means the applicable relay/server, domain, client,
+operator, and provider-facing behavior for each NIP, with fixtures and manual
+conformance before it is advertised. Deprecated or unrecommended protocols
+remain compatibility surfaces rather than foundations for new designs;
+client-only specifications are implemented and tested in the client surface
+without being falsely advertised as relay capabilities.
+
+Immortal is also intended to absorb the noncustodial coordination surface of
+Boltz- and tbDEX-shaped markets. The boundary is custody, not computation:
+the one binary may validate, index, route, reserve provider-signed capacity,
+coordinate state machines, verify public settlement evidence, schedule
+recovery, and expose compatibility protocols. It must not hold user or
+liquidity-provider funds, wallet seeds, spend/refund keys, unreleased
+preimages, node-control secrets, bank credentials, or claim that relay state
+is settlement truth. Where the pinned lanes lack a safe primitive, we will
+write a focused NIP and fixture it here.
+
+In OpenAgents product language, this is the **Liquidity Market**, one of the
+five interlocking Agent Markets. NIP-MKT is the reusable negotiated-market
+protocol family beneath it, and the first concrete system is a multi-provider
+noncustodial Bitcoin liquidity network. It is broader than an exchange and is
+not a pooled-custody product.
+
 Operation Diamond Hands Phase 0 adds a bounded, transport-neutral Nostr
 project reader for native and browser/WASM applications. It verifies event IDs
 and signatures locally, understands the adopted NIP-OT Organization and NIP-PG
