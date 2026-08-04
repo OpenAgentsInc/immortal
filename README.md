@@ -1,17 +1,44 @@
 # Immortal
 
-A hardened Nostr relay. One Rust binary and one Postgres database. Nothing
-else.
+Hardened Rust infrastructure for the open swap network. Each product is
+one binary and one Postgres database. Nothing else.
 
 License: CC0-1.0. Public domain.
 
 ## What Immortal is
 
-Immortal is a relay for the Nostr protocol. It runs as one program. It keeps
-all data in one Postgres database. It does not need other services.
+Immortal ships small, severe, independently deployable programs that
+share one discipline — a minimal owner-approved dependency allowlist,
+primitives written in this repository, prepared SQL only, fail-closed
+behavior, and manually executed conformance — so that joining the
+network means running a binary, not integrating a stack.
 
-You can run it on one small server. You can also run many relay processes
-against one database. The design is the same in both cases.
+The products:
+
+- **The relay** (`immortal`, shipped and deployed): a Nostr relay that
+  is also the coordination fabric of the negotiated-market (NIP-MKT)
+  protocol family — discovery heads, gift-wrapped negotiation
+  transport, and the optional no-spend swap coordination handler. It
+  never holds funds, spend keys, or unreleased preimages.
+- **The provider daemon** (`immortal-provider`, in progress): the
+  runnable liquidity-provider daemon for the swap network — Offerings,
+  RFQ intake, signed Quotes, reservation accounting, and settlement
+  execution against the operator's own bitcoind and Lightning node.
+  This is the binary that holds the operator's money; it is a different
+  program run by a different party than the relay.
+- **The client engine** (library): the verify-before-fund swap engine
+  wallets embed, and the source of the generated TypeScript SDK.
+
+The expansion from single relay to this monorepo is a recorded owner
+decision with a full migration analysis: see
+[`docs/MONOREPO.md`](docs/MONOREPO.md). The role-by-role infrastructure
+of the network each product serves is
+[`docs/deployment/swap-network-infrastructure.md`](docs/deployment/swap-network-infrastructure.md).
+
+The relay runs as one program and keeps all data in one Postgres
+database. It does not need other services. You can run it on one small
+server, or many relay processes against one database; the design is the
+same in both cases.
 
 ## Architecture
 
@@ -54,9 +81,12 @@ TLS is the job of the reverse proxy (nginx or Caddy).
 2. **Hardened.** Prepared SQL statements only. Limits on frame size,
    subscriptions, filters, and query cost. Rate limits per IP and per
    pubkey. Fail closed.
-3. **Simple.** One crate. One server binary. The same crate exposes a
-   transport-neutral client library when built without the `server` feature.
-   Seven direct dependencies (see `AGENTS.md`).
+3. **Simple.** One binary per product, each with its own owner-approved
+   dependency allowlist (seven direct dependencies for the relay; see
+   `AGENTS.md`). Today this is one crate whose non-`server` feature
+   build exposes the transport-neutral client library; the planned
+   workspace split (`docs/MONOREPO.md`, issue #24) makes the custody
+   boundary between relay and provider a build fact.
 4. **Easy to deploy.** A new Debian server, Postgres from the package
    manager, and this binary make a relay in minutes.
 5. **Locally proved.** Conformance and deployment acceptance run manually;
@@ -99,15 +129,18 @@ remain compatibility surfaces rather than foundations for new designs;
 client-only specifications are implemented and tested in the client surface
 without being falsely advertised as relay capabilities.
 
-Immortal is also intended to absorb the noncustodial coordination surface of
-Boltz- and tbDEX-shaped markets. The boundary is custody, not computation:
-the one binary may validate, index, route, reserve provider-signed capacity,
-coordinate state machines, verify public settlement evidence, schedule
-recovery, and expose compatibility protocols. It must not hold user or
-liquidity-provider funds, wallet seeds, spend/refund keys, unreleased
-preimages, node-control secrets, bank credentials, or claim that relay state
-is settlement truth. Where the pinned lanes lack a safe primitive, we will
-write a focused NIP and fixture it here.
+Immortal absorbs the noncustodial coordination surface of Boltz- and
+tbDEX-shaped markets into the relay, and ships the custody-bearing
+provider role as its own separate binary. The boundary is custody, not
+computation: the relay binary may validate, index, route, reserve
+provider-signed capacity, coordinate state machines, verify public
+settlement evidence, schedule recovery, and expose compatibility
+protocols. It must not hold user or liquidity-provider funds, wallet
+seeds, spend/refund keys, unreleased preimages, node-control secrets,
+bank credentials, or claim that relay state is settlement truth. Those
+things live only in `immortal-provider`, run by the operator whose money
+they are (`docs/MONOREPO.md`). Where the pinned lanes lack a safe
+primitive, we will write a focused NIP and fixture it here.
 
 In OpenAgents product language, this is the **Liquidity Market**, one of the
 five interlocking Agent Markets. NIP-MKT is the reusable negotiated-market

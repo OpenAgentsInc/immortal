@@ -242,7 +242,7 @@ reservation ledger (operator policy, not daemon authority).
 | `AGENTS.md` | Rewrite rules per §3 (per-product phrasing, per-crate allowlists, custody-boundary rule). Lands with the workspace conversion packet |
 | `Cargo.toml` / `src/` | Workspace conversion per §5; code moves, no behavior change; full conformance rerun proves it |
 | `README.md` | Repo identity: hardened infrastructure for the open swap network; one section per product with its one-line "run it" promise |
-| `docs/ROADMAP.md` | New milestone (M13, provider daemon) with an issue ledger mirroring the M12 pattern; M12 issues #14/#18/#19 re-scoped (below) |
+| `docs/ROADMAP.md` | A provider-runtime subledger *inside M12* (M13 is already the market-extension ledger): #24 workspace conversion, #25 provider rails, plus the #14/#15/#18/#19 re-scopes below |
 | Issue #14 | Superseded in one respect: the funded daemon now lives *in this repo* as `immortal-provider`. The library/daemon split survives as crate-internal structure; the no-spend actor becomes `--no-spend` mode |
 | Issue #18 | The lab consumes both binaries from this workspace against external regtest nodes; topology unchanged |
 | Issue #19 | The runbook ships `runbook-provider-debian.md` as its provider half; "independent providers" now means independently *operated and keyed* instances of our daemon (or anyone else's implementation of the NIPs — the wire stays the boundary) |

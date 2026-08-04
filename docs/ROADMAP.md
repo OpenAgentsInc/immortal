@@ -338,12 +338,12 @@ boundary stated in the immediate program above governs every item.
 | [#11](https://github.com/OpenAgentsInc/immortal/issues/11) | Adopt MKT-SWP: sync, collision review, relay validation, fixtures, contract-export section, NIP-11 gate | 9311 |
 | [#12](https://github.com/OpenAgentsInc/immortal/issues/12) | Client-core swap engine: submarine/reverse/chain requester flows, verify-before-fund enforced structurally, claim/refund assembly with embedder-held keys, crash recovery | #10, #11 |
 | [#13](https://github.com/OpenAgentsInc/immortal/issues/13) | Noncustodial coordination handlers: reservation accounting, session timers, equivocation/fork surfacing, relay-verifiable evidence observations | #11 |
-| [#14](https://github.com/OpenAgentsInc/immortal/issues/14) | Provider-side session library plus the persistent no-spend provider actor (reference embedding; funded daemons stay external) | #11, #12 |
+| [#14](https://github.com/OpenAgentsInc/immortal/issues/14) | Provider-side session logic plus the `--no-spend` provider mode, relocated into `crates/immortal-provider` (re-scoped 2026-08-04; the funded daemon is #25's rails around it) | #11, #12, #24 |
 | [#15](https://github.com/OpenAgentsInc/immortal/issues/15) | Boltz-compatible REST/WebSocket facade: deterministic versioned mapping onto MKT-SWP sessions, fail-closed, off by default | #11, #13 |
 | [#16](https://github.com/OpenAgentsInc/immortal/issues/16) | tbDEX schema/vector harvest into fixtures plus the fail-closed legacy message translator | #11 |
 | [#17](https://github.com/OpenAgentsInc/immortal/issues/17) | Adopt MKT-PFI: credentialed-ramp validation, risk-classification vocabulary, PII-refusal fixtures | 9311, #16 |
-| [#18](https://github.com/OpenAgentsInc/immortal/issues/18) | Adversarial regtest lab: two funded providers on external regtest nodes, multiple relays, the full failure matrix, recovery from persistence | #9, #10-#15 |
-| [#19](https://github.com/OpenAgentsInc/immortal/issues/19) | Migration closing packet: swap-network runbook, facade shadow mode against a live Boltz endpoint, cutover and rollback | #18 |
+| [#18](https://github.com/OpenAgentsInc/immortal/issues/18) | Adversarial regtest lab: two independently keyed funded `immortal-provider` instances on external regtest nodes, multiple relays, the full failure matrix, recovery from persistence | #9, #10-#15, #24, #25 |
+| [#19](https://github.com/OpenAgentsInc/immortal/issues/19) | Migration closing packet: swap-network runbook plus the provider Debian runbook, facade shadow mode against a live Boltz endpoint, cutover and rollback | #18 |
 
 Downstream consumers regenerate as the ledger advances:
 [openagents#9309](https://github.com/OpenAgentsInc/openagents/issues/9309)
@@ -365,7 +365,24 @@ complete. The pinned relay exposes the MKT-SWP and MKT-PFI v1 observable
 contracts, verification primitives, transport-neutral SWP client, and the
 off-by-default exact-conformance coordination handler without claiming PFI
 external authority or an executable profile. Provider packets follow the
-dependency table above.
+dependency table above and the subledger below.
+
+### M12 provider-runtime subledger (2026-08-04)
+
+The monorepo expansion decision (`docs/MONOREPO.md`): this repo ships the
+runnable provider daemon, not only an embeddable library, so the remaining
+M12 packets prove a shipped product. The workspace conversion is the
+blocking first packet; nothing below it starts until its conformance
+rerun is green.
+
+| Issue | Packet | Depends on |
+| --- | --- | --- |
+| [#24](https://github.com/OpenAgentsInc/immortal/issues/24) | Workspace conversion: `crates/immortal-core` / `immortal-relay` / `immortal-client` / `immortal-provider`; per-product `AGENTS.md` rules; custody boundary as a build fact; pure code motion proven by full conformance rerun | — |
+| [#14](https://github.com/OpenAgentsInc/immortal/issues/14) | Session logic + `--no-spend` mode in `crates/immortal-provider` (re-scoped) | #24 |
+| [#25](https://github.com/OpenAgentsInc/immortal/issues/25) | Provider rails: hand-rolled bitcoind JSON-RPC + polling watcher, CLN unix-socket client, wallet and script-path Taproot settlement over in-repo primitives, watchtower, reservation ledger, provider contract export — same seven-dependency allowlist | #24, #14 |
+| [#15](https://github.com/OpenAgentsInc/immortal/issues/15) | Boltz-compatible facade, rebased onto the workspace; verification backed by the external `immortal-provider` process (re-scoped) | #11, #13, #24 |
+| [#18](https://github.com/OpenAgentsInc/immortal/issues/18) | Adversarial lab consuming both shipped binaries (re-scoped) | #25 |
+| [#19](https://github.com/OpenAgentsInc/immortal/issues/19) | Closing packet + `runbook-provider-debian.md` (re-scoped) | #18 |
 
 ## M13 — Market extension ledger (post-replacement)
 

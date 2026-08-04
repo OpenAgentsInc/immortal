@@ -69,10 +69,12 @@ curl -s -H "Accept: application/nostr+json" https://<relay-host> \
 
 ## Liquidity provider: where the node infrastructure lives
 
-This is the role Boltz performed and the role this repository
-deliberately does not contain. Independent LPs are market participants,
-not support services hidden behind the relay (`docs/inspiration/boltz.md`,
-Reject table). From the Boltz backend configuration and its regtest
+This is the role Boltz performed. The daemon that performs it ships
+from this repository as `immortal-provider` (`../MONOREPO.md`); the rail
+nodes it drives — listed below — are operator-run infrastructure,
+distinct from the relay and never deployed beside it. Independent LPs
+are market participants, not support services hidden behind the relay
+(`docs/inspiration/boltz.md`, Reject table). From the Boltz backend configuration and its regtest
 topology (`boltz-backend`, `regtest/docker-compose.yml` in the pinned
 review set), a real swap provider runs roughly eight things:
 
