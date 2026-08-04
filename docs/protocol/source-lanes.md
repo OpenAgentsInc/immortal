@@ -56,12 +56,14 @@ LBR, SA, SKL, and TRN). The `block` lane repinned with no spec content
 changes.
 
 Owner direction on 2026-08-04 selects NIP-MKT from the `openagents` lane as
-the next adoption target, ahead of the previously parked lane items and ahead
-of M8/M9 — see the M10 and M11 milestones in `docs/ROADMAP.md`. The adoption
-discipline is unchanged: the implementation lands with its fixture corpus,
-the `39600-39699` collision review is repeated at the pinned commits before
-any kind is treated as allocated, and NIP-11 advertises NIP-MKT only after
-the local conformance gate passes. The NIP-90 freeze means no new NIP-90 job
-kinds or semantics are implemented in any lane; existing NIP-90 material is
-read-compatibility only. All other `openagents` specifications remain parked
-pending their own adoption decisions.
+the **first implementation slice** of the full-lane directive above, ahead
+of the other lane items and ahead of M8/M9 — see the M10 and M11 milestones
+in `docs/ROADMAP.md`. The adoption discipline is unchanged: the
+implementation lands with its fixture corpus, the `39600-39699` collision
+review is repeated at the pinned commits before any kind is treated as
+allocated, and NIP-11 advertises NIP-MKT only after the local conformance
+gate passes. The NIP-90 freeze means no new NIP-90 job kinds or semantics
+are implemented in any lane; existing NIP-90 material is read-compatibility
+only. The remaining `openagents` specifications stay implementation targets
+under the full-lane directive and enter the runtime through their own
+sequenced packets, each with the same fixture and conformance gate.
