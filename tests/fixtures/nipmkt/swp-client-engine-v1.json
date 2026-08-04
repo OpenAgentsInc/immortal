@@ -1,0 +1,101 @@
+{
+  "schema": "openagents.mkt-swp.client-engine-fixtures.v1",
+  "source": {
+    "lane": "openagents",
+    "commit": "a7f5522c0a7430f9f5b1cfa09477dae2d16d3682",
+    "specification": "nips/openagents/MKT-SWP.md",
+    "issue": "OpenAgentsInc/immortal#12",
+    "profile": "mkt-swp",
+    "version": 1
+  },
+  "deterministic_session": {
+    "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "requester_secret_byte": 17,
+    "provider_secret_byte": 34,
+    "offering_id": "btc-lightning-regtest",
+    "network_a": "bip122:00000000000000000000000000000000",
+    "network_b": "bip122:11111111111111111111111111111111",
+    "chain_asset_a": "swp:1:bip122:00000000000000000000000000000000:btc:chain",
+    "lightning_asset_a": "swp:1:bip122:00000000000000000000000000000000:btc:lightning",
+    "chain_asset_b": "swp:1:bip122:11111111111111111111111111111111:btc:chain",
+    "payment_hash": "96c772a829fb7c780410f1d85cf12a89e8b3c78c0bac5fb47f62758bf961ec30",
+    "invoice": "lnbc10u1p3unwfusp5t9r3yymhpfqculx78u027lxspgxcr2n2987mx2j55nnfs95nxnzqpp5jmrh92pfld78spqs78v9euf2385t83uvpwk9ldrlvf6ch7tpascqhp5zvkrmemgth3tufcvflmzjzfvjt023nazlhljz2n9hattj4f8jq8qxqyjw5qcqpjrzjqtc4fc44feggv7065fqe5m4ytjarg3repr5j9el35xhmtfexc42yczarjuqqfzqqqqqqqqlgqqqqqqgq9q9qxpqysgq079nkq507a5tw7xgttmj4u990j7wfggtrasah5gd4ywfr2pjcn29383tphp4t48gquelz9z78p4cq7ml3nrrphw5w6eckhjwmhezhnqpy6gyf0",
+    "invoice_amount_msat": "1000000",
+    "funding_transaction": "02000000010000000000000000000000000000000000000000000000000000000000000000ffffffff00ffffffff01a086010000000000225120147c9c57132f6e7ecddba9800bb0c4449251c92a1e60371ee77557b6620f3ea300000000",
+    "funding_output_index": 0,
+    "funding_amount": "100000",
+    "taproot_output_key": "147c9c57132f6e7ecddba9800bb0c4449251c92a1e60371ee77557b6620f3ea3",
+    "taproot_script": "20d85a959b0290bf19bb89ed43c916be835475d013da4b362117393e25a48229b8ac",
+    "taproot_control_block": "c1187791b6f712a8ea41c8ecdd0ee77fab3e85263b37e1ec18a3651926b3a6cf27",
+    "destination_script_pubkey": "51"
+  },
+  "record_construction": [
+    {"name": "swp-v1-client-construct-rfq", "kind": 39604, "author": "requester"},
+    {"name": "swp-v1-client-construct-quote", "kind": 39605, "author": "provider"},
+    {"name": "swp-v1-client-construct-order", "kind": 39606, "author": "requester"},
+    {"name": "swp-v1-client-construct-status", "kind": 39607, "author": "requester"},
+    {"name": "swp-v1-client-construct-cancel", "kind": 39608, "author": "requester"},
+    {"name": "swp-v1-client-construct-close", "kind": 39609, "author": "requester"},
+    {"name": "swp-v1-client-external-signature-shape-mismatch", "error": "swp_external_signature_mismatch"},
+    {"name": "swp-v1-client-external-signature-invalid", "error": "swp_external_signature_invalid"}
+  ],
+  "flows": [
+    {"name": "swp-v1-submarine-regtest-cooperative", "swap_type": "submarine", "terminal": "completed"},
+    {"name": "swp-v1-submarine-regtest-script-refund", "swap_type": "submarine", "terminal": "refunded"},
+    {"name": "swp-v1-reverse-regtest-cooperative", "swap_type": "reverse", "terminal": "completed"},
+    {"name": "swp-v1-reverse-regtest-provider-refund", "swap_type": "reverse", "terminal": "refunded"},
+    {"name": "swp-v1-chain-regtest-cooperative", "swap_type": "chain", "terminal": "completed"},
+    {"name": "swp-v1-chain-regtest-dual-refund", "swap_type": "chain", "terminal": "refunded"}
+  ],
+  "verify_before_fund": [
+    {"name": "swp-v1-client-verification-passed", "result": "funding_authorized"},
+    {"name": "swp-v1-negative-contract-one-signer", "error": "swp_contract_missing"},
+    {"name": "swp-v1-negative-contract-digest-fork", "error": "swp_contract_digest_mismatch"},
+    {"name": "swp-v1-negative-contract-order-mismatch", "error": "swp_contract_terms_mismatch"},
+    {"name": "swp-v1-negative-payment-hash", "error": "swp_payment_hash_mismatch"},
+    {"name": "swp-v1-negative-invoice-network", "error": "swp_invoice_invalid"},
+    {"name": "swp-v1-negative-invoice-amountless", "error": "swp_invoice_invalid"},
+    {"name": "swp-v1-negative-taproot-tree", "error": "swp_script_commitment_mismatch"},
+    {"name": "swp-v1-negative-funding-amount", "error": "swp_terms_mismatch"},
+    {"name": "swp-v1-negative-timeout-ladder", "error": "swp_timeout_ladder_unsafe"},
+    {"name": "swp-v1-negative-rbf-forbidden", "error": "swp_rbf_policy_violation"},
+    {"name": "swp-v1-negative-insufficient-confirmations", "error": "swp_confirmation_insufficient"},
+    {"name": "swp-v1-negative-missing-exit-package", "error": "swp_exit_package_missing"},
+    {"name": "swp-v1-recovery-unusable-exit-package", "error": "swp_exit_package_unusable"},
+    {"name": "swp-v1-negative-restore-does-not-trust-authorized-bit", "error": "swp_funding_not_authorized"}
+  ],
+  "sequencing": [
+    {"name": "swp-v1-status-contiguous", "result": "advanced"},
+    {"name": "swp-v1-status-gap", "error": "swp_status_gap"},
+    {"name": "swp-v1-status-fork", "error": "swp_status_fork"},
+    {"name": "swp-v1-negative-provider-claims-requester-verification", "error": "swp_status_signer_invalid"},
+    {"name": "swp-v1-status-illegal-transition", "error": "swp_status_transition_invalid"},
+    {"name": "swp-v1-recovery-mutual-close-disagreement", "result": "both_retained"}
+  ],
+  "external_effects": [
+    {"name": "swp-v1-client-wallet-sign-callback", "result": "signed_transaction_validated"},
+    {"name": "swp-v1-client-wallet-sign-mutation", "error": "swp_external_signature_mismatch"},
+    {"name": "swp-v1-replay-effect-after-crash", "result": "prior_result"},
+    {"name": "swp-v1-conflict-effect-binding", "error": "swp_external_effect_conflict"}
+  ],
+  "recovery": [
+    {"name": "swp-v1-client-crash-restore-revalidates", "result": "verification_required"},
+    {"name": "swp-v1-doomsday-submarine-provider-gone", "action": "broadcast_refund"},
+    {"name": "swp-v1-doomsday-reverse-coordinator-gone", "action": "direct_complete_or_refund"},
+    {"name": "swp-v1-doomsday-chain-counterparty-gone", "action": "ordered_unilateral_exits"},
+    {"name": "swp-v1-doomsday-keyless-esplora-broadcast", "result": "public_post_request"},
+    {"name": "swp-v1-recovery-missing-signed-record", "error": "swp_unresolved_loss"}
+  ],
+  "custody_tripwires": [
+    {"member": "seed", "error": "swp_secret_material_forbidden"},
+    {"member": "private_key", "error": "swp_secret_material_forbidden"},
+    {"member": "claim_private_key", "error": "swp_secret_material_forbidden"},
+    {"member": "refund_private_key", "error": "swp_secret_material_forbidden"},
+    {"member": "preimage", "error": "swp_secret_material_forbidden"},
+    {"member": "macaroon", "error": "swp_secret_material_forbidden"},
+    {"member": "nwc", "error": "swp_secret_material_forbidden"},
+    {"member": "nwc_string", "error": "swp_secret_material_forbidden"},
+    {"member": "musig_secret_nonce", "error": "swp_secret_material_forbidden"},
+    {"member": "signing_nonce", "error": "swp_secret_material_forbidden"}
+  ]
+}

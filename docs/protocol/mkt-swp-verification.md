@@ -32,6 +32,10 @@ The transaction and timeout cases are deterministic local inputs. Live regtest
 funding, reorg, replacement, claim, and refund evidence belongs to the M12 lab,
 where external Bitcoin and Lightning nodes own all custody and broadcast work.
 
+The requester-side lifecycle, funding gate, wallet callback, persistence, and
+recovery contract built on these primitives is documented in
+[`mkt-swp-client.md`](mkt-swp-client.md).
+
 Run the packet gate with:
 
 ```sh

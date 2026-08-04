@@ -88,6 +88,12 @@ names the NIP that owns the behavior.
   public receipts, and bounded commitment/evidence/dispute/recourse shapes.
   It exports all 41 upstream cases while keeping credential, rail, guarantee,
   reserve, dispute, external-effect, and recovery authority client-only.
+- `nipmkt/swp-client-engine-v1.json` pins the transport-neutral requester
+  engine: exact externally signed records, bilateral canonical contract
+  binding, all three swap flows, verify-before-fund refusals, per-signer
+  sequencing, wallet-owned claim/refund signing, idempotent external effects,
+  crash recovery, keyless pre-signed broadcast, and recursive custody
+  tripwires. It adds no relay-handler or settlement claim.
 - `nipmkt/tbdex-legacy.json` adapts the field vocabulary and parse-vector
   shapes from `TBD54566975/tbdex` protocol 1.0 at commit
   `7546a079bb860e7ede8125739b7970810a2df314`, Apache-2.0. It records the

@@ -283,3 +283,34 @@ state on timeout, and cannot sign participant transitions, hold custody
 material, operate a wallet or node, or assert payment/finality. Its complete
 boundary is [`mkt-swp-coordination.md`](mkt-swp-coordination.md). No source-
 lane precedence exception was created.
+
+## M12 MKT-SWP client execution decision (2026-08-04)
+
+Issue #12 consumes the already pinned OpenAgents MKT-SWP v1 text at
+`a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`. It allocates no new kind and
+therefore does not repeat or alter issue #11's three-lane and registry
+collision result: `39610` remains the sole adopted Swap Contract kind and
+`39611-39629` plus `39631-39699` remain unallocated here.
+
+The transport-neutral client now constructs the six private base records and
+bilateral Swap Contracts through exact external signing requests. It binds
+both signers to RFC 8785-compatible contract terms, projects independent
+Status streams without hiding gaps or forks, and implements submarine,
+reverse, and chain verification with the issue-#10 Bitcoin/Lightning
+primitives. Funding authority exists only after that verification and an
+embedding-wallet callback succeed. Restored snapshots always return to the
+unverified state.
+
+Exit packages bind each executable claim or refund path and its public
+verification requirements. Their package digest commits the execution fields
+but excludes the two Swap Contract IDs and shared contract digest to avoid a
+circular event-ID commitment. The complete package still carries and
+revalidates those exact bilateral bindings. Wallet and external-signer
+callbacks own all signatures; a complete pre-signed exit can also produce a
+keyless public Esplora broadcast request for the doomsday path.
+
+This adoption adds deterministic fixtures and machine-contract metadata but
+no dependency, server handler, database state, custody material, rail
+credential, or settlement authority. It does not change NIP-11: the relay's
+`mkt-swp:1` claim stays observable-only and its executable-profile set remains
+empty until issue #13 passes its active-configuration conformance gate.

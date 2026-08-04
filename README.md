@@ -64,7 +64,8 @@ TLS is the job of the reverse proxy (nginx or Caddy).
 
 ## Status
 
-M1 through M7, the M10 NIP-MKT relay base, and the adopted M12 relay packets are complete: the protocol domain, Postgres store,
+M1 through M7, the M10 NIP-MKT relay base, and the adopted M12 packets are
+complete: the protocol domain, Postgres store,
 HTTP/WebSocket gateway, pinned per-NIP fixtures, locally executable
 conformance, actual-process chaos and load proofs, and the production
 deployment kit. The relay also provides expiration cleanup, protected and
@@ -81,10 +82,12 @@ verification primitives and the relay-observable MKT-SWP and MKT-PFI v1
 adoptions: public Offering grammar, immutable wrapped Swap Contracts on kind
 `39610`, public Qualification Policy heads on kind `39630`, bounded
 commitment/evidence shapes, exported fixtures, and gated profile discovery. It
-also includes the off-by-default `mkt-swp-coordination:1` handler for signed
-capacity accounting, reservation timeouts, Status gaps/forks, and public
-observation-not-authority evidence. The executable-profile set remains empty.
-See `docs/ROADMAP.md`, `docs/conformance/`, and `docs/deployment/`.
+also includes the transport-neutral MKT-SWP client engine with verify-before-
+fund transitions, wallet-owned signing, and keyless recovery, plus the off-by-
+default `mkt-swp-coordination:1` handler for signed capacity accounting,
+reservation timeouts, Status gaps/forks, and public observation-not-authority
+evidence. The executable-profile set remains empty. See `docs/ROADMAP.md`,
+`docs/conformance/`, and `docs/deployment/`.
 
 The current feature list is a deployment snapshot, not Immortal's scope
 ceiling. The immediate protocol-totality program targets **every specification
@@ -142,7 +145,8 @@ recipient transport. The same gate advertises `mkt-swp:1` and
 `nip-mkt-pfi:1` for their relay-observable v1 grammar. The separate
 [`coordination handler`](docs/protocol/mkt-swp-coordination.md) advertises
 `mkt-swp-coordination:1` only with its exact compiled conformance digest; the
-executable-profile set remains empty.
+machine contract separately records the completed MKT-SWP client engine, and
+the executable-profile set remains empty.
 
 The transport-neutral client core also exposes a fail-closed
 [`tbDEX legacy translation audit`](docs/protocol/tbdex-legacy-translation.md).

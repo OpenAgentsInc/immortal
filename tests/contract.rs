@@ -62,6 +62,14 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
             .coordination
             .on_relay_output_orderbook
     );
+    assert_eq!(
+        descriptor.mkt.mkt_swp.client_engine.status,
+        "implemented_client_only"
+    );
+    assert_eq!(
+        descriptor.mkt.mkt_swp.client_engine.requester_flows,
+        ["submarine", "reverse", "chain"]
+    );
     assert!(
         descriptor
             .mkt
@@ -152,6 +160,7 @@ fn fixture_manifest_hashes_exact_sorted_committed_bytes() {
     assert!(paths.contains("tests/fixtures/nipmkt/relay-closing.json"));
     assert!(paths.contains("tests/fixtures/nipmkt/swp-profile-v1.json"));
     assert!(paths.contains("tests/fixtures/nipmkt/swp-coordination-v1.json"));
+    assert!(paths.contains("tests/fixtures/nipmkt/swp-client-engine-v1.json"));
 }
 
 fn lower_hex(bytes: &[u8]) -> String {

@@ -157,6 +157,7 @@ pub struct MktSwpGrammar {
     pub forbidden_custody_members: Vec<&'static str>,
     pub upstream_fixture_cases: usize,
     pub coordination: MktSwpCoordinationGrammar,
+    pub client_engine: MktSwpClientContract,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -189,6 +190,19 @@ pub struct MktSwpCoordinationGrammar {
     pub durable_private_state: &'static str,
     pub multi_process_consistency: &'static str,
     pub on_relay_output_orderbook: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MktSwpClientContract {
+    pub status: &'static str,
+    pub build_targets: Vec<&'static str>,
+    pub requester_flows: Vec<&'static str>,
+    pub constructed_record_kinds: Vec<u16>,
+    pub funding_requires: Vec<&'static str>,
+    pub wallet_boundary: &'static str,
+    pub persistence: &'static str,
+    pub recovery: Vec<&'static str>,
+    pub fixture: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -929,6 +943,39 @@ fn mkt_grammar() -> MktGrammar {
                 durable_private_state: "signed_identifiers_bounded_accounting_and_hashes_only",
                 multi_process_consistency: "postgres_advisory_locks_and_transactions",
                 on_relay_output_orderbook: false,
+            },
+            client_engine: MktSwpClientContract {
+                status: "implemented_client_only",
+                build_targets: vec!["native", "wasm32-unknown-unknown"],
+                requester_flows: vec!["submarine", "reverse", "chain"],
+                constructed_record_kinds: vec![
+                    MKT_RFQ_KIND,
+                    MKT_QUOTE_KIND,
+                    MKT_ORDER_KIND,
+                    MKT_STATUS_KIND,
+                    MKT_CANCEL_KIND,
+                    MKT_CLOSE_KIND,
+                    MKT_SWP_SWAP_CONTRACT_KIND,
+                ],
+                funding_requires: vec![
+                    "accepted_quote_and_order",
+                    "matching_bilateral_swap_contract",
+                    "rfc8785_contract_digest",
+                    "public_rail_verification",
+                    "persisted_exit_package",
+                    "external_wallet_authorization_callback",
+                ],
+                wallet_boundary: "external_callbacks_only; no seed, spend key, unreleased preimage, macaroon, NWC string, or signing nonce",
+                persistence: "signed_records, public_verifier_inputs, exit_packages, and external-effect results; authorization is rederived after restore",
+                recovery: vec![
+                    "per_signer_gap_and_fork_surface",
+                    "timeout_ladder",
+                    "claim_or_refund_assembly",
+                    "coordinator_independent_direct_recovery",
+                    "presigned_keyless_esplora_broadcast",
+                    "explicit_unresolved_loss",
+                ],
+                fixture: "tests/fixtures/nipmkt/swp-client-engine-v1.json",
             },
         },
         mkt_pfi: MktPfiGrammar {

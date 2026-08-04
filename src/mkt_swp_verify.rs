@@ -65,6 +65,21 @@ pub struct TransactionOutput {
 }
 
 impl Transaction {
+    pub fn new(
+        version: i32,
+        inputs: Vec<TransactionInput>,
+        outputs: Vec<TransactionOutput>,
+        lock_time: u32,
+    ) -> Self {
+        Self {
+            version,
+            inputs,
+            outputs,
+            lock_time,
+            has_witness: false,
+        }
+    }
+
     pub fn parse(bytes: &[u8]) -> Result<Self, VerificationError> {
         if bytes.is_empty() || bytes.len() > MAX_TRANSACTION_BYTES {
             return Err(VerificationError::Bounds("transaction byte length"));

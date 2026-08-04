@@ -258,6 +258,12 @@
       "scope": "relay_and_client"
     },
     {
+      "path": "tests/fixtures/nipmkt/swp-client-engine-v1.json",
+      "sha256": "b3bcf2251b5e75e01ba6037a2c961e1e48a7d1d10498dc476696a06895c8d43d",
+      "bytes": 7008,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/nipmkt/swp-profile-v1.json",
       "sha256": "9e50f308f9f5bfea49f50c265c89a4c0ed3a00988eb107943d463dbdc0daaf22",
       "bytes": 11402,

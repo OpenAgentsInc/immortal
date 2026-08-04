@@ -46,6 +46,21 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   service, database, wallet, node credential, participant key, or settlement
   authority was added.
 
+### 2026-08-04 — Codex 5.6 Sol, M12 MKT-SWP client engine / issue #12
+
+- Implemented the native/WASM transport-neutral requester engine for all
+  three MKT-SWP v1 flows: deterministic external signing requests, bilateral
+  RFC 8785-compatible contract binding, per-signer lifecycle projection, and
+  structural verify-before-fund authorization.
+- Added wallet-owned claim/refund transaction signing, deterministic external
+  effect replay, crash restore that always re-enters verification, typed
+  recovery actions, pre-signed keyless Esplora broadcast, and recursive
+  custody-material tripwires. No dependency, service, database, private key,
+  preimage, macaroon, signing nonce, or broadcast authority was added.
+- Added the deterministic client fixture, machine-contract export, protocol
+  and source-lane decisions, and native/no-default/WASM/manual conformance
+  coverage. The relay executable-profile and NIP-11 claims remain unchanged.
+
 ### 2026-08-04 — Codex 5.6 Sol, M12 MKT-SWP relay adoption / issue #11
 
 - Synced the released MKT-SWP and MKT-PFI drafts from OpenAgents commit
