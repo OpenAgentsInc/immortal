@@ -69,10 +69,12 @@ HTTP/WebSocket gateway, pinned per-NIP fixtures, locally executable
 conformance, actual-process chaos and load proofs, and the production
 deployment kit. The relay also provides expiration cleanup, protected and
 recipient-gated events, relay-managed groups, authenticated management,
-bounded COUNT, full-text search, and bounded Blossom media. M8 hardening and
-formal work is next. The pinned Block extension lane is also active for agent
-ownership/authentication, observer and turn traffic, private agent data,
-reminders, projects, identity/DM/workspace commands, and relay state. See
+bounded COUNT, full-text search, and bounded Blossom media. The pinned Block
+extension lane is also active for agent ownership/authentication, observer
+and turn traffic, private agent data, reminders, projects,
+identity/DM/workspace commands, and relay state. The next work, in order, is
+NIP-MKT negotiated-market support (M10), the machine-readable contract and
+TypeScript SDK export lane (M11), and then M8 hardening and formal work. See
 `docs/ROADMAP.md`, `docs/conformance/`, and `docs/deployment/`.
 
 The current feature list is a deployment snapshot, not Immortal's scope

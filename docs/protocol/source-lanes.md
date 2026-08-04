@@ -45,3 +45,23 @@ roadmap's NIP-98 choice wins over current Blossom BUD-11 kind-24242
 authorization. M7 itself created no identifier-precedence exception. The later
 owner-directed Block adoption is recorded above; OpenAgents specifications
 remain parked.
+
+## M10 decision (2026-08-04)
+
+The 2026-08-04 sync advanced the `openagents` lane: it now pins NIP-MKT
+(`MKT.md`, the negotiated-market base on kinds `39600-39609` with
+`39610-39699` reserved) and `NIP90-MIGRATION.md` (the upstream NIP-90
+unrecommended status and the compatibility freeze annotated into AC, CN, DS,
+LBR, SA, SKL, and TRN). The `block` lane repinned with no spec content
+changes.
+
+Owner direction on 2026-08-04 selects NIP-MKT from the `openagents` lane as
+the next adoption target, ahead of the previously parked lane items and ahead
+of M8/M9 — see the M10 and M11 milestones in `docs/ROADMAP.md`. The adoption
+discipline is unchanged: the implementation lands with its fixture corpus,
+the `39600-39699` collision review is repeated at the pinned commits before
+any kind is treated as allocated, and NIP-11 advertises NIP-MKT only after
+the local conformance gate passes. The NIP-90 freeze means no new NIP-90 job
+kinds or semantics are implemented in any lane; existing NIP-90 material is
+read-compatibility only. All other `openagents` specifications remain parked
+pending their own adoption decisions.

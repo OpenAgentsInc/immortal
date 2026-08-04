@@ -4,6 +4,15 @@ The order of work. Each milestone lands with its fixtures and leaves the
 build green. Rules live in `AGENTS.md`; NIP sources live in `nips/`;
 external-project reviews live in `docs/inspiration/`.
 
+Milestone numbers are stable identifiers, not the execution order. The
+current order of the remaining work is **M10 → M11 → M8 → M9** (owner
+direction, 2026-08-04), all under the immediate protocol-totality and
+noncustodial-markets program below: NIP-MKT negotiated-market support and
+the machine-readable contract/SDK lane come first, because the immediate
+goal is a working market demo against this relay from Omega and
+`openagents.com`. Hardening (M8) and the drop-in kit (M9) continue after,
+and any M8 finding that affects the market lane is fixed in place.
+
 ## M0 — Foundation (done)
 
 - [x] Repo, license (CC0), README, AGENTS.md doctrine
@@ -186,6 +195,113 @@ credentials, and final settlement authority remain with clients, providers,
 or the underlying rail. All of this still obeys one binary, one Postgres,
 prepared SQL, bounded work, fail-closed operation, and no GitHub workflows or
 GitHub-billed automation.
+
+M10 and M11 below are the first two concrete slices of this program, in
+that order: the NIP-MKT base makes the negotiated-market fabric real on
+this relay, and the contract/SDK lane makes it consumable from Omega and
+`openagents.com` without hand-written drift.
+
+## M10 — Negotiated markets (NIP-MKT base)
+
+The first slice of the immediate program and the current top priority.
+Implement the pinned `nips/openagents/MKT.md` base as a
+transport-plus-validation lane: public discovery heads, gated gift-wrap
+negotiation transport, and the base admission rules. Focused profiles
+(MKT-SWP and the rest of `39610-39699`) and the broader Boltz/tbDEX
+absorption items above are separate later slices; the optional
+noncustodial handler role (routing, reservation accounting, timers) lands
+after the base. NIP-90 job kinds are frozen per
+`nips/openagents/NIP90-MIGRATION.md` — no new NIP-90 semantics land here.
+
+- [ ] Adoption decision recorded in `docs/protocol/source-lanes.md`: lane
+      `openagents`, identifier NIP-MKT, kinds `39600-39609`, with
+      `39610-39699` reserved and unallocated
+- [ ] Repeat the registry-of-kinds and three-lane collision review of
+      `39600-39699` at the pinned manifest commits (the spec requires the
+      re-check before implementation)
+- [ ] Domain: public head validation — Provider Profile `39600`, Offering
+      `39601`, Profile Descriptor `39602` (required tags, status enums,
+      16 KiB content bound) and Public Market Receipt `39603` (unique `d`,
+      required `profile`/`outcome`/`x`/`role` tags, 4 KiB bound)
+- [ ] Domain: private record kinds `39604-39609` are
+      **immutable-by-contract** — identical signed bytes under an existing
+      `(pubkey, kind, d)` are idempotent replay returning the prior `OK`;
+      different bytes are an idempotency conflict and fail closed. This
+      deliberately overrides the generic NIP-01 addressable
+      newest-head replacement for these six kinds and needs its own store
+      path and fixtures
+- [ ] Domain: common-grammar checks — exactly-one `d`/`session`/`profile`/
+      `alt`, at least one role-marked `p` tag, 64-lower-hex `session` and
+      `d`, the `openagents.mkt.v1` content envelope with tag/body
+      agreement, duplicate-JSON-member rejection, 32 KiB private-record
+      bound, and the tag caps (64 tags, 8 `p`, 32 causal refs, 16
+      profiles, 8 hints)
+- [ ] Store: MKT admission inside the existing single transaction with a
+      distinct machine-readable `OK` reason for idempotency conflicts
+- [ ] Gateway: reject bare publication of `39604-39609` (private records
+      travel only inside NIP-59 gift wraps); confirm wrapped negotiation
+      rides the existing NIP-17 `1059` recipient gating on every read
+      surface — REQ, id lookup, COUNT, search exclusion, live fanout —
+      with MKT fixtures proving each surface
+- [ ] Limits: discovery-head rate limits per IP and pubkey; wrap-rate
+      limits per IP, sender, and recipient reusing the existing 1059
+      machinery
+- [ ] Fixture corpus per the MKT conformance section (relay-observable
+      subset): malformed events, duplicate JSON keys, unsupported
+      profile/version, changed bytes under one `d`, rewrapped replay,
+      bare-private publication, expired events, and never classifying
+      `396xx` as ephemeral or regular. Client-only cases (quote
+      supersession, double reservation, sequence gap/fork, signer
+      mismatch, settlement overclaim) live in the exported corpus for SDK
+      consumers (M11)
+- [ ] Formal model where the state space is bounded: the
+      replay/conflict/immutability admission machine for `39604-39609`;
+      counterexamples become fixtures
+- [ ] NIP-11: advertise NIP-MKT only after the local conformance gate
+      passes, following the `supported_extensions` practice from the
+      Block lane
+
+## M11 — Contract export and TypeScript SDK lane
+
+Downstream demo surfaces — the Omega market panel (`~/work/omega`, Rust/
+GPUI) and the `openagents.com` web app — need typed clients that agree
+with this relay byte-for-byte. The repeatable process: **Immortal emits a
+machine-readable contract artifact; downstream repos generate their SDKs
+from it and replay our fixtures.** The relay stays one binary and one
+Postgres — the contract is something the binary prints, never a service.
+
+- [ ] `immortal contract` subcommand (serde/serde_json only — zero new
+      dependencies): print a versioned, deterministic (stable key order)
+      JSON descriptor of the implemented surface — supported NIPs by
+      lane, the kind table with classifications and publication rules,
+      configured limits and bounds, the NIP-MKT grammar (required tags;
+      the status/quote/reservation/state/action/outcome enums; size
+      caps), and the machine-readable `OK`/`CLOSED` reason strings
+- [ ] Contract identity: embed the crate version and the pinned
+      `nips/manifest.json` commits, so any generated SDK names the exact
+      protocol revision it was generated from
+- [ ] `scripts/export-contract.sh`: build, run the subcommand, write
+      `contract/immortal-contract.json` plus a fixture-corpus manifest
+      (paths and digests). Run it after every sync or adoption commit;
+      review the contract diff like a spec diff
+- [ ] Fixtures are part of the contract artifact: the exported manifest
+      covers the M10 corpus plus the client-only MKT cases, and a
+      downstream SDK is conformant only when it replays them
+      byte-for-byte
+- [ ] Document the downstream consumers and their boundaries (recorded
+      here, implemented in their own repos):
+      - the `openagents` monorepo generates an Effect Schema TypeScript
+        SDK from the contract JSON, layered on the workspace `nostr-effect`
+        primitives, with a test suite that replays the exported fixtures;
+        regeneration triggers whenever the contract version changes
+      - `openagents.com` builds the web market demo (provider discovery,
+        RFQ → Quote → Order → Status → Close) on that SDK against a dev
+        Immortal
+      - Omega builds its market panel in Rust on this crate's
+        transport-neutral client core (the non-`server` feature build
+        proven natively and on `wasm32-unknown-unknown` in Diamond Hands
+        Phase 0), reusing `domain` validation directly and speaking to
+        the relay over its own WebSocket
 
 ## M8 — Hardening and formal work
 
