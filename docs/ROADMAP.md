@@ -4,14 +4,15 @@ The order of work. Each milestone lands with its fixtures and leaves the
 build green. Rules live in `AGENTS.md`; NIP sources live in `nips/`;
 external-project reviews live in `docs/inspiration/`.
 
-Milestone numbers are stable identifiers, not the execution order. The
-current order of the remaining work is **M10 → M11 → M8 → M9** (owner
-direction, 2026-08-04), all under the immediate protocol-totality and
-noncustodial-markets program below: NIP-MKT negotiated-market support and
-the machine-readable contract/SDK lane come first, because the immediate
-goal is a working market demo against this relay from Omega and
-`openagents.com`. Hardening (M8) and the drop-in kit (M9) continue after,
-and any M8 finding that affects the market lane is fixed in place.
+Milestone numbers are stable identifiers, not the execution order. M10
+(NIP-MKT base) and M11 (contract/SDK export) are complete. The current
+order of the remaining work is **M12 → M8 → M9** (owner direction,
+2026-08-04), all under the immediate protocol-totality and
+noncustodial-markets program below: M12 is the issue-backed Boltz/tbDEX
+port program whose completion makes Immortal-based services able to
+replace Boltz-class dependencies. Hardening (M8) and the drop-in kit (M9)
+continue after, and any M8 finding that affects the market lane is fixed
+in place.
 
 ## M0 — Foundation (done)
 
@@ -171,19 +172,22 @@ successor microstandards.
       families and NIP-BT after the first liquidity slice; the earlier BT
       postponement is sequencing, not cancellation
 - [ ] Draft, review, pin, and implement focused OpenAgents market NIPs:
-      negotiated-market base plus atomic-swap, P2P, credentialed-PFI,
-      mint/federation, LSP, and later risk/guarantee profiles; do not extend
-      NIP-90 for new market semantics
+      negotiated-market base (done — M10) plus atomic-swap, P2P,
+      credentialed-PFI, mint/federation, LSP, and later risk/guarantee
+      profiles; do not extend NIP-90 for new market semantics. SWP and PFI
+      drafting is openagents#9311 in the M12 ledger; P2P/MINT/LSP/RISK
+      follow after the Boltz-class replacement exists
 - [ ] Absorb the noncustodial Boltz/tbDEX surface: provider profiles and
       discovery, Offering/RFQ/Quote/Order/Status/Close, signed quote
       reservation, multi-provider routing, privacy and credential policy,
       script/invoice verification, chain/LN evidence, timeout/refund
       recovery, monitoring, disputes/recourse, and Boltz REST/WebSocket plus
-      tbDEX message compatibility where interoperability justifies it
+      tbDEX message compatibility where interoperability justifies it —
+      now issue-backed as the M12 ledger below (#10-#17, #19)
 - [ ] Prove browser and native clients, at least two independently keyed
       providers, multiple relays, partitions, crashes, duplicate/conflicting
       messages, reorg/RBF, noncooperation, refund, and secret-leak rejection
-      in a manual adversarial regtest lab
+      in a manual adversarial regtest lab — now issue-backed as M12 #18
 
 The noncustodial boundary is strict but deliberately ambitious. Immortal may
 compute, validate, index, coordinate, route, reserve signed provider capacity,
@@ -196,10 +200,11 @@ or the underlying rail. All of this still obeys one binary, one Postgres,
 prepared SQL, bounded work, fail-closed operation, and no GitHub workflows or
 GitHub-billed automation.
 
-M10 and M11 below are the first two concrete slices of this program, in
-that order: the NIP-MKT base makes the negotiated-market fabric real on
-this relay, and the contract/SDK lane makes it consumable from Omega and
-`openagents.com` without hand-written drift.
+M10 and M11 below were the first two concrete slices of this program and
+are complete: the NIP-MKT base made the negotiated-market fabric real on
+this relay, and the contract/SDK lane made it consumable from Omega and
+`openagents.com` without hand-written drift. M12 is the third slice: the
+issue ledger that ports the Boltz/tbDEX infrastructure itself.
 
 ## M10 — Negotiated markets (NIP-MKT base)
 
@@ -302,6 +307,54 @@ Postgres — the contract is something the binary prints, never a service.
         proven natively and on `wasm32-unknown-unknown` in Diamond Hands
         Phase 0), reusing `domain` validation directly and speaking to
         the relay over its own WebSocket
+
+## M12 — Boltz/tbDEX port program (issue ledger)
+
+The concrete, issue-backed program that ports the relevant Boltz and tbDEX
+infrastructure into Immortal's noncustodial boundary. **When every issue in
+this ledger is closed, an Immortal-based deployment can replace a
+Boltz-class swap dependency for a consuming service** — that is the
+completion criterion, executed through the migration runbook (#19).
+Replacement capability is what the ledger proves; a public replacement
+claim additionally needs live deployment evidence.
+
+Sources: the pinned inspiration reviews (`docs/inspiration/boltz.md`,
+`docs/inspiration/tbdex.md`), the workspace teardowns
+(`openagents/docs/teardowns/2026-08-03-boltz-ecosystem-nostr-rebuild-teardown.md`
+and `...2026-08-04-tbdex-liquidity-protocol-teardown.md` §7 harvest map),
+and the frozen `~/work/projects/tbd/` reference lane. The noncustodial
+boundary stated in the immediate program above governs every item.
+
+| Issue | Packet | Depends on |
+| --- | --- | --- |
+| [openagents#9311](https://github.com/OpenAgentsInc/openagents/issues/9311) | Draft MKT-SWP and MKT-PFI profile NIPs upstream in `docs/nips/` (39610-39699 allocations, fresh collision review), then sync into this lane | — |
+| [#9](https://github.com/OpenAgentsInc/immortal/issues/9) | Dev env: local relay + seeded NIP-MKT market on one machine (macOS quickstart) | — |
+| [#10](https://github.com/OpenAgentsInc/immortal/issues/10) | Bitcoin/Lightning verification primitives, allowlist-only and in-repo: tx parse, Taproot trees, MuSig2 verification, BOLT11 parse, timelock ladders | — |
+| [#11](https://github.com/OpenAgentsInc/immortal/issues/11) | Adopt MKT-SWP: sync, collision review, relay validation, fixtures, contract-export section, NIP-11 gate | 9311 |
+| [#12](https://github.com/OpenAgentsInc/immortal/issues/12) | Client-core swap engine: submarine/reverse/chain requester flows, verify-before-fund enforced structurally, claim/refund assembly with embedder-held keys, crash recovery | #10, #11 |
+| [#13](https://github.com/OpenAgentsInc/immortal/issues/13) | Noncustodial coordination handlers: reservation accounting, session timers, equivocation/fork surfacing, relay-verifiable evidence observations | #11 |
+| [#14](https://github.com/OpenAgentsInc/immortal/issues/14) | Provider-side session library plus the persistent no-spend provider actor (reference embedding; funded daemons stay external) | #11, #12 |
+| [#15](https://github.com/OpenAgentsInc/immortal/issues/15) | Boltz-compatible REST/WebSocket facade: deterministic versioned mapping onto MKT-SWP sessions, fail-closed, off by default | #11, #13 |
+| [#16](https://github.com/OpenAgentsInc/immortal/issues/16) | tbDEX schema/vector harvest into fixtures plus the fail-closed legacy message translator | #11 |
+| [#17](https://github.com/OpenAgentsInc/immortal/issues/17) | Adopt MKT-PFI: credentialed-ramp validation, risk-classification vocabulary, PII-refusal fixtures | 9311, #16 |
+| [#18](https://github.com/OpenAgentsInc/immortal/issues/18) | Adversarial regtest lab: two funded providers on external regtest nodes, multiple relays, the full failure matrix, recovery from persistence | #9, #10-#15 |
+| [#19](https://github.com/OpenAgentsInc/immortal/issues/19) | Migration closing packet: swap-network runbook, facade shadow mode against a live Boltz endpoint, cutover and rollback | #18 |
+
+Downstream consumers regenerate as the ledger advances:
+[openagents#9309](https://github.com/OpenAgentsInc/openagents/issues/9309)
+(generated TypeScript SDK),
+[openagents#9310](https://github.com/OpenAgentsInc/openagents/issues/9310)
+(web market demo), and
+[omega#244](https://github.com/OpenAgentsInc/omega/issues/244) (Omega
+market panel). They consume the contract artifact and fixture manifests;
+they are not gates on this ledger.
+
+Sequencing inside the ledger: #9 and #10 start immediately (no
+dependencies); the SWP spine (#11 → #12/#13 → #14/#15) is the critical
+path; #16/#17 are the tbDEX lane and can run beside it; #18 then #19
+close the program. MKT-MINT, MKT-LSP, and MKT-RISK profiles are
+deliberately outside this ledger — they extend the market after the
+Boltz-class replacement exists.
 
 ## M8 — Hardening and formal work
 

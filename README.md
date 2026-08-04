@@ -74,10 +74,15 @@ extension lane is also active for agent ownership/authentication, observer
 and turn traffic, private agent data, reminders, projects,
 identity/DM/workspace commands, and relay state. NIP-MKT now provides public
 discovery, immutable internal validation, private wrapped transport, and a
-complete relay/client conformance boundary. The next work, in order, is the
-machine-readable contract and TypeScript SDK export lane (M11), followed by
-M8 hardening and formal work. See
-`docs/ROADMAP.md`, `docs/conformance/`, and `docs/deployment/`.
+complete relay/client conformance boundary, and M11's deterministic contract
+export (`immortal contract`, `scripts/export-contract.sh`) is the generation
+source for downstream SDKs. The next work is M12, the issue-backed
+Boltz/tbDEX port program in `docs/ROADMAP.md` — swap profiles, verification
+primitives, coordination handlers, provider library, compatibility facade,
+and the adversarial regtest lab — whose completion makes Immortal-based
+services able to replace Boltz-class dependencies. M8 hardening and formal
+work follow. See `docs/ROADMAP.md`, `docs/conformance/`, and
+`docs/deployment/`.
 
 The current feature list is a deployment snapshot, not Immortal's scope
 ceiling. The immediate protocol-totality program targets **every specification
