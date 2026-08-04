@@ -7,6 +7,8 @@ RUN apt-get update \
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY migrations ./migrations
+COPY nips ./nips
+COPY tests/fixtures ./tests/fixtures
 COPY src ./src
 RUN cargo build --locked --release \
     && strip target/release/immortal
