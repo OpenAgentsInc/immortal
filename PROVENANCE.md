@@ -28,6 +28,22 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-04 — Codex 5.6 Sol, M11 local NIP-MKT development / issue #9
+
+- Added the transport-neutral NIP-44 v2 and NIP-59 client core with bounded
+  plaintexts, authenticated decryption, exact signed-inner preservation,
+  signer/kind/recipient binding, official-vector coverage, and an exported
+  client transport fixture.
+- Added `immortal dev-market-seed` and its shell wrapper. Two throwaway actors
+  publish Provider and Offering heads, authenticate recipient subscriptions,
+  and complete wrapped RFQ, Quote, Order, Status, and Close records. Every
+  record has independently randomized counterparty and recovery wraps; both
+  are decrypted and checked against the original event ID.
+- Added the disposable local relay launcher for native/Homebrew Postgres with
+  Docker or Podman fallback, plus the local runbook. The live macOS proof
+  completed all five stages against `ws://127.0.0.1:18080`; output contains no
+  private keys and labels completion as coordination rather than settlement.
+
 ### 2026-08-04 — Codex 5.6 Sol, M10 NIP-MKT common grammar / issue #5
 
 - Continued from the reviewed issue #4 implementation at `2b9c59e` in the

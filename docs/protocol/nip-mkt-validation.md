@@ -30,6 +30,16 @@ created by an older release or legacy import.
 | Explicit profile consumer | `validate_mkt_private_with_profiles` additionally requires a caller-supplied `MktProfileSupport` with an exact ID/version and rejects profile-declared critical members that the consumer does not understand. Unknown noncritical members remain in the returned body. |
 | NIP-59 gift wrap at the transport relay | The inner signed record is encrypted and opaque. The relay can validate and recipient-gate the outer wrap, but cannot claim it checked inner MKT grammar, signer roles, terms, or profile semantics. |
 
+The no-server client library implements bounded NIP-44 v2 and NIP-59
+wrap/unwrap primitives. A private MKT record is validated and signed first;
+the rumor carries those exact signed bytes and binds the inner author, kind,
+timestamp, and recipient. Unwrapping verifies the outer signature, seal
+signature, rumor ID, layer-to-layer signer/recipient agreement, and the exact
+inner signature before applying the caller's explicit profile registry.
+Applications create independent outer material for the counterparty and the
+sender's recovery copy. The committed NIP-44 vector and NIP-MKT client
+transport fixture are part of the exported SDK conformance manifest.
+
 The public gateway refuses bare `39604-39609` publication with the stable
 reason `restricted: mkt-private-requires-gift-wrap` before database, keyed-rate,
 or store work, after consuming only the generic IP attempt budget. The internal
@@ -111,6 +121,11 @@ kind and recipient mismatch, evidence mismatch, recovery loss, expired Order,
 unauthorized Status/Cancel/Close, rewrapped replay, and settlement overclaim.
 Those cases are inputs for SDK conformance; none is advertised as relay
 enforcement.
+
+`immortal dev-market-seed` uses the synthetic `local-dev` profile only for a
+loopback smoke. It drives RFQ, Quote, Order, completed Status, and Close with
+two throwaway actors and validates both deliveries of every record. Its final
+state is a coordination claim, not a relay or settlement capability claim.
 
 ## NIP-11 advertisement
 

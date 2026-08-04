@@ -17,6 +17,17 @@ pub fn print_contract() -> Result<(), GatewayError> {
     Ok(())
 }
 
+pub fn dev_market_seed() -> Result<(), GatewayError> {
+    let relay_url = std::env::var("IMMORTAL_DEV_RELAY_URL")
+        .unwrap_or_else(|_| "ws://127.0.0.1:18080".to_owned());
+    let trace = immortal::dev_market::seed(&relay_url).map_err(GatewayError::Config)?;
+    serde_json::to_writer_pretty(std::io::stdout().lock(), &trace).map_err(|error| {
+        GatewayError::Internal(format!("could not serialize smoke trace: {error}"))
+    })?;
+    std::io::stdout().lock().write_all(b"\n")?;
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UnsignedEvent {

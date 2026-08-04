@@ -27,6 +27,7 @@ cache, no sync engine. Postgres does all the storage work.
 | [`runbook-debian-vps.md`](runbook-debian-vps.md) | The canonical single-box deployment: Debian 13, apt Postgres, hardened systemd, Caddy or nginx, backups, restore, upgrade, and schema-aware rollback. |
 | [`runbook-digitalocean.md`](runbook-digitalocean.md) | DigitalOcean: the supported Debian 13 Droplet path and the explicit managed-platform boundary. |
 | [`runbook-google-cloud.md`](runbook-google-cloud.md) | Google Cloud: Cloud Run + Cloud SQL + Secret Manager + Artifact Registry, and a GCE VM alternative. |
+| [`runbook-local-dev.md`](runbook-local-dev.md) | Disposable local Postgres and relay plus the two-actor wrapped NIP-MKT smoke. |
 
 ## Reading order
 

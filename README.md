@@ -139,6 +139,11 @@ artifacts live under [`contract/`](contract/README.md); regenerate or verify
 them with `scripts/export-contract.sh` after every protocol sync or adoption
 change.
 
+For local NIP-MKT development, `scripts/dev-relay.sh` starts a loopback relay
+and disposable Postgres, while `scripts/dev-market-seed.sh` drives a wrapped
+RFQ through Close exchange between two throwaway actors. See the
+[`local development runbook`](docs/deployment/runbook-local-dev.md).
+
 ## Quick start
 
 On Debian 13, install the build toolchain and Postgres, then create a dedicated

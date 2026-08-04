@@ -90,6 +90,12 @@
       "scope": "relay"
     },
     {
+      "path": "tests/fixtures/nip44/market-client.json",
+      "sha256": "708744cae37de15cfdf93d1c38d994259947a5a7b31a6259a8aaa6c9f705bd82",
+      "bytes": 604,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/nip45/count.json",
       "sha256": "8dd3dd7d16f397f76a32b332980c7314af8103b42ff211b69b03a7b2b093bd91",
       "bytes": 287,
@@ -201,6 +207,12 @@
       "path": "tests/fixtures/nipmkt/client-only-cases.json",
       "sha256": "96ef5367ccba2f111137579661948a0402d2d04935636281b04f39b07f4db64e",
       "bytes": 9529,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/client-transport.json",
+      "sha256": "9868527d36e28a14d521b1f3f744124461cbb65d80c4e7dccd8675b7e4047a38",
+      "bytes": 637,
       "scope": "client"
     },
     {

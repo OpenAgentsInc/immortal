@@ -39,7 +39,11 @@ for path in sorted(fixture_root.rglob("*.json"), key=lambda item: item.relative_
     except ValueError as error:
         raise SystemExit(f"fixture escapes repository root: {path}") from error
     data = path.read_bytes()
-    if relative.endswith("nipmkt/client-only-cases.json"):
+    if (
+        relative.endswith("nipmkt/client-only-cases.json")
+        or relative.endswith("nipmkt/client-transport.json")
+        or relative.endswith("nip44/market-client.json")
+    ):
         scope = "client"
     elif relative.endswith("nipmkt/common-grammar.json") or relative.endswith("nipmkt/relay-closing.json"):
         scope = "relay_and_client"
