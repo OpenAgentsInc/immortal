@@ -2,7 +2,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::{
-    domain::{Event, Filter},
+    domain::{Event, Filter, MAX_REMINDER_HORIZON_SECONDS},
     store::RelayPolicy,
 };
 
@@ -188,7 +188,12 @@ pub struct Nip11Document<'a> {
     pub pubkey: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contact: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<&'a str>,
+    #[serde(rename = "self", skip_serializing_if = "Option::is_none")]
+    pub relay_self: Option<&'a str>,
     pub supported_nips: Vec<u16>,
+    pub supported_extensions: Vec<&'static str>,
     pub software: &'static str,
     pub version: &'static str,
     pub limitation: Nip11Limitation,
@@ -214,9 +219,20 @@ pub struct Nip11Limitation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at_lower_limit: Option<u64>,
     pub default_limit: usize,
+    pub max_not_before_delta: u64,
+    pub due_delivery_mode: &'static str,
 }
 
+#[cfg(test)]
 pub fn nip11_json(config: &GatewayConfig, policy: &RelayPolicy) -> String {
+    nip11_json_with_icon(config, policy, None)
+}
+
+pub fn nip11_json_with_icon(
+    config: &GatewayConfig,
+    policy: &RelayPolicy,
+    icon: Option<&str>,
+) -> String {
     let mut supported_nips = vec![1, 9, 11, 40, 45, 50, 65, 94];
     if config.relay_url.is_some() {
         supported_nips.extend([17, 42, 70]);
@@ -230,12 +246,26 @@ pub fn nip11_json(config: &GatewayConfig, policy: &RelayPolicy) -> String {
     if config.management_pubkey.is_some() || config.media.is_some() {
         supported_nips.push(98);
     }
+    let mut supported_extensions = vec!["nip-mp", "nip-oa", "nip-rs"];
+    if config.relay_url.is_some() {
+        supported_extensions.extend(["nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-er"]);
+    }
+    if config.relay_url.is_some() && config.relay_signer.is_some() {
+        supported_extensions.extend(["nip-dv", "nip-ia"]);
+    }
+    if config.relay_url.is_some() && config.management_pubkey.is_some() {
+        supported_extensions.push("nip-wp");
+    }
+    supported_extensions.sort_unstable();
     let document = Nip11Document {
         name: &config.identity.name,
         description: config.identity.description.as_deref(),
         pubkey: config.identity.pubkey.as_deref(),
         contact: config.identity.contact.as_deref(),
+        icon,
+        relay_self: config.identity.pubkey.as_deref(),
         supported_nips,
+        supported_extensions,
         software: "https://github.com/OpenAgentsInc/immortal",
         version: env!("CARGO_PKG_VERSION"),
         limitation: Nip11Limitation {
@@ -250,6 +280,8 @@ pub fn nip11_json(config: &GatewayConfig, policy: &RelayPolicy) -> String {
             created_at_lower_limit: (policy.max_past_seconds > 0)
                 .then_some(policy.max_past_seconds),
             default_limit: config.limits.max_limit,
+            max_not_before_delta: MAX_REMINDER_HORIZON_SECONDS,
+            due_delivery_mode: "lazy",
         },
         nip29: config
             .relay_signer
@@ -286,7 +318,7 @@ mod tests {
     use std::net::SocketAddr;
 
     use serde::Deserialize;
-    use serde_json::Value;
+    use serde_json::{Value, json};
 
     use crate::store::RelayPolicy;
 
@@ -381,6 +413,25 @@ mod tests {
         assert_eq!(actual["contact"], expected["contact"]);
         assert_eq!(actual["pubkey"], expected["pubkey"]);
         assert_eq!(actual["supported_nips"], expected["supported_nips"]);
+        for extension in [
+            "nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-er", "nip-mp", "nip-oa",
+            "nip-rs",
+        ] {
+            assert!(
+                actual["supported_extensions"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(extension))
+            );
+        }
+        for disabled in ["nip-dv", "nip-ia", "nip-wp", "nip-pl", "nip-cw", "nip-gs"] {
+            assert!(
+                !actual["supported_extensions"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(disabled))
+            );
+        }
         for field in [
             "max_message_length",
             "max_subscriptions",

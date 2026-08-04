@@ -22,7 +22,14 @@ use tokio_tungstenite::tungstenite::{
 };
 
 use crate::{
-    domain::{Event, EventClass, Filter},
+    domain::{
+        AGENT_ENGRAM_KIND, AGENT_OBSERVER_KIND, AGENT_TURN_METRIC_KIND, AgentObserverDirection,
+        DM_HIDE_KIND, DM_OPEN_KIND, DM_VISIBILITY_KIND, EVENT_REMINDER_KIND, Event, EventClass,
+        Filter, IDENTITY_ARCHIVE_REQUEST_KIND, IDENTITY_UNARCHIVE_REQUEST_KIND, PUSH_LEASE_KIND,
+        RELAY_ONLY_BLOCK_KINDS, WORKSPACE_PROFILE_KIND, agent_observer_route,
+        agent_turn_metric_owner, dm_visibility_channel, parse_identity_archive_request,
+        validate_block_ingest, verify_agent_auth_attestation, verify_owner_binding, workspace_icon,
+    },
     store::{
         AdmissionOutcome, AdmissionRejection, NotificationListener, Store, StoreError,
         StoreNotification,
@@ -74,7 +81,7 @@ struct ServerState {
     rate: RateLimiter,
     challenge_secret: [u8; 32],
     next_connection_id: AtomicU64,
-    nip11: Arc<str>,
+    policy: crate::store::RelayPolicy,
     current: Arc<AtomicBool>,
     shutdown: watch::Sender<bool>,
     media: Option<MediaStorage>,
@@ -263,7 +270,6 @@ impl Gateway {
             }
         };
         let local_addr = listener.local_addr()?;
-        let nip11 = Arc::<str>::from(wire::nip11_json(&config, &policy));
         let state = Arc::new(ServerState {
             rate: RateLimiter::new(config.limits.clone()),
             config: Arc::new(config),
@@ -271,7 +277,7 @@ impl Gateway {
             hub,
             challenge_secret,
             next_connection_id: AtomicU64::new(1),
-            nip11,
+            policy,
             current,
             shutdown: shutdown.clone(),
             media,
@@ -394,13 +400,9 @@ async fn handle_socket(
         if is_management_request(&head) {
             return serve_management(stream, &head, &state.config, &state.db).await;
         }
-        return serve_http(
-            stream,
-            &head,
-            &state.nip11,
-            state.current.load(Ordering::Acquire),
-        )
-        .await;
+        let icon = state.db.workspace_icon().await?;
+        let nip11 = wire::nip11_json_with_icon(&state.config, &state.policy, icon.as_deref());
+        return serve_http(stream, &head, &nip11, state.current.load(Ordering::Acquire)).await;
     }
     let websocket =
         websocket_handshake(stream, request_bytes, state.config.limits.max_frame_bytes).await?;
@@ -572,7 +574,7 @@ async fn handle_client_text(
         }
     };
     match message {
-        ClientMessage::Auth(event) => handle_auth(context, event, pending),
+        ClientMessage::Auth(event) => handle_auth(context, event, pending).await,
         ClientMessage::Event(event) => handle_event(context, event, pending).await,
         ClientMessage::Req {
             subscription_id,
@@ -596,7 +598,7 @@ async fn handle_client_text(
     }
 }
 
-fn handle_auth(
+async fn handle_auth(
     context: &mut ConnectionContext,
     event: Event,
     pending: &mut VecDeque<String>,
@@ -619,7 +621,7 @@ fn handle_auth(
         ));
         return Ok(());
     }
-    let Some(auth) = &mut context.auth else {
+    let Some(auth) = &context.auth else {
         pending.push_back(ok_message(
             &event.id,
             false,
@@ -627,10 +629,74 @@ fn handle_auth(
         ));
         return Ok(());
     };
-    match auth.authenticate(&event, unix_now()) {
-        Ok(()) => pending.push_back(ok_message(&event.id, true, "")),
-        Err(reason) => pending.push_back(ok_message(&event.id, false, &reason)),
+    if let Err(reason) = auth.verify(&event, unix_now()) {
+        pending.push_back(ok_message(&event.id, false, &reason));
+        return Ok(());
     }
+
+    let identity = context
+        .state
+        .db
+        .identity_status(event.pubkey.clone())
+        .await?;
+    let virtual_owner = if identity.closed_membership && !identity.direct_member {
+        let attestation = match verify_agent_auth_attestation(&event) {
+            Ok(Some(attestation)) => attestation,
+            Ok(None) => {
+                pending.push_back(ok_message(
+                    &event.id,
+                    false,
+                    "restricted: agent authentication requires an owner attestation",
+                ));
+                return Ok(());
+            }
+            Err(reason) => {
+                pending.push_back(ok_message(
+                    &event.id,
+                    false,
+                    &format!("restricted: {reason}"),
+                ));
+                return Ok(());
+            }
+        };
+        if !context
+            .state
+            .db
+            .materialize_agent_owner(event.pubkey.clone(), attestation.owner_pubkey.clone(), true)
+            .await?
+        {
+            pending.push_back(ok_message(
+                &event.id,
+                false,
+                "restricted: owner is not an active member or conflicts with the agent's main owner",
+            ));
+            return Ok(());
+        }
+        Some(attestation.owner_pubkey)
+    } else {
+        // Direct members and open relays use ordinary NIP-42 authentication.
+        // A valid optional NIP-OA tag still mints the main owner relation; a
+        // malformed optional tag cannot invalidate direct authentication.
+        if let Ok(Some(attestation)) = verify_agent_auth_attestation(&event) {
+            context
+                .state
+                .db
+                .materialize_agent_owner(event.pubkey.clone(), attestation.owner_pubkey, false)
+                .await?;
+        }
+        None
+    };
+
+    let auth = context
+        .auth
+        .as_mut()
+        .expect("authentication state was checked above");
+    if let Some(owner) = virtual_owner {
+        auth.accept_virtual(event.pubkey.clone(), owner);
+    } else {
+        auth.accept_direct(event.pubkey.clone());
+    }
+    pending.push_back(ok_message(&event.id, true, ""));
     Ok(())
 }
 
@@ -660,6 +726,32 @@ async fn handle_event(
         ));
         return Ok(());
     }
+    let identity = context
+        .state
+        .db
+        .identity_status(event.pubkey.clone())
+        .await?;
+    if identity.closed_membership
+        && !context
+            .auth
+            .as_ref()
+            .is_some_and(|auth| auth.is_authenticated_as(&event.pubkey))
+    {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "auth-required: closed-relay events require authentication by their author",
+        ));
+        return Ok(());
+    }
+    if RELAY_ONLY_BLOCK_KINDS.contains(&event.kind) {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "restricted: this Block NIP kind is relay-authored only",
+        ));
+        return Ok(());
+    }
     if event.is_protected()
         && !context
             .auth
@@ -681,9 +773,104 @@ async fn handle_event(
         ));
         return Ok(());
     }
-    if !context.state.rate.event_from_ip(context.ip)
-        || !context.state.rate.event_from_pubkey(&event.pubkey)
-    {
+
+    if event.kind == WORKSPACE_PROFILE_KIND {
+        return handle_workspace_profile(context, event, pending).await;
+    }
+    if matches!(
+        event.kind,
+        IDENTITY_ARCHIVE_REQUEST_KIND | IDENTITY_UNARCHIVE_REQUEST_KIND
+    ) {
+        return handle_identity_archive(context, event, pending).await;
+    }
+    if matches!(event.kind, DM_HIDE_KIND | DM_OPEN_KIND) {
+        return handle_dm_visibility(context, event, pending).await;
+    }
+
+    if event.kind == AGENT_OBSERVER_KIND {
+        return handle_agent_observer_event(context, event, pending).await;
+    }
+
+    let virtual_owner = context
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.virtual_owner_for(&event.pubkey))
+        .map(str::to_owned);
+
+    if event.kind == AGENT_TURN_METRIC_KIND {
+        if !context
+            .auth
+            .as_ref()
+            .is_some_and(|auth| auth.is_authenticated_as(&event.pubkey))
+        {
+            pending.push_back(ok_message(
+                &event.id,
+                false,
+                "auth-required: agent turn metrics require agent authentication",
+            ));
+            return Ok(());
+        }
+        if let Err(error) = event.validate_crypto() {
+            pending.push_back(ok_message(&event.id, false, &format!("invalid: {error}")));
+            return Ok(());
+        }
+        let owner = match agent_turn_metric_owner(&event) {
+            Ok(owner) => owner,
+            Err(reason) => {
+                pending.push_back(ok_message(&event.id, false, &format!("invalid: {reason}")));
+                return Ok(());
+            }
+        };
+        if !context
+            .state
+            .db
+            .is_agent_owner(event.pubkey.clone(), owner)
+            .await?
+        {
+            pending.push_back(ok_message(
+                &event.id,
+                false,
+                "restricted: turn metric owner is not the authenticated main owner of this agent",
+            ));
+            return Ok(());
+        }
+    }
+
+    if event.kind == PUSH_LEASE_KIND {
+        if !context
+            .auth
+            .as_ref()
+            .is_some_and(|auth| auth.is_authenticated_as(&event.pubkey))
+        {
+            pending.push_back(ok_message(
+                &event.id,
+                false,
+                "auth-required: push leases require author authentication",
+            ));
+            return Ok(());
+        }
+        if let Err(error) = event.validate_crypto() {
+            pending.push_back(ok_message(&event.id, false, &format!("invalid: {error}")));
+            return Ok(());
+        }
+    }
+    if let Err(reason) = validate_block_ingest(&event, unix_now()) {
+        pending.push_back(ok_message(&event.id, false, &format!("invalid: {reason}")));
+        return Ok(());
+    }
+    if event.kind == PUSH_LEASE_KIND {
+        // Immortal deliberately has no external push service. Without an
+        // advertised executor key it cannot decrypt and bind a lease, so the
+        // NIP-PL handler fails closed instead of persisting unusable state.
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "restricted: push executor is not configured or advertised",
+        ));
+        return Ok(());
+    }
+
+    if !event_rate_allowed(context, &event) {
         pending.push_back(ok_message(
             &event.id,
             false,
@@ -691,6 +878,344 @@ async fn handle_event(
         ));
         return Ok(());
     }
+    admit_event(context, event, pending, virtual_owner).await
+}
+
+async fn handle_workspace_profile(
+    context: &mut ConnectionContext,
+    event: Event,
+    pending: &mut VecDeque<String>,
+) -> Result<(), GatewayError> {
+    if !context
+        .auth
+        .as_ref()
+        .is_some_and(|auth| auth.is_directly_authenticated_as(&event.pubkey))
+    {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "auth-required: workspace profile commands require direct relay-owner authentication",
+        ));
+        return Ok(());
+    }
+    if context.state.config.management_pubkey.as_deref() != Some(&event.pubkey) {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "restricted: workspace profile commands require the relay owner",
+        ));
+        return Ok(());
+    }
+    if event.created_at.abs_diff(unix_now()) > 120 {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "invalid: workspace profile command is outside the 120-second freshness window",
+        ));
+        return Ok(());
+    }
+    if let Err(error) = event.validate_crypto() {
+        pending.push_back(ok_message(&event.id, false, &format!("invalid: {error}")));
+        return Ok(());
+    }
+    let icon = match workspace_icon(&event) {
+        Ok(icon) => icon,
+        Err(reason) => {
+            pending.push_back(ok_message(&event.id, false, &format!("invalid: {reason}")));
+            return Ok(());
+        }
+    };
+    if !event_rate_allowed(context, &event) {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "rate-limited: event rate exceeded",
+        ));
+        return Ok(());
+    }
+    match context
+        .state
+        .db
+        .set_workspace_icon(event.clone(), icon)
+        .await
+    {
+        Ok(changed) => pending.push_back(ok_message(
+            &event.id,
+            true,
+            if changed {
+                ""
+            } else {
+                "duplicate: already processed"
+            },
+        )),
+        Err(error) => {
+            pending.push_back(ok_message(&event.id, false, &store_error_response(&error)))
+        }
+    }
+    Ok(())
+}
+
+async fn handle_identity_archive(
+    context: &mut ConnectionContext,
+    event: Event,
+    pending: &mut VecDeque<String>,
+) -> Result<(), GatewayError> {
+    if !context
+        .auth
+        .as_ref()
+        .is_some_and(|auth| auth.is_authenticated_as(&event.pubkey))
+    {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "auth-required: identity archive requests require actor authentication",
+        ));
+        return Ok(());
+    }
+    if context.state.config.relay_signer.is_none() {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "error: identity archival requires a configured relay identity",
+        ));
+        return Ok(());
+    }
+    if let Err(error) = event.validate_crypto() {
+        pending.push_back(ok_message(&event.id, false, &format!("invalid: {error}")));
+        return Ok(());
+    }
+    let now = unix_now();
+    let request = match parse_identity_archive_request(&event, now) {
+        Ok(request) => request,
+        Err(reason) => {
+            pending.push_back(ok_message(&event.id, false, &format!("invalid: {reason}")));
+            return Ok(());
+        }
+    };
+    if !event_rate_allowed(context, &event) {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "rate-limited: event rate exceeded",
+        ));
+        return Ok(());
+    }
+    let consent = if request.target == event.pubkey {
+        "self"
+    } else if context.state.config.management_pubkey.as_deref() == Some(&event.pubkey)
+        && context
+            .auth
+            .as_ref()
+            .is_some_and(|auth| auth.is_directly_authenticated_as(&event.pubkey))
+    {
+        "admin"
+    } else {
+        let binding = match verify_owner_binding(&event, &request.target) {
+            Ok(Some(binding)) => binding,
+            Ok(None) => {
+                pending.push_back(ok_message(
+                    &event.id,
+                    false,
+                    "restricted: no self, admin, or owner consent path accepts this request",
+                ));
+                return Ok(());
+            }
+            Err(reason) => {
+                pending.push_back(ok_message(&event.id, false, &format!("invalid: {reason}")));
+                return Ok(());
+            }
+        };
+        if binding.owner_pubkey != event.pubkey
+            || !context
+                .state
+                .db
+                .materialize_agent_owner(request.target.clone(), event.pubkey.clone(), false)
+                .await?
+        {
+            pending.push_back(ok_message(
+                &event.id,
+                false,
+                "restricted: owner credential conflicts with the agent's main owner",
+            ));
+            return Ok(());
+        }
+        "owner"
+    };
+    match context
+        .state
+        .db
+        .process_identity_archive(event.clone(), request, consent.to_owned(), now)
+        .await
+    {
+        Ok(changed) => pending.push_back(ok_message(
+            &event.id,
+            true,
+            if changed {
+                ""
+            } else {
+                "duplicate: archive state already current"
+            },
+        )),
+        Err(error) => {
+            pending.push_back(ok_message(&event.id, false, &store_error_response(&error)))
+        }
+    }
+    Ok(())
+}
+
+async fn handle_dm_visibility(
+    context: &mut ConnectionContext,
+    event: Event,
+    pending: &mut VecDeque<String>,
+) -> Result<(), GatewayError> {
+    if !context
+        .auth
+        .as_ref()
+        .is_some_and(|auth| auth.is_authenticated_as(&event.pubkey))
+    {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "auth-required: DM visibility commands require actor authentication",
+        ));
+        return Ok(());
+    }
+    if context.state.config.relay_signer.is_none() {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "error: DM visibility requires a configured relay identity",
+        ));
+        return Ok(());
+    }
+    if let Err(error) = event.validate_crypto() {
+        pending.push_back(ok_message(&event.id, false, &format!("invalid: {error}")));
+        return Ok(());
+    }
+    let channel = match dm_visibility_channel(&event) {
+        Ok(channel) => channel.to_owned(),
+        Err(reason) => {
+            pending.push_back(ok_message(&event.id, false, &format!("invalid: {reason}")));
+            return Ok(());
+        }
+    };
+    if !event_rate_allowed(context, &event) {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "rate-limited: event rate exceeded",
+        ));
+        return Ok(());
+    }
+    let hidden = event.kind == DM_HIDE_KIND;
+    match context
+        .state
+        .db
+        .process_dm_visibility(event.clone(), channel, hidden, unix_now())
+        .await
+    {
+        Ok(changed) => pending.push_back(ok_message(
+            &event.id,
+            true,
+            if changed {
+                ""
+            } else {
+                "duplicate: visibility state already current"
+            },
+        )),
+        Err(StoreError::Management(reason)) => pending.push_back(ok_message(
+            &event.id,
+            false,
+            &format!("restricted: {}", bounded(&reason, 512)),
+        )),
+        Err(error) => {
+            pending.push_back(ok_message(&event.id, false, &store_error_response(&error)))
+        }
+    }
+    Ok(())
+}
+
+async fn handle_agent_observer_event(
+    context: &mut ConnectionContext,
+    event: Event,
+    pending: &mut VecDeque<String>,
+) -> Result<(), GatewayError> {
+    if !context
+        .auth
+        .as_ref()
+        .is_some_and(|auth| auth.is_authenticated_as(&event.pubkey))
+    {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "auth-required: agent observer frames require sender authentication",
+        ));
+        return Ok(());
+    }
+    if let Err(error) = event.validate_crypto() {
+        pending.push_back(ok_message(&event.id, false, &format!("invalid: {error}")));
+        return Ok(());
+    }
+    if event.created_at.abs_diff(unix_now()) > 300 {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "invalid: agent observer timestamp is outside the five-minute freshness window",
+        ));
+        return Ok(());
+    }
+    let route = match agent_observer_route(&event) {
+        Ok(Some(route)) => route,
+        Ok(None) => {
+            pending.push_back(ok_message(&event.id, true, ""));
+            return Ok(());
+        }
+        Err(reason) => {
+            pending.push_back(ok_message(&event.id, false, &format!("invalid: {reason}")));
+            return Ok(());
+        }
+    };
+    if !context
+        .state
+        .db
+        .is_agent_owner(route.agent_pubkey.clone(), route.owner_pubkey.clone())
+        .await?
+    {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "restricted: observer frame is not authorized for this agent owner",
+        ));
+        return Ok(());
+    }
+    if !context.state.rate.observer_from_ip(context.ip)
+        || !context.state.rate.observer_from_agent(&route.agent_pubkey)
+    {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "rate-limited: agent observer frame rate exceeded",
+        ));
+        return Ok(());
+    }
+    let virtual_owner = (route.direction == AgentObserverDirection::Telemetry)
+        .then(|| {
+            context
+                .auth
+                .as_ref()
+                .and_then(|auth| auth.virtual_owner_for(&event.pubkey))
+                .map(str::to_owned)
+        })
+        .flatten();
+    admit_event(context, event, pending, virtual_owner).await
+}
+
+async fn admit_event(
+    context: &mut ConnectionContext,
+    event: Event,
+    pending: &mut VecDeque<String>,
+    virtual_owner: Option<String>,
+) -> Result<(), GatewayError> {
     let event_bytes = serde_json::to_vec(&event)
         .map_err(|error| GatewayError::Internal(format!("event serialization: {error}")))?;
     if event_bytes.len() > context.state.config.limits.max_frame_bytes {
@@ -704,7 +1229,12 @@ async fn handle_event(
     let event_id = event.id.clone();
     let ephemeral = (event.class() == EventClass::Ephemeral).then(|| Arc::new(event.clone()));
     let admission_now = unix_now();
-    match context.state.db.admit(event, admission_now).await {
+    match context
+        .state
+        .db
+        .admit(event, admission_now, virtual_owner)
+        .await
+    {
         Ok(outcome) => {
             if matches!(&outcome, AdmissionOutcome::Ephemeral) {
                 if let Some(event) = ephemeral {
@@ -790,6 +1320,15 @@ async fn handle_req(
             return Ok(());
         }
     };
+    let read_pubkeys = context
+        .auth
+        .as_ref()
+        .map(AuthState::authenticated_pubkeys)
+        .unwrap_or_default();
+    if let Some(reason) = owner_scoped_filter_denial(&filters, &read_pubkeys) {
+        pending.push_back(closed_message(&subscription_id, reason));
+        return Ok(());
+    }
     if context.query_tasks.len()
         >= context
             .state
@@ -851,11 +1390,6 @@ async fn handle_req(
             / 2)
         .max(1),
     );
-    let read_pubkeys = context
-        .auth
-        .as_ref()
-        .map(AuthState::authenticated_pubkeys)
-        .unwrap_or_default();
     context.query_tasks.spawn(async move {
         match db
             .history(
@@ -920,6 +1454,10 @@ async fn handle_count(
         .as_ref()
         .map(AuthState::authenticated_pubkeys)
         .unwrap_or_default();
+    if let Some(reason) = owner_scoped_filter_denial(&filters, &read_pubkeys) {
+        pending.push_back(closed_message(&query_id, reason));
+        return Ok(());
+    }
     if filters.iter().any(|filter| {
         filter
             .kinds
@@ -952,6 +1490,73 @@ async fn handle_count(
         Err(_) => pending.push_back(closed_message(&query_id, "error: count query failed")),
     }
     Ok(())
+}
+
+fn owner_scoped_filter_denial(filters: &[Filter], read_pubkeys: &[String]) -> Option<&'static str> {
+    for filter in filters {
+        let explicitly_private = filter.kinds.as_ref().is_some_and(|kinds| {
+            kinds.iter().any(|kind| {
+                matches!(
+                    *kind,
+                    AGENT_OBSERVER_KIND
+                        | AGENT_TURN_METRIC_KIND
+                        | AGENT_ENGRAM_KIND
+                        | EVENT_REMINDER_KIND
+                        | PUSH_LEASE_KIND
+                        | DM_VISIBILITY_KIND
+                )
+            })
+        });
+        if !explicitly_private {
+            continue;
+        }
+        if read_pubkeys.is_empty() {
+            return Some("auth-required: private Block NIP reads require authentication");
+        }
+        let kinds = filter.kinds.as_deref().unwrap_or_default();
+        let p_scoped = filter.tags.get(&'p').is_some_and(|values| {
+            !values.is_empty()
+                && values
+                    .iter()
+                    .all(|value| read_pubkeys.iter().any(|pubkey| pubkey == value))
+        });
+        let author_scoped = filter.authors.as_ref().is_some_and(|values| {
+            !values.is_empty()
+                && values
+                    .iter()
+                    .all(|value| read_pubkeys.iter().any(|pubkey| pubkey == value))
+        });
+        if kinds.iter().any(|kind| {
+            matches!(
+                *kind,
+                AGENT_OBSERVER_KIND | AGENT_TURN_METRIC_KIND | DM_VISIBILITY_KIND
+            )
+        }) && !p_scoped
+        {
+            return Some("restricted: recipient-private reads must be scoped to #p self");
+        }
+        if kinds
+            .iter()
+            .any(|kind| matches!(*kind, EVENT_REMINDER_KIND | PUSH_LEASE_KIND))
+            && !author_scoped
+        {
+            return Some("restricted: author-private reads must be scoped to authors self");
+        }
+        if kinds.contains(&AGENT_ENGRAM_KIND) && !p_scoped && !author_scoped {
+            return Some("restricted: engram reads must be scoped to agent author or #p owner");
+        }
+    }
+    None
+}
+
+fn event_rate_allowed(context: &ConnectionContext, event: &Event) -> bool {
+    context.state.rate.event_from_ip(context.ip)
+        && context.state.rate.event_from_pubkey(&event.pubkey)
+        && context
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.virtual_owner_for(&event.pubkey))
+            .is_none_or(|owner| context.state.rate.event_from_pubkey(owner))
 }
 
 fn validate_and_clamp_filters(

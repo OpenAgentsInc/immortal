@@ -25,11 +25,15 @@ by `AGENTS.md`.
 | NIP-70 same-connection protected publication and embedded-repost refusal | `nip70/protected.json`, expanded fixtures, and the live gateway contract |
 | NIP-86/NIP-98 method shapes, exact URL/method/payload authentication, owner authorization, replay prevention, policy methods, and group extensions | `nip86/management.json`, `nip98/http-auth.json`, unit/expanded fixtures, and the live HTTP/Postgres contract |
 | NIP-B7/NIP-94 media server lists and metadata; streaming upload, exact hash/auth, replay refusal, public HEAD/GET/range, ownership deletion, and filesystem publication | `nipb7/servers.json`, `nip94/metadata.json`, media unit tests, and the live HTTP/Postgres contract |
+| Block NIP-OA/AA/AO/AM agent ownership, closed-relay authentication, ephemeral observer routing/rates, and owner-private turn metrics | `tests/fixtures/nipoa/`, `nipaa/`, `nipao/`, `nipam/`, `tests/agent_fixtures.rs`, and the live gateway contract |
+| Block NIP-AE/AP/ER/MP/PL stored-envelope validation and authenticated author/owner/shared ACLs, including fail-closed push-executor refusal | the matching `tests/fixtures/nip*/server.json` corpora, `tests/block_fixtures.rs`, and the live gateway contract |
+| Block NIP-IA/DV/WP authenticated commands, transactional derived state, relay-signed deltas/snapshots, and cross-process NIP-11 workspace icon | the matching Block fixtures plus the live gateway contract |
+| Block NIP-CW safe WebSocket degradation, NIP-RS addressable/barrier semantics, and NIP-GS no-handler classification | `nipcw/`, `niprs/`, `nipgs/`, filter/store unit tests, and the live gateway contract |
 | M2 migrations, hash drift, prepared admission/query paths, least privilege, policy branches, FTS, transactional NOTIFY, replacement/deletion concurrency, and ephemeral non-storage | `tests/store_static.rs` and `tests/store_postgres.rs` |
 | M3 indexed fanout by ID/author/kind/tag, broad lane, race-free EOSE, deduplication, queue overflow, query cancellation, limits, rates, frame bounds, and graceful shutdown | gateway unit tests and `tests/gateway_postgres.rs` |
 | M4 two binaries/one Postgres, cross-delivery, bounded sequence-gap recovery, kill-one survival, and fail-closed unbounded gap | `tests/multiprocess_postgres.rs` |
 | M4 events/sec, WebSocket connect p99, and REQ-to-EOSE p99 | `tests/load_postgres.rs` and [`load-report.md`](load-report.md) |
-| M6 migration, physical expiration sweep, group state, and management replay state | `tests/store_static.rs`, `tests/store_postgres.rs`, and `tests/gateway_postgres.rs` |
+| M6 and Block migrations, expiration sweep, group state, management replay, main-agent ownership, and relay-derived Block state | `tests/store_static.rs`, `tests/store_postgres.rs`, and `tests/gateway_postgres.rs` |
 | M7 migration, pending/ready publication, media ownership, quota, and authorization replay state | `tests/store_static.rs` and `tests/gateway_postgres.rs` |
 
 ## Running locally

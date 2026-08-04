@@ -45,3 +45,32 @@ fn m7_migration_contains_media_ownership_and_replay_state() {
         assert!(sql.contains(required), "migration is missing {required:?}");
     }
 }
+
+#[test]
+fn block_migrations_contain_identity_and_derived_state() {
+    let identity = include_str!("../migrations/0004_agent_identity_turns.sql");
+    for required in [
+        "CREATE TABLE agent_owner",
+        "agent_pubkey text COLLATE \"C\" PRIMARY KEY",
+        "WHEN kind = 44200",
+    ] {
+        assert!(
+            identity.contains(required),
+            "identity migration is missing {required:?}"
+        );
+    }
+
+    let handlers = include_str!("../migrations/0005_block_server_handlers.sql");
+    for required in [
+        "CREATE TABLE block_command",
+        "CREATE TABLE workspace_profile",
+        "CREATE TABLE archived_identity",
+        "CREATE TABLE dm_hidden",
+        "kind IN (30078, 30174, 30175, 30178, 30300, 30350, 30622, 44200)",
+    ] {
+        assert!(
+            handlers.contains(required),
+            "Block handler migration is missing {required:?}"
+        );
+    }
+}

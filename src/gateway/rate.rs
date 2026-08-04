@@ -8,6 +8,7 @@ use std::{
 use super::GatewayLimits;
 
 const WINDOW: Duration = Duration::from_secs(60);
+const OBSERVER_WINDOW: Duration = Duration::from_secs(1);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_RATE_KEYS: usize = 100_000;
 
@@ -21,6 +22,8 @@ struct State {
     connections: HashMap<IpAddr, usize>,
     event_ip: HashMap<IpAddr, Counter>,
     event_pubkey: HashMap<String, Counter>,
+    observer_ip: HashMap<IpAddr, Counter>,
+    observer_agent: HashMap<String, Counter>,
     req_ip: HashMap<IpAddr, Counter>,
     media_ip: HashMap<IpAddr, Counter>,
     media_pubkey: HashMap<String, Counter>,
@@ -44,6 +47,8 @@ impl RateLimiter {
                 connections: HashMap::new(),
                 event_ip: HashMap::new(),
                 event_pubkey: HashMap::new(),
+                observer_ip: HashMap::new(),
+                observer_agent: HashMap::new(),
                 req_ip: HashMap::new(),
                 media_ip: HashMap::new(),
                 media_pubkey: HashMap::new(),
@@ -94,6 +99,32 @@ impl RateLimiter {
         allow_ip(&mut state.req_ip, ip, self.limits.req_per_minute_ip)
     }
 
+    pub fn observer_from_ip(&self, ip: IpAddr) -> bool {
+        let Ok(mut state) = self.inner.lock() else {
+            return false;
+        };
+        state.cleanup();
+        allow_ip_for(
+            &mut state.observer_ip,
+            ip,
+            self.limits.observer_events_per_second_ip,
+            OBSERVER_WINDOW,
+        )
+    }
+
+    pub fn observer_from_agent(&self, agent_pubkey: &str) -> bool {
+        let Ok(mut state) = self.inner.lock() else {
+            return false;
+        };
+        state.cleanup();
+        allow_string_for(
+            &mut state.observer_agent,
+            agent_pubkey,
+            self.limits.observer_events_per_second_agent,
+            OBSERVER_WINDOW,
+        )
+    }
+
     pub fn media_from_ip(&self, ip: IpAddr) -> bool {
         let Ok(mut state) = self.inner.lock() else {
             return false;
@@ -130,17 +161,39 @@ impl Drop for ConnectionPermit {
 }
 
 fn allow_ip(map: &mut HashMap<IpAddr, Counter>, key: IpAddr, limit: u32) -> bool {
+    allow_ip_for(map, key, limit, WINDOW)
+}
+
+fn allow_ip_for(
+    map: &mut HashMap<IpAddr, Counter>,
+    key: IpAddr,
+    limit: u32,
+    window: Duration,
+) -> bool {
     if !map.contains_key(&key) && map.len() >= MAX_RATE_KEYS {
         return false;
     }
-    allow_counter(map.entry(key).or_insert_with(new_counter), limit)
+    allow_counter(map.entry(key).or_insert_with(new_counter), limit, window)
 }
 
 fn allow_string(map: &mut HashMap<String, Counter>, key: &str, limit: u32) -> bool {
+    allow_string_for(map, key, limit, WINDOW)
+}
+
+fn allow_string_for(
+    map: &mut HashMap<String, Counter>,
+    key: &str,
+    limit: u32,
+    window: Duration,
+) -> bool {
     if !map.contains_key(key) && map.len() >= MAX_RATE_KEYS {
         return false;
     }
-    allow_counter(map.entry(key.to_owned()).or_insert_with(new_counter), limit)
+    allow_counter(
+        map.entry(key.to_owned()).or_insert_with(new_counter),
+        limit,
+        window,
+    )
 }
 
 impl State {
@@ -153,6 +206,10 @@ impl State {
             .retain(|_, counter| now.duration_since(counter.started) < WINDOW);
         self.event_pubkey
             .retain(|_, counter| now.duration_since(counter.started) < WINDOW);
+        self.observer_ip
+            .retain(|_, counter| now.duration_since(counter.started) < OBSERVER_WINDOW);
+        self.observer_agent
+            .retain(|_, counter| now.duration_since(counter.started) < OBSERVER_WINDOW);
         self.req_ip
             .retain(|_, counter| now.duration_since(counter.started) < WINDOW);
         self.media_ip
@@ -170,8 +227,8 @@ fn new_counter() -> Counter {
     }
 }
 
-fn allow_counter(counter: &mut Counter, limit: u32) -> bool {
-    if counter.started.elapsed() >= WINDOW {
+fn allow_counter(counter: &mut Counter, limit: u32, window: Duration) -> bool {
+    if counter.started.elapsed() >= window {
         *counter = new_counter();
     }
     if counter.count >= limit {
@@ -195,6 +252,8 @@ mod tests {
             max_connections_per_ip: 1,
             events_per_minute_ip: 1,
             events_per_minute_pubkey: 1,
+            observer_events_per_second_ip: 1,
+            observer_events_per_second_agent: 1,
             req_per_minute_ip: 1,
             media_per_minute_ip: 1,
             media_per_minute_pubkey: 1,
@@ -210,6 +269,10 @@ mod tests {
         assert!(!limiter.event_from_ip(ip));
         assert!(limiter.event_from_pubkey("a"));
         assert!(!limiter.event_from_pubkey("a"));
+        assert!(limiter.observer_from_ip(ip));
+        assert!(!limiter.observer_from_ip(ip));
+        assert!(limiter.observer_from_agent("agent"));
+        assert!(!limiter.observer_from_agent("agent"));
         assert!(limiter.req_from_ip(ip));
         assert!(!limiter.req_from_ip(ip));
         assert!(limiter.media_from_ip(ip));

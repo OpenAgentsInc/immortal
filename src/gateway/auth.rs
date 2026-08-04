@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     fs::File,
     io::Read,
     net::IpAddr,
@@ -18,7 +18,7 @@ const AUTH_WINDOW_SECONDS: u64 = 600;
 pub struct AuthState {
     challenge: String,
     relay_url: String,
-    authenticated: HashSet<String>,
+    authenticated: HashMap<String, Option<String>>,
 }
 
 impl AuthState {
@@ -26,7 +26,7 @@ impl AuthState {
         Self {
             challenge,
             relay_url,
-            authenticated: HashSet::new(),
+            authenticated: HashMap::new(),
         }
     }
 
@@ -39,14 +39,25 @@ impl AuthState {
     }
 
     pub fn is_authenticated_as(&self, pubkey: &str) -> bool {
-        self.authenticated.contains(pubkey)
+        self.authenticated.contains_key(pubkey)
+    }
+
+    pub fn is_directly_authenticated_as(&self, pubkey: &str) -> bool {
+        matches!(self.authenticated.get(pubkey), Some(None))
     }
 
     pub fn authenticated_pubkeys(&self) -> Vec<String> {
-        self.authenticated.iter().cloned().collect()
+        self.authenticated.keys().cloned().collect()
     }
 
+    #[cfg(test)]
     pub fn authenticate(&mut self, event: &Event, now: u64) -> Result<(), String> {
+        self.verify(event, now)?;
+        self.accept_direct(event.pubkey.clone());
+        Ok(())
+    }
+
+    pub fn verify(&self, event: &Event, now: u64) -> Result<(), String> {
         event
             .validate_structure()
             .map_err(|error| format!("invalid: {error}"))?;
@@ -72,8 +83,19 @@ impl AuthState {
         {
             return Err("invalid: authentication relay URL does not match".to_owned());
         }
-        self.authenticated.insert(event.pubkey.clone());
         Ok(())
+    }
+
+    pub fn accept_direct(&mut self, pubkey: String) {
+        self.authenticated.insert(pubkey, None);
+    }
+
+    pub fn accept_virtual(&mut self, pubkey: String, owner_pubkey: String) {
+        self.authenticated.insert(pubkey, Some(owner_pubkey));
+    }
+
+    pub fn virtual_owner_for(&self, pubkey: &str) -> Option<&str> {
+        self.authenticated.get(pubkey).and_then(Option::as_deref)
     }
 }
 
@@ -164,6 +186,13 @@ mod tests {
             );
             assert_eq!(auth.is_authenticated(), case.valid, "case: {}", case.name);
         }
+
+        let mut virtual_auth = AuthState::new("virtual".into(), fixture.relay_url);
+        virtual_auth.accept_virtual("agent".into(), "owner".into());
+        assert!(virtual_auth.is_authenticated_as("agent"));
+        assert!(!virtual_auth.is_directly_authenticated_as("agent"));
+        virtual_auth.accept_direct("agent".into());
+        assert!(virtual_auth.is_directly_authenticated_as("agent"));
     }
 
     fn signed_event(created_at: u64, kind: u16, tags: Vec<Tag>) -> Event {

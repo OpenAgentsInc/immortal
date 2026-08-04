@@ -12,10 +12,10 @@ use tokio::{
 };
 
 use crate::{
-    domain::{Event, Filter, RelaySigner},
+    domain::{Event, Filter, IdentityArchiveRequest, RelaySigner},
     store::{
-        AdmissionOutcome, ManagementRequest, MediaDeleteOutcome, MediaRecord, MediaUploadOutcome,
-        Store, StoreError, StoredEvent,
+        AdmissionOutcome, IdentityStatus, ManagementRequest, MediaDeleteOutcome, MediaRecord,
+        MediaUploadOutcome, Store, StoreError, StoredEvent,
     },
 };
 
@@ -35,7 +35,45 @@ enum DbRequest {
     Admit {
         event: Event,
         now: u64,
+        virtual_owner: Option<String>,
         response: oneshot::Sender<Result<AdmissionOutcome, StoreError>>,
+    },
+    IdentityStatus {
+        pubkey: String,
+        response: oneshot::Sender<Result<IdentityStatus, StoreError>>,
+    },
+    MaterializeAgentOwner {
+        agent_pubkey: String,
+        owner_pubkey: String,
+        require_owner_member: bool,
+        response: oneshot::Sender<Result<bool, StoreError>>,
+    },
+    IsAgentOwner {
+        agent_pubkey: String,
+        owner_pubkey: String,
+        response: oneshot::Sender<Result<bool, StoreError>>,
+    },
+    WorkspaceIcon {
+        response: oneshot::Sender<Result<Option<String>, StoreError>>,
+    },
+    SetWorkspaceIcon {
+        event: Event,
+        icon: String,
+        response: oneshot::Sender<Result<bool, StoreError>>,
+    },
+    IdentityArchive {
+        event: Event,
+        request: IdentityArchiveRequest,
+        consent: String,
+        now: u64,
+        response: oneshot::Sender<Result<bool, StoreError>>,
+    },
+    DmVisibility {
+        event: Event,
+        channel: String,
+        hidden: bool,
+        now: u64,
+        response: oneshot::Sender<Result<bool, StoreError>>,
     },
     History {
         filters: Vec<Filter>,
@@ -160,10 +198,104 @@ impl DbPool {
         ))
     }
 
-    pub async fn admit(&self, event: Event, now: u64) -> Result<AdmissionOutcome, StoreError> {
+    pub async fn admit(
+        &self,
+        event: Event,
+        now: u64,
+        virtual_owner: Option<String>,
+    ) -> Result<AdmissionOutcome, StoreError> {
         let (response, result) = oneshot::channel();
         self.send(DbRequest::Admit {
             event,
+            now,
+            virtual_owner,
+            response,
+        })?;
+        result.await.map_err(|_| StoreError::ConnectionClosed)?
+    }
+
+    pub async fn identity_status(&self, pubkey: String) -> Result<IdentityStatus, StoreError> {
+        let (response, result) = oneshot::channel();
+        self.send(DbRequest::IdentityStatus { pubkey, response })?;
+        result.await.map_err(|_| StoreError::ConnectionClosed)?
+    }
+
+    pub async fn materialize_agent_owner(
+        &self,
+        agent_pubkey: String,
+        owner_pubkey: String,
+        require_owner_member: bool,
+    ) -> Result<bool, StoreError> {
+        let (response, result) = oneshot::channel();
+        self.send(DbRequest::MaterializeAgentOwner {
+            agent_pubkey,
+            owner_pubkey,
+            require_owner_member,
+            response,
+        })?;
+        result.await.map_err(|_| StoreError::ConnectionClosed)?
+    }
+
+    pub async fn is_agent_owner(
+        &self,
+        agent_pubkey: String,
+        owner_pubkey: String,
+    ) -> Result<bool, StoreError> {
+        let (response, result) = oneshot::channel();
+        self.send(DbRequest::IsAgentOwner {
+            agent_pubkey,
+            owner_pubkey,
+            response,
+        })?;
+        result.await.map_err(|_| StoreError::ConnectionClosed)?
+    }
+
+    pub async fn workspace_icon(&self) -> Result<Option<String>, StoreError> {
+        let (response, result) = oneshot::channel();
+        self.send(DbRequest::WorkspaceIcon { response })?;
+        result.await.map_err(|_| StoreError::ConnectionClosed)?
+    }
+
+    pub async fn set_workspace_icon(&self, event: Event, icon: String) -> Result<bool, StoreError> {
+        let (response, result) = oneshot::channel();
+        self.send(DbRequest::SetWorkspaceIcon {
+            event,
+            icon,
+            response,
+        })?;
+        result.await.map_err(|_| StoreError::ConnectionClosed)?
+    }
+
+    pub async fn process_identity_archive(
+        &self,
+        event: Event,
+        request: IdentityArchiveRequest,
+        consent: String,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        let (response, result) = oneshot::channel();
+        self.send(DbRequest::IdentityArchive {
+            event,
+            request,
+            consent,
+            now,
+            response,
+        })?;
+        result.await.map_err(|_| StoreError::ConnectionClosed)?
+    }
+
+    pub async fn process_dm_visibility(
+        &self,
+        event: Event,
+        channel: String,
+        hidden: bool,
+        now: u64,
+    ) -> Result<bool, StoreError> {
+        let (response, result) = oneshot::channel();
+        self.send(DbRequest::DmVisibility {
+            event,
+            channel,
+            hidden,
             now,
             response,
         })?;
@@ -323,9 +455,99 @@ async fn handle_request(
         DbRequest::Admit {
             event,
             now,
+            virtual_owner,
             response,
         } => {
-            let result = store.admit_with_signer(&event, now, relay_signer).await;
+            let result = store
+                .admit_with_identity(&event, now, relay_signer, virtual_owner.as_deref())
+                .await;
+            let fatal = result.as_ref().is_err_and(is_fatal);
+            let _ = response.send(result);
+            fatal
+        }
+        DbRequest::IdentityStatus { pubkey, response } => {
+            let result = store.identity_status(&pubkey).await;
+            let fatal = result.as_ref().is_err_and(is_fatal);
+            let _ = response.send(result);
+            fatal
+        }
+        DbRequest::MaterializeAgentOwner {
+            agent_pubkey,
+            owner_pubkey,
+            require_owner_member,
+            response,
+        } => {
+            let result = store
+                .materialize_agent_owner(&agent_pubkey, &owner_pubkey, require_owner_member)
+                .await;
+            let fatal = result.as_ref().is_err_and(is_fatal);
+            let _ = response.send(result);
+            fatal
+        }
+        DbRequest::IsAgentOwner {
+            agent_pubkey,
+            owner_pubkey,
+            response,
+        } => {
+            let result = store.is_agent_owner(&agent_pubkey, &owner_pubkey).await;
+            let fatal = result.as_ref().is_err_and(is_fatal);
+            let _ = response.send(result);
+            fatal
+        }
+        DbRequest::WorkspaceIcon { response } => {
+            let result = store.workspace_icon().await;
+            let fatal = result.as_ref().is_err_and(is_fatal);
+            let _ = response.send(result);
+            fatal
+        }
+        DbRequest::SetWorkspaceIcon {
+            event,
+            icon,
+            response,
+        } => {
+            let result = store.set_workspace_icon(&event, &icon).await;
+            let fatal = result.as_ref().is_err_and(is_fatal);
+            let _ = response.send(result);
+            fatal
+        }
+        DbRequest::IdentityArchive {
+            event,
+            request,
+            consent,
+            now,
+            response,
+        } => {
+            let result = match relay_signer {
+                Some(signer) => {
+                    store
+                        .process_identity_archive(&event, &request, &consent, now, signer)
+                        .await
+                }
+                None => Err(StoreError::Management(
+                    "relay signing key is required for identity archival".into(),
+                )),
+            };
+            let fatal = result.as_ref().is_err_and(is_fatal);
+            let _ = response.send(result);
+            fatal
+        }
+        DbRequest::DmVisibility {
+            event,
+            channel,
+            hidden,
+            now,
+            response,
+        } => {
+            let result = match relay_signer {
+                Some(signer) => {
+                    store
+                        .process_dm_visibility(&event, &channel, hidden, now, signer)
+                        .await
+                }
+                None => Err(StoreError::Management(
+                    "relay signing key is required for DM visibility".into(),
+                )),
+            };
             let fatal = result.as_ref().is_err_and(is_fatal);
             let _ = response.send(result);
             fatal

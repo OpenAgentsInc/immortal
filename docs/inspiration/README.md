@@ -36,3 +36,4 @@ Each review has these sections, in this order:
 | Project | File | Pinned commit |
 | --- | --- | --- |
 | nostr-rs-relay | [`nostr-rs-relay.md`](nostr-rs-relay.md) | `b5c1f642e4` |
+| Block Buzz | [`buzz.md`](buzz.md) | `027a74a61c` |

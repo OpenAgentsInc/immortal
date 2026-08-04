@@ -69,7 +69,9 @@ conformance, actual-process chaos and load proofs, and the production
 deployment kit. The relay also provides expiration cleanup, protected and
 recipient-gated events, relay-managed groups, authenticated management,
 bounded COUNT, full-text search, and bounded Blossom media. M8 hardening and
-formal work is next. See
+formal work is next. The pinned Block extension lane is also active for agent
+ownership/authentication, observer and turn traffic, private agent data,
+reminders, projects, identity/DM/workspace commands, and relay state. See
 `docs/ROADMAP.md`, `docs/conformance/`, and `docs/deployment/`.
 
 ## Quick start
@@ -109,6 +111,11 @@ restore, upgrade, and rollback.
 The production environment template also enables the filesystem Blossom
 endpoint at `/var/lib/immortal/media`. Upload and delete use NIP-98; reads are
 public and content-addressed. See [`docs/protocol/media.md`](docs/protocol/media.md).
+
+The exact Block NIP handler and advertisement contract is documented in
+[`docs/protocol/block-nips.md`](docs/protocol/block-nips.md). Draft extensions
+that cannot be executed under the configured one-binary deployment fail
+closed and are not advertised.
 
 Reproduce the full fresh-Debian proof manually with a running Apple Container,
 Podman, or Docker runtime:

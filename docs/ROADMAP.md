@@ -103,6 +103,20 @@ as early as possible.
       when stable upstream)
 - [x] `nips/block/` and `nips/openagents/` lanes: per-NIP owner decision,
       official lane wins on identifier conflict
+- [x] Block agent identity and turns: NIP-OA owner attestations, NIP-AA
+      agent authentication, NIP-AO ephemeral observer routing, and NIP-AM
+      owner-private turn metrics
+- [x] Block stored data: NIP-AE encrypted engrams, NIP-AP private/shared
+      personas and team catalogs, NIP-ER lazy encrypted reminders, and NIP-MP
+      project validation
+- [x] Block relay commands and derived state: NIP-IA identity archival,
+      NIP-DV DM visibility, and NIP-WP workspace profile icon
+- [x] Block relay semantics: NIP-CW safe WebSocket degradation with relay-only
+      overlay kinds, NIP-RS addressable read state and race-free full-state
+      barrier, and NIP-GS's explicitly client-side Git signatures
+- [x] NIP-PL public-envelope/auth/ACL handler fails closed while no executor
+      key, lease descriptor, or push transport is configured or advertised;
+      no second service was added
 
 ## M7 — Media
 

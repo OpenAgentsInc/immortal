@@ -7,7 +7,7 @@ exception. No M6 exception was approved.
 | Lane | Decision for M6 |
 | --- | --- |
 | `official` | Implement the pinned NIP-17, NIP-29, NIP-40, NIP-45, NIP-50, NIP-65, NIP-70, NIP-86, and NIP-98 behavior described in `nip-expansion.md`. Watch NIP-77 without implementing it. NIP-91 is absent from this pinned lane, so do not advertise or implement it. |
-| `block` | Park all 15 custom specifications (NIP-AA, AE, AM, AO, AP, CW, DV, ER, GS, IA, MP, OA, PL, RS, and WP). None is required by M6 and the owner approved no identifier or precedence exception. |
+| `block` | Owner adoption on 2026-08-03 pulled all 15 pinned custom specifications forward: NIP-AA, AE, AM, AO, AP, CW, DV, ER, GS, IA, MP, OA, PL, RS, and WP. The exact server contract and deliberate non-advertisement cases are in `block-nips.md`; no identifier conflicts with the official lane were introduced. |
 | `openagents` | Keep NIP-AC, DS, LBR, SA, SKL, and TRN postponed under the owner direction recorded in that lane's README. The lane does not drive new runtime work until the owner pulls it forward. |
 
 The source files remain pinned protocol inputs, not claims of runtime support.
@@ -21,5 +21,6 @@ The official lane's pinned NIP-B7, NIP-94, and NIP-98 drive M7. NIP-B7 points
 outside the NIP repository for the Blossom HTTP contract, so the reviewed
 external input is recorded separately in `media.md` at an exact commit. The
 roadmap's NIP-98 choice wins over current Blossom BUD-11 kind-24242
-authorization. Block and OpenAgents specifications remain parked; M7 creates
-no identifier-precedence exception.
+authorization. M7 itself created no identifier-precedence exception. The later
+owner-directed Block adoption is recorded above; OpenAgents specifications
+remain parked.

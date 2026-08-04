@@ -13,6 +13,8 @@ pub struct GatewayLimits {
     pub max_query_cost: usize,
     pub events_per_minute_ip: u32,
     pub events_per_minute_pubkey: u32,
+    pub observer_events_per_second_ip: u32,
+    pub observer_events_per_second_agent: u32,
     pub req_per_minute_ip: u32,
     pub media_per_minute_ip: u32,
     pub media_per_minute_pubkey: u32,
@@ -30,6 +32,8 @@ impl Default for GatewayLimits {
             max_query_cost: 100_000,
             events_per_minute_ip: 120,
             events_per_minute_pubkey: 60,
+            observer_events_per_second_ip: 200,
+            observer_events_per_second_agent: 100,
             req_per_minute_ip: 120,
             media_per_minute_ip: 30,
             media_per_minute_pubkey: 15,
@@ -154,6 +158,11 @@ impl GatewayConfig {
             max_query_cost: parse_or("IMMORTAL_MAX_QUERY_COST", "100000")?,
             events_per_minute_ip: parse_or("IMMORTAL_RATE_EVENTS_PER_MIN_IP", "120")?,
             events_per_minute_pubkey: parse_or("IMMORTAL_RATE_EVENTS_PER_MIN_PUBKEY", "60")?,
+            observer_events_per_second_ip: parse_or("IMMORTAL_RATE_OBSERVER_PER_SEC_IP", "200")?,
+            observer_events_per_second_agent: parse_or(
+                "IMMORTAL_RATE_OBSERVER_PER_SEC_AGENT",
+                "100",
+            )?,
             req_per_minute_ip: parse_or("IMMORTAL_RATE_REQ_PER_MIN_IP", "120")?,
             media_per_minute_ip: parse_or("IMMORTAL_RATE_MEDIA_PER_MIN_IP", "30")?,
             media_per_minute_pubkey: parse_or("IMMORTAL_RATE_MEDIA_PER_MIN_PUBKEY", "15")?,
@@ -243,6 +252,14 @@ impl GatewayConfig {
             (
                 "IMMORTAL_RATE_EVENTS_PER_MIN_PUBKEY",
                 self.limits.events_per_minute_pubkey,
+            ),
+            (
+                "IMMORTAL_RATE_OBSERVER_PER_SEC_IP",
+                self.limits.observer_events_per_second_ip,
+            ),
+            (
+                "IMMORTAL_RATE_OBSERVER_PER_SEC_AGENT",
+                self.limits.observer_events_per_second_agent,
             ),
             (
                 "IMMORTAL_RATE_REQ_PER_MIN_IP",

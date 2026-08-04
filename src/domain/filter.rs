@@ -112,6 +112,18 @@ struct RawFilter {
     limit: Option<usize>,
     #[serde(default)]
     search: Option<String>,
+    // NIP-CW extension fields are intentionally accepted and discarded on
+    // WebSocket REQ. The pinned specification explicitly permits this safe
+    // degradation: the clean NIP-01 filter is served, with no false bounds
+    // overlay that could masquerade as a top-level page.
+    #[serde(default)]
+    top_level: Option<Value>,
+    #[serde(default)]
+    include_summaries: Option<Value>,
+    #[serde(default)]
+    include_aux: Option<Value>,
+    #[serde(default)]
+    before_id: Option<Value>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -122,6 +134,12 @@ impl<'de> Deserialize<'de> for Filter {
         D: Deserializer<'de>,
     {
         let raw = RawFilter::deserialize(deserializer)?;
+        let _channel_window_extensions = (
+            &raw.top_level,
+            &raw.include_summaries,
+            &raw.include_aux,
+            &raw.before_id,
+        );
         let mut tags = BTreeMap::new();
         for (field, value) in raw.extra {
             let bytes = field.as_bytes();

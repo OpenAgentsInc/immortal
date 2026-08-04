@@ -463,12 +463,7 @@ impl Hub {
             if !matches_any(&subscription.filters, &published.event) {
                 continue;
             }
-            if published.event.kind == 1_059
-                && !published
-                    .event
-                    .gift_wrap_recipient()
-                    .is_some_and(|recipient| subscription.read_pubkeys.contains(recipient))
-            {
+            if !event_visible_to_reader(&published.event, &subscription.read_pubkeys) {
                 continue;
             }
             match &mut subscription.state {
@@ -567,6 +562,28 @@ impl Hub {
         self.recent_ephemeral_order
             .push_back((event_id.to_owned(), now));
         true
+    }
+}
+
+fn event_visible_to_reader(event: &Event, readers: &HashSet<String>) -> bool {
+    match event.kind {
+        1_059 | 24_200 | 30_622 | 44_200 => event
+            .tag_values("p")
+            .next()
+            .is_some_and(|recipient| readers.contains(recipient)),
+        30_300 | 30_350 => readers.contains(&event.pubkey),
+        30_174 => {
+            readers.contains(&event.pubkey)
+                || event.tag_values("p").any(|owner| readers.contains(owner))
+        }
+        30_175 | 30_178 => {
+            readers.contains(&event.pubkey)
+                || event
+                    .tags
+                    .iter()
+                    .any(|tag| tag.as_slice() == ["shared", "true"])
+        }
+        _ => true,
     }
 }
 

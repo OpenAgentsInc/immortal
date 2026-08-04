@@ -2,7 +2,7 @@ use secp256k1::{Keypair, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
 
 use super::hex::{decode_lower_hex, encode_lower_hex};
-use super::{DomainError, Event, Tag};
+use super::{BLOCK_GLOBAL_ONLY_KINDS, DomainError, Event, Tag};
 
 const HTTP_AUTH_KIND: u16 = 27_235;
 const HTTP_AUTH_WINDOW_SECONDS: u64 = 60;
@@ -238,7 +238,9 @@ pub(crate) fn validate_expanded_event(event: &Event) -> Result<(), DomainError> 
     let group_tags = event
         .tags
         .iter()
-        .filter(|tag| tag.name() == Some("h"))
+        // NIP-MP is explicitly global-only. Its unknown tags are opaque, so a
+        // stray h (or previous) must not turn a project into NIP-29 traffic.
+        .filter(|tag| !BLOCK_GLOBAL_ONLY_KINDS.contains(&event.kind) && tag.name() == Some("h"))
         .collect::<Vec<_>>();
     if !group_tags.is_empty() {
         if group_tags.len() != 1 {

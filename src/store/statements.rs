@@ -18,6 +18,13 @@ SELECT NOT EXISTS (SELECT 1 FROM relay_allowed_kind)
     OR EXISTS (SELECT 1 FROM relay_allowed_kind WHERE kind = $1)
 "#;
 const MEMBER_SQL: &str = "SELECT 1 FROM relay_member_pubkey WHERE pubkey = $1";
+const AGENT_OWNER_SQL: &str =
+    "SELECT 1 FROM agent_owner WHERE agent_pubkey = $1 AND owner_pubkey = $2";
+const INSERT_AGENT_OWNER_SQL: &str = r#"
+INSERT INTO agent_owner (agent_pubkey, owner_pubkey)
+VALUES ($1, $2)
+ON CONFLICT DO NOTHING
+"#;
 const BLOCKED_PUBKEY_SQL: &str = "SELECT reason FROM relay_blocked_pubkey WHERE pubkey = $1";
 const BLOCKED_KIND_SQL: &str = "SELECT reason FROM relay_blocked_kind WHERE kind = $1";
 const ADVISORY_LOCK_SQL: &str = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))";
@@ -137,14 +144,40 @@ WHERE ($1::text[] IS NULL OR e.id = ANY($1))
   AND (e.expires_at IS NULL OR e.expires_at > $7)
   AND e.ingest_seq <= $9
   AND (
-      e.kind <> 1059
+      e.kind NOT IN (1059, 24200, 30174, 30175, 30178, 30300, 30350, 30622, 44200)
       OR (
-          $10::text[] IS NOT NULL
+          e.kind IN (1059, 24200, 30622, 44200)
+          AND $10::text[] IS NOT NULL
           AND EXISTS (
               SELECT 1 FROM nostr_indexed_tag recipient
               WHERE recipient.event_id = e.id
                 AND recipient.tag_name = 'p'
                 AND recipient.tag_value = ANY($10)
+          )
+      )
+      OR (
+          e.kind IN (30300, 30350)
+          AND $10::text[] IS NOT NULL
+          AND e.pubkey = ANY($10)
+      )
+      OR (
+          e.kind = 30174
+          AND $10::text[] IS NOT NULL
+          AND (
+              e.pubkey = ANY($10)
+              OR EXISTS (
+                  SELECT 1 FROM nostr_indexed_tag owner
+                  WHERE owner.event_id = e.id
+                    AND owner.tag_name = 'p'
+                    AND owner.tag_value = ANY($10)
+              )
+          )
+      )
+      OR (
+          e.kind IN (30175, 30178)
+          AND (
+              ($10::text[] IS NOT NULL AND e.pubkey = ANY($10))
+              OR e.tags @> '[["shared","true"]]'::jsonb
           )
       )
   )
@@ -196,14 +229,40 @@ WHERE ($1::text[] IS NULL OR e.id = ANY($1))
       )
   )
   AND (
-      e.kind <> 1059
+      e.kind NOT IN (1059, 24200, 30174, 30175, 30178, 30300, 30350, 30622, 44200)
       OR (
-          $8::text[] IS NOT NULL
+          e.kind IN (1059, 24200, 30622, 44200)
+          AND $8::text[] IS NOT NULL
           AND EXISTS (
               SELECT 1 FROM nostr_indexed_tag recipient
               WHERE recipient.event_id = e.id
                 AND recipient.tag_name = 'p'
                 AND recipient.tag_value = ANY($8)
+          )
+      )
+      OR (
+          e.kind IN (30300, 30350)
+          AND $8::text[] IS NOT NULL
+          AND e.pubkey = ANY($8)
+      )
+      OR (
+          e.kind = 30174
+          AND $8::text[] IS NOT NULL
+          AND (
+              e.pubkey = ANY($8)
+              OR EXISTS (
+                  SELECT 1 FROM nostr_indexed_tag owner
+                  WHERE owner.event_id = e.id
+                    AND owner.tag_name = 'p'
+                    AND owner.tag_value = ANY($8)
+              )
+          )
+      )
+      OR (
+          e.kind IN (30175, 30178)
+          AND (
+              ($8::text[] IS NOT NULL AND e.pubkey = ANY($8))
+              OR e.tags @> '[["shared","true"]]'::jsonb
           )
       )
   )
@@ -333,6 +392,41 @@ DELETE FROM media_owner WHERE sha256 = $1 AND pubkey = $2 RETURNING sha256
 "#;
 const MEDIA_HAS_OWNER_SQL: &str = "SELECT EXISTS (SELECT 1 FROM media_owner WHERE sha256 = $1)";
 const DELETE_MEDIA_BLOB_SQL: &str = "DELETE FROM media_blob WHERE sha256 = $1 RETURNING sha256";
+const ACCEPT_BLOCK_COMMAND_SQL: &str = r#"
+INSERT INTO block_command (event_id, pubkey, kind)
+VALUES ($1, $2, $3)
+ON CONFLICT DO NOTHING
+RETURNING event_id
+"#;
+const WORKSPACE_ICON_SQL: &str = "SELECT icon FROM workspace_profile WHERE singleton = TRUE";
+const SET_WORKSPACE_ICON_SQL: &str = r#"
+UPDATE workspace_profile
+SET icon = $1, command_event_id = $2, updated_at = clock_timestamp()
+WHERE singleton = TRUE
+"#;
+const UPSERT_ARCHIVED_IDENTITY_SQL: &str = r#"
+INSERT INTO archived_identity (
+    pubkey, reason, replaced_by, consent, actor_pubkey, request_event_id
+) VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (pubkey) DO NOTHING
+RETURNING pubkey
+"#;
+const DELETE_ARCHIVED_IDENTITY_SQL: &str =
+    "DELETE FROM archived_identity WHERE pubkey = $1 RETURNING pubkey";
+const LIST_ARCHIVED_IDENTITIES_SQL: &str =
+    "SELECT pubkey FROM archived_identity ORDER BY pubkey LIMIT 10000";
+const INSERT_DM_HIDDEN_SQL: &str = r#"
+INSERT INTO dm_hidden (viewer_pubkey, group_id)
+VALUES ($1, $2)
+ON CONFLICT DO NOTHING
+RETURNING group_id
+"#;
+const DELETE_DM_HIDDEN_SQL: &str = r#"
+DELETE FROM dm_hidden WHERE viewer_pubkey = $1 AND group_id = $2
+RETURNING group_id
+"#;
+const LIST_DM_HIDDEN_SQL: &str =
+    "SELECT group_id FROM dm_hidden WHERE viewer_pubkey = $1 ORDER BY group_id LIMIT 10000";
 
 #[derive(Clone)]
 pub(crate) struct Statements {
@@ -341,6 +435,8 @@ pub(crate) struct Statements {
     pub allowed_pubkey: Statement,
     pub allowed_kind: Statement,
     pub member: Statement,
+    pub agent_owner: Statement,
+    pub insert_agent_owner: Statement,
     pub blocked_pubkey: Statement,
     pub blocked_kind: Statement,
     pub advisory_lock: Statement,
@@ -399,6 +495,15 @@ pub(crate) struct Statements {
     pub delete_media_owner: Statement,
     pub media_has_owner: Statement,
     pub delete_media_blob: Statement,
+    pub accept_block_command: Statement,
+    pub workspace_icon: Statement,
+    pub set_workspace_icon: Statement,
+    pub upsert_archived_identity: Statement,
+    pub delete_archived_identity: Statement,
+    pub list_archived_identities: Statement,
+    pub insert_dm_hidden: Statement,
+    pub delete_dm_hidden: Statement,
+    pub list_dm_hidden: Statement,
 }
 
 impl Statements {
@@ -409,6 +514,8 @@ impl Statements {
             allowed_pubkey: client.prepare(ALLOWED_PUBKEY_SQL).await?,
             allowed_kind: client.prepare(ALLOWED_KIND_SQL).await?,
             member: client.prepare(MEMBER_SQL).await?,
+            agent_owner: client.prepare(AGENT_OWNER_SQL).await?,
+            insert_agent_owner: client.prepare(INSERT_AGENT_OWNER_SQL).await?,
             blocked_pubkey: client.prepare(BLOCKED_PUBKEY_SQL).await?,
             blocked_kind: client.prepare(BLOCKED_KIND_SQL).await?,
             advisory_lock: client.prepare(ADVISORY_LOCK_SQL).await?,
@@ -467,6 +574,15 @@ impl Statements {
             delete_media_owner: client.prepare(DELETE_MEDIA_OWNER_SQL).await?,
             media_has_owner: client.prepare(MEDIA_HAS_OWNER_SQL).await?,
             delete_media_blob: client.prepare(DELETE_MEDIA_BLOB_SQL).await?,
+            accept_block_command: client.prepare(ACCEPT_BLOCK_COMMAND_SQL).await?,
+            workspace_icon: client.prepare(WORKSPACE_ICON_SQL).await?,
+            set_workspace_icon: client.prepare(SET_WORKSPACE_ICON_SQL).await?,
+            upsert_archived_identity: client.prepare(UPSERT_ARCHIVED_IDENTITY_SQL).await?,
+            delete_archived_identity: client.prepare(DELETE_ARCHIVED_IDENTITY_SQL).await?,
+            list_archived_identities: client.prepare(LIST_ARCHIVED_IDENTITIES_SQL).await?,
+            insert_dm_hidden: client.prepare(INSERT_DM_HIDDEN_SQL).await?,
+            delete_dm_hidden: client.prepare(DELETE_DM_HIDDEN_SQL).await?,
+            list_dm_hidden: client.prepare(LIST_DM_HIDDEN_SQL).await?,
         })
     }
 }

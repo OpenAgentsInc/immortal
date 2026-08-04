@@ -27,7 +27,7 @@ async fn m2_store_contract_against_postgres() {
     }
 
     let (mut store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![1, 2, 3]);
+    assert_eq!(report.applied_versions, vec![1, 2, 3, 4, 5]);
     assert!(store.is_current());
 
     let (_second_store, report) = Store::connect_with_report(&database_url).await.unwrap();

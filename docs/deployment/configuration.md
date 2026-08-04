@@ -91,6 +91,12 @@ NIP-50 search, and NIP-65 relay-list storage need no extra variable. The full
 contract and deliberate NIP-29 subset are in
 `docs/protocol/nip-expansion.md`.
 
+The Block extension handlers need no additional service or database. NIP-AO
+uses the dedicated observer rates below. NIP-IA and NIP-DV require
+`IMMORTAL_RELAY_SECRET_KEY` because their derived state is relay-signed;
+NIP-WP requires `IMMORTAL_MANAGEMENT_PUBKEY`. Immortal does not configure or
+advertise a NIP-PL push executor. See `docs/protocol/block-nips.md`.
+
 TLS terminates at the reverse proxy. The binary itself never speaks TLS and
 has no certificate configuration.
 
@@ -105,6 +111,8 @@ has no certificate configuration.
 | `IMMORTAL_MAX_QUERY_COST` | no | `100000` | Upper bound on estimated rows scanned per `REQ` (1–1,000,000,000); costlier queries are refused with `CLOSED`. |
 | `IMMORTAL_RATE_EVENTS_PER_MIN_IP` | no | `120` | `EVENT` messages accepted per minute per client IP. |
 | `IMMORTAL_RATE_EVENTS_PER_MIN_PUBKEY` | no | `60` | `EVENT` messages accepted per minute per author pubkey. |
+| `IMMORTAL_RATE_OBSERVER_PER_SEC_IP` | no | `200` | NIP-AO observer frames accepted per second per client IP. |
+| `IMMORTAL_RATE_OBSERVER_PER_SEC_AGENT` | no | `100` | NIP-AO observer frames accepted per second for each agent, including owner-to-agent control traffic. |
 | `IMMORTAL_RATE_REQ_PER_MIN_IP` | no | `120` | `REQ` messages per minute per client IP. |
 | `IMMORTAL_RATE_MEDIA_PER_MIN_IP` | no | `30` | Combined media uploads and deletes per minute per client IP. |
 | `IMMORTAL_RATE_MEDIA_PER_MIN_PUBKEY` | no | `15` | Combined media uploads and deletes per minute per authenticated pubkey. |

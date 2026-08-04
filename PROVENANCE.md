@@ -413,6 +413,79 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   Rust and Node test builds, so it is retained as pass evidence rather than a
   replacement baseline.
 
+### 2026-08-03 — Codex 5.6 Sol (Extra High), Block NIP Server Lane
+
+- Began from commit `ce4addc21298a9de86f607eac35788763fb64026` on a clean
+  `main`, current with `origin/main`, and accepted the owner-directed phase as
+  Codex 5.6 Sol (Extra High). Read the binding repository doctrine and the
+  exact pinned Block NIP-OA, NIP-AA, NIP-AO, and NIP-AM texts before changing
+  runtime behavior. The owner then expanded the pass to every pinned Block
+  NIP and every server-side handler, so all 15 texts were reviewed: NIP-AA,
+  AE, AM, AO, AP, CW, DV, ER, GS, IA, MP, OA, PL, RS, and WP.
+- Reviewed `/Users/christopherdavid/work/projects/repos/buzz` and refreshed its
+  upstream objects without changing its checked-out branch. The Immortal NIP
+  snapshot commit `027a74a61c8643a1d1086d3e8307fad89d7735f7` is an ancestor
+  of current `block/buzz` main, and the specs plus their relevant relay,
+  database, SDK, and migration handlers are unchanged between those points.
+  Buzz itself contains the public server implementation; its documented
+  sibling organization repositories provide internal build, release, and
+  deployment machinery rather than another public relay handler source.
+- Implementation inputs selected from Buzz are its first-mint agent-owner
+  mapping, signed NIP-OA preimage and strict conditions grammar, NIP-AA
+  membership fallback, NIP-AO direction/unknown-frame/freshness/rate shape,
+  NIP-AM envelope and owner-only read rules, and the generated-FTS-column
+  exclusion migration. These contracts are being adapted into Immortal's
+  owned domain types, prepared `tokio-postgres` statements, existing in-memory
+  subscription hub, and Postgres `LISTEN/NOTIFY` lane. No Buzz service, Redis,
+  SQLx, Nostr crate, or dependency was imported. The exact Apache-2.0 review,
+  borrow table, and rejected topology are recorded in
+  `docs/inspiration/buzz.md`.
+- Added owned domain constants, strict public-envelope/tag validators, NIP-OA
+  and NIP-AA attestation verification, NIP-AO routing, and NIP-AM owner
+  extraction. Added first-mint agent-owner state, closed-relay virtual
+  membership, owner-aggregated publication rates, and independent bounded
+  observer rates. NIP-AO stays ephemeral; unknown frames are silently dropped;
+  NIP-AM and encrypted/private Block kinds stay out of FTS and behind the same
+  historical, COUNT, and live-fanout ACLs.
+- Added prepared transactional state for NIP-IA identity archive/unarchive,
+  NIP-DV per-viewer DM visibility, and NIP-WP workspace profile commands.
+  Accepted IA and DV commands atomically write relay-signed deltas/snapshots;
+  relay-only kinds cannot be client-forged. NIP-11 reads the workspace icon
+  from Postgres for correct multi-process visibility. NIP-AE, AP, ER, and MP
+  validate and use the repository's normal addressable replacement path, with
+  explicit private/shared read rules applied before ordering and limits.
+- Recorded the three server-semantics cases precisely: NIP-CW's WebSocket-safe
+  degradation discards extension fields and protects its relay-only overlay
+  kinds; NIP-RS uses existing addressable ordering and the race-free
+  high-water/EOSE/live barrier; NIP-GS defines no Nostr kind or relay handler.
+  NIP-PL reaches authenticated-author, signature, public-envelope, expiry, and
+  author-private read gates, then fails closed because Immortal advertises no
+  executor descriptor/key and has no configured platform push transport. It
+  is not advertised or stored. This pass added no service, broker, cache,
+  database, dependency, GitHub workflow, or GitHub-billed check.
+- Added one committed corpus for each Block NIP and new domain/static/live
+  Postgres contracts. Updated NIP-11 extension discovery, deployment limits,
+  source-lane decisions, the roadmap, conformance map, fixture provenance,
+  README, and the public Block server contract.
+- Verification before the final documentation pass: `cargo test --locked
+  --all-targets` passed all ordinary targets (including 4 agent and 11 Block
+  corpus tests), and `./scripts/test-postgres.sh` passed the live store and
+  gateway contracts, two-process chaos, release load gate, and a new disposable
+  Debian acceptance. The five-run load sample measured 1,104.70 median
+  committed events/sec, 0.33 ms connect-p99, and 4.35 ms REQ-to-EOSE-p99.
+- The exact final tree then passed `./scripts/test-conformance.sh`: formatting,
+  locked all-target check/tests, warnings-denied Clippy and rustdoc,
+  shell/static checks, fresh-Postgres store and two-gateway Block contracts,
+  two-process gap/chaos, optimized five-run load proof, binary smoke, and a new
+  fresh-Debian 13 relay plus backup/restore acceptance. A final NIP-AA audit
+  then bound closed-relay `EVENT` authorization to the event author, with a
+  live cross-identity rejection, and the strengthened exact tree passed that
+  entire gate again. Its final load sample measured 4,376.44 committed
+  events/sec median, 0.29 ms connect-p99 median, and 3.08 ms
+  REQ-to-EOSE-p99 median. The only stopped attempts were a missing test-module
+  `json!` import and one redundant-closure lint; both were fixed before the
+  complete clean reruns.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

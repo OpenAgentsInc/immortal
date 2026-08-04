@@ -61,6 +61,10 @@ async fn m3_gateway_contract_against_postgres() {
     .await
     .unwrap();
     assert_physically_expired(&verification_database_url, &expired_id).await;
+    configure_closed_membership(&verification_database_url).await;
+    tokio::task::spawn_blocking(move || closed_agent_auth_contract(address_one))
+        .await
+        .unwrap();
 
     stop_one.shutdown();
     stop_two.shutdown();
@@ -75,6 +79,133 @@ async fn m3_gateway_contract_against_postgres() {
         .unwrap()
         .unwrap();
     std::fs::remove_dir_all(media_root).unwrap();
+}
+
+async fn configure_closed_membership(database_url: &str) {
+    let (client, connection) = tokio_postgres::connect(database_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let close = client
+        .prepare("UPDATE relay_policy SET closed_membership = TRUE WHERE singleton = TRUE")
+        .await
+        .unwrap();
+    client.execute(&close, &[]).await.unwrap();
+    let member = client
+        .prepare(
+            "INSERT INTO relay_member_pubkey (pubkey, note) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .await
+        .unwrap();
+    for secret in [21_u8, 24] {
+        client
+            .execute(&member, &[&pubkey(secret), &"NIP-AA live owner"])
+            .await
+            .unwrap();
+    }
+}
+
+fn closed_agent_auth_contract(address: SocketAddr) {
+    let mut agent = connect_client(address);
+    let challenge = expect_auth_challenge(&mut agent);
+    let accepted_auth = agent_auth_event(22, 21, &challenge);
+    send_json(&mut agent, json!(["AUTH", accepted_auth]));
+    assert_eq!(read_json(&mut agent)[2], true);
+    let publication = signed_event(22, now(), 1, Vec::new(), "virtual member publication");
+    send_json(&mut agent, json!(["EVENT", publication]));
+    assert_eq!(read_json(&mut agent)[2], true);
+    let cross_identity = signed_event(24, now(), 1, Vec::new(), "different direct member");
+    send_json(&mut agent, json!(["EVENT", cross_identity]));
+    let refusal = read_json(&mut agent);
+    assert_eq!(refusal[2], false);
+    assert!(refusal[3].as_str().unwrap().starts_with("auth-required:"));
+    agent.close(None).unwrap();
+
+    let mut uncredentialed = connect_client(address);
+    let challenge = expect_auth_challenge(&mut uncredentialed);
+    let ordinary = signed_event(
+        23,
+        now(),
+        22_242,
+        vec![
+            Tag::new(vec!["relay".into(), "ws://relay.test".into()]),
+            Tag::new(vec!["challenge".into(), challenge]),
+        ],
+        "",
+    );
+    send_json(&mut uncredentialed, json!(["AUTH", ordinary]));
+    assert_eq!(read_json(&mut uncredentialed)[2], false);
+    uncredentialed.close(None).unwrap();
+
+    let mut conflict = connect_client(address);
+    let challenge = expect_auth_challenge(&mut conflict);
+    let conflicting_auth = agent_auth_event(22, 24, &challenge);
+    send_json(&mut conflict, json!(["AUTH", conflicting_auth]));
+    assert_eq!(read_json(&mut conflict)[2], false);
+    conflict.close(None).unwrap();
+
+    // A virtual identity never inherits relay-owner command authority, even
+    // when its pubkey is the configured management pubkey.
+    let mut virtual_manager = connect_client(address);
+    let challenge = expect_auth_challenge(&mut virtual_manager);
+    let manager_auth = agent_auth_event(91, 21, &challenge);
+    send_json(&mut virtual_manager, json!(["AUTH", manager_auth]));
+    assert_eq!(read_json(&mut virtual_manager)[2], true);
+    let command = signed_event(
+        91,
+        now(),
+        9_033,
+        vec![Tag::new(vec![
+            "icon".into(),
+            "https://example.com/forbidden.png".into(),
+        ])],
+        "",
+    );
+    send_json(&mut virtual_manager, json!(["EVENT", command]));
+    assert_eq!(read_json(&mut virtual_manager)[2], false);
+    virtual_manager.close(None).unwrap();
+}
+
+fn agent_auth_event(agent_secret: u8, owner_secret: u8, challenge: &str) -> Event {
+    let agent = pubkey(agent_secret);
+    let secp = Secp256k1::new();
+    let owner_key = Keypair::from_secret_key(
+        &secp,
+        &SecretKey::from_byte_array([owner_secret; 32]).unwrap(),
+    );
+    let digest: [u8; 32] = Sha256::digest(format!("nostr:agent-auth:{agent}:").as_bytes()).into();
+    let signature = secp.sign_schnorr_no_aux_rand(&digest, &owner_key);
+    signed_event(
+        agent_secret,
+        now(),
+        22_242,
+        vec![
+            Tag::new(vec!["relay".into(), "ws://relay.test".into()]),
+            Tag::new(vec!["challenge".into(), challenge.to_owned()]),
+            Tag::new(vec![
+                "auth".into(),
+                pubkey(owner_secret),
+                "".into(),
+                signature.to_string(),
+            ]),
+        ],
+        "",
+    )
+}
+
+fn owner_binding_tag(agent_secret: u8, owner_secret: u8) -> Tag {
+    let agent = pubkey(agent_secret);
+    let secp = Secp256k1::new();
+    let owner_key = Keypair::from_secret_key(
+        &secp,
+        &SecretKey::from_byte_array([owner_secret; 32]).unwrap(),
+    );
+    let digest: [u8; 32] = Sha256::digest(format!("nostr:agent-auth:{agent}:").as_bytes()).into();
+    Tag::new(vec![
+        "auth".into(),
+        pubkey(owner_secret),
+        "".into(),
+        secp.sign_schnorr_no_aux_rand(&digest, &owner_key)
+            .to_string(),
+    ])
 }
 
 fn test_config(database_url: String, media_root: PathBuf) -> GatewayConfig {
@@ -141,6 +272,18 @@ async fn assert_nip11_http(address: SocketAddr) {
                 .unwrap()
                 .contains(&json!(nip)),
             "missing NIP-{nip}"
+        );
+    }
+    for extension in [
+        "nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-dv", "nip-er", "nip-ia", "nip-mp",
+        "nip-oa", "nip-rs", "nip-wp",
+    ] {
+        assert!(
+            document["supported_extensions"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(extension)),
+            "missing {extension}"
         );
     }
 }
@@ -559,7 +702,320 @@ fn expanded_protocol_contract(address_one: SocketAddr, address_two: SocketAddr) 
     protected_and_private_contract(address_one, address_two);
     search_and_count_contract(address_one, address_two);
     group_contract(address_one, address_two);
+    block_server_contract(address_one, address_two);
     expiration_contract(address_one, address_two)
+}
+
+fn block_server_contract(address_one: SocketAddr, address_two: SocketAddr) {
+    let mut owner = connect_client(address_one);
+    let challenge = expect_auth_challenge(&mut owner);
+    authenticate(&mut owner, 21, &challenge);
+
+    let mut agent = connect_client(address_two);
+    let challenge = expect_auth_challenge(&mut agent);
+    let agent_auth = agent_auth_event(22, 21, &challenge);
+    send_json(&mut agent, json!(["AUTH", agent_auth]));
+    assert_eq!(read_json(&mut agent)[2], true);
+
+    send_json(
+        &mut owner,
+        json!(["REQ", "observer-owner", {"kinds":[24200], "#p":[pubkey(21)]}]),
+    );
+    assert_eq!(read_json(&mut owner), json!(["EOSE", "observer-owner"]));
+    send_json(
+        &mut agent,
+        json!(["REQ", "observer-agent", {"kinds":[24200], "#p":[pubkey(22)]}]),
+    );
+    assert_eq!(read_json(&mut agent), json!(["EOSE", "observer-agent"]));
+    let control = signed_event(
+        21,
+        now(),
+        24_200,
+        vec![
+            Tag::new(vec!["p".into(), pubkey(22)]),
+            Tag::new(vec!["agent".into(), pubkey(22)]),
+            Tag::new(vec!["frame".into(), "control".into()]),
+        ],
+        &fake_nip44_v2(),
+    );
+    send_json(&mut owner, json!(["EVENT", control]));
+    assert_eq!(read_json(&mut owner)[2], true);
+    assert_eq!(read_json(&mut agent)[2]["id"], control.id);
+    let telemetry = signed_event(
+        22,
+        now(),
+        24_200,
+        vec![
+            Tag::new(vec!["p".into(), pubkey(21)]),
+            Tag::new(vec!["agent".into(), pubkey(22)]),
+            Tag::new(vec!["frame".into(), "telemetry".into()]),
+        ],
+        &fake_nip44_v2(),
+    );
+    send_json(&mut agent, json!(["EVENT", telemetry]));
+    assert_eq!(read_json(&mut agent)[2], true);
+    assert_eq!(read_json(&mut owner)[2]["id"], telemetry.id);
+    send_json(
+        &mut owner,
+        json!(["REQ", "observer-history", {"kinds":[24200], "#p":[pubkey(21)]}]),
+    );
+    assert_eq!(read_json(&mut owner), json!(["EOSE", "observer-history"]));
+
+    send_json(
+        &mut owner,
+        json!(["REQ", "turn-metrics", {"kinds":[44200], "#p":[pubkey(21)]}]),
+    );
+    assert_eq!(read_json(&mut owner), json!(["EOSE", "turn-metrics"]));
+    let metric = signed_event(
+        22,
+        now(),
+        44_200,
+        vec![
+            Tag::new(vec!["p".into(), pubkey(21)]),
+            Tag::new(vec!["agent".into(), pubkey(22)]),
+        ],
+        &fake_nip44_v2(),
+    );
+    send_json(&mut agent, json!(["EVENT", metric]));
+    assert_eq!(read_json(&mut agent)[2], true);
+    assert_eq!(read_json(&mut owner)[2]["id"], metric.id);
+
+    let engram = signed_event(
+        22,
+        now(),
+        30_174,
+        vec![
+            Tag::new(vec!["d".into(), "a".repeat(64)]),
+            Tag::new(vec!["p".into(), pubkey(21)]),
+        ],
+        &fake_nip44_v2(),
+    );
+    send_json(&mut owner, json!(["EVENT", engram]));
+    assert_eq!(read_json(&mut owner)[2], true);
+    send_json(
+        &mut owner,
+        json!(["REQ", "engram-owner", {"kinds":[30174], "#p":[pubkey(21)]}]),
+    );
+    assert_eq!(read_json(&mut owner)[2]["id"], engram.id);
+    assert_eq!(read_json(&mut owner), json!(["EOSE", "engram-owner"]));
+
+    let unshared = signed_event(
+        21,
+        now(),
+        30_175,
+        vec![Tag::new(vec!["d".into(), "private-agent".into()])],
+        r#"{"display_name":"Private"}"#,
+    );
+    let shared = signed_event(
+        21,
+        now(),
+        30_175,
+        vec![
+            Tag::new(vec!["d".into(), "shared-agent".into()]),
+            Tag::new(vec!["shared".into(), "true".into()]),
+        ],
+        r#"{"display_name":"Shared"}"#,
+    );
+    for event in [&unshared, &shared] {
+        send_json(&mut owner, json!(["EVENT", event]));
+        assert_eq!(read_json(&mut owner)[2], true);
+    }
+
+    let reminder = signed_event(
+        21,
+        now(),
+        30_300,
+        vec![
+            Tag::new(vec!["d".into(), "0123456789abcdef0123456789abcdef".into()]),
+            Tag::new(vec!["not_before".into(), (now() + 60).to_string()]),
+        ],
+        &fake_nip44_v2(),
+    );
+    send_json(&mut owner, json!(["EVENT", reminder]));
+    assert_eq!(read_json(&mut owner)[2], true);
+
+    let project = signed_event(
+        21,
+        now(),
+        30_621,
+        vec![
+            Tag::new(vec!["d".into(), "platform".into()]),
+            Tag::new(vec!["a".into(), format!("30617:{}:immortal", pubkey(21))]),
+            Tag::new(vec!["h".into(), "not-a-group-scope".into()]),
+            Tag::new(vec!["previous".into(), "opaque-to-nip-mp".into()]),
+        ],
+        "ignored",
+    );
+    send_json(&mut owner, json!(["EVENT", project]));
+    assert_eq!(read_json(&mut owner)[2], true);
+
+    let lease = signed_event(
+        21,
+        now(),
+        30_350,
+        vec![
+            Tag::new(vec!["d".into(), "installation".into()]),
+            Tag::new(vec!["expiration".into(), (now() + 3_600).to_string()]),
+            Tag::new(vec!["exec".into(), "unadvertised".into()]),
+        ],
+        &fake_nip44_v2(),
+    );
+    send_json(&mut owner, json!(["EVENT", lease]));
+    let refusal = read_json(&mut owner);
+    assert_eq!(refusal[2], false);
+    assert!(refusal[3].as_str().unwrap().starts_with("restricted:"));
+
+    let archive = signed_event(
+        21,
+        now(),
+        9_035,
+        vec![
+            Tag::new(vec!["-".into()]),
+            Tag::new(vec!["p".into(), pubkey(21)]),
+            Tag::new(vec!["reason".into(), "rotated".into()]),
+        ],
+        "retired",
+    );
+    send_json(&mut owner, json!(["EVENT", archive]));
+    assert_eq!(read_json(&mut owner)[2], true);
+    send_json(
+        &mut owner,
+        json!(["REQ", "archive-state", {"kinds":[8002,13535], "authors":[pubkey(90)]}]),
+    );
+    let mut archival_kinds = Vec::new();
+    loop {
+        let message = read_json(&mut owner);
+        if message == json!(["EOSE", "archive-state"]) {
+            break;
+        }
+        archival_kinds.push(message[2]["kind"].as_u64().unwrap());
+    }
+    archival_kinds.sort_unstable();
+    assert_eq!(archival_kinds, vec![8_002, 13_535]);
+
+    let owner_archive = signed_event(
+        21,
+        now(),
+        9_035,
+        vec![
+            Tag::new(vec!["-".into()]),
+            Tag::new(vec!["p".into(), pubkey(22)]),
+            owner_binding_tag(22, 21),
+        ],
+        "owner retired agent",
+    );
+    send_json(&mut owner, json!(["EVENT", owner_archive]));
+    assert_eq!(read_json(&mut owner)[2], true);
+
+    let mut outsider = connect_client(address_two);
+    let challenge = expect_auth_challenge(&mut outsider);
+    authenticate(&mut outsider, 20, &challenge);
+    send_json(
+        &mut outsider,
+        json!(["REQ", "personas", {"kinds":[30175], "authors":[pubkey(21)]}]),
+    );
+    assert_eq!(read_json(&mut outsider)[2]["id"], shared.id);
+    assert_eq!(read_json(&mut outsider), json!(["EOSE", "personas"]));
+    send_json(
+        &mut outsider,
+        json!(["REQ", "foreign-reminder", {"kinds":[30300], "authors":[pubkey(21)]}]),
+    );
+    assert_eq!(read_json(&mut outsider)[0], "CLOSED");
+
+    // NIP-CW's permitted WebSocket degradation strips extension fields and
+    // serves the standard channel filter without synthesizing fake overlays.
+    send_json(
+        &mut outsider,
+        json!(["REQ", "cw-degrade", {"#h":["fixture-group"], "top_level":true, "include_summaries":true, "before_id":"0".repeat(64)}]),
+    );
+    loop {
+        let message = read_json(&mut outsider);
+        if message == json!(["EOSE", "cw-degrade"]) {
+            break;
+        }
+        assert_ne!(message[2]["kind"], 39_006);
+    }
+
+    let mut admin = connect_client(address_one);
+    let challenge = expect_auth_challenge(&mut admin);
+    authenticate(&mut admin, 30, &challenge);
+    let hide = signed_event(
+        30,
+        now(),
+        41_012,
+        vec![Tag::new(vec!["h".into(), "fixture-group".into()])],
+        "",
+    );
+    send_json(&mut admin, json!(["EVENT", hide]));
+    assert_eq!(read_json(&mut admin)[2], true);
+    send_json(
+        &mut admin,
+        json!(["REQ", "hidden", {"kinds":[30622], "#p":[pubkey(30)]}]),
+    );
+    let snapshot = read_json(&mut admin);
+    assert_eq!(snapshot[2]["kind"], 30_622);
+    assert_eq!(snapshot[2]["pubkey"], pubkey(90));
+    assert_eq!(read_json(&mut admin), json!(["EOSE", "hidden"]));
+    send_json(&mut admin, json!(["CLOSE", "hidden"]));
+    let open = signed_event(
+        30,
+        now(),
+        41_010,
+        vec![Tag::new(vec!["h".into(), "fixture-group".into()])],
+        "",
+    );
+    send_json(&mut admin, json!(["EVENT", open]));
+    assert_eq!(read_json(&mut admin)[2], true);
+    send_json(
+        &mut admin,
+        json!(["REQ", "visible", {"kinds":[30622], "#p":[pubkey(30)]}]),
+    );
+    let visible = read_json(&mut admin);
+    assert_eq!(visible[2]["kind"], 30_622);
+    assert!(
+        visible[2]["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|tag| tag[0] != "h")
+    );
+    assert_eq!(read_json(&mut admin), json!(["EOSE", "visible"]));
+
+    let mut manager = connect_client(address_one);
+    let challenge = expect_auth_challenge(&mut manager);
+    authenticate(&mut manager, 91, &challenge);
+    let profile = signed_event(
+        91,
+        now(),
+        9_033,
+        vec![Tag::new(vec![
+            "icon".into(),
+            "https://example.com/workspace.png".into(),
+        ])],
+        "",
+    );
+    send_json(&mut manager, json!(["EVENT", profile]));
+    assert_eq!(read_json(&mut manager)[2], true);
+    assert_nip11_icon(address_two, "https://example.com/workspace.png");
+
+    manager.close(None).unwrap();
+    admin.close(None).unwrap();
+    outsider.close(None).unwrap();
+    agent.close(None).unwrap();
+    owner.close(None).unwrap();
+}
+
+fn assert_nip11_icon(address: SocketAddr, expected: &str) {
+    let mut stream = StdTcpStream::connect(address).unwrap();
+    write!(
+        stream,
+        "GET / HTTP/1.1\r\nHost: relay.test\r\nAccept: application/nostr+json\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let document: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(document["icon"], expected);
 }
 
 fn protected_and_private_contract(address_one: SocketAddr, address_two: SocketAddr) {
@@ -1065,6 +1521,12 @@ fn base64(bytes: &[u8]) -> String {
         }
     }
     output
+}
+
+fn fake_nip44_v2() -> String {
+    let mut bytes = [0_u8; 99];
+    bytes[0] = 0x02;
+    base64(&bytes)
 }
 
 fn now() -> u64 {

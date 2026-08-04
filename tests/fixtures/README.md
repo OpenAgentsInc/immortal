@@ -30,6 +30,16 @@ names the NIP that owns the behavior.
   publishing, and HTTP-authentication boundaries. The live Postgres gateway
   contract checks the associated storage, access-control, signing, sweep,
   management, media metadata/server-list, and wire behavior.
+- `nipoa/attestation.json`, `nipaa/auth.json`, `nipao/observer.json`, and
+  `nipam/turn-metrics.json` pin the Block agent ownership, agent-authentication,
+  ephemeral observer, and private turn-metric envelopes against Buzz commit
+  `027a74a61c8643a1d1086d3e8307fad89d7735f7`.
+- `nipae/`, `nipap/`, `niper/`, `nipmp/`, `nippl/`, `nipia/`, `nipdv/`,
+  `nipwp/`, `nipcw/`, `niprs/`, and `nipgs/` each contain a committed server
+  contract derived from the corresponding pinned Block text. They cover
+  private-data ACLs, validators, relay commands and snapshots, safe query
+  degradation, race-free standard relay semantics, the no-relay-handler Git
+  signature case, and NIP-PL's fail-closed unadvertised executor posture.
 
 Fixture data is committed rather than generated so a specification or
 implementation change produces a reviewable diff.

@@ -25,8 +25,10 @@ use tokio::{
 use tokio_postgres::{AsyncMessage, Client, NoTls, Row, types::ToSql};
 
 use crate::domain::{
-    DeletionRequest, DeletionTombstone, Event, EventClass, Filter, GroupAction, GroupMetadata,
-    RelaySigner, ReplacementDecision, Tag, compare_replacement_order, search_terms,
+    BLOCK_GLOBAL_ONLY_KINDS, DM_VISIBILITY_KIND, DeletionRequest, DeletionTombstone, Event,
+    EventClass, Filter, GroupAction, GroupMetadata, IDENTITY_ARCHIVE_LIST_KIND,
+    IDENTITY_ARCHIVED_KIND, IDENTITY_UNARCHIVED_KIND, IdentityArchiveRequest, RelaySigner,
+    ReplacementDecision, Tag, compare_replacement_order, search_terms, validate_block_ingest,
 };
 
 pub use error::StoreError;
@@ -140,6 +142,12 @@ pub struct RelayPolicy {
     pub max_past_seconds: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityStatus {
+    pub closed_membership: bool,
+    pub direct_member: bool,
+}
+
 /// A committed durable position or a validated ephemeral event delivered
 /// through Postgres `NOTIFY` without ever entering a table.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,9 +256,24 @@ impl Store {
         now: u64,
         relay_signer: Option<&RelaySigner>,
     ) -> Result<AdmissionOutcome, StoreError> {
+        self.admit_with_identity(event, now, relay_signer, None)
+            .await
+    }
+
+    /// Admit an event for a NIP-AA virtual member authenticated on the owning
+    /// connection. The owner mapping is checked in the same policy transaction;
+    /// no persistent relay-membership row is created for the agent.
+    pub async fn admit_with_identity(
+        &mut self,
+        event: &Event,
+        now: u64,
+        relay_signer: Option<&RelaySigner>,
+        virtual_owner: Option<&str>,
+    ) -> Result<AdmissionOutcome, StoreError> {
         self.ensure_current()?;
         event.validate_structure()?;
         event.validate_crypto()?;
+        validate_block_ingest(event, now).map_err(crate::domain::DomainError::InvalidEvent)?;
         if event.kind == 22_242 {
             return Ok(AdmissionOutcome::Rejected(AdmissionRejection::AuthEvent));
         }
@@ -332,14 +355,25 @@ impl Store {
                 AdmissionRejection::KindNotAllowed,
             ));
         }
-        if policy.closed_membership
-            && transaction
+        if policy.closed_membership {
+            let direct_member = transaction
                 .query_opt(&statements.member, &[&event.pubkey])
                 .await?
-                .is_none()
-        {
-            transaction.commit().await?;
-            return Ok(AdmissionOutcome::Rejected(AdmissionRejection::NotMember));
+                .is_some();
+            let virtual_member = if direct_member {
+                false
+            } else if let Some(owner) = virtual_owner {
+                transaction
+                    .query_opt(&statements.agent_owner, &[&event.pubkey, &owner])
+                    .await?
+                    .is_some()
+            } else {
+                false
+            };
+            if !direct_member && !virtual_member {
+                transaction.commit().await?;
+                return Ok(AdmissionOutcome::Rejected(AdmissionRejection::NotMember));
+            }
         }
         if event.content.len() > policy.max_content_bytes {
             transaction.commit().await?;
@@ -388,7 +422,7 @@ impl Store {
                 .await?;
         }
 
-        let group_id = event.group_id();
+        let group_id = group_scope(event);
         if (39_000..=39_005).contains(&event.kind)
             && relay_signer.is_none_or(|signer| signer.pubkey() != event.pubkey)
         {
@@ -697,6 +731,285 @@ impl Store {
             .await?
             .ok_or_else(|| StoreError::InvalidPolicy("singleton row is missing".to_owned()))?;
         Ok(AdmissionPolicy::from_row(&row)?.into())
+    }
+
+    pub async fn identity_status(&self, pubkey: &str) -> Result<IdentityStatus, StoreError> {
+        self.ensure_current()?;
+        let policy_row = self
+            .client
+            .query_opt(&self.statements.policy, &[])
+            .await?
+            .ok_or_else(|| StoreError::InvalidPolicy("singleton row is missing".to_owned()))?;
+        let closed_membership = AdmissionPolicy::from_row(&policy_row)?.closed_membership;
+        let direct_member = self
+            .client
+            .query_opt(&self.statements.member, &[&pubkey])
+            .await?
+            .is_some();
+        Ok(IdentityStatus {
+            closed_membership,
+            direct_member,
+        })
+    }
+
+    /// Persist a verified owner relation with Buzz-compatible first-mint-wins
+    /// semantics. Repeating the same relation succeeds; a conflicting owner
+    /// cannot replace the main owner.
+    pub async fn materialize_agent_owner(
+        &mut self,
+        agent_pubkey: &str,
+        owner_pubkey: &str,
+        require_owner_member: bool,
+    ) -> Result<bool, StoreError> {
+        self.ensure_current()?;
+        let statements = self.statements.clone();
+        let transaction = self.client.transaction().await?;
+        if require_owner_member
+            && transaction
+                .query_opt(&statements.member, &[&owner_pubkey])
+                .await?
+                .is_none()
+        {
+            transaction.commit().await?;
+            return Ok(false);
+        }
+        transaction
+            .execute(
+                &statements.insert_agent_owner,
+                &[&agent_pubkey, &owner_pubkey],
+            )
+            .await?;
+        let matches = transaction
+            .query_opt(&statements.agent_owner, &[&agent_pubkey, &owner_pubkey])
+            .await?
+            .is_some();
+        transaction.commit().await?;
+        Ok(matches)
+    }
+
+    pub async fn is_agent_owner(
+        &self,
+        agent_pubkey: &str,
+        owner_pubkey: &str,
+    ) -> Result<bool, StoreError> {
+        self.ensure_current()?;
+        Ok(self
+            .client
+            .query_opt(
+                &self.statements.agent_owner,
+                &[&agent_pubkey, &owner_pubkey],
+            )
+            .await?
+            .is_some())
+    }
+
+    pub async fn workspace_icon(&self) -> Result<Option<String>, StoreError> {
+        self.ensure_current()?;
+        Ok(self
+            .client
+            .query_one(&self.statements.workspace_icon, &[])
+            .await?
+            .get(0))
+    }
+
+    pub async fn set_workspace_icon(
+        &mut self,
+        event: &Event,
+        icon: &str,
+    ) -> Result<bool, StoreError> {
+        self.ensure_current()?;
+        let statements = self.statements.clone();
+        let transaction = self.client.transaction().await?;
+        let kind = i32::from(event.kind);
+        if transaction
+            .query_opt(
+                &statements.accept_block_command,
+                &[&event.id, &event.pubkey, &kind],
+            )
+            .await?
+            .is_none()
+        {
+            transaction.commit().await?;
+            return Ok(false);
+        }
+        let icon = (!icon.is_empty()).then_some(icon);
+        transaction
+            .execute(&statements.set_workspace_icon, &[&icon, &event.id])
+            .await?;
+        transaction.commit().await?;
+        Ok(true)
+    }
+
+    pub async fn process_identity_archive(
+        &mut self,
+        event: &Event,
+        request: &IdentityArchiveRequest,
+        consent: &str,
+        now: u64,
+        signer: &RelaySigner,
+    ) -> Result<bool, StoreError> {
+        self.ensure_current()?;
+        let statements = self.statements.clone();
+        let transaction = self.client.transaction().await?;
+        let kind = i32::from(event.kind);
+        if transaction
+            .query_opt(
+                &statements.accept_block_command,
+                &[&event.id, &event.pubkey, &kind],
+            )
+            .await?
+            .is_none()
+        {
+            transaction.commit().await?;
+            return Ok(false);
+        }
+
+        let changed = if request.archive {
+            transaction
+                .query_opt(
+                    &statements.upsert_archived_identity,
+                    &[
+                        &request.target,
+                        &request.reason,
+                        &request.replaced_by,
+                        &consent,
+                        &event.pubkey,
+                        &event.id,
+                    ],
+                )
+                .await?
+                .is_some()
+        } else {
+            transaction
+                .query_opt(&statements.delete_archived_identity, &[&request.target])
+                .await?
+                .is_some()
+        };
+        if changed {
+            transaction.query_one(&statements.ingest_lock, &[]).await?;
+            let mut delta_tags = vec![
+                Tag::new(vec!["-".into()]),
+                Tag::new(vec!["p".into(), request.target.clone()]),
+                Tag::new(vec!["consent".into(), consent.into(), event.pubkey.clone()]),
+                Tag::new(vec!["e".into(), event.id.clone()]),
+            ];
+            if let Some(reason) = &request.reason {
+                delta_tags.push(Tag::new(vec!["reason".into(), reason.clone()]));
+            }
+            if let Some(replaced_by) = &request.replaced_by {
+                delta_tags.push(Tag::new(vec!["replaced-by".into(), replaced_by.clone()]));
+            }
+            let delta_kind = if request.archive {
+                IDENTITY_ARCHIVED_KIND
+            } else {
+                IDENTITY_UNARCHIVED_KIND
+            };
+            let delta = signer.sign(now, delta_kind, delta_tags, event.content.clone());
+            insert_internal_regular_event(&transaction, &statements, &delta).await?;
+
+            let archived = transaction
+                .query(&statements.list_archived_identities, &[])
+                .await?
+                .into_iter()
+                .map(|row| row.get::<_, String>(0))
+                .collect::<Vec<_>>();
+            let mut snapshot_tags = vec![Tag::new(vec!["-".into()])];
+            snapshot_tags.extend(
+                archived
+                    .into_iter()
+                    .map(|pubkey| Tag::new(vec!["p".into(), pubkey])),
+            );
+            insert_internal_replaceable_event(
+                &transaction,
+                &statements,
+                signer,
+                IDENTITY_ARCHIVE_LIST_KIND,
+                "",
+                now,
+                snapshot_tags,
+                String::new(),
+            )
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(changed)
+    }
+
+    pub async fn process_dm_visibility(
+        &mut self,
+        event: &Event,
+        channel: &str,
+        hidden: bool,
+        now: u64,
+        signer: &RelaySigner,
+    ) -> Result<bool, StoreError> {
+        self.ensure_current()?;
+        let statements = self.statements.clone();
+        let transaction = self.client.transaction().await?;
+        if transaction
+            .query_opt(&statements.group_member, &[&channel, &event.pubkey])
+            .await?
+            .is_none()
+        {
+            transaction.commit().await?;
+            return Err(StoreError::Management(
+                "DM visibility actor is not a member of the target group".into(),
+            ));
+        }
+        let kind = i32::from(event.kind);
+        if transaction
+            .query_opt(
+                &statements.accept_block_command,
+                &[&event.id, &event.pubkey, &kind],
+            )
+            .await?
+            .is_none()
+        {
+            transaction.commit().await?;
+            return Ok(false);
+        }
+        let changed = if hidden {
+            transaction
+                .query_opt(&statements.insert_dm_hidden, &[&event.pubkey, &channel])
+                .await?
+                .is_some()
+        } else {
+            transaction
+                .query_opt(&statements.delete_dm_hidden, &[&event.pubkey, &channel])
+                .await?
+                .is_some()
+        };
+        if changed {
+            transaction.query_one(&statements.ingest_lock, &[]).await?;
+            let hidden_groups = transaction
+                .query(&statements.list_dm_hidden, &[&event.pubkey])
+                .await?
+                .into_iter()
+                .map(|row| row.get::<_, String>(0))
+                .collect::<Vec<_>>();
+            let mut tags = vec![
+                Tag::new(vec!["d".into(), event.pubkey.clone()]),
+                Tag::new(vec!["p".into(), event.pubkey.clone()]),
+            ];
+            tags.extend(
+                hidden_groups
+                    .into_iter()
+                    .map(|group| Tag::new(vec!["h".into(), group])),
+            );
+            insert_internal_replaceable_event(
+                &transaction,
+                &statements,
+                signer,
+                DM_VISIBILITY_KIND,
+                &event.pubkey,
+                now,
+                tags,
+                String::new(),
+            )
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(changed)
     }
 
     pub async fn event_by_ingest_seq(
@@ -1448,10 +1761,16 @@ fn admission_lock_keys(
                 .map(|address| format!("address:{address}")),
         );
     }
-    if let Some(group_id) = event.group_id() {
+    if let Some(group_id) = group_scope(event) {
         keys.insert(format!("group:{group_id}"));
     }
     keys
+}
+
+fn group_scope(event: &Event) -> Option<&str> {
+    (!BLOCK_GLOBAL_ONLY_KINDS.contains(&event.kind))
+        .then(|| event.group_id())
+        .flatten()
 }
 
 struct GroupRow {
@@ -1852,6 +2171,92 @@ async fn insert_internal_regular_event(
                 &statements.insert_tag,
                 &[&event.id, &tag_name, &tag_value, &created_at],
             )
+            .await?;
+    }
+    transaction
+        .query_one(&statements.notify, &[&ingest_seq.to_string()])
+        .await?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_internal_replaceable_event(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    signer: &RelaySigner,
+    kind: u16,
+    identifier: &str,
+    now: u64,
+    tags: Vec<Tag>,
+    content: String,
+) -> Result<(), StoreError> {
+    let kind_i32 = i32::from(kind);
+    let current = transaction
+        .query_opt(
+            &statements.head,
+            &[&kind_i32, &signer.pubkey(), &identifier],
+        )
+        .await?;
+    let created_at = current
+        .as_ref()
+        .map(|row| row.get::<_, i64>(1))
+        .map(|value| {
+            u64::try_from(value)
+                .map_err(|_| StoreError::CorruptRow("negative internal event timestamp".into()))
+        })
+        .transpose()?
+        .map_or(now, |previous| now.max(previous.saturating_add(1)));
+    let event = signer.sign(created_at, kind, tags, content);
+    let created_at = pg_i64(created_at, "internal replaceable event timestamp")?;
+    let tags_json = serde_json::to_string(&event.tags)
+        .map_err(|error| StoreError::Serialization(error.to_string()))?;
+    let identifier_param = Some(identifier);
+    let expires_at: Option<i64> = None;
+    let Some(row) = transaction
+        .query_opt(
+            &statements.insert_event,
+            &[
+                &event.id,
+                &event.pubkey,
+                &created_at,
+                &kind_i32,
+                &tags_json,
+                &event.content,
+                &event.sig,
+                &identifier_param,
+                &expires_at,
+            ],
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+    let ingest_seq = row.get::<_, i64>(0);
+    for (tag_name, tag_value) in event.indexed_tags() {
+        let tag_name = tag_name.to_string();
+        transaction
+            .execute(
+                &statements.insert_tag,
+                &[&event.id, &tag_name, &tag_value, &created_at],
+            )
+            .await?;
+    }
+    transaction
+        .execute(
+            &statements.upsert_head,
+            &[
+                &kind_i32,
+                &event.pubkey,
+                &identifier,
+                &event.id,
+                &created_at,
+            ],
+        )
+        .await?;
+    if let Some(current) = current {
+        let old_id = current.get::<_, String>(0);
+        transaction
+            .execute(&statements.delete_event, &[&old_id])
             .await?;
     }
     transaction
