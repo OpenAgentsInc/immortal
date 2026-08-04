@@ -384,7 +384,8 @@ rerun is green.
 | [#14](https://github.com/OpenAgentsInc/immortal/issues/14) | Session logic + `--no-spend` mode in `crates/immortal-provider` (re-scoped) | #24 |
 | [#25](https://github.com/OpenAgentsInc/immortal/issues/25) | Provider rails: hand-rolled bitcoind JSON-RPC + polling watcher, CLN unix-socket client, wallet and script-path Taproot settlement over in-repo primitives, watchtower, reservation ledger, provider contract export — same seven-dependency allowlist | #24, #14 |
 | [#15](https://github.com/OpenAgentsInc/immortal/issues/15) | Boltz-compatible facade, rebased onto the workspace; verification backed by the external `immortal-provider` process (re-scoped) | #11, #13, #14, #25 |
-| [#18](https://github.com/OpenAgentsInc/immortal/issues/18) | Adversarial lab consuming both shipped binaries (re-scoped) | #25 |
+| [#32](https://github.com/OpenAgentsInc/immortal/issues/32) | Lab prerequisites: wallet-side harness executable (scriptable step control, persisted-record restart) and regtest node provisioning scripts (bitcoind, CLN + hold plugin, topology manifest, extension hooks) | #25 |
+| [#18](https://github.com/OpenAgentsInc/immortal/issues/18) | Adversarial lab consuming both shipped binaries (re-scoped; first pass proves submarine and reverse shapes, chain swaps enter with #27) | #25, #32 |
 | [#19](https://github.com/OpenAgentsInc/immortal/issues/19) | Closing packet + `runbook-provider-debian.md` (re-scoped) | #18 |
 
 ### M12 Boltz-parity ledger (2026-08-04)
