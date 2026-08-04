@@ -253,8 +253,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/swp-client-engine-v1.json",
-      "sha256": "c41e3f830e481c4cf5ddd196819b2b12c3e45853715116a3f6769709829c61ed",
-      "bytes": 13940,
+      "sha256": "02a6f4be33cd28b1391bc8230052183db64fe04dbfa70dc257b8220486de4fdc",
+      "bytes": 16101,
       "scope": "client"
     },
     {

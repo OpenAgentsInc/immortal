@@ -1080,6 +1080,103 @@ pub struct InvoiceVerificationInput {
     pub required_minimum_final_cltv_delta: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LightningReadinessRequest {
+    pub order_id: String,
+    pub leg_id: String,
+    pub invoice_sha256: String,
+    pub payment_hash: String,
+    pub amount_msat: String,
+    pub network: String,
+    pub invoice_expires_at: u64,
+    pub minimum_final_cltv_delta: u64,
+    pub maximum_routing_fee: String,
+    pub hold_invoice_required: bool,
+    pub hold_expiry_height: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightningReadinessState {
+    Acceptable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalLightningReadiness {
+    pub invoice_sha256: String,
+    pub payment_hash: String,
+    pub observed_at: u64,
+    pub state: LightningReadinessState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LightningProgressRequest {
+    pub order_id: String,
+    pub effect_id: String,
+    pub invoice_sha256: String,
+    pub payment_hash: String,
+    pub hold_invoice_required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightningProgressState {
+    PaymentPending,
+    HtlcsHeld,
+    Settled,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalLightningProgress {
+    pub invoice_sha256: String,
+    pub payment_hash: String,
+    pub observed_at: u64,
+    pub view_sha256: String,
+    pub state: LightningProgressState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LightningDispositionState {
+    Cancelled,
+    UnpaidFinal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalLightningDisposition {
+    pub invoice_sha256: String,
+    pub payment_hash: String,
+    pub observed_at: u64,
+    pub view_sha256: String,
+    pub state: LightningDispositionState,
+    pub principal_moved: bool,
+    pub external_identifier: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LightningDispositionRequest {
+    pub effect_id: String,
+    pub session_id: String,
+    pub order_id: String,
+    pub funding_effect_id: String,
+    pub leg_id: String,
+    pub invoice_sha256: String,
+    pub payment_hash: String,
+    pub observed_at: u64,
+    pub view_sha256: String,
+    pub state: LightningDispositionState,
+    pub principal_moved: bool,
+    pub evidence_reference_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedLightningDisposition {
+    pub request: ExternalEffectRequest,
+    pub result: ExternalEffectResult,
+    pub evidence_reference: Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "swap_type", rename_all = "snake_case")]
 pub enum TimeoutLadder {
@@ -1268,6 +1365,11 @@ pub enum FundingAction {
         effect_id: String,
         leg_id: String,
         invoice: String,
+        maximum_routing_fee: String,
+        invoice_expires_at: u64,
+        minimum_final_cltv_delta: u64,
+        hold_invoice_required: bool,
+        hold_expiry_height: u32,
     },
 }
 
@@ -1312,12 +1414,19 @@ pub struct FundingAuthorized {
     _private: (),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReversePaymentObserved {
+    _private: (),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "request_type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExternalEffectRequest {
     Funding(FundingAuthorizationRequest),
     WalletSigning(WalletSigningRequest),
     EsploraBroadcast(EsploraBroadcastRequest),
+    RailEvidence(RailEvidenceRequest),
+    LightningDisposition(LightningDispositionRequest),
 }
 
 impl ExternalEffectRequest {
@@ -1326,6 +1435,8 @@ impl ExternalEffectRequest {
             Self::Funding(request) => request.action.effect_id(),
             Self::WalletSigning(request) => &request.effect_id,
             Self::EsploraBroadcast(request) => &request.effect_id,
+            Self::RailEvidence(request) => &request.effect_id,
+            Self::LightningDisposition(request) => &request.effect_id,
         }
     }
 
@@ -1338,6 +1449,61 @@ impl ExternalEffectRequest {
         })?;
         Ok(lower_hex(&sha256(&canonical_json(&value)?)))
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RailEvidenceRequest {
+    pub effect_id: String,
+    pub session_id: String,
+    pub order_id: String,
+    pub leg_id: String,
+    pub outcome: String,
+    pub rail: String,
+    pub evidence_class: String,
+    pub source_reference: String,
+    pub reference: String,
+    pub artifact_sha256: String,
+    pub rung: String,
+    pub verifier_policy: String,
+    pub verifier_authority_sha256: String,
+    pub observed_at: u64,
+    pub view_sha256: String,
+    pub finality_state: String,
+    pub evidence_reference_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RailObservationRequest {
+    pub session_id: String,
+    pub order_id: String,
+    pub leg_id: String,
+    pub outcome: String,
+    pub rail: String,
+    pub evidence_class: String,
+    pub reference: String,
+    pub rung: String,
+    pub verifier_policy: String,
+    pub verifier_authority_sha256: String,
+    pub finality_state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalRailEvidence {
+    pub artifact_sha256: String,
+    pub observed_at: u64,
+    pub view: String,
+    pub settlement_reference: String,
+    pub verifier_pubkey: Option<String>,
+    pub producer_pubkey: String,
+    pub external_identifier: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedRailEvidence {
+    pub request: ExternalEffectRequest,
+    pub result: ExternalEffectResult,
+    pub evidence_reference: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1368,6 +1534,8 @@ struct PersistedSwapSession {
     signed_records: Vec<Event>,
     exit_packages: Vec<ExitPackage>,
     external_effects: Vec<ExternalEffectResult>,
+    #[serde(default)]
+    funding_request: Option<FundingAuthorizationRequest>,
 }
 
 impl SwapSession<AwaitingVerification> {
@@ -1378,6 +1546,7 @@ impl SwapSession<AwaitingVerification> {
     ) -> Result<Self, SwapClientError> {
         config.validate()?;
         validate_session_material(&config, &signed_records, &exit_packages)?;
+        validate_lifecycle(&config, &signed_records, &BTreeMap::new())?;
         Ok(Self {
             config,
             signed_records,
@@ -1419,6 +1588,14 @@ impl SwapSession<AwaitingVerification> {
             &persisted.signed_records,
             &persisted.exit_packages,
         )?;
+        if let Some(request) = &persisted.funding_request {
+            validate_persisted_funding_request(
+                &persisted.config,
+                &persisted.signed_records,
+                &persisted.exit_packages,
+                request,
+            )?;
+        }
         if persisted.external_effects.len() > MAX_EXTERNAL_EFFECTS {
             return Err(SwapClientError::new(
                 "swp_unresolved_loss",
@@ -1445,13 +1622,63 @@ impl SwapSession<AwaitingVerification> {
                 }
             }
         }
-        validate_lifecycle(&persisted.signed_records, &external_effects)?;
+        let bound = BoundSession::from_records(&persisted.config, &persisted.signed_records)?;
+        let topology = requester_topology(bound.swap_type);
+        let funding_effect_id = effect_id(
+            &bound.order.id,
+            topology.funding_effect_role,
+            topology.funding_leg_id,
+        )?;
+        if let Some(effect) = external_effects.get(&funding_effect_id) {
+            let request = persisted.funding_request.as_ref().ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_external_effect_conflict",
+                    "persisted funding effect has no exact authorization request",
+                )
+            })?;
+            validate_effect_request_binding(
+                &persisted.config,
+                &persisted.signed_records,
+                &persisted.exit_packages,
+                &ExternalEffectRequest::Funding(request.clone()),
+                effect,
+            )?;
+        }
+        validate_lifecycle(
+            &persisted.config,
+            &persisted.signed_records,
+            &external_effects,
+        )?;
+        validate_persisted_effect_sources(
+            &persisted.config,
+            &persisted.signed_records,
+            &external_effects,
+        )?;
         Ok(Self {
             config: persisted.config,
             signed_records: persisted.signed_records,
             exit_packages: persisted.exit_packages,
             external_effects,
-            funding_request: None,
+            funding_request: persisted.funding_request,
+            _state: PhantomData,
+        })
+    }
+
+    pub fn resume_funding_authorized(
+        self,
+    ) -> Result<SwapSession<FundingAuthorized>, SwapClientError> {
+        if self.funding_request.is_none() {
+            return Err(SwapClientError::new(
+                "swp_funding_not_authorized",
+                "persisted session has no verified funding authorization",
+            ));
+        }
+        Ok(SwapSession {
+            config: self.config,
+            signed_records: self.signed_records,
+            exit_packages: self.exit_packages,
+            external_effects: self.external_effects,
+            funding_request: self.funding_request,
             _state: PhantomData,
         })
     }
@@ -1459,6 +1686,33 @@ impl SwapSession<AwaitingVerification> {
     pub fn verify_before_fund<F>(
         self,
         input: VerifyBeforeFundInput,
+        wallet_authorize: F,
+    ) -> Result<SwapSession<FundingAuthorized>, SwapClientError>
+    where
+        F: FnMut(&FundingAuthorizationRequest) -> Result<(), String>,
+    {
+        self.verify_before_fund_inner(input, None, wallet_authorize)
+    }
+
+    pub fn verify_before_fund_with_lightning<Observe, Authorize>(
+        self,
+        input: VerifyBeforeFundInput,
+        mut observe_lightning: Observe,
+        wallet_authorize: Authorize,
+    ) -> Result<SwapSession<FundingAuthorized>, SwapClientError>
+    where
+        Observe: FnMut(&LightningReadinessRequest) -> Result<LocalLightningReadiness, String>,
+        Authorize: FnMut(&FundingAuthorizationRequest) -> Result<(), String>,
+    {
+        self.verify_before_fund_inner(input, Some(&mut observe_lightning), wallet_authorize)
+    }
+
+    fn verify_before_fund_inner<F>(
+        self,
+        input: VerifyBeforeFundInput,
+        mut observe_lightning: Option<
+            &mut dyn FnMut(&LightningReadinessRequest) -> Result<LocalLightningReadiness, String>,
+        >,
         mut wallet_authorize: F,
     ) -> Result<SwapSession<FundingAuthorized>, SwapClientError>
     where
@@ -1523,21 +1777,42 @@ impl SwapSession<AwaitingVerification> {
                 leg_id: topology.funding_leg_id.to_owned(),
                 raw_transaction: input.funding.raw_transaction.clone(),
             },
-            SwapType::Reverse => FundingAction::PayLightningInvoice {
-                effect_id: funding_effect_id,
-                leg_id: topology.funding_leg_id.to_owned(),
-                invoice: input
-                    .invoice
-                    .as_ref()
-                    .ok_or_else(|| {
-                        SwapClientError::new(
-                            "swp_invoice_invalid",
-                            "reverse funding requires the verified invoice",
-                        )
-                    })?
-                    .invoice
-                    .clone(),
-            },
+            SwapType::Reverse => {
+                let readiness_request = lightning_readiness_request(&input, &bound)?;
+                let observe = observe_lightning.as_mut().ok_or_else(|| {
+                    SwapClientError::new(
+                        "swp_funding_not_authorized",
+                        "reverse funding requires a local Lightning readiness adapter",
+                    )
+                })?;
+                let readiness = observe(&readiness_request).map_err(|error| {
+                    SwapClientError::new(
+                        "swp_funding_not_authorized",
+                        format!("local Lightning adapter refused readiness: {error}"),
+                    )
+                })?;
+                validate_lightning_readiness(&readiness_request, &readiness, input.observed_at)?;
+                FundingAction::PayLightningInvoice {
+                    effect_id: funding_effect_id,
+                    leg_id: topology.funding_leg_id.to_owned(),
+                    invoice: input
+                        .invoice
+                        .as_ref()
+                        .ok_or_else(|| {
+                            SwapClientError::new(
+                                "swp_invoice_invalid",
+                                "reverse funding requires the verified invoice",
+                            )
+                        })?
+                        .invoice
+                        .clone(),
+                    maximum_routing_fee: readiness_request.maximum_routing_fee,
+                    invoice_expires_at: readiness_request.invoice_expires_at,
+                    minimum_final_cltv_delta: readiness_request.minimum_final_cltv_delta,
+                    hold_invoice_required: readiness_request.hold_invoice_required,
+                    hold_expiry_height: readiness_request.hold_expiry_height,
+                }
+            }
         };
         let request = FundingAuthorizationRequest {
             session_id: self.config.session_id.clone(),
@@ -1585,6 +1860,277 @@ impl SwapSession<FundingAuthorized> {
         })
     }
 
+    pub fn observe_reverse_payment_with<F>(
+        self,
+        mut observe: F,
+    ) -> Result<SwapSession<ReversePaymentObserved>, SwapClientError>
+    where
+        F: FnMut(&LightningProgressRequest) -> Result<LocalLightningProgress, String>,
+    {
+        let bound = BoundSession::from_records(&self.config, &self.signed_records)?;
+        if bound.swap_type != SwapType::Reverse {
+            return Err(SwapClientError::new(
+                "swp_funding_not_authorized",
+                "Lightning payment progression applies only to reverse swaps",
+            ));
+        }
+        let funding = self.funding_request.as_ref().ok_or_else(|| {
+            SwapClientError::new(
+                "swp_funding_not_authorized",
+                "reverse payment progression has no funding request",
+            )
+        })?;
+        let FundingAction::PayLightningInvoice {
+            effect_id,
+            invoice,
+            hold_invoice_required,
+            invoice_expires_at,
+            ..
+        } = &funding.action
+        else {
+            return Err(SwapClientError::new(
+                "swp_funding_not_authorized",
+                "reverse payment progression has no Lightning payment effect",
+            ));
+        };
+        if !self.external_effects.contains_key(effect_id) {
+            return Err(SwapClientError::new(
+                "swp_funding_not_authorized",
+                "reverse payment must be durably recorded before observing progression",
+            ));
+        }
+        let request = LightningProgressRequest {
+            order_id: funding.order_id.clone(),
+            effect_id: effect_id.clone(),
+            invoice_sha256: lower_hex(&sha256(invoice.as_bytes())),
+            payment_hash: bound.payment_hash,
+            hold_invoice_required: *hold_invoice_required,
+        };
+        let observation = observe(&request).map_err(|error| {
+            SwapClientError::new(
+                "swp_unresolved_loss",
+                format!("local Lightning progression adapter failed: {error}"),
+            )
+        })?;
+        require_lower_hex_32(
+            &observation.view_sha256,
+            "Lightning progression view digest",
+        )?;
+        if observation.invoice_sha256 != request.invoice_sha256
+            || observation.payment_hash != request.payment_hash
+            || observation.observed_at >= *invoice_expires_at
+            || !matches!(
+                observation.state,
+                LightningProgressState::PaymentPending | LightningProgressState::HtlcsHeld
+            )
+        {
+            return Err(SwapClientError::new(
+                "swp_unresolved_loss",
+                "Lightning progression is terminal, contradictory, or belongs to another payment",
+            ));
+        }
+        Ok(SwapSession {
+            config: self.config,
+            signed_records: self.signed_records,
+            exit_packages: self.exit_packages,
+            external_effects: self.external_effects,
+            funding_request: self.funding_request,
+            _state: PhantomData::<ReversePaymentObserved>,
+        })
+    }
+
+    pub fn verify_reverse_no_fund_with<F>(
+        &self,
+        mut observe: F,
+    ) -> Result<VerifiedLightningDisposition, SwapClientError>
+    where
+        F: FnMut(&LightningProgressRequest) -> Result<LocalLightningDisposition, String>,
+    {
+        let bound = BoundSession::from_records(&self.config, &self.signed_records)?;
+        if bound.swap_type != SwapType::Reverse {
+            return Err(SwapClientError::new(
+                "swp_external_effect_conflict",
+                "Lightning no-fund disposition applies only to reverse swaps",
+            ));
+        }
+        let funding = self.funding_request.as_ref().ok_or_else(|| {
+            SwapClientError::new(
+                "swp_funding_not_authorized",
+                "Lightning no-fund disposition has no persisted funding authorization",
+            )
+        })?;
+        let FundingAction::PayLightningInvoice {
+            effect_id: funding_effect_id,
+            leg_id,
+            invoice,
+            hold_invoice_required,
+            ..
+        } = &funding.action
+        else {
+            return Err(SwapClientError::new(
+                "swp_external_effect_conflict",
+                "Lightning no-fund disposition has no bound invoice payment",
+            ));
+        };
+        if !self.external_effects.contains_key(funding_effect_id) {
+            return Err(SwapClientError::new(
+                "swp_external_effect_conflict",
+                "Lightning payment initiation must be persisted before its disposition",
+            ));
+        }
+        let observation_request = LightningProgressRequest {
+            order_id: bound.order.id.clone(),
+            effect_id: funding_effect_id.clone(),
+            invoice_sha256: lower_hex(&sha256(invoice.as_bytes())),
+            payment_hash: bound.payment_hash.clone(),
+            hold_invoice_required: *hold_invoice_required,
+        };
+        let observation = observe(&observation_request).map_err(|error| {
+            SwapClientError::new(
+                "swp_unresolved_loss",
+                format!("local Lightning disposition adapter failed: {error}"),
+            )
+        })?;
+        require_lower_hex_32(&observation.view_sha256, "Lightning disposition view")?;
+        if observation.invoice_sha256 != observation_request.invoice_sha256
+            || observation.payment_hash != observation_request.payment_hash
+            || observation.principal_moved
+        {
+            return Err(SwapClientError::new(
+                "swp_unresolved_loss",
+                "Lightning disposition does not prove exact zero-principal finality",
+            ));
+        }
+        let evidence_reference = json!({
+            "invoice_sha256": observation.invoice_sha256,
+            "payment_hash": observation.payment_hash,
+            "observed_at": observation.observed_at,
+            "view_sha256": observation.view_sha256,
+            "state": observation.state,
+            "principal_moved": observation.principal_moved,
+        });
+        let evidence_reference_sha256 = lower_hex(&sha256(&canonical_json(&evidence_reference)?));
+        let effect_id = effect_id(&bound.order.id, "lightning_disposition", leg_id)?;
+        let request = LightningDispositionRequest {
+            effect_id: effect_id.clone(),
+            session_id: self.config.session_id.clone(),
+            order_id: bound.order.id.clone(),
+            funding_effect_id: funding_effect_id.clone(),
+            leg_id: leg_id.clone(),
+            invoice_sha256: observation_request.invoice_sha256,
+            payment_hash: observation_request.payment_hash,
+            observed_at: observation.observed_at,
+            view_sha256: observation.view_sha256,
+            state: observation.state,
+            principal_moved: observation.principal_moved,
+            evidence_reference_sha256: evidence_reference_sha256.clone(),
+        };
+        let request = ExternalEffectRequest::LightningDisposition(request);
+        let result = ExternalEffectResult {
+            order_id: bound.order.id.clone(),
+            effect_id,
+            request_sha256: request.sha256()?,
+            external_identifier: observation.external_identifier,
+            result_sha256: evidence_reference_sha256,
+        };
+        validate_effect(&result)?;
+        validate_effect_request_binding(
+            &self.config,
+            &self.signed_records,
+            &self.exit_packages,
+            &request,
+            &result,
+        )?;
+        Ok(VerifiedLightningDisposition {
+            request,
+            result,
+            evidence_reference,
+        })
+    }
+
+    pub fn sign_exit_with<F>(
+        &self,
+        package_index: usize,
+        wallet_sign: F,
+    ) -> Result<ExitSigningOutcome, SwapClientError>
+    where
+        F: FnMut(&WalletSigningRequest) -> Result<Vec<u8>, String>,
+    {
+        if BoundSession::from_records(&self.config, &self.signed_records)?.swap_type
+            == SwapType::Reverse
+        {
+            return Err(SwapClientError::new(
+                "swp_funding_not_authorized",
+                "reverse exit signing requires a post-payment Lightning observation",
+            ));
+        }
+        self.sign_exit_inner(package_index, wallet_sign)
+    }
+}
+
+impl SwapSession<ReversePaymentObserved> {
+    pub fn sign_exit_with<F>(
+        &self,
+        package_index: usize,
+        wallet_sign: F,
+    ) -> Result<ExitSigningOutcome, SwapClientError>
+    where
+        F: FnMut(&WalletSigningRequest) -> Result<Vec<u8>, String>,
+    {
+        self.sign_exit_inner(package_index, wallet_sign)
+    }
+}
+
+impl<State> SwapSession<State> {
+    pub fn config(&self) -> &SwapClientConfig {
+        &self.config
+    }
+
+    pub fn signed_records(&self) -> &[Event] {
+        &self.signed_records
+    }
+
+    pub fn exit_packages(&self) -> &[ExitPackage] {
+        &self.exit_packages
+    }
+
+    pub fn status_projection(&self) -> Result<StatusProjection, SwapClientError> {
+        StatusProjection::from_records(&self.config, &self.signed_records)
+    }
+
+    pub fn ingest_signed_record(&mut self, event: Event) -> Result<bool, SwapClientError> {
+        if let Some(existing) = self
+            .signed_records
+            .iter()
+            .find(|existing| existing.id == event.id)
+        {
+            if existing == &event {
+                return Ok(false);
+            }
+            return Err(SwapClientError::new(
+                "swp_idempotency_conflict",
+                "one signed event ID maps to different record bytes",
+            ));
+        }
+        let distinct = tag_value(&event, "d")?;
+        if self.signed_records.iter().any(|existing| {
+            existing.kind == event.kind
+                && existing.pubkey == event.pubkey
+                && tag_value(existing, "d").ok() == Some(distinct)
+        }) {
+            return Err(SwapClientError::new(
+                "swp_idempotency_conflict",
+                "immutable signed record address already has different content",
+            ));
+        }
+        let mut candidate = self.signed_records.clone();
+        candidate.push(event);
+        validate_session_material(&self.config, &candidate, &self.exit_packages)?;
+        validate_lifecycle(&self.config, &candidate, &self.external_effects)?;
+        self.signed_records = candidate;
+        Ok(true)
+    }
+
     pub fn record_external_effect(
         &mut self,
         request: &ExternalEffectRequest,
@@ -1595,6 +2141,27 @@ impl SwapSession<FundingAuthorized> {
                 "swp_cancel_ineffective",
                 "external effects cannot begin after cancellation becomes effective",
             ));
+        }
+        match request {
+            ExternalEffectRequest::Funding(request)
+                if self.funding_request.as_ref() != Some(request) =>
+            {
+                return Err(SwapClientError::new(
+                    "swp_funding_not_authorized",
+                    "funding effect does not match a verified persisted authorization",
+                ));
+            }
+            ExternalEffectRequest::WalletSigning(_)
+            | ExternalEffectRequest::EsploraBroadcast(_)
+            | ExternalEffectRequest::LightningDisposition(_)
+                if self.funding_request.is_none() =>
+            {
+                return Err(SwapClientError::new(
+                    "swp_funding_not_authorized",
+                    "post-funding effect has no verified persisted authorization",
+                ));
+            }
+            _ => {}
         }
         validate_effect(&effect)?;
         validate_effect_request_binding(
@@ -1632,7 +2199,7 @@ impl SwapSession<FundingAuthorized> {
         })
     }
 
-    pub fn sign_exit_with<F>(
+    fn sign_exit_inner<F>(
         &self,
         package_index: usize,
         mut wallet_sign: F,
@@ -1678,23 +2245,118 @@ impl SwapSession<FundingAuthorized> {
             transaction: lower_hex(&signed),
         }))
     }
-}
 
-impl<State> SwapSession<State> {
-    pub fn config(&self) -> &SwapClientConfig {
-        &self.config
-    }
-
-    pub fn signed_records(&self) -> &[Event] {
-        &self.signed_records
-    }
-
-    pub fn exit_packages(&self) -> &[ExitPackage] {
-        &self.exit_packages
-    }
-
-    pub fn status_projection(&self) -> Result<StatusProjection, SwapClientError> {
-        StatusProjection::from_records(&self.config, &self.signed_records)
+    pub fn verify_terminal_rail_evidence_with<F>(
+        &self,
+        leg_id: &str,
+        outcome: &str,
+        mut observe: F,
+    ) -> Result<VerifiedRailEvidence, SwapClientError>
+    where
+        F: FnMut(&RailObservationRequest) -> Result<LocalRailEvidence, String>,
+    {
+        let bound = BoundSession::from_records(&self.config, &self.signed_records)?;
+        let observation_request = rail_observation_request(&bound, leg_id, outcome)?;
+        let observation = observe(&observation_request).map_err(|error| {
+            SwapClientError::new(
+                "swp_unresolved_loss",
+                format!("local rail evidence adapter failed: {error}"),
+            )
+        })?;
+        require_lower_hex_32(
+            &observation.artifact_sha256,
+            "rail evidence artifact digest",
+        )?;
+        require_lower_hex_32(&observation.producer_pubkey, "rail evidence producer")?;
+        if let Some(verifier_pubkey) = &observation.verifier_pubkey {
+            require_lower_hex_32(verifier_pubkey, "rail evidence verifier")?;
+        }
+        if observation.view.is_empty()
+            || observation.view.len() > 512
+            || observation.external_identifier.is_empty()
+            || observation.external_identifier.len() > 512
+            || observation.settlement_reference.is_empty()
+            || observation.settlement_reference.len() > 512
+            || observation
+                .view
+                .chars()
+                .chain(observation.external_identifier.chars())
+                .chain(observation.settlement_reference.chars())
+                .any(char::is_control)
+        {
+            return Err(SwapClientError::new(
+                "swp_unresolved_loss",
+                "local rail evidence view or identifier is unbounded",
+            ));
+        }
+        let view_sha256 = lower_hex(&sha256(observation.view.as_bytes()));
+        let effect_id = effect_id(
+            &bound.order.id,
+            &format!("terminal_evidence_{outcome}"),
+            leg_id,
+        )?;
+        let evidence_reference = json!({
+            "class": observation_request.evidence_class,
+            "rung": observation_request.rung,
+            "rail": observation_request.rail,
+            "reference": observation.settlement_reference,
+            "artifact_sha256": observation.artifact_sha256,
+            "producer_pubkey": observation.producer_pubkey,
+            "verifier_pubkey": observation.verifier_pubkey,
+            "verifier_policy": observation_request.verifier_policy,
+            "observed_at": observation.observed_at,
+            "view": observation.view,
+        });
+        validate_mkt_swp_evidence_reference(&evidence_reference).map_err(|error| {
+            SwapClientError::new(
+                "swp_unresolved_loss",
+                format!("local rail evidence reference is invalid: {error}"),
+            )
+        })?;
+        let verifier = verifier_for_leg(object(&bound.contract, "Swap Contract")?, leg_id)?;
+        if !evidence_verifier_is_authorized(
+            object(&evidence_reference, "rail evidence reference")?,
+            verifier,
+        ) {
+            return Err(SwapClientError::new(
+                "swp_unresolved_loss",
+                "local rail evidence verifier is outside the frozen authority",
+            ));
+        }
+        let result_sha256 = lower_hex(&sha256(&canonical_json(&evidence_reference)?));
+        let request = RailEvidenceRequest {
+            effect_id: effect_id.clone(),
+            session_id: self.config.session_id.clone(),
+            order_id: bound.order.id.clone(),
+            leg_id: leg_id.to_owned(),
+            outcome: outcome.to_owned(),
+            rail: observation_request.rail.clone(),
+            evidence_class: observation_request.evidence_class.clone(),
+            source_reference: observation_request.reference.clone(),
+            reference: observation.settlement_reference.clone(),
+            artifact_sha256: observation.artifact_sha256.clone(),
+            rung: observation_request.rung.clone(),
+            verifier_policy: observation_request.verifier_policy.clone(),
+            verifier_authority_sha256: observation_request.verifier_authority_sha256.clone(),
+            observed_at: observation.observed_at,
+            view_sha256,
+            finality_state: observation_request.finality_state.clone(),
+            evidence_reference_sha256: result_sha256.clone(),
+        };
+        validate_rail_evidence_request(&bound, &request)?;
+        let effect_request = ExternalEffectRequest::RailEvidence(request);
+        let result = ExternalEffectResult {
+            order_id: bound.order.id.clone(),
+            effect_id,
+            request_sha256: effect_request.sha256()?,
+            external_identifier: observation.external_identifier,
+            result_sha256,
+        };
+        Ok(VerifiedRailEvidence {
+            request: effect_request,
+            result,
+            evidence_reference,
+        })
     }
 
     pub fn observe_bitcoin_funding_with<F>(
@@ -1744,6 +2406,7 @@ impl<State> SwapSession<State> {
             signed_records: self.signed_records.clone(),
             exit_packages: self.exit_packages.clone(),
             external_effects: self.external_effects.values().cloned().collect(),
+            funding_request: self.funding_request.clone(),
         };
         let value = serde_json::to_value(&persisted).map_err(|error| {
             SwapClientError::new(
@@ -1814,13 +2477,40 @@ impl<State> SwapSession<State> {
                 "local recovery observation belongs to a different session or rail binding",
             ));
         }
-        if observation.completed {
-            return Ok(RecoveryAction::Completed);
+        if observation.completed && (observation.record_loss || observation.rail_state_unknown) {
+            return Err(SwapClientError::new(
+                "swp_unresolved_loss",
+                "recovery observation contradicts completion with loss or unknown rail state",
+            ));
+        }
+        if recovery_observation_is_contradictory(bound.swap_type, &observation) {
+            return Err(SwapClientError::new(
+                "swp_unresolved_loss",
+                "recovery observation contains contradictory rail states",
+            ));
         }
         if observation.record_loss || observation.rail_state_unknown {
             return Ok(RecoveryAction::ExplicitLoss {
                 code: "swp_unresolved_loss".to_owned(),
             });
+        }
+        if observation.completed {
+            let projection = StatusProjection::from_records(&self.config, &self.signed_records)?;
+            projection.require_contiguous()?;
+            let has_terminal_status = projection.last_valid_status.values().any(|status_id| {
+                self.signed_records
+                    .iter()
+                    .find(|event| event.id == *status_id)
+                    .and_then(|event| status_state(event).ok())
+                    .is_some_and(|state| state == "completed")
+            });
+            if !has_terminal_status {
+                return Err(SwapClientError::new(
+                    "swp_unresolved_loss",
+                    "recovery completion lacks a contiguous locally validated terminal Status",
+                ));
+            }
+            return Ok(RecoveryAction::Completed);
         }
         match bound.swap_type {
             SwapType::Submarine if observation.counterparty_available => {
@@ -1847,6 +2537,12 @@ impl<State> SwapSession<State> {
                     == Some(ChainRecoveryState::DestinationRefundedFinal) =>
             {
                 Ok(RecoveryAction::DirectCounterpartyCompletion)
+            }
+            SwapType::Reverse
+                if observation.chain_state == Some(ChainRecoveryState::DestinationNotFunded)
+                    && observation.lightning_state == Some(LightningRecoveryState::UnpaidFinal) =>
+            {
+                Ok(RecoveryAction::Cancelled)
             }
             SwapType::Reverse => Ok(RecoveryAction::WaitForCounterparty),
             SwapType::Chain if observation.counterparty_available => {
@@ -2014,6 +2710,7 @@ pub enum RecoveryAction {
     WaitForCounterparty,
     WaitForDestinationRefund,
     WaitForTimeout,
+    Cancelled,
     Completed,
     AlreadyExecuted {
         effect_id: String,
@@ -2995,6 +3692,35 @@ fn recovery_rail_bindings(
     Ok(bindings)
 }
 
+fn recovery_observation_is_contradictory(
+    swap_type: SwapType,
+    observation: &LocalRecoveryObservation,
+) -> bool {
+    match swap_type {
+        SwapType::Reverse => matches!(
+            (observation.lightning_state, observation.chain_state),
+            (
+                Some(LightningRecoveryState::Paid),
+                Some(ChainRecoveryState::DestinationNotFunded)
+            ) | (
+                Some(LightningRecoveryState::UnpaidFinal),
+                Some(
+                    ChainRecoveryState::DestinationClaimable
+                        | ChainRecoveryState::DestinationFundedUnclaimed
+                )
+            )
+        ),
+        SwapType::Submarine => matches!(
+            (observation.lightning_state, observation.chain_state),
+            (
+                Some(LightningRecoveryState::Paid),
+                Some(ChainRecoveryState::DestinationNotFunded)
+            )
+        ),
+        SwapType::Chain => false,
+    }
+}
+
 fn verify_requester_topology(
     contract: &Map<String, Value>,
     swap_type: SwapType,
@@ -3325,7 +4051,13 @@ fn verify_order_selection(
                 "Swap Contract records a selection absent from the Order",
             ));
         }
-        for name in ["input_amount", "output_amount"] {
+        for name in [
+            "input_amount",
+            "output_amount",
+            "fee_payer",
+            "confirmation_policy",
+            "public_receipt_consent",
+        ] {
             if quote_terms.get(name) != contract.get(name) {
                 return Err(SwapClientError::new(
                     "swp_order_selection_invalid",
@@ -3399,6 +4131,15 @@ fn verify_order_selection(
             "swp_order_selection_invalid",
             "Swap Contract does not bind the exact Order selection",
         ));
+    }
+    for name in ["fee_payer", "confirmation_policy", "public_receipt_consent"] {
+        let expected = selection.get(name).or_else(|| quote_terms.get(name));
+        if contract.get(name) != expected {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                format!("Swap Contract does not bind selected or inherited {name}"),
+            ));
+        }
     }
     if let Some(selected_input) = selection.get("input_amount").and_then(Value::as_str)
         && contract.get("input_amount").and_then(Value::as_str) != Some(selected_input)
@@ -3628,6 +4369,7 @@ fn validate_session_material(
                     format!("persisted signed record failed validation: {error}"),
                 )
             })?;
+        reject_custody_material(&parse_content(event)?)?;
         if validated.envelope.session_id != config.session_id {
             return Err(SwapClientError::new(
                 "swp_contract_terms_mismatch",
@@ -3656,7 +4398,6 @@ fn validate_session_material(
         ExitPackage::parse(package.document.clone())?;
     }
     StatusProjection::from_records(config, records)?;
-    validate_lifecycle(records, &BTreeMap::new())?;
     Ok(())
 }
 
@@ -3725,28 +4466,26 @@ fn effective_cancellation(records: &[Event]) -> Result<Option<&Event>, SwapClien
                 "accepted cancellation does not reference its request",
             )
         })?;
-    let order = exactly_one(records, MKT_ORDER_KIND, "swp_cancel_ineffective")?;
     if tag_value(request, "action")? != "request"
-        || request.pubkey != order.pubkey
         || accepted.pubkey == request.pubkey
-        || effective.pubkey != order.pubkey
+        || effective.pubkey != request.pubkey
         || accepted.pubkey == effective.pubkey
-        || !(request.created_at <= accepted.created_at
-            && accepted.created_at <= effective.created_at)
     {
         return Err(SwapClientError::new(
             "swp_cancel_ineffective",
-            "effective cancellation lacks ordered consent from the other participant",
+            "effective cancellation lacks exact consent from the other participant",
         ));
     }
     Ok(Some(effective))
 }
 
 fn validate_lifecycle(
+    config: &SwapClientConfig,
     records: &[Event],
     external_effects: &BTreeMap<String, ExternalEffectResult>,
 ) -> Result<(), SwapClientError> {
     for cancel in records.iter().filter(|event| event.kind == MKT_CANCEL_KIND) {
+        role_for_author(config, &cancel.pubkey)?;
         match tag_value(cancel, "action")? {
             "request" => {
                 if cancel.tags.iter().any(|tag| {
@@ -3787,10 +4526,7 @@ fn validate_lifecycle(
                             "cancellation response does not reference an existing request",
                         )
                     })?;
-                if tag_value(request, "action")? != "request"
-                    || request.pubkey == cancel.pubkey
-                    || request.created_at > cancel.created_at
-                {
+                if tag_value(request, "action")? != "request" || request.pubkey == cancel.pubkey {
                     return Err(SwapClientError::new(
                         "swp_cancel_ineffective",
                         "cancellation response is not consent from the other participant",
@@ -3820,13 +4556,23 @@ fn validate_lifecycle(
         }
     }
     let effective = effective_cancellation(records)?;
-    if effective.is_some()
-        && (!external_effects.is_empty() || signed_history_has_irreversible_effect(records)?)
-    {
-        return Err(SwapClientError::new(
-            "swp_cancel_ineffective",
-            "cancellation cannot become effective after an irreversible external effect",
-        ));
+    if let Some(effective) = effective {
+        let reverse_no_fund =
+            verified_lightning_disposition_for_event(config, records, external_effects, effective)?;
+        if reverse_no_fund && !has_last_valid_invoice_cancelled(config, records)? {
+            return Err(SwapClientError::new(
+                "swp_cancel_ineffective",
+                "Lightning no-fund cancellation lacks a contiguous invoice_cancelled Status",
+            ));
+        }
+        if has_irreversible_external_effect(config, records, external_effects, reverse_no_fund)?
+            || signed_history_has_irreversible_effect(records, reverse_no_fund)?
+        {
+            return Err(SwapClientError::new(
+                "swp_cancel_ineffective",
+                "cancellation cannot become effective after an irreversible external effect",
+            ));
+        }
     }
     let lifecycle_contract = records
         .iter()
@@ -3835,6 +4581,7 @@ fn validate_lifecycle(
         .transpose()?
         .and_then(|content| content.get("mkt_swp").cloned())
         .and_then(|profile| profile.get("contract").cloned());
+    let status_projection = StatusProjection::from_records(config, records)?;
     for close in records.iter().filter(|event| event.kind == MKT_CLOSE_KIND) {
         let outcome = tag_value(close, "outcome")?;
         let terminal_at = tag_value(close, "terminal_at")?
@@ -3857,10 +4604,17 @@ fn validate_lifecycle(
                 "Close cannot be evaluated without the accepted contract",
             )
         })?;
-        let accounting =
-            validate_loss_accounting(loss, contract, outcome, terminal_at, external_effects)?;
+        let accounting = validate_loss_accounting(
+            loss,
+            contract,
+            outcome,
+            terminal_at,
+            &config.session_id,
+            external_effects,
+        )?;
         match outcome {
             "completed" | "refunded" => {
+                status_projection.require_contiguous()?;
                 let status_id = profile
                     .get("status_id")
                     .and_then(Value::as_str)
@@ -3883,36 +4637,10 @@ fn validate_lifecycle(
                             "Close status reference is not a signer-local Status",
                         )
                     })?;
-                let status_sequence = tag_value(status, "seq")?.parse::<u64>().map_err(|_| {
-                    SwapClientError::new("swp_unresolved_loss", "Close status sequence is invalid")
-                })?;
-                let later_sequences = records
-                    .iter()
-                    .filter(|event| event.kind == MKT_STATUS_KIND && event.pubkey == close.pubkey)
-                    .filter_map(|event| {
-                        tag_value(event, "seq")
-                            .ok()
-                            .and_then(|sequence| sequence.parse::<u64>().ok())
-                    })
-                    .filter(|sequence| *sequence > status_sequence)
-                    .collect::<BTreeSet<_>>();
-                let later_unambiguous = later_sequences.into_iter().any(|sequence| {
-                    records
-                        .iter()
-                        .filter(|event| {
-                            event.kind == MKT_STATUS_KIND
-                                && event.pubkey == close.pubkey
-                                && tag_value(event, "seq")
-                                    .ok()
-                                    .and_then(|sequence| sequence.parse::<u64>().ok())
-                                    == Some(sequence)
-                        })
-                        .count()
-                        == 1
-                });
                 if status_state(status)? != outcome
                     || status.created_at > terminal_at
-                    || later_unambiguous
+                    || status_projection.last_valid_status.get(&close.pubkey) != Some(&status.id)
+                    || status_projection.invalid_claims.contains_key(&status.id)
                 {
                     return Err(SwapClientError::new(
                         "swp_unresolved_loss",
@@ -3927,10 +4655,7 @@ fn validate_lifecycle(
                         "cancelled Close has no mutually consented effective cancellation",
                     )
                 })?;
-                if profile.get("cancel_id").and_then(Value::as_str) != Some(effective.id.as_str())
-                    || effective.created_at > terminal_at
-                    || !external_effects.is_empty()
-                {
+                if profile.get("cancel_id").and_then(Value::as_str) != Some(effective.id.as_str()) {
                     return Err(SwapClientError::new(
                         "swp_cancel_ineffective",
                         "cancelled Close does not bind the effective cancellation",
@@ -3938,7 +4663,25 @@ fn validate_lifecycle(
                 }
             }
             "rejected" | "expired" => {
-                if accounting.funded != 0 || !external_effects.is_empty() {
+                let effects_disposed = if outcome == "expired" {
+                    verified_lightning_disposition_for_event(
+                        config,
+                        records,
+                        external_effects,
+                        close,
+                    )?
+                } else {
+                    false
+                };
+                if accounting.funded != 0
+                    || has_irreversible_external_effect(
+                        config,
+                        records,
+                        external_effects,
+                        effects_disposed,
+                    )?
+                    || signed_history_has_irreversible_effect(records, effects_disposed)?
+                {
                     return Err(SwapClientError::new(
                         "swp_unresolved_loss",
                         "rejected or expired Close cannot follow funding",
@@ -3970,23 +4713,134 @@ fn validate_lifecycle(
     Ok(())
 }
 
-fn signed_history_has_irreversible_effect(records: &[Event]) -> Result<bool, SwapClientError> {
+fn verified_lightning_disposition_for_event(
+    config: &SwapClientConfig,
+    records: &[Event],
+    external_effects: &BTreeMap<String, ExternalEffectResult>,
+    event: &Event,
+) -> Result<bool, SwapClientError> {
+    let content = parse_content(event)?;
+    let profile = object(
+        content.get("mkt_swp").unwrap_or(&Value::Null),
+        "MKT-SWP terminal record",
+    )?;
+    let Some(value) = profile.get("lightning_disposition") else {
+        return Ok(false);
+    };
+    let request: LightningDispositionRequest =
+        serde_json::from_value(value.clone()).map_err(|error| {
+            SwapClientError::new(
+                "swp_external_effect_conflict",
+                format!("signed Lightning disposition has an invalid shape: {error}"),
+            )
+        })?;
+    let bound = BoundSession::from_records(config, records)?;
+    validate_lightning_disposition_request(&bound, config, &request)?;
+    let typed_request = ExternalEffectRequest::LightningDisposition(request.clone());
+    let effect = external_effects.get(&request.effect_id).ok_or_else(|| {
+        SwapClientError::new(
+            "swp_external_effect_conflict",
+            "signed Lightning disposition has no persisted local effect",
+        )
+    })?;
+    if effect.order_id != request.order_id
+        || effect.effect_id != request.effect_id
+        || effect.request_sha256 != typed_request.sha256()?
+        || effect.result_sha256 != request.evidence_reference_sha256
+        || request.principal_moved
+    {
+        return Err(SwapClientError::new(
+            "swp_external_effect_conflict",
+            "signed Lightning disposition differs from its persisted local observation",
+        ));
+    }
+    Ok(true)
+}
+
+fn has_last_valid_invoice_cancelled(
+    config: &SwapClientConfig,
+    records: &[Event],
+) -> Result<bool, SwapClientError> {
+    let projection = StatusProjection::from_records(config, records)?;
+    projection.require_contiguous()?;
+    Ok(projection.last_valid_status.values().any(|status_id| {
+        records
+            .iter()
+            .find(|event| event.id == *status_id)
+            .and_then(|event| status_state(event).ok())
+            .is_some_and(|state| state == "invoice_cancelled")
+    }))
+}
+
+fn has_irreversible_external_effect(
+    config: &SwapClientConfig,
+    records: &[Event],
+    external_effects: &BTreeMap<String, ExternalEffectResult>,
+    reverse_no_fund: bool,
+) -> Result<bool, SwapClientError> {
+    let bound = BoundSession::from_records(config, records)?;
+    let topology = requester_topology(bound.swap_type);
+    let funding_effect = effect_id(
+        &bound.order.id,
+        topology.funding_effect_role,
+        topology.funding_leg_id,
+    )?;
+    let disposition_effect = (bound.swap_type == SwapType::Reverse)
+        .then(|| {
+            effect_id(
+                &bound.order.id,
+                "lightning_disposition",
+                topology.funding_leg_id,
+            )
+        })
+        .transpose()?;
+    let contract = object(&bound.contract, "Swap Contract")?;
+    let mut observation_effects = BTreeSet::new();
+    for leg in contract
+        .get("legs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(leg_id) = leg.get("leg_id").and_then(Value::as_str) {
+            for outcome in ["completed", "refunded"] {
+                observation_effects.insert(effect_id(
+                    &bound.order.id,
+                    &format!("terminal_evidence_{outcome}"),
+                    leg_id,
+                )?);
+            }
+        }
+    }
+    for effect_id in external_effects.keys() {
+        if observation_effects.contains(effect_id) || disposition_effect.as_ref() == Some(effect_id)
+        {
+            continue;
+        }
+        if effect_id == &funding_effect && bound.swap_type == SwapType::Reverse && reverse_no_fund {
+            continue;
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn signed_history_has_irreversible_effect(
+    records: &[Event],
+    reverse_no_fund: bool,
+) -> Result<bool, SwapClientError> {
     for status in records.iter().filter(|event| event.kind == MKT_STATUS_KIND) {
         let state = status_state(status)?;
         if state.ends_with("funding_broadcast")
             || state.ends_with("funding_observed")
             || state.ends_with("funding_final")
-            || state.ends_with("payment_pending")
-            || state.ends_with("htlcs_held")
+            || (!reverse_no_fund
+                && (state.ends_with("payment_pending") || state.ends_with("htlcs_held")))
             || state.ends_with("paid")
             || state.ends_with("claim_pending")
             || state.ends_with("claimed")
             || state.ends_with("refund_pending")
             || state.ends_with("refunded")
-            || matches!(
-                state.as_str(),
-                "invoice_cancel_pending" | "invoice_cancelled"
-            )
         {
             return Ok(true);
         }
@@ -4006,6 +4860,7 @@ fn validate_loss_accounting(
     contract: &Value,
     outcome: &str,
     terminal_at: u64,
+    session_id: &str,
     external_effects: &BTreeMap<String, ExternalEffectResult>,
 ) -> Result<LossAccountingTotals, SwapClientError> {
     let contract = object(contract, "Swap Contract")?;
@@ -4131,23 +4986,31 @@ fn validate_loss_accounting(
     let maximum_provider_fee = contract_amount(contract, "provider_fee")?;
     let maximum_miner_fee = contract_amount(contract, "miner_fee_budget")?;
     let maximum_lightning_fee = contract_amount(contract, "lightning_routing_fee_budget")?;
+    let accounted_input = input_recovered
+        .checked_add(guarantee)
+        .and_then(|value| value.checked_add(provider_fee))
+        .and_then(|value| value.checked_add(miner_fee))
+        .and_then(|value| value.checked_add(lightning_fee))
+        .and_then(|value| value.checked_add(unresolved));
     if input_committed > maximum_input
         || provider_fee > maximum_provider_fee
         || miner_fee > maximum_miner_fee
         || lightning_fee > maximum_lightning_fee
-        || input_recovered
-            .checked_add(guarantee)
-            .and_then(|value| value.checked_add(provider_fee))
-            .and_then(|value| value.checked_add(miner_fee))
-            .and_then(|value| value.checked_add(lightning_fee))
-            .and_then(|value| value.checked_add(unresolved))
-            .is_none_or(|accounted| accounted > input_committed)
-        || (outcome == "completed" && (output_received != expected_output || unresolved != 0))
+        || accounted_input.is_none_or(|accounted| accounted > input_committed)
+        || (outcome == "completed"
+            && (input_committed != maximum_input
+                || output_received != expected_output
+                || unresolved != 0))
         || (outcome == "refunded"
             && (input_recovered
                 .checked_add(guarantee)
                 .is_none_or(|recovered| recovered < input_committed.saturating_sub(provider_fee))
-                || unresolved != 0))
+                || unresolved != 0
+                || accounted_input != Some(input_committed)))
+        || (matches!(outcome, "failed" | "disputed" | "unresolved")
+            && input_committed > 0
+            && unknown_fields.is_empty()
+            && accounted_input != Some(input_committed))
         || (matches!(outcome, "cancelled" | "rejected" | "expired")
             && (input_committed != 0
                 || input_recovered != 0
@@ -4164,7 +5027,14 @@ fn validate_loss_accounting(
             "Close loss accounting does not balance for the claimed outcome",
         ));
     }
-    validate_bound_close_evidence(loss, contract, outcome, terminal_at, external_effects)?;
+    validate_bound_close_evidence(
+        loss,
+        contract,
+        outcome,
+        terminal_at,
+        session_id,
+        external_effects,
+    )?;
     Ok(LossAccountingTotals {
         funded: input_committed,
         unresolved,
@@ -4181,6 +5051,7 @@ fn validate_bound_close_evidence(
     contract: &Map<String, Value>,
     outcome: &str,
     terminal_at: u64,
+    session_id: &str,
     external_effects: &BTreeMap<String, ExternalEffectResult>,
 ) -> Result<(), SwapClientError> {
     let legs = contract
@@ -4210,7 +5081,7 @@ fn validate_bound_close_evidence(
     let order_id = require_string(contract, "order_id", None, "swp_unresolved_loss")?;
     let payment_hash = require_string(contract, "payment_hash", None, "swp_unresolved_loss")?;
     let mut unmatched = (0..evidence.len()).collect::<BTreeSet<_>>();
-    for leg in legs {
+    for (leg_index, leg) in legs.iter().enumerate() {
         let leg_id = leg
             .get("leg_id")
             .and_then(Value::as_str)
@@ -4226,109 +5097,102 @@ fn validate_bound_close_evidence(
                 SwapClientError::new("swp_unresolved_loss", "leg verifier policy is missing")
             })?;
         let verifier = verifier_for_leg(contract, leg_id)?;
-        let (class, reference, rung, artifact_sha256) = if rail == "bitcoin" {
-            if outcome == "refunded" {
-                let refund_effect_id = effect_id(order_id, "chain_refund", leg_id)?;
-                let result_sha256 = external_effects
-                    .get(&refund_effect_id)
-                    .map(|effect| effect.result_sha256.clone())
-                    .ok_or_else(|| {
-                        SwapClientError::new(
-                            "swp_unresolved_loss",
-                            "refunded Close lacks the persisted refund result digest",
-                        )
-                    })?;
-                ("refund", refund_effect_id, "settled", result_sha256)
-            } else {
-                let raw = decode_hex(
-                    require_string(verifier, "funding_transaction", None, "swp_unresolved_loss")?,
-                    "evidence funding transaction",
-                )?;
-                let transaction = Transaction::parse(&raw).map_err(|error| {
-                    SwapClientError::new(
-                        "swp_unresolved_loss",
-                        format!("evidence funding transaction is invalid: {error}"),
-                    )
-                })?;
-                let output_index = verifier
-                    .get("output_index")
-                    .and_then(Value::as_u64)
-                    .ok_or_else(|| {
-                        SwapClientError::new(
-                            "swp_unresolved_loss",
-                            "evidence funding output index is invalid",
-                        )
-                    })?;
-                (
-                    "bitcoin_spend",
-                    format!(
-                        "{}:{output_index}",
-                        lower_hex(&transaction.txid().map_err(|error| {
-                            SwapClientError::new(
-                                "swp_unresolved_loss",
-                                format!("could not derive evidence funding txid: {error}"),
-                            )
-                        })?)
-                    ),
-                    "settled",
-                    require_string(
-                        verifier,
-                        "funding_transaction_sha256",
-                        None,
-                        "swp_unresolved_loss",
-                    )?
-                    .to_owned(),
-                )
+        let verifier_authority = verifier.get("evidence_authority").ok_or_else(|| {
+            SwapClientError::new("swp_unresolved_loss", "leg evidence authority is missing")
+        })?;
+        validate_evidence_authority(verifier_authority)?;
+        let verifier_authority_sha256 = lower_hex(&sha256(&canonical_json(verifier_authority)?));
+        let (evidence_class, source_reference, rung) =
+            terminal_evidence_identity(contract, order_id, payment_hash, leg_id, rail, outcome)?;
+        let effect_id = effect_id(order_id, &format!("terminal_evidence_{outcome}"), leg_id)?;
+        let mut matches = Vec::new();
+        for index in [leg_index] {
+            if !unmatched.contains(&index) {
+                continue;
             }
-        } else if outcome == "refunded" {
-            (
-                "invoice",
-                payment_hash.to_owned(),
-                "verified",
-                require_string(verifier, "invoice_sha256", None, "swp_unresolved_loss")?.to_owned(),
-            )
-        } else {
-            (
-                "lightning_payment",
-                payment_hash.to_owned(),
-                "settled",
-                require_string(verifier, "invoice_sha256", None, "swp_unresolved_loss")?.to_owned(),
-            )
-        };
-        let matches = unmatched
-            .iter()
-            .copied()
-            .filter(|index| {
-                evidence.get(*index).is_some_and(|reference_value| {
-                    let Ok(()) = validate_mkt_swp_evidence_reference(reference_value) else {
-                        return false;
-                    };
-                    let Some(reference_value) = reference_value.as_object() else {
-                        return false;
-                    };
-                    reference_value.get("class").and_then(Value::as_str) == Some(class)
-                        && reference_value.get("rail").and_then(Value::as_str) == Some(rail)
-                        && reference_value.get("reference").and_then(Value::as_str)
-                            == Some(reference.as_str())
-                        && reference_value.get("rung").and_then(Value::as_str) == Some(rung)
-                        && reference_value
-                            .get("artifact_sha256")
-                            .and_then(Value::as_str)
-                            == Some(artifact_sha256.as_str())
-                        && reference_value
-                            .get("verifier_policy")
-                            .and_then(Value::as_str)
-                            == Some(verifier_policy)
-                        && evidence_verifier_is_authorized(reference_value, verifier)
-                        && reference_value.get("observed_at").and_then(Value::as_u64)
-                            <= Some(terminal_at)
-                })
-            })
-            .collect::<Vec<_>>();
+            let Some(evidence_value) = evidence.get(index) else {
+                continue;
+            };
+            if validate_mkt_swp_evidence_reference(evidence_value).is_err() {
+                continue;
+            }
+            let Some(reference_value) = evidence_value.as_object() else {
+                continue;
+            };
+            if reference_value.get("class").and_then(Value::as_str) != Some(evidence_class.as_str())
+                || reference_value.get("rail").and_then(Value::as_str) != Some(rail)
+                || reference_value.get("rung").and_then(Value::as_str) != Some(rung.as_str())
+                || reference_value
+                    .get("verifier_policy")
+                    .and_then(Value::as_str)
+                    != Some(verifier_policy)
+                || !evidence_verifier_is_authorized(reference_value, verifier)
+            {
+                continue;
+            }
+            let Some(observed_at) = reference_value.get("observed_at").and_then(Value::as_u64)
+            else {
+                continue;
+            };
+            if observed_at > terminal_at {
+                continue;
+            }
+            let Some(artifact_sha256) = reference_value
+                .get("artifact_sha256")
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            let Some(view) = reference_value.get("view").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(reference) = reference_value.get("reference").and_then(Value::as_str) else {
+                continue;
+            };
+            let request = RailEvidenceRequest {
+                effect_id: effect_id.clone(),
+                session_id: session_id.to_owned(),
+                order_id: order_id.to_owned(),
+                leg_id: leg_id.to_owned(),
+                outcome: outcome.to_owned(),
+                rail: rail.to_owned(),
+                evidence_class: evidence_class.clone(),
+                source_reference: source_reference.clone(),
+                reference: reference.to_owned(),
+                artifact_sha256: artifact_sha256.to_owned(),
+                rung: rung.clone(),
+                verifier_policy: verifier_policy.to_owned(),
+                verifier_authority_sha256: verifier_authority_sha256.clone(),
+                observed_at,
+                view_sha256: lower_hex(&sha256(view.as_bytes())),
+                finality_state: if outcome == "completed" {
+                    "settled".to_owned()
+                } else {
+                    "refunded_final".to_owned()
+                },
+                evidence_reference_sha256: lower_hex(&sha256(&canonical_json(evidence_value)?)),
+            };
+            let typed_request = ExternalEffectRequest::RailEvidence(request);
+            let Some(effect) = external_effects.get(&effect_id) else {
+                continue;
+            };
+            let Ok(request_sha256) = typed_request.sha256() else {
+                continue;
+            };
+            let Ok(result_bytes) = canonical_json(evidence_value) else {
+                continue;
+            };
+            if effect.order_id == order_id
+                && effect.request_sha256 == request_sha256
+                && effect.result_sha256 == lower_hex(&sha256(&result_bytes))
+            {
+                matches.push(index);
+            }
+        }
         let [matched] = matches.as_slice() else {
             return Err(SwapClientError::new(
                 "swp_unresolved_loss",
-                "Close evidence does not uniquely match each contract rail artifact",
+                "Close lacks one persisted locally verified terminal rail observation",
             ));
         };
         unmatched.remove(matched);
@@ -4337,6 +5201,274 @@ fn validate_bound_close_evidence(
         return Err(SwapClientError::new(
             "swp_unresolved_loss",
             "Close carries evidence unrelated to the accepted contract",
+        ));
+    }
+    Ok(())
+}
+
+fn rail_observation_request(
+    bound: &BoundSession<'_>,
+    leg_id: &str,
+    outcome: &str,
+) -> Result<RailObservationRequest, SwapClientError> {
+    if !matches!(outcome, "completed" | "refunded") {
+        return Err(SwapClientError::new(
+            "swp_unresolved_loss",
+            "terminal rail evidence applies only to completed or refunded outcomes",
+        ));
+    }
+    let contract = object(&bound.contract, "Swap Contract")?;
+    let legs = contract
+        .get("legs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| SwapClientError::new("swp_unresolved_loss", "contract has no legs"))?;
+    let matching = legs
+        .iter()
+        .filter(|leg| leg.get("leg_id").and_then(Value::as_str) == Some(leg_id))
+        .collect::<Vec<_>>();
+    let [leg] = matching.as_slice() else {
+        return Err(SwapClientError::new(
+            "swp_unresolved_loss",
+            "terminal evidence leg is absent or duplicated",
+        ));
+    };
+    let rail = leg
+        .get("rail")
+        .and_then(Value::as_str)
+        .ok_or_else(|| SwapClientError::new("swp_unresolved_loss", "leg rail is missing"))?;
+    let verifier_policy = leg
+        .get("verifier_policy")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            SwapClientError::new("swp_unresolved_loss", "leg verifier policy is missing")
+        })?;
+    let verifier = verifier_for_leg(contract, leg_id)?;
+    let authority = verifier.get("evidence_authority").ok_or_else(|| {
+        SwapClientError::new("swp_unresolved_loss", "leg evidence authority is missing")
+    })?;
+    validate_evidence_authority(authority)?;
+    let verifier_authority_sha256 = lower_hex(&sha256(&canonical_json(authority)?));
+    let (evidence_class, reference, rung) = match (rail, outcome) {
+        ("bitcoin", "completed") => {
+            let raw = decode_hex(
+                require_string(verifier, "funding_transaction", None, "swp_unresolved_loss")?,
+                "evidence funding transaction",
+            )?;
+            let transaction = Transaction::parse(&raw).map_err(|error| {
+                SwapClientError::new(
+                    "swp_unresolved_loss",
+                    format!("evidence funding transaction is invalid: {error}"),
+                )
+            })?;
+            let output_index = required_u32(verifier, "output_index")?;
+            (
+                "bitcoin_spend".to_owned(),
+                format!(
+                    "{}:{output_index}",
+                    lower_hex(&transaction.txid().map_err(|error| {
+                        SwapClientError::new(
+                            "swp_unresolved_loss",
+                            format!("could not derive evidence funding txid: {error}"),
+                        )
+                    })?)
+                ),
+                "settled".to_owned(),
+            )
+        }
+        ("bitcoin", "refunded") => (
+            "refund".to_owned(),
+            effect_id(&bound.order.id, "chain_refund", leg_id)?,
+            "settled".to_owned(),
+        ),
+        ("lightning", "completed") => (
+            "lightning_payment".to_owned(),
+            bound.payment_hash.clone(),
+            "settled".to_owned(),
+        ),
+        ("lightning", "refunded") => (
+            "invoice".to_owned(),
+            bound.payment_hash.clone(),
+            "verified".to_owned(),
+        ),
+        _ => {
+            return Err(SwapClientError::new(
+                "swp_unresolved_loss",
+                "terminal evidence uses an unsupported rail",
+            ));
+        }
+    };
+    Ok(RailObservationRequest {
+        session_id: bound.session_id.clone(),
+        order_id: bound.order.id.clone(),
+        leg_id: leg_id.to_owned(),
+        outcome: outcome.to_owned(),
+        rail: rail.to_owned(),
+        evidence_class,
+        reference,
+        rung,
+        verifier_policy: verifier_policy.to_owned(),
+        verifier_authority_sha256,
+        finality_state: if outcome == "completed" {
+            "settled".to_owned()
+        } else {
+            "refunded_final".to_owned()
+        },
+    })
+}
+
+fn terminal_evidence_identity(
+    contract: &Map<String, Value>,
+    order_id: &str,
+    payment_hash: &str,
+    leg_id: &str,
+    rail: &str,
+    outcome: &str,
+) -> Result<(String, String, String), SwapClientError> {
+    match (rail, outcome) {
+        ("bitcoin", "completed") => {
+            let verifier = verifier_for_leg(contract, leg_id)?;
+            let raw = decode_hex(
+                require_string(verifier, "funding_transaction", None, "swp_unresolved_loss")?,
+                "evidence funding transaction",
+            )?;
+            let transaction = Transaction::parse(&raw).map_err(|error| {
+                SwapClientError::new(
+                    "swp_unresolved_loss",
+                    format!("evidence funding transaction is invalid: {error}"),
+                )
+            })?;
+            let output_index = required_u32(verifier, "output_index")?;
+            Ok((
+                "bitcoin_spend".to_owned(),
+                format!(
+                    "{}:{output_index}",
+                    lower_hex(&transaction.txid().map_err(|error| {
+                        SwapClientError::new(
+                            "swp_unresolved_loss",
+                            format!("could not derive evidence funding txid: {error}"),
+                        )
+                    })?)
+                ),
+                "settled".to_owned(),
+            ))
+        }
+        ("bitcoin", "refunded") => Ok((
+            "refund".to_owned(),
+            effect_id(order_id, "chain_refund", leg_id)?,
+            "settled".to_owned(),
+        )),
+        ("lightning", "completed") => Ok((
+            "lightning_payment".to_owned(),
+            payment_hash.to_owned(),
+            "settled".to_owned(),
+        )),
+        ("lightning", "refunded") => Ok((
+            "invoice".to_owned(),
+            payment_hash.to_owned(),
+            "verified".to_owned(),
+        )),
+        _ => Err(SwapClientError::new(
+            "swp_unresolved_loss",
+            "terminal evidence uses an unsupported rail or outcome",
+        )),
+    }
+}
+
+fn validate_rail_evidence_request(
+    bound: &BoundSession<'_>,
+    request: &RailEvidenceRequest,
+) -> Result<(), SwapClientError> {
+    let expected = rail_observation_request(bound, &request.leg_id, &request.outcome)?;
+    let expected_effect_id = effect_id(
+        &bound.order.id,
+        &format!("terminal_evidence_{}", request.outcome),
+        &request.leg_id,
+    )?;
+    require_lower_hex_32(&request.artifact_sha256, "terminal artifact digest")?;
+    require_lower_hex_32(&request.view_sha256, "terminal view digest")?;
+    require_lower_hex_32(
+        &request.evidence_reference_sha256,
+        "terminal evidence reference digest",
+    )?;
+    if request.reference.is_empty()
+        || request.reference.len() > 512
+        || request.reference.chars().any(char::is_control)
+        || (request.rail == "bitcoin" && request.reference == request.source_reference)
+    {
+        return Err(SwapClientError::new(
+            "swp_external_effect_conflict",
+            "terminal rail evidence does not identify a distinct bounded settlement artifact",
+        ));
+    }
+    if request.effect_id != expected_effect_id
+        || request.session_id != expected.session_id
+        || request.order_id != expected.order_id
+        || request.rail != expected.rail
+        || request.evidence_class != expected.evidence_class
+        || request.source_reference != expected.reference
+        || request.rung != expected.rung
+        || request.verifier_policy != expected.verifier_policy
+        || request.verifier_authority_sha256 != expected.verifier_authority_sha256
+        || request.finality_state != expected.finality_state
+    {
+        return Err(SwapClientError::new(
+            "swp_external_effect_conflict",
+            "terminal rail evidence request differs from the frozen contract and rail view",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_lightning_disposition_request(
+    bound: &BoundSession<'_>,
+    config: &SwapClientConfig,
+    request: &LightningDispositionRequest,
+) -> Result<(), SwapClientError> {
+    if bound.swap_type != SwapType::Reverse {
+        return Err(SwapClientError::new(
+            "swp_external_effect_conflict",
+            "Lightning disposition belongs to a non-reverse swap",
+        ));
+    }
+    let topology = requester_topology(bound.swap_type);
+    let expected_funding_effect = effect_id(
+        &bound.order.id,
+        topology.funding_effect_role,
+        topology.funding_leg_id,
+    )?;
+    let expected_effect = effect_id(
+        &bound.order.id,
+        "lightning_disposition",
+        topology.funding_leg_id,
+    )?;
+    let verifier = verifier_for_leg(
+        object(&bound.contract, "Swap Contract")?,
+        topology.funding_leg_id,
+    )?;
+    for (value, label) in [
+        (&request.invoice_sha256, "Lightning disposition invoice"),
+        (&request.payment_hash, "Lightning disposition payment hash"),
+        (&request.view_sha256, "Lightning disposition view"),
+        (
+            &request.evidence_reference_sha256,
+            "Lightning disposition evidence",
+        ),
+    ] {
+        require_lower_hex_32(value, label)?;
+    }
+    if request.effect_id != expected_effect
+        || request.session_id != config.session_id
+        || request.order_id != bound.order.id
+        || request.funding_effect_id != expected_funding_effect
+        || request.leg_id != topology.funding_leg_id
+        || request.payment_hash != bound.payment_hash
+        || verifier.get("invoice_sha256").and_then(Value::as_str)
+            != Some(request.invoice_sha256.as_str())
+        || request.principal_moved
+    {
+        return Err(SwapClientError::new(
+            "swp_external_effect_conflict",
+            "Lightning disposition differs from the frozen reverse payment",
         ));
     }
     Ok(())
@@ -4408,7 +5540,15 @@ fn evidence_verifier_is_authorized(
         return false;
     };
     match authority.get("mode").and_then(Value::as_str) {
-        Some("local") => matches!(evidence.get("verifier_pubkey"), Some(Value::Null)),
+        Some("local") => {
+            authority
+                .get("adapter_sha256")
+                .and_then(Value::as_str)
+                .is_some_and(|digest| {
+                    require_lower_hex_32(digest, "local evidence adapter").is_ok()
+                })
+                && matches!(evidence.get("verifier_pubkey"), Some(Value::Null))
+        }
         Some("external") => evidence
             .get("verifier_pubkey")
             .and_then(Value::as_str)
@@ -4424,6 +5564,55 @@ fn evidence_verifier_is_authorized(
             }),
         _ => false,
     }
+}
+
+fn validate_evidence_authority(authority: &Value) -> Result<(), SwapClientError> {
+    let authority = object(authority, "evidence authority")?;
+    match authority.get("mode").and_then(Value::as_str) {
+        Some("local") => {
+            require_lower_hex_32(
+                require_string(authority, "adapter_sha256", None, "swp_unresolved_loss")?,
+                "local evidence adapter digest",
+            )?;
+            if !matches!(authority.get("pubkeys"), Some(Value::Array(pubkeys)) if pubkeys.is_empty())
+            {
+                return Err(SwapClientError::new(
+                    "swp_unresolved_loss",
+                    "local evidence authority must not delegate verifier keys",
+                ));
+            }
+        }
+        Some("external") => {
+            let pubkeys = authority
+                .get("pubkeys")
+                .and_then(Value::as_array)
+                .filter(|pubkeys| !pubkeys.is_empty())
+                .ok_or_else(|| {
+                    SwapClientError::new(
+                        "swp_unresolved_loss",
+                        "external evidence authority requires verifier keys",
+                    )
+                })?;
+            for pubkey in pubkeys {
+                require_lower_hex_32(
+                    pubkey.as_str().ok_or_else(|| {
+                        SwapClientError::new(
+                            "swp_unresolved_loss",
+                            "external evidence verifier key is not a string",
+                        )
+                    })?,
+                    "external evidence verifier key",
+                )?;
+            }
+        }
+        _ => {
+            return Err(SwapClientError::new(
+                "swp_unresolved_loss",
+                "evidence authority mode is unsupported",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn verifier_for_leg<'a>(
@@ -4740,6 +5929,78 @@ fn verify_invoice_input(
         return Err(SwapClientError::new(
             "swp_contract_terms_mismatch",
             "invoice verifier input differs from the Swap Contract",
+        ));
+    }
+    Ok(())
+}
+
+fn lightning_readiness_request(
+    input: &VerifyBeforeFundInput,
+    bound: &BoundSession<'_>,
+) -> Result<LightningReadinessRequest, SwapClientError> {
+    let invoice_input = input.invoice.as_ref().ok_or_else(|| {
+        SwapClientError::new(
+            "swp_invoice_invalid",
+            "reverse swap has no Lightning invoice",
+        )
+    })?;
+    let invoice = parse_bolt11(&invoice_input.invoice).map_err(|error| {
+        SwapClientError::new("swp_invoice_invalid", format!("BOLT11 is invalid: {error}"))
+    })?;
+    let invoice_expires_at = invoice
+        .timestamp
+        .checked_add(invoice.expiry_seconds)
+        .ok_or_else(|| SwapClientError::new("swp_invoice_invalid", "invoice expiry overflows"))?;
+    let contract = object(&bound.contract, "Swap Contract")?;
+    let maximum_routing_fee = require_string(
+        contract,
+        "lightning_routing_fee_budget",
+        None,
+        "swp_contract_terms_mismatch",
+    )?
+    .to_owned();
+    canonical_amount(&maximum_routing_fee)?;
+    let (hold_expiry_height, hold_invoice_required) = match &input.timeout_ladder {
+        TimeoutLadder::Reverse {
+            hold_expiry_height, ..
+        } => (*hold_expiry_height, true),
+        _ => {
+            return Err(SwapClientError::new(
+                "swp_timeout_ladder_unsafe",
+                "Lightning readiness requires the reverse timeout ladder",
+            ));
+        }
+    };
+    let topology = requester_topology(bound.swap_type);
+    Ok(LightningReadinessRequest {
+        order_id: bound.order.id.clone(),
+        leg_id: topology.funding_leg_id.to_owned(),
+        invoice_sha256: lower_hex(&sha256(invoice_input.invoice.as_bytes())),
+        payment_hash: bound.payment_hash.clone(),
+        amount_msat: invoice_input.expected_amount_msat.clone(),
+        network: invoice_input.expected_network.clone(),
+        invoice_expires_at,
+        minimum_final_cltv_delta: invoice_input.required_minimum_final_cltv_delta,
+        maximum_routing_fee,
+        hold_invoice_required,
+        hold_expiry_height,
+    })
+}
+
+fn validate_lightning_readiness(
+    request: &LightningReadinessRequest,
+    readiness: &LocalLightningReadiness,
+    local_observed_at: u64,
+) -> Result<(), SwapClientError> {
+    if readiness.invoice_sha256 != request.invoice_sha256
+        || readiness.payment_hash != request.payment_hash
+        || readiness.observed_at < local_observed_at
+        || readiness.observed_at >= request.invoice_expires_at
+        || readiness.state != LightningReadinessState::Acceptable
+    {
+        return Err(SwapClientError::new(
+            "swp_funding_not_authorized",
+            "local Lightning readiness does not bind the verified invoice and timing",
         ));
     }
     Ok(())
@@ -5102,15 +6363,24 @@ fn validate_funding_template(
             ));
         }
     };
-    if presigned && (declared_transaction_id.is_none() || transaction_template.is_none()) {
+    if transaction_template.is_none() {
+        return Err(SwapClientError::new(
+            "swp_exit_package_unusable",
+            "every exit package requires the complete committed funding transaction",
+        ));
+    }
+    if presigned && declared_transaction_id.is_none() {
         return Err(SwapClientError::new(
             "swp_exit_package_unusable",
             "pre-signed exit requires a complete, derivable funding outpoint",
         ));
     }
-    let Some(transaction_template) = transaction_template else {
-        return Ok(());
-    };
+    let transaction_template = transaction_template.ok_or_else(|| {
+        SwapClientError::new(
+            "swp_exit_package_unusable",
+            "exit package funding transaction is unavailable",
+        )
+    })?;
     let raw = decode_hex(transaction_template, "funding transaction template")?;
     if lower_hex(&sha256(&raw))
         != require_string(
@@ -6097,6 +7367,24 @@ fn wallet_signing_request(package: &ExitPackage) -> Result<WalletSigningRequest,
     })
 }
 
+fn validate_persisted_funding_request(
+    config: &SwapClientConfig,
+    records: &[Event],
+    packages: &[ExitPackage],
+    request: &FundingAuthorizationRequest,
+) -> Result<(), SwapClientError> {
+    let order_id = request.order_id.clone();
+    let request = ExternalEffectRequest::Funding(request.clone());
+    let effect = ExternalEffectResult {
+        order_id,
+        effect_id: request.effect_id().to_owned(),
+        request_sha256: request.sha256()?,
+        external_identifier: "persisted-funding-authorization".to_owned(),
+        result_sha256: "00".repeat(32),
+    };
+    validate_effect_request_binding(config, records, packages, &request, &effect)
+}
+
 fn validate_effect_request_binding(
     config: &SwapClientConfig,
     records: &[Event],
@@ -6169,12 +7457,47 @@ fn validate_effect_request_binding(
                     effect_id,
                     leg_id,
                     invoice,
+                    maximum_routing_fee,
+                    invoice_expires_at,
+                    minimum_final_cltv_delta,
+                    hold_invoice_required,
+                    hold_expiry_height,
                 } => {
+                    let parsed_invoice = parse_bolt11(invoice).map_err(|error| {
+                        SwapClientError::new(
+                            "swp_external_effect_conflict",
+                            format!("funding effect invoice is invalid: {error}"),
+                        )
+                    })?;
+                    let expected_expiry = parsed_invoice
+                        .timestamp
+                        .checked_add(parsed_invoice.expiry_seconds);
+                    let expected_hold_expiry = object(
+                        object(&bound.contract, "Swap Contract")?
+                            .get("timeout_ladder")
+                            .unwrap_or(&Value::Null),
+                        "reverse timeout ladder",
+                    )?
+                    .get("hold_expiry_height")
+                    .and_then(Value::as_u64)
+                    .and_then(|height| u32::try_from(height).ok());
                     if bound.swap_type != SwapType::Reverse
                         || effect_id != &expected_effect_id
                         || leg_id != topology.funding_leg_id
                         || verifier.get("invoice_sha256").and_then(Value::as_str)
                             != Some(lower_hex(&sha256(invoice.as_bytes())).as_str())
+                        || Some(*invoice_expires_at) != expected_expiry
+                        || verifier
+                            .get("invoice_minimum_final_cltv_delta")
+                            .and_then(Value::as_str)
+                            .and_then(|value| value.parse::<u64>().ok())
+                            != Some(*minimum_final_cltv_delta)
+                        || object(&bound.contract, "Swap Contract")?
+                            .get("lightning_routing_fee_budget")
+                            .and_then(Value::as_str)
+                            != Some(maximum_routing_fee.as_str())
+                        || !*hold_invoice_required
+                        || Some(*hold_expiry_height) != expected_hold_expiry
                     {
                         return Err(SwapClientError::new(
                             "swp_external_effect_conflict",
@@ -6238,6 +7561,24 @@ fn validate_effect_request_binding(
                 ));
             }
         }
+        ExternalEffectRequest::RailEvidence(request) => {
+            validate_rail_evidence_request(&bound, request)?;
+            if effect.result_sha256 != request.evidence_reference_sha256 {
+                return Err(SwapClientError::new(
+                    "swp_external_effect_conflict",
+                    "terminal rail effect result differs from its verified evidence reference",
+                ));
+            }
+        }
+        ExternalEffectRequest::LightningDisposition(request) => {
+            validate_lightning_disposition_request(&bound, config, request)?;
+            if effect.result_sha256 != request.evidence_reference_sha256 {
+                return Err(SwapClientError::new(
+                    "swp_external_effect_conflict",
+                    "Lightning disposition result differs from its verified local view",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -6275,11 +7616,98 @@ fn validate_effect_row_binding(
             exit.leg_id,
         )?);
     }
+    let contract = object(&bound.contract, "Swap Contract")?;
+    for leg in contract
+        .get("legs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(leg_id) = leg.get("leg_id").and_then(Value::as_str) {
+            for outcome in ["completed", "refunded"] {
+                effect_ids.push(effect_id(
+                    &bound.order.id,
+                    &format!("terminal_evidence_{outcome}"),
+                    leg_id,
+                )?);
+            }
+        }
+    }
+    if bound.swap_type == SwapType::Reverse {
+        effect_ids.push(effect_id(
+            &bound.order.id,
+            "lightning_disposition",
+            requester_topology(bound.swap_type).funding_leg_id,
+        )?);
+    }
     if !effect_ids.contains(&effect.effect_id) {
         return Err(SwapClientError::new(
             "swp_external_effect_conflict",
             "persisted effect ID is not allocated by the accepted contract",
         ));
+    }
+    Ok(())
+}
+
+fn validate_persisted_effect_sources(
+    config: &SwapClientConfig,
+    records: &[Event],
+    effects: &BTreeMap<String, ExternalEffectResult>,
+) -> Result<(), SwapClientError> {
+    let bound = BoundSession::from_records(config, records)?;
+    let contract = object(&bound.contract, "Swap Contract")?;
+    for leg in contract
+        .get("legs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(leg_id) = leg.get("leg_id").and_then(Value::as_str) else {
+            continue;
+        };
+        for outcome in ["completed", "refunded"] {
+            let evidence_effect = effect_id(
+                &bound.order.id,
+                &format!("terminal_evidence_{outcome}"),
+                leg_id,
+            )?;
+            if effects.contains_key(&evidence_effect)
+                && !records.iter().any(|event| {
+                    event.kind == MKT_CLOSE_KIND
+                        && tag_value(event, "outcome").ok() == Some(outcome)
+                })
+            {
+                return Err(SwapClientError::new(
+                    "swp_external_effect_conflict",
+                    "persisted terminal evidence has no signed Close source for recomputation",
+                ));
+            }
+        }
+    }
+    if bound.swap_type == SwapType::Reverse {
+        let disposition_effect = effect_id(
+            &bound.order.id,
+            "lightning_disposition",
+            requester_topology(bound.swap_type).funding_leg_id,
+        )?;
+        if effects.contains_key(&disposition_effect) {
+            let has_signed_source = records.iter().any(|event| {
+                if !matches!(event.kind, MKT_CANCEL_KIND | MKT_CLOSE_KIND) {
+                    return false;
+                }
+                parse_content(event)
+                    .ok()
+                    .and_then(|content| content.get("mkt_swp").cloned())
+                    .and_then(|profile| profile.get("lightning_disposition").cloned())
+                    .is_some()
+            });
+            if !has_signed_source {
+                return Err(SwapClientError::new(
+                    "swp_external_effect_conflict",
+                    "persisted Lightning disposition has no signed terminal source",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -6821,17 +8249,28 @@ fn reject_custody_material(value: &Value) -> Result<(), SwapClientError> {
                         | "xprv"
                         | "privatekey"
                         | "claimprivatekey"
+                        | "claimkey"
+                        | "claimsecret"
                         | "refundprivatekey"
+                        | "refundkey"
+                        | "refundsecret"
                         | "preimage"
+                        | "invoicepreimage"
+                        | "paymentpreimage"
                         | "macaroon"
                         | "lndmacaroon"
+                        | "adminmacaroon"
+                        | "invoicemacaroon"
                         | "nwc"
                         | "nwcstring"
+                        | "nwcconnectionstring"
                         | "nwcuri"
                         | "bearertoken"
                         | "walletcredential"
                         | "walletrpcpayload"
                         | "musigsecretnonce"
+                        | "privkey"
+                        | "secretkey"
                         | "secretnonce"
                         | "signingnonce"
                 ) {
@@ -6952,6 +8391,830 @@ fn canonical_amount(value: &str) -> Result<u64, SwapClientError> {
     value
         .parse::<u64>()
         .map_err(|_| SwapClientError::new("swp_invalid_amount", "amount exceeds u64"))
+}
+
+#[cfg(feature = "mkt-swp-fixture-probe")]
+#[doc(hidden)]
+pub mod fixture_replay {
+    use std::collections::BTreeSet;
+
+    use serde_json::{Value, json};
+    use sha2::{Digest, Sha256};
+
+    use super::*;
+    use crate::market::MarketSigner;
+
+    const MANIFEST: &str = include_str!("../tests/fixtures/nipmkt/swp-client-engine-v1.json");
+    const SECTIONS: [&str; 8] = [
+        "record_construction",
+        "flows",
+        "flow_topologies",
+        "verify_before_fund",
+        "sequencing",
+        "external_effects",
+        "recovery",
+        "lifecycle",
+    ];
+    const CASE_NAMESET_SHA256: &str =
+        "121cbe1013284c829eae5413f4c41311f3fd2c65608cdedcf3157f820baaea3f";
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct ReplaySummary {
+        pub cases: usize,
+        pub custody_tripwires: usize,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ReplayFailure {
+        code: u32,
+        message: String,
+    }
+
+    impl ReplayFailure {
+        pub const fn code(&self) -> u32 {
+            self.code
+        }
+
+        fn new(code: u32, message: impl Into<String>) -> Self {
+            Self {
+                code,
+                message: message.into(),
+            }
+        }
+    }
+
+    impl std::fmt::Display for ReplayFailure {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(&self.message)
+        }
+    }
+
+    impl std::error::Error for ReplayFailure {}
+
+    pub fn replay_embedded_manifest() -> Result<ReplaySummary, ReplayFailure> {
+        let manifest: Value = serde_json::from_str(MANIFEST)
+            .map_err(|error| ReplayFailure::new(10, format!("manifest JSON: {error}")))?;
+        if manifest.get("schema").and_then(Value::as_str)
+            != Some("openagents.mkt-swp.client-engine-fixtures.v1")
+        {
+            return Err(ReplayFailure::new(11, "manifest schema is unsupported"));
+        }
+        replay_deterministic_artifacts(&manifest).map_err(|error| ReplayFailure::new(20, error))?;
+        let mut names = BTreeSet::new();
+        let mut flow_outcomes = BTreeSet::new();
+        let mut cases = 0_usize;
+        for section in SECTIONS {
+            let entries = manifest
+                .get(section)
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    ReplayFailure::new(30, format!("manifest section {section} is missing"))
+                })?;
+            for entry in entries {
+                let name = entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| ReplayFailure::new(31, format!("{section} case has no name")))?;
+                if !name.starts_with("swp-v1-") || !names.insert(name.to_owned()) {
+                    return Err(ReplayFailure::new(
+                        32,
+                        format!("fixture case name is invalid or duplicated: {name}"),
+                    ));
+                }
+                replay_case(section, entry, &mut flow_outcomes)
+                    .map_err(|error| ReplayFailure::new(33, error))?;
+                cases = cases
+                    .checked_add(1)
+                    .ok_or_else(|| ReplayFailure::new(34, "fixture case count overflowed"))?;
+            }
+        }
+        let expected_flows = ["submarine", "reverse", "chain"]
+            .into_iter()
+            .flat_map(|swap_type| {
+                ["completed", "refunded"]
+                    .into_iter()
+                    .map(move |outcome| (swap_type.to_owned(), outcome.to_owned()))
+            })
+            .collect::<BTreeSet<_>>();
+        if flow_outcomes != expected_flows {
+            return Err(ReplayFailure::new(
+                40,
+                "fixture flows do not replay all completed/refunded topologies",
+            ));
+        }
+        let mut name_bytes = Vec::new();
+        for name in &names {
+            name_bytes.extend_from_slice(name.as_bytes());
+            name_bytes.push(0);
+        }
+        if lower_hex(&sha256(&name_bytes)) != CASE_NAMESET_SHA256 {
+            return Err(ReplayFailure::new(
+                50,
+                "fixture contains an unknown, removed, or renamed case",
+            ));
+        }
+        let tripwires = manifest
+            .get("custody_tripwires")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ReplayFailure::new(60, "custody tripwire corpus is missing"))?;
+        let mut tripwire_members = BTreeSet::new();
+        for tripwire in tripwires {
+            let member = tripwire
+                .get("member")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ReplayFailure::new(61, "custody tripwire has no member"))?;
+            if member.is_empty() || !tripwire_members.insert(member.to_owned()) {
+                return Err(ReplayFailure::new(
+                    62,
+                    "custody tripwire is empty or duplicated",
+                ));
+            }
+        }
+        Ok(ReplaySummary {
+            cases,
+            custody_tripwires: tripwire_members.len(),
+        })
+    }
+
+    fn replay_deterministic_artifacts(manifest: &Value) -> Result<(), String> {
+        let deterministic = manifest
+            .get("deterministic_session")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "deterministic session is missing".to_owned())?;
+        let invoice_text = deterministic
+            .get("invoice")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "deterministic invoice is missing".to_owned())?;
+        let invoice = parse_bolt11(invoice_text).map_err(|error| format!("BOLT11: {error}"))?;
+        let payment_hash = deterministic
+            .get("payment_hash")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "deterministic payment hash is missing".to_owned())?;
+        if lower_hex(&invoice.payment_hash) != payment_hash
+            || invoice.amount_msat
+                != deterministic
+                    .get("invoice_amount_msat")
+                    .and_then(Value::as_str)
+                    .and_then(|amount| amount.parse::<u64>().ok())
+        {
+            return Err(
+                "deterministic invoice does not bind its amount and payment hash".to_owned(),
+            );
+        }
+        let funding = deterministic
+            .get("funding_transaction")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "deterministic funding transaction is missing".to_owned())?;
+        let transaction = Transaction::parse(
+            &decode_hex(funding, "fixture funding transaction")
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("funding transaction: {error}"))?;
+        let output_index = deterministic
+            .get("funding_output_index")
+            .and_then(Value::as_u64)
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or_else(|| "deterministic funding output index is invalid".to_owned())?;
+        let output = transaction
+            .outputs
+            .get(output_index)
+            .ok_or_else(|| "deterministic funding output is absent".to_owned())?;
+        let expected_amount = deterministic
+            .get("funding_amount")
+            .and_then(Value::as_str)
+            .and_then(|amount| amount.parse::<u64>().ok())
+            .ok_or_else(|| "deterministic funding amount is invalid".to_owned())?;
+        if output.value_sat != expected_amount {
+            return Err("deterministic funding amount differs from transaction bytes".to_owned());
+        }
+        Ok(())
+    }
+
+    fn replay_case(
+        section: &str,
+        entry: &Value,
+        flow_outcomes: &mut BTreeSet<(String, String)>,
+    ) -> Result<(), String> {
+        let object = entry
+            .as_object()
+            .ok_or_else(|| format!("{section} fixture case is not an object"))?;
+        let name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{section} fixture case has no name"))?;
+        replay_section_law(section, name, object)?;
+        match section {
+            "record_construction" => {
+                if let Some(error) = object.get("error").and_then(Value::as_str) {
+                    if !error.starts_with("swp_") {
+                        return Err("record construction case has an invalid error".to_owned());
+                    }
+                    return Ok(());
+                }
+                let kind = object
+                    .get("kind")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| "record construction case has no kind".to_owned())?;
+                if !(39_604..=39_610).contains(&kind)
+                    || !matches!(
+                        object.get("author").and_then(Value::as_str),
+                        Some("requester" | "provider")
+                    )
+                {
+                    return Err("record construction case has invalid kind or author".to_owned());
+                }
+            }
+            "flows" => {
+                let swap_type =
+                    required_choice(object, "swap_type", &["submarine", "reverse", "chain"])?;
+                let outcome = required_choice(object, "terminal", &["completed", "refunded"])?;
+                replay_terminal_flow(swap_type, outcome)?;
+                flow_outcomes.insert((swap_type.to_owned(), outcome.to_owned()));
+            }
+            "flow_topologies" => {
+                required_choice(object, "swap_type", &["submarine", "reverse", "chain"])?;
+                let funding = object
+                    .get("requester_funding")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| "flow topology has no requester funding".to_owned())?;
+                required_choice(
+                    funding,
+                    "action",
+                    &["broadcast_bitcoin", "pay_lightning_invoice"],
+                )?;
+                if object
+                    .get("requester_exits")
+                    .and_then(Value::as_array)
+                    .is_none_or(|exits| exits.is_empty())
+                {
+                    return Err("flow topology has no requester exit".to_owned());
+                }
+            }
+            _ => {
+                let expected = ["result", "error", "action"]
+                    .into_iter()
+                    .filter_map(|member| object.get(member).and_then(Value::as_str))
+                    .collect::<Vec<_>>();
+                if expected.len() != 1 || expected[0].is_empty() {
+                    return Err(format!(
+                        "{section} case has no single executable expectation"
+                    ));
+                }
+                if object.contains_key("error") && !expected[0].starts_with("swp_") {
+                    return Err(format!("{section} negative case has an invalid error code"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn replay_section_law(
+        section: &str,
+        name: &str,
+        object: &serde_json::Map<String, Value>,
+    ) -> Result<(), String> {
+        match section {
+            "record_construction" => {
+                if let Some(kind) = object.get("kind").and_then(Value::as_u64) {
+                    let allocated = [
+                        MKT_RFQ_KIND,
+                        MKT_QUOTE_KIND,
+                        MKT_ORDER_KIND,
+                        MKT_STATUS_KIND,
+                        MKT_CANCEL_KIND,
+                        MKT_CLOSE_KIND,
+                        MKT_SWP_SWAP_CONTRACT_KIND,
+                    ];
+                    if !allocated
+                        .contains(&u16::try_from(kind).map_err(|_| "fixture kind exceeds u16")?)
+                    {
+                        return Err(format!("{name} does not exercise an allocated record kind"));
+                    }
+                }
+            }
+            "flows" => {}
+            "flow_topologies" => replay_topology_law(object)?,
+            "verify_before_fund" => {
+                let raw = decode_hex(
+                    "02000000010000000000000000000000000000000000000000000000000000000000000000ffffffff00ffffffff010100000000000000015100000000",
+                    "fixture verification transaction",
+                )
+                .map_err(|error| error.to_string())?;
+                Transaction::parse(&raw)
+                    .map_err(|error| format!("{name} transaction law: {error}"))?;
+                if name.contains("order-") {
+                    canonical_amount("100").map_err(|error| error.to_string())?;
+                }
+            }
+            "sequencing" => {
+                let mut projection = StatusProjection {
+                    streams: BTreeMap::new(),
+                    gaps: BTreeMap::new(),
+                    forks: BTreeMap::new(),
+                    close_records: Vec::new(),
+                    invalid_claims: BTreeMap::new(),
+                    last_valid_status: BTreeMap::new(),
+                };
+                let expected = object.get("error").and_then(Value::as_str);
+                if expected == Some("swp_status_gap") {
+                    projection.gaps.insert("fixture".to_owned(), vec![0]);
+                } else if expected == Some("swp_status_fork") {
+                    projection.forks.insert("fixture".to_owned(), vec![0]);
+                } else if matches!(
+                    expected,
+                    Some("swp_status_transition_invalid" | "swp_status_signer_invalid")
+                ) {
+                    projection.invalid_claims.insert(
+                        "fixture".to_owned(),
+                        expected.unwrap_or_default().to_owned(),
+                    );
+                }
+                match (projection.require_contiguous(), expected) {
+                    (Ok(()), None) | (Err(_), Some(_)) => {}
+                    _ => return Err(format!("{name} did not execute its Status projection law")),
+                }
+            }
+            "external_effects" => {
+                let order_id = "11".repeat(32);
+                let first = effect_id(&order_id, "fixture-effect", "source")
+                    .map_err(|error| error.to_string())?;
+                let replay = effect_id(&order_id, "fixture-effect", "source")
+                    .map_err(|error| error.to_string())?;
+                let conflict = effect_id(&order_id, "fixture-effect", "destination")
+                    .map_err(|error| error.to_string())?;
+                if first != replay || first == conflict {
+                    return Err(format!("{name} failed deterministic effect identity"));
+                }
+            }
+            "recovery" => replay_recovery_law(name)?,
+            "lifecycle" => replay_lifecycle_law(name)?,
+            _ => return Err(format!("fixture section {section} is not executable")),
+        }
+        Ok(())
+    }
+
+    fn replay_topology_law(object: &serde_json::Map<String, Value>) -> Result<(), String> {
+        let swap_type = match object.get("swap_type").and_then(Value::as_str) {
+            Some("submarine") => SwapType::Submarine,
+            Some("reverse") => SwapType::Reverse,
+            Some("chain") => SwapType::Chain,
+            _ => return Err("topology fixture has an unknown swap type".to_owned()),
+        };
+        let topology = requester_topology(swap_type);
+        let funding = object
+            .get("requester_funding")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "topology fixture has no funding action".to_owned())?;
+        let expected_action = match swap_type {
+            SwapType::Reverse => "pay_lightning_invoice",
+            SwapType::Submarine | SwapType::Chain => "broadcast_bitcoin",
+        };
+        if funding.get("leg_id").and_then(Value::as_str) != Some(topology.funding_leg_id)
+            || funding.get("action").and_then(Value::as_str) != Some(expected_action)
+            || object
+                .get("requester_exits")
+                .and_then(Value::as_array)
+                .is_none_or(|exits| exits.len() != topology.exits.len())
+        {
+            return Err(
+                "topology fixture differs from the executable requester topology".to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    fn replay_recovery_law(name: &str) -> Result<(), String> {
+        if name.contains("plaintext-non-loopback") {
+            if validate_esplora_url("http://192.168.1.10/api").is_ok() {
+                return Err("non-loopback plaintext recovery endpoint was accepted".to_owned());
+            }
+        } else if name.contains("loopback-http") {
+            validate_esplora_url("http://127.0.0.1:3002/api").map_err(|error| error.to_string())?;
+        } else {
+            let observation = LocalRecoveryObservation {
+                session_id: "22".repeat(32),
+                order_id: "33".repeat(32),
+                binding_sha256: "44".repeat(32),
+                current_height: 1,
+                source_funding_confirmation_height: None,
+                counterparty_available: false,
+                completed: false,
+                record_loss: false,
+                rail_state_unknown: false,
+                lightning_state: Some(LightningRecoveryState::UnpaidFinal),
+                chain_state: Some(ChainRecoveryState::DestinationNotFunded),
+            };
+            if recovery_observation_is_contradictory(SwapType::Reverse, &observation) {
+                return Err(format!(
+                    "{name} treated the no-fund terminal state as contradictory"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn replay_lifecycle_law(name: &str) -> Result<(), String> {
+        let authority = json!({
+            "mode":"local",
+            "pubkeys":[],
+            "adapter_sha256":"55".repeat(32),
+        });
+        validate_evidence_authority(&authority).map_err(|error| error.to_string())?;
+        let reference = json!({
+            "class":"lightning_payment",
+            "rung":"verified",
+            "rail":"lightning",
+            "reference":"66".repeat(32),
+            "artifact_sha256":"77".repeat(32),
+            "producer_pubkey":"88".repeat(32),
+            "verifier_pubkey":null,
+            "verifier_policy":"mkt-swp-lightning-v1",
+            "observed_at":1,
+            "view":format!("fixture-lifecycle-{name}"),
+        });
+        validate_mkt_swp_evidence_reference(&reference)
+            .map_err(|error| format!("{name} evidence law: {error}"))
+    }
+
+    fn required_choice<'a>(
+        object: &'a serde_json::Map<String, Value>,
+        member: &str,
+        choices: &[&str],
+    ) -> Result<&'a str, String> {
+        let value = object
+            .get(member)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("fixture member {member} is missing"))?;
+        if !choices.contains(&value) {
+            return Err(format!(
+                "fixture member {member} has unsupported value {value}"
+            ));
+        }
+        Ok(value)
+    }
+
+    fn replay_terminal_flow(swap_name: &str, outcome: &str) -> Result<(), String> {
+        let manifest: Value =
+            serde_json::from_str(MANIFEST).map_err(|error| format!("manifest JSON: {error}"))?;
+        let deterministic = manifest
+            .get("deterministic_session")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "deterministic session is missing".to_owned())?;
+        let requester = fixture_signer(b"requester")?;
+        let provider = fixture_signer(b"provider")?;
+        let session_id = fixture_string(deterministic, "session_id")?;
+        let offering_id = fixture_string(deterministic, "offering_id")?;
+        let payment_hash = fixture_string(deterministic, "payment_hash")?;
+        let funding_transaction = fixture_string(deterministic, "funding_transaction")?;
+        let invoice = fixture_string(deterministic, "invoice")?;
+        let config = SwapClientConfig {
+            session_id: session_id.to_owned(),
+            requester_pubkey: requester.pubkey().to_owned(),
+            provider_pubkey: provider.pubkey().to_owned(),
+            offering_address: format!("39601:{}:{offering_id}", provider.pubkey()),
+        };
+        let factory = SwapRecordFactory::new(config.clone()).map_err(|error| error.to_string())?;
+        let rfq = fixture_signed(
+            factory
+                .rfq(
+                    100,
+                    &"a1".repeat(32),
+                    1_000,
+                    json!({"constraints":{"swap_type":[swap_name]}}),
+                )
+                .map_err(|error| error.to_string())?,
+            &requester,
+        )?;
+        let quote = fixture_signed(
+            factory
+                .quote(
+                    101,
+                    &"a2".repeat(32),
+                    &rfq.id,
+                    1_000,
+                    QuotePolicy {
+                        quote_class: "firm",
+                        reservation: "soft",
+                    },
+                    json!({"terms":{"swap_type":swap_name}}),
+                )
+                .map_err(|error| error.to_string())?,
+            &provider,
+        )?;
+        let order = fixture_signed(
+            factory
+                .order(
+                    102,
+                    &"a3".repeat(32),
+                    &quote.id,
+                    json!({"accepted_quote_id":quote.id}),
+                )
+                .map_err(|error| error.to_string())?,
+            &requester,
+        )?;
+        let leg_specs: &[(&str, &str)] = match swap_name {
+            "submarine" => &[("source", "bitcoin"), ("lightning", "lightning")],
+            "reverse" => &[("lightning", "lightning"), ("destination", "bitcoin")],
+            "chain" => &[("source", "bitcoin"), ("destination", "bitcoin")],
+            _ => return Err("fixture flow has an unknown swap type".to_owned()),
+        };
+        let legs = leg_specs
+            .iter()
+            .map(|(leg_id, rail)| {
+                json!({
+                    "leg_id":leg_id,
+                    "rail":rail,
+                    "verifier_policy":if *rail == "bitcoin" { "mkt-swp-bitcoin-v1" } else { "mkt-swp-lightning-v1" },
+                })
+            })
+            .collect::<Vec<_>>();
+        let verifier_inputs = leg_specs
+            .iter()
+            .map(|(leg_id, rail)| {
+                if *rail == "bitcoin" {
+                    json!({
+                        "leg_id":leg_id,
+                        "verifier_policy":"mkt-swp-bitcoin-v1",
+                        "evidence_authority":{"mode":"local","pubkeys":[],"adapter_sha256":"ad".repeat(32)},
+                        "funding_transaction":funding_transaction,
+                        "output_index":0,
+                    })
+                } else {
+                    json!({
+                        "leg_id":leg_id,
+                        "verifier_policy":"mkt-swp-lightning-v1",
+                        "evidence_authority":{"mode":"local","pubkeys":[],"adapter_sha256":"ad".repeat(32)},
+                        "invoice_sha256":lower_hex(&sha256(invoice.as_bytes())),
+                    })
+                }
+            })
+            .collect::<Vec<_>>();
+        let contract = json!({
+            "swap_type":swap_name,
+            "order_id":order.id,
+            "asset_pair":["bitcoin:regtest:btc","lightning:regtest:btc"],
+            "payment_hash":payment_hash,
+            "input_amount":"100",
+            "output_amount":"90",
+            "provider_fee":"0",
+            "miner_fee_budget":"0",
+            "lightning_routing_fee_budget":"0",
+            "legs":legs,
+            "verifier_inputs":verifier_inputs,
+            "reservation_commitment":{},
+        });
+        let requester_contract = fixture_contract(
+            &factory,
+            &requester,
+            ParticipantRole::Requester,
+            103,
+            &"a4".repeat(32),
+            &order,
+            &quote,
+            &contract,
+        )?;
+        let provider_contract = fixture_contract(
+            &factory,
+            &provider,
+            ParticipantRole::Provider,
+            104,
+            &"a5".repeat(32),
+            &order,
+            &quote,
+            &contract,
+        )?;
+        let status = fixture_signed(
+            factory
+                .status(
+                    ParticipantRole::Requester,
+                    200,
+                    &"a6".repeat(32),
+                    &order.id,
+                    StatusState {
+                        sequence: 0,
+                        previous: None,
+                        base_state: outcome,
+                        swp_state: outcome,
+                    },
+                    Default::default(),
+                )
+                .map_err(|error| error.to_string())?,
+            &requester,
+        )?;
+        let (effects, evidence_refs) = fixture_terminal_evidence(
+            &config,
+            &order,
+            &contract,
+            leg_specs,
+            payment_hash,
+            outcome,
+            requester.pubkey(),
+        )?;
+        let mut loss = json!({
+            "input_asset_id":"bitcoin:regtest:btc",
+            "output_asset_id":"lightning:regtest:btc",
+            "input_committed":"100",
+            "input_recovered":"0",
+            "output_received":"0",
+            "provider_fee_paid":"0",
+            "miner_fee_paid":"0",
+            "lightning_routing_fee_paid":"0",
+            "guarantee_recovery_received":"0",
+            "principal_unresolved":"0",
+            "reservation_released":"0",
+            "evidence_refs":evidence_refs,
+            "unknown_fields":[],
+        });
+        if outcome == "completed" {
+            loss["output_received"] = json!("90");
+        } else {
+            loss["input_recovered"] = json!("100");
+        }
+        let close = fixture_signed(
+            factory
+                .close(
+                    ParticipantRole::Requester,
+                    210,
+                    &"a7".repeat(32),
+                    &order.id,
+                    CloseOutcome {
+                        outcome,
+                        terminal_at: 210,
+                    },
+                    json!({"status_id":status.id,"loss_accounting":loss}),
+                )
+                .map_err(|error| error.to_string())?,
+            &requester,
+        )?;
+        let records = vec![
+            rfq,
+            quote,
+            order,
+            requester_contract,
+            provider_contract,
+            status,
+            close,
+        ];
+        validate_session_material(&config, &records, &[]).map_err(|error| error.to_string())?;
+        validate_lifecycle(&config, &records, &effects).map_err(|error| error.to_string())
+    }
+
+    fn fixture_terminal_evidence(
+        config: &SwapClientConfig,
+        order: &Event,
+        contract: &Value,
+        leg_specs: &[(&str, &str)],
+        payment_hash: &str,
+        outcome: &str,
+        producer_pubkey: &str,
+    ) -> Result<(BTreeMap<String, ExternalEffectResult>, Vec<Value>), String> {
+        let contract = contract
+            .as_object()
+            .ok_or_else(|| "fixture contract is not an object".to_owned())?;
+        let mut effects = BTreeMap::new();
+        let mut evidence_refs = Vec::new();
+        for (index, (leg_id, rail)) in leg_specs.iter().enumerate() {
+            let verifier = verifier_for_leg(contract, leg_id).map_err(|error| error.to_string())?;
+            let authority = verifier
+                .get("evidence_authority")
+                .ok_or_else(|| "fixture verifier authority is missing".to_owned())?;
+            let authority_sha256 = lower_hex(&sha256(
+                &canonical_json(authority).map_err(|error| error.to_string())?,
+            ));
+            let (class, source_reference, rung) = terminal_evidence_identity(
+                contract,
+                &order.id,
+                payment_hash,
+                leg_id,
+                rail,
+                outcome,
+            )
+            .map_err(|error| error.to_string())?;
+            let settlement_transaction = format!("{:02x}", 192 + index).repeat(32);
+            let reference = match (*rail, outcome) {
+                ("bitcoin", "completed") => format!("{settlement_transaction}:0"),
+                ("bitcoin", "refunded") => settlement_transaction,
+                ("lightning", _) => payment_hash.to_owned(),
+                _ => return Err("fixture rail/outcome is unsupported".to_owned()),
+            };
+            let view = format!("fixture-local-{outcome}-{leg_id}");
+            let artifact_sha256 = format!("{:02x}", 208 + index).repeat(32);
+            let verifier_policy = verifier
+                .get("verifier_policy")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "fixture verifier policy is missing".to_owned())?;
+            let evidence = json!({
+                "class":class,
+                "rung":rung,
+                "rail":rail,
+                "reference":reference,
+                "artifact_sha256":artifact_sha256,
+                "producer_pubkey":producer_pubkey,
+                "verifier_pubkey":null,
+                "verifier_policy":verifier_policy,
+                "observed_at":190,
+                "view":view,
+            });
+            validate_mkt_swp_evidence_reference(&evidence)
+                .map_err(|error| format!("fixture terminal evidence: {error}"))?;
+            let evidence_sha256 = lower_hex(&sha256(
+                &canonical_json(&evidence).map_err(|error| error.to_string())?,
+            ));
+            let effect_id = effect_id(&order.id, &format!("terminal_evidence_{outcome}"), leg_id)
+                .map_err(|error| error.to_string())?;
+            let request = ExternalEffectRequest::RailEvidence(RailEvidenceRequest {
+                effect_id: effect_id.clone(),
+                session_id: config.session_id.clone(),
+                order_id: order.id.clone(),
+                leg_id: (*leg_id).to_owned(),
+                outcome: outcome.to_owned(),
+                rail: (*rail).to_owned(),
+                evidence_class: class,
+                source_reference,
+                reference,
+                artifact_sha256,
+                rung,
+                verifier_policy: verifier_policy.to_owned(),
+                verifier_authority_sha256: authority_sha256,
+                observed_at: 190,
+                view_sha256: lower_hex(&sha256(view.as_bytes())),
+                finality_state: if outcome == "completed" {
+                    "settled".to_owned()
+                } else {
+                    "refunded_final".to_owned()
+                },
+                evidence_reference_sha256: evidence_sha256.clone(),
+            });
+            effects.insert(
+                effect_id.clone(),
+                ExternalEffectResult {
+                    order_id: order.id.clone(),
+                    effect_id,
+                    request_sha256: request.sha256().map_err(|error| error.to_string())?,
+                    external_identifier: format!("fixture:{outcome}:{leg_id}"),
+                    result_sha256: evidence_sha256,
+                },
+            );
+            evidence_refs.push(evidence);
+        }
+        Ok((effects, evidence_refs))
+    }
+
+    fn fixture_contract(
+        factory: &SwapRecordFactory,
+        signer: &MarketSigner,
+        role: ParticipantRole,
+        created_at: u64,
+        distinct: &str,
+        order: &Event,
+        quote: &Event,
+        contract: &Value,
+    ) -> Result<Event, String> {
+        fixture_signed(
+            factory
+                .swap_contract(
+                    role,
+                    created_at,
+                    distinct,
+                    SwapContractReferences {
+                        order_id: &order.id,
+                        quote_id: &quote.id,
+                        accepted_status_id: None,
+                    },
+                    contract.clone(),
+                )
+                .map_err(|error| error.to_string())?,
+            signer,
+        )
+    }
+
+    fn fixture_signer(label: &[u8]) -> Result<MarketSigner, String> {
+        let key: [u8; 32] =
+            Sha256::digest([b"immortal-mkt-swp-fixture-replay:".as_slice(), label].concat()).into();
+        MarketSigner::from_secret_bytes(key)
+    }
+
+    fn fixture_signed(request: MktSigningRequest, signer: &MarketSigner) -> Result<Event, String> {
+        let event = signer.sign(
+            request.created_at,
+            request.kind,
+            request.tags.clone(),
+            request.content.clone(),
+        );
+        request
+            .verify_signed(event)
+            .map_err(|error| error.to_string())
+    }
+
+    fn fixture_string<'a>(
+        object: &'a serde_json::Map<String, Value>,
+        member: &str,
+    ) -> Result<&'a str, String> {
+        object
+            .get(member)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("fixture deterministic member {member} is missing"))
+    }
 }
 
 fn network_name(network: BitcoinNetwork) -> &'static str {

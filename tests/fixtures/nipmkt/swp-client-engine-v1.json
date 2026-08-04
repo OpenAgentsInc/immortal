@@ -105,6 +105,12 @@
     ,{"name": "swp-v1-negative-leg-execution-field-mutation", "error": "swp_contract_terms_mismatch"}
     ,{"name": "swp-v1-cooperative-spend-keys-distinct-from-nostr", "result": "verified"}
     ,{"name": "swp-v1-wallet-sign-null-funding-txid-derived", "result": "signed_transaction_validated"}
+    ,{"name": "swp-v1-negative-reverse-readiness-adapter-required", "error": "swp_funding_not_authorized"}
+    ,{"name": "swp-v1-negative-reverse-post-effect-progress-required", "error": "swp_funding_not_authorized"}
+    ,{"name": "swp-v1-order-partial-selection-inherits-omissions", "result": "funding_authorized"}
+    ,{"name": "swp-v1-order-empty-selection-inherits-quote", "result": "funding_authorized"}
+    ,{"name": "swp-v1-order-null-selection-inherits-quote", "result": "funding_authorized"}
+    ,{"name": "swp-v1-negative-wallet-sign-missing-funding-template", "error": "swp_exit_package_unusable"}
   ],
   "sequencing": [
     {"name": "swp-v1-status-contiguous", "result": "advanced"},
@@ -115,6 +121,8 @@
     {"name": "swp-v1-negative-provider-claims-requester-verification", "error": "swp_status_signer_invalid"},
     {"name": "swp-v1-status-illegal-transition", "error": "swp_status_transition_invalid"},
     {"name": "swp-v1-recovery-mutual-close-disagreement", "result": "both_retained"}
+    ,{"name": "swp-v1-negative-close-status-gap", "error": "swp_status_gap"}
+    ,{"name": "swp-v1-negative-close-status-fork", "error": "swp_status_fork"}
   ],
   "external_effects": [
     {"name": "swp-v1-client-wallet-sign-callback", "result": "signed_transaction_validated"},
@@ -134,6 +142,10 @@
     ,{"name": "swp-v1-replay-exit-signing-skips-callback", "result": "prior_result"}
     ,{"name": "swp-v1-external-sign-wrap-decrypt-callbacks", "result": "exact_signed_inner_bytes"}
     ,{"name": "swp-v1-presigned-null-funding-txid", "error": "swp_exit_package_unusable"}
+    ,{"name": "swp-v1-signed-record-exact-replay", "result": "prior_result"}
+    ,{"name": "swp-v1-negative-signed-record-immutable-address-conflict", "error": "swp_idempotency_conflict"}
+    ,{"name": "swp-v1-negative-signed-record-custody-alias", "error": "swp_secret_material_forbidden"}
+    ,{"name": "swp-v1-negative-terminal-evidence-result-tamper", "error": "swp_unresolved_loss"}
   ],
   "recovery": [
     {"name": "swp-v1-client-crash-restore-revalidates", "result": "verification_required"},
@@ -150,6 +162,9 @@
     ,{"name": "swp-v1-recovery-restored-contract-revalidated", "error": "swp_contract_terms_mismatch"}
     ,{"name": "swp-v1-doomsday-loopback-http-esplora", "result": "public_post_request"}
     ,{"name": "swp-v1-negative-plaintext-non-loopback-esplora", "error": "swp_exit_package_unusable"}
+    ,{"name": "swp-v1-reverse-unpaid-not-funded-cancelled", "action": "cancelled"}
+    ,{"name": "swp-v1-negative-recovery-completed-with-loss", "error": "swp_unresolved_loss"}
+    ,{"name": "swp-v1-negative-recovery-completed-status-gap", "error": "swp_status_gap"}
   ],
   "lifecycle": [
     {"name": "swp-v1-cancel-effective-with-mutual-consent", "result": "cancelled"},
@@ -167,6 +182,14 @@
     ,{"name": "swp-v1-close-disputed-with-contested-evidence", "result": "disputed"}
     ,{"name": "swp-v1-close-unresolved-with-unknown-field", "result": "unresolved"}
     ,{"name": "swp-v1-negative-close-forged-artifact-or-verifier", "error": "swp_unresolved_loss"}
+    ,{"name": "swp-v1-provider-initiated-cancel-untrusted-time", "result": "cancelled"}
+    ,{"name": "swp-v1-reverse-no-fund-effective-cancel", "result": "cancelled"}
+    ,{"name": "swp-v1-negative-reverse-no-fund-forged-evidence", "error": "swp_external_effect_conflict"}
+    ,{"name": "swp-v1-expired-after-verified-release", "result": "expired"}
+    ,{"name": "swp-v1-negative-close-completed-zero-input", "error": "swp_unresolved_loss"}
+    ,{"name": "swp-v1-negative-close-failed-vanishing-principal", "error": "swp_unresolved_loss"}
+    ,{"name": "swp-v1-negative-terminal-evidence-funding-outpoint-only", "error": "swp_external_effect_conflict"}
+    ,{"name": "swp-v1-close-terminal-persisted-local-evidence", "result": "completed"}
   ],
   "custody_tripwires": [
     {"member": "seed", "error": "swp_secret_material_forbidden"},

@@ -16,6 +16,7 @@ required-features = ["server"]
 default = ["server"]
 server = ["dep:tokio", "dep:tokio-postgres", "dep:tokio-tungstenite", "mkt-swp-verify"]
 mkt-swp-verify = []
+mkt-swp-fixture-probe = ["mkt-swp-verify"]
 
 # Dependency policy: additions require owner sign-off recorded in AGENTS.md.
 # Allowlist: tokio, tokio-tungstenite, tokio-postgres, secp256k1, sha2,

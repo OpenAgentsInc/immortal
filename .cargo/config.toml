@@ -3,4 +3,4 @@
 # implementation and route only its wasm build through the already-required
 # Zig toolchain wrapper. This is manual/local build tooling, not CI automation.
 CC_wasm32_unknown_unknown = { value = "scripts/wasm-cc", relative = true }
-
+AR_wasm32_unknown_unknown = { value = "scripts/wasm-ar", relative = true }

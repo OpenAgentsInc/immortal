@@ -21,3 +21,11 @@ pub mod nip44;
 #[cfg(feature = "server")]
 pub mod store;
 pub mod tbdex;
+
+#[cfg(all(target_arch = "wasm32", feature = "mkt-swp-fixture-probe"))]
+pub fn mkt_swp_fixture_probe() -> u32 {
+    match mkt_swp_client::fixture_replay::replay_embedded_manifest() {
+        Ok(_) => 0,
+        Err(failure) => failure.code(),
+    }
+}

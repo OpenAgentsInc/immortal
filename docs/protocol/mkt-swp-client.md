@@ -20,16 +20,25 @@ kind-39610 Swap Contracts. The two contracts must name the same order and
 quote, contain the same RFC 8785-compatible canonical digest, and agree with
 the Quote terms. An Order may choose only the Quote's finite `input_amount`,
 `fee_payer`, `confirmation_policy`, and `public_receipt_consent` options; the
-contract freezes the exact selection and recomputed output amount.
+contract freezes selected values, inherits every omitted value from the Quote,
+and recomputes the output amount. Empty and null selections mean full
+inheritance.
 Status projection is maintained independently per signer. Sequence gaps and
 forks remain visible. Signer-invalid states, regressions, and every descendant
 of a gap, fork, or invalid claim remain retained but cannot advance the last
-valid rung. An effective Cancel binds the requester request and provider
-acceptance as two exact references and is refused when either persisted
-effects or signed Status history shows that funds moved. Conflicting Close
+valid rung. Either participant may request cancellation and emit the effective
+record after the other participant accepts; exact references and participant
+roles establish consent without trusting cross-party timestamps. Bitcoin
+broadcast remains irreversible for cancellation. Reverse Lightning initiation
+may be released only by an exact persisted local cancelled or unpaid-final
+observation proving that no principal moved, followed by a contiguous
+`invoice_cancelled` Status. Conflicting Close
 records remain separate evidence rather than being collapsed into settlement
-truth. Terminal evidence binds the exact transaction, invoice, or persisted
-effect-result digest and the verifier authority frozen in the contract.
+truth. Completed and refunded Close records bind one locally verified,
+persisted settlement or refund observation per leg, including its artifact,
+view, policy, authority, finality, outcome, and effect-result digest. A funding
+template, outpoint, or invoice digest alone is not settlement evidence, and a
+Close must reference its signer's exact contiguous last-valid terminal Status.
 
 ## Verify before fund
 
@@ -58,11 +67,17 @@ Bitcoin funding-template broadcast on `source`; reverse requesters authorize
 payment of the verified invoice on `lightning`. Confirmation, replacement,
 and competing-spend facts are obtained later through an explicit local
 Bitcoin observation adapter and are not fields a funding caller can assert.
+Reverse funding additionally requires a typed local Lightning readiness
+adapter. The resulting action binds the exact invoice, amount, network,
+expiry, minimum final CLTV, maximum routing fee, and hold-invoice deadline.
+Pending or held observations are accepted only after payment initiation is
+durably recorded and gate reverse exit signing.
 A refusal leaves funding unauthorized. The
-authorized marker is private and is never serialized. Restoring a snapshot
-always revalidates its signed records, exit packages, and effect ledger and
-returns `AwaitingVerification`, so a persisted boolean cannot bypass the
-gate.
+authorization request is persisted as typed public metadata so the same
+operation and crash-ready exit packages can be reconstructed after restart;
+no authorization boolean is trusted. Restoring a snapshot revalidates its
+signed records, full funding templates, exit packages, authorization request,
+and effect ledger before it can resume the authorized typestate.
 
 The RFQ comparison covers the ordered asset pair, exact or ranged amount, fee
 cap, confirmation and replacement constraints, script mode, completion time,
@@ -118,6 +133,15 @@ and refunds the source only when the destination was never funded or its
 refund is final. Missing rail state becomes an explicit unresolved-loss
 result; effect-ID sorting never determines recovery order.
 
+Signed records may be appended after funding through the ingestion API. Exact
+event replay is idempotent; changed bytes at an immutable `(kind, pubkey, d)`
+address fail closed. Every append reruns role, session, Order, lifecycle,
+Status, Close, recursive custody, and persisted-effect checks without dropping
+the effect ledger. Recovery refuses completion on a gap, fork, invalid Status
+ancestry, explicit loss, unknown rail state, or contradictory observations.
+An unpaid-final invoice plus an unfunded reverse destination terminates as
+cancelled instead of waiting indefinitely.
+
 ## Custody boundary
 
 Snapshots contain signed public records, exit templates or complete
@@ -143,6 +167,9 @@ Run its native/no-default/WASM gate with:
 ./scripts/test-swp-verification.sh
 ```
 
-The deterministic client corpus is
-`tests/fixtures/nipmkt/swp-client-engine-v1.json`; the full repository gate is
+The deterministic 126-case client corpus is
+`tests/fixtures/nipmkt/swp-client-engine-v1.json`. Its closed-world replay
+builds and validates all six completed/refunded flow sessions through the same
+library code on native and in a zero-import WASM probe. The probe-only feature
+does not enter ordinary client or server builds. The full repository gate is
 `./scripts/test-conformance.sh`.
