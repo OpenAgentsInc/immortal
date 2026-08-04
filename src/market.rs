@@ -302,6 +302,7 @@ pub(crate) fn unwrap_mkt_record_for_handler(
     validate_rumor_record(wrap, rumor, supported_profiles).map(Some)
 }
 
+#[cfg(feature = "server")]
 fn unwrap_rumor(wrap: &Event, recipient: &MarketSigner) -> Result<Rumor, String> {
     unwrap_rumor_with_callback(wrap, recipient.pubkey(), |request| {
         let key = recipient.conversation_key(&request.peer_pubkey)?;
