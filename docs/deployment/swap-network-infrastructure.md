@@ -125,20 +125,19 @@ signs Quotes, accepts Orders, and reports sequenced Status — all over
 relays. Separately and privately, it drives its own nodes. The relay
 never learns a spend key and cannot move a satoshi.
 
-What this repository contributes to the role is the embeddable
-provider-side session library and the no-spend provider actor
-([#14](https://github.com/OpenAgentsInc/immortal/issues/14)). A funded
-reference provider daemon — real Lightning node, real chain wallet,
-real inventory — is downstream of that library and explicitly outside
-this repo's binary. As of this writing no issue in any owned repo builds
-or operates a funded production provider; whether OpenAgents runs one
-itself (taking custody, inventory, and liquidity risk as a participant
-in a market it operates) or recruits independent operators (shipping the
-library and a runbook, and depending on external capital showing up) is
-an open owner decision, not a settled plan. The adversarial regtest lab
-([#18](https://github.com/OpenAgentsInc/immortal/issues/18)) needs a
-funded provider either way, but on regtest with valueless coins — it
-proves the code, not the business.
+What this repository contributes to the role is the provider-side
+session logic ([#14](https://github.com/OpenAgentsInc/immortal/issues/14))
+and — per the owner decision of 2026-08-04 recorded in
+[`../MONOREPO.md`](../MONOREPO.md) — a runnable reference provider
+daemon, `immortal-provider`, shipped from this repo as its own hardened
+binary under the same minimal-dependency principles as the relay.
+Becoming a provider means running that binary against your own nodes
+and funding its wallet, not integrating a library. Who operates funded
+instances (OpenAgents itself, independent operators, or both) remains a
+capital decision separate from the software. The adversarial regtest
+lab ([#18](https://github.com/OpenAgentsInc/immortal/issues/18))
+exercises funded providers on regtest with valueless coins — it proves
+the code, not the business.
 
 ## Client: what the verifying side needs
 
