@@ -82,6 +82,9 @@ Project/Status/Update records, and makes EOSE the snapshot boundary. The
 embedding application owns its WebSocket, so a browser connects straight to
 the relay without an Immortal HTTP proxy. See
 [`docs/protocol/openagents-project.md`](docs/protocol/openagents-project.md).
+That contract also documents the single binary's bounded manual command for
+signing the initial authority-owned records without placing a private key in
+argv or source.
 
 ## Quick start
 

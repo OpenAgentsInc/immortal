@@ -10,6 +10,8 @@
 //!              COUNT/search, Blossom media, subscription index, EOSE handoff,
 //!              ephemeral lane
 
+mod operations;
+
 use immortal::gateway::{Gateway, GatewayConfig, GatewayError};
 
 #[tokio::main]
@@ -25,6 +27,20 @@ async fn main() {
 }
 
 async fn run() -> Result<(), GatewayError> {
+    let mut arguments = std::env::args().skip(1);
+    if let Some(command) = arguments.next() {
+        if arguments.next().is_some() {
+            return Err(GatewayError::Config(
+                "operator command accepts no positional arguments".to_owned(),
+            ));
+        }
+        return match command.as_str() {
+            "sign-openagents-project-events" => operations::sign_openagents_project_events(),
+            _ => Err(GatewayError::Config(format!(
+                "unknown operator command: {command}"
+            ))),
+        };
+    }
     let config = GatewayConfig::from_env()?;
     let gateway = Gateway::start(config).await?;
     let address = gateway.local_addr();

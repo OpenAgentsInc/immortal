@@ -672,6 +672,41 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   no-GitHub-automation invariant; no GitHub workflow or GitHub-billed check is
   introduced or required.
 
+### 2026-08-04 — Codex 5.6 Sol (Extra High), Operation Diamond Hands Phase 0
+
+- Accepted issue #1 sequentially from fresh `origin/main` worktrees as Codex
+  5.6 Sol (Extra High). Immortal commit `98e1dd57529f7917e40f52e88bb8d95da4fee61b`
+  is already on `main`: it added the fixture-backed OT/PG domain contract and
+  transport-neutral native/wasm project client without a new dependency,
+  service, binary, database, or GitHub automation.
+- The consumer is being integrated in
+  `openagents/apps/openagents.com/apps/diamond-hands`, not Omega. It pins Omega
+  `b4fac63a2c90d77d6630d9df7eb9cb8a5983bac8` for GPUI, WebGPU, `ui`, and
+  `theme`, and pins the Immortal client commit above. The browser owns the
+  `WebSocket`; project content is not in the wasm bundle.
+- The local release build now links the existing secp256k1 C backend for wasm
+  through Zig compiler, archiver, and ranlib wrappers, installs an app-local
+  browser theme provider with the exact UI-facing Aiur values, retains the
+  GPUI app with `run_embedded`, and degrades invalid configuration without a
+  panic. The Start public tree carries stable HTML/JS/wasm artifacts while the
+  Cloud Run adapter maps `/dh` to the static entry and adds wasm MIME, COOP,
+  COEP, CORP, and a relay-only connect policy.
+- Manual evidence so far: native and wasm Immortal tests passed; the GPUI app
+  passed wasm check, warnings-denied no-deps Clippy, and release Trunk build;
+  48 focused OpenAgents route/header tests passed; the Start build and API
+  typecheck passed. Headless Chromium loaded the release page, directly opened
+  `wss://relay.openagents.com`, sent `dh-project-v1`, observed `EOSE`, and made
+  zero `/api` requests.
+- Added a bounded `sign-openagents-project-events` mode to the existing
+  Immortal binary for production seeding. It accepts only 1–32 adopted OT/PG
+  events under 65,536 bytes, reads the signing key only from the environment,
+  validates every signed result, and performs no network or database I/O. Its
+  unit tests and the repository's locked all-target test and warnings-denied
+  Clippy gates pass. Production publication, the post-EOSE live-event browser
+  proof, OpenAgents deployment, final documentation, and issue closure remain
+  pending because the Google Cloud owner credential requires interactive
+  reauthentication.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

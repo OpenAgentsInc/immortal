@@ -86,3 +86,22 @@ Run both target checks manually:
 Zig is used only as the C compiler for the already-approved `secp256k1`
 backend on `wasm32-unknown-unknown`; Apple clang does not ship that target.
 No GitHub workflow or GitHub-billed automation is used.
+
+## Bounded operator signing
+
+The one Immortal binary also exposes a manual signing boundary for initial and
+replacement OT/PG records:
+
+```sh
+IMMORTAL_RELAY_SECRET_KEY=<protected-environment-value> \
+  immortal sign-openagents-project-events < unsigned-events.json \
+  > signed-events.json
+```
+
+The command accepts one JSON array of 1–32 unsigned records, caps stdin at
+65,536 bytes, admits only kinds `32100`, `32222`, `32223`, and `32226`, signs
+with the relay key supplied through the environment, and runs the complete
+OT/PG validator before emitting anything. It does not accept a secret in argv,
+connect to the network, start another service, or write a database. Operators
+publish the signed result through an ordinary Nostr client and wait for the
+relay's post-commit `OK` response.
