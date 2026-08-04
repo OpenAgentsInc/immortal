@@ -10,8 +10,6 @@
   },
   "deterministic_session": {
     "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "requester_secret_byte": 17,
-    "provider_secret_byte": 34,
     "offering_id": "btc-lightning-regtest",
     "network_a": "bip122:00000000000000000000000000000000",
     "network_b": "bip122:11111111111111111111111111111111",
@@ -21,12 +19,12 @@
     "payment_hash": "96c772a829fb7c780410f1d85cf12a89e8b3c78c0bac5fb47f62758bf961ec30",
     "invoice": "lnbc10u1p3unwfusp5t9r3yymhpfqculx78u027lxspgxcr2n2987mx2j55nnfs95nxnzqpp5jmrh92pfld78spqs78v9euf2385t83uvpwk9ldrlvf6ch7tpascqhp5zvkrmemgth3tufcvflmzjzfvjt023nazlhljz2n9hattj4f8jq8qxqyjw5qcqpjrzjqtc4fc44feggv7065fqe5m4ytjarg3repr5j9el35xhmtfexc42yczarjuqqfzqqqqqqqqlgqqqqqqgq9q9qxpqysgq079nkq507a5tw7xgttmj4u990j7wfggtrasah5gd4ywfr2pjcn29383tphp4t48gquelz9z78p4cq7ml3nrrphw5w6eckhjwmhezhnqpy6gyf0",
     "invoice_amount_msat": "1000000",
-    "funding_transaction": "02000000010000000000000000000000000000000000000000000000000000000000000000ffffffff00ffffffff01a086010000000000225120147c9c57132f6e7ecddba9800bb0c4449251c92a1e60371ee77557b6620f3ea300000000",
+    "funding_transaction": "02000000010000000000000000000000000000000000000000000000000000000000000000ffffffff00ffffffff01a0860100000000002251202b57d284ad0470478797b9646c8cfef0a517c55830ba25a7345d1e8de51f5bcb00000000",
     "funding_output_index": 0,
     "funding_amount": "100000",
-    "taproot_output_key": "147c9c57132f6e7ecddba9800bb0c4449251c92a1e60371ee77557b6620f3ea3",
-    "taproot_script": "20d85a959b0290bf19bb89ed43c916be835475d013da4b362117393e25a48229b8ac",
-    "taproot_control_block": "c1187791b6f712a8ea41c8ecdd0ee77fab3e85263b37e1ec18a3651926b3a6cf27",
+    "taproot_output_key": "2b57d284ad0470478797b9646c8cfef0a517c55830ba25a7345d1e8de51f5bcb",
+    "taproot_script": "203cce51a0d412eae5953107a1c5a27cb29ea49d172c24aabb24af428bac56d3e1ac",
+    "taproot_control_block": "c115e303d114320fd738c4a552a7ccf202674fc46a6f0d306ee9fd769cfc5e1c0e",
     "destination_script_pubkey": "51"
   },
   "record_construction": [
@@ -88,14 +86,24 @@
   ],
   "custody_tripwires": [
     {"member": "seed", "error": "swp_secret_material_forbidden"},
+    {"member": "wallet-seed", "error": "swp_secret_material_forbidden"},
+    {"member": "mnemonic", "error": "swp_secret_material_forbidden"},
+    {"member": "xprv", "error": "swp_secret_material_forbidden"},
     {"member": "private_key", "error": "swp_secret_material_forbidden"},
+    {"member": "privateKey", "error": "swp_secret_material_forbidden"},
     {"member": "claim_private_key", "error": "swp_secret_material_forbidden"},
     {"member": "refund_private_key", "error": "swp_secret_material_forbidden"},
     {"member": "preimage", "error": "swp_secret_material_forbidden"},
     {"member": "macaroon", "error": "swp_secret_material_forbidden"},
+    {"member": "lnd-macaroon", "error": "swp_secret_material_forbidden"},
     {"member": "nwc", "error": "swp_secret_material_forbidden"},
     {"member": "nwc_string", "error": "swp_secret_material_forbidden"},
+    {"member": "nwc-uri", "error": "swp_secret_material_forbidden"},
+    {"member": "bearer_token", "error": "swp_secret_material_forbidden"},
+    {"member": "wallet_credential", "error": "swp_secret_material_forbidden"},
+    {"member": "wallet_rpc_payload", "error": "swp_secret_material_forbidden"},
     {"member": "musig_secret_nonce", "error": "swp_secret_material_forbidden"},
+    {"member": "secretNonce", "error": "swp_secret_material_forbidden"},
     {"member": "signing_nonce", "error": "swp_secret_material_forbidden"}
   ]
 }

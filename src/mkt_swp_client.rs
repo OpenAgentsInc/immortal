@@ -21,8 +21,9 @@ use crate::{
         MKT_SWP_SWAP_CONTRACT_KIND, MktProfileSupport, Tag, validate_mkt_private_raw,
     },
     mkt_swp_verify::{
-        BitcoinNetwork, Timelock, Transaction, parse_bolt11, parse_swap_script, sha256,
-        validate_timelock_ladder, verify_control_block,
+        BitcoinNetwork, ScriptInstruction, Timelock, Transaction, parse_bolt11, parse_swap_script,
+        sha256, tagged_hash, tapleaf_hash, validate_timelock_ladder, verify_control_block,
+        verify_musig2_signature,
     },
 };
 
@@ -708,6 +709,34 @@ impl ExitPackage {
             )?,
             "exit destination scriptPubKey",
         )?;
+        let verification = object(
+            root.get("verification").unwrap_or(&Value::Null),
+            "exit verification",
+        )?;
+        require_lower_hex(
+            require_string(
+                verification,
+                "taproot_script",
+                None,
+                "swp_exit_package_unusable",
+            )?,
+            "exit Taproot script",
+        )?;
+        require_lower_hex(
+            require_string(
+                verification,
+                "taproot_control_block",
+                None,
+                "swp_exit_package_unusable",
+            )?,
+            "exit Taproot control block",
+        )?;
+        require_string(
+            exit,
+            "sighash_type",
+            Some("DEFAULT"),
+            "swp_exit_package_unusable",
+        )?;
         match mode {
             "presigned" => {
                 let signed = require_string(
@@ -756,8 +785,17 @@ impl ExitPackage {
                 ));
             }
         }
+        let is_presigned = mode == "presigned";
         let package = Self { document };
         package.unsigned_transaction()?;
+        if is_presigned {
+            package.presigned_transaction()?.ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_exit_package_unusable",
+                    "pre-signed exit package has no complete transaction",
+                )
+            })?;
+        }
         Ok(package)
     }
 
@@ -766,20 +804,12 @@ impl ExitPackage {
     }
 
     pub fn commitment_sha256(&self) -> Result<String, SwapClientError> {
-        let object = object(&self.document, "exit package")?;
-        let commitment = json!({
-            "participant_role": object.get("participant_role"),
-            "leg_id": object.get("leg_id"),
-            "network_id": object.get("network_id"),
-            "asset_id": object.get("asset_id"),
-            "effect_id": object.get("effect_id"),
-            "funding": object.get("funding"),
-            "exit": object.get("exit"),
-            "verification": object.get("verification"),
-            "secret_commitments": object.get("secret_commitments"),
-            "broadcast": object.get("broadcast")
-        });
-        Ok(lower_hex(&Sha256::digest(canonical_json(&commitment)?)))
+        let mut commitment = object(&self.document, "exit package")?.clone();
+        commitment.remove("swap_contract_ids");
+        commitment.remove("contract_sha256");
+        Ok(lower_hex(&Sha256::digest(canonical_json(&Value::Object(
+            commitment,
+        ))?)))
     }
 
     pub fn effect_id(&self) -> Result<&str, SwapClientError> {
@@ -901,8 +931,18 @@ impl ExitPackage {
             )?,
             "pre-signed exit transaction",
         )?;
-        validate_signed_transaction_matches(&self.unsigned_transaction()?, &bytes)?;
+        validate_signed_transaction_matches(self, &self.unsigned_transaction()?, &bytes)?;
         Ok(Some(bytes))
+    }
+
+    pub fn signing_digest(&self) -> Result<[u8; 32], SwapClientError> {
+        let transaction = Transaction::parse(&self.unsigned_transaction()?).map_err(|error| {
+            SwapClientError::new(
+                "swp_exit_package_unusable",
+                format!("assembled exit transaction is invalid: {error}"),
+            )
+        })?;
+        taproot_exit_sighash(self, &transaction)
     }
 }
 
@@ -1357,6 +1397,7 @@ impl SwapSession<FundingAuthorized> {
             effect_id: package.effect_id()?.to_owned(),
             path: package.path()?.to_owned(),
             unsigned_transaction: lower_hex(&unsigned),
+            signature_hash: lower_hex(&package.signing_digest()?),
         };
         let signed = wallet_sign(&request).map_err(|error| {
             SwapClientError::new(
@@ -1364,7 +1405,7 @@ impl SwapSession<FundingAuthorized> {
                 format!("embedding wallet refused exit signing: {error}"),
             )
         })?;
-        validate_signed_transaction_matches(&unsigned, &signed)?;
+        validate_signed_transaction_matches(package, &unsigned, &signed)?;
         Ok(SignedExitTransaction {
             effect_id: request.effect_id,
             path: request.path,
@@ -1479,6 +1520,7 @@ pub struct WalletSigningRequest {
     pub effect_id: String,
     pub path: String,
     pub unsigned_transaction: String,
+    pub signature_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1695,14 +1737,19 @@ impl<'a> BoundSession<'a> {
         config: &SwapClientConfig,
         records: &'a [Event],
     ) -> Result<Self, SwapClientError> {
+        let rfq = exactly_one(records, MKT_RFQ_KIND, "swp_unresolved_loss")?;
         let quote = exactly_one(records, MKT_QUOTE_KIND, "swp_contract_terms_mismatch")?;
         let order = exactly_one(records, MKT_ORDER_KIND, "swp_contract_terms_mismatch")?;
-        if quote.pubkey != config.provider_pubkey || order.pubkey != config.requester_pubkey {
+        if rfq.pubkey != config.requester_pubkey
+            || quote.pubkey != config.provider_pubkey
+            || order.pubkey != config.requester_pubkey
+        {
             return Err(SwapClientError::new(
                 "swp_contract_signer_invalid",
-                "Quote or Order author is not the configured participant",
+                "RFQ, Quote, or Order author is not the configured participant",
             ));
         }
+        require_marked_reference(quote, "rfq", &rfq.id)?;
         require_marked_reference(order, "quote", &quote.id)?;
         let contracts = records
             .iter()
@@ -2161,7 +2208,17 @@ fn verify_exit_packages(
                 "Swap Contract has no exit package commitments",
             )
         })?;
+    let effect_bindings = contract
+        .get("effect_bindings")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_exit_package_mismatch",
+                "Swap Contract has no external-effect bindings",
+            )
+        })?;
     let contract_ids = bound.contract_ids();
+    let mut matched_commitments = BTreeSet::new();
     for package in packages {
         let document = object(package.document(), "exit package")?;
         if document.get("order_id").and_then(Value::as_str) != Some(bound.order.id.as_str())
@@ -2200,21 +2257,75 @@ fn verify_exit_packages(
         )?;
         let leg = require_string(document, "leg_id", None, "swp_exit_package_mismatch")?;
         let path = package.path()?;
-        let admitted = commitments.iter().any(|commitment| {
-            commitment.as_object().is_some_and(|commitment| {
-                commitment.get("participant_role").and_then(Value::as_str) == Some(role)
-                    && commitment.get("leg_id").and_then(Value::as_str) == Some(leg)
-                    && commitment.get("path").and_then(Value::as_str) == Some(path)
-                    && commitment.get("package_sha256").and_then(Value::as_str)
-                        == Some(digest.as_str())
+        let mode = package.mode()?;
+        let effect_role = match path {
+            "claim" => "chain_claim",
+            "refund" => "chain_refund",
+            _ => {
+                return Err(SwapClientError::new(
+                    "swp_exit_package_mismatch",
+                    "exit package path has no external-effect role",
+                ));
+            }
+        };
+        let expected_effect_id = effect_id(&bound.order.id, effect_role, leg)?;
+        if package.effect_id()? != expected_effect_id {
+            return Err(SwapClientError::new(
+                "swp_exit_package_mismatch",
+                "exit package effect ID is not derived from its Order, role, and leg",
+            ));
+        }
+        if !effect_bindings.iter().any(|binding| {
+            binding.as_object().is_some_and(|binding| {
+                binding.get("role").and_then(Value::as_str) == Some(effect_role)
+                    && binding.get("leg_id").and_then(Value::as_str) == Some(leg)
             })
-        });
-        if !admitted {
+        }) {
+            return Err(SwapClientError::new(
+                "swp_exit_package_mismatch",
+                "exit package has no exact external-effect binding",
+            ));
+        }
+        let admitted = commitments
+            .iter()
+            .enumerate()
+            .find_map(|(index, commitment)| {
+                commitment.as_object().and_then(|commitment| {
+                    (commitment.get("participant_role").and_then(Value::as_str) == Some(role)
+                        && commitment.get("leg_id").and_then(Value::as_str) == Some(leg)
+                        && commitment.get("path").and_then(Value::as_str) == Some(path)
+                        && commitment.get("package_mode").and_then(Value::as_str) == Some(mode)
+                        && commitment.get("package_sha256").and_then(Value::as_str)
+                            == Some(digest.as_str()))
+                    .then_some(index)
+                })
+            });
+        let Some(commitment_index) = admitted else {
             return Err(SwapClientError::new(
                 "swp_exit_package_mismatch",
                 "exit package has no exact Swap Contract commitment",
             ));
+        };
+        if !matched_commitments.insert(commitment_index) {
+            return Err(SwapClientError::new(
+                "swp_exit_package_mismatch",
+                "multiple exit packages satisfy one Swap Contract commitment",
+            ));
         }
+    }
+    let required_requester_commitments = commitments
+        .iter()
+        .enumerate()
+        .filter(|(_, commitment)| {
+            commitment.get("participant_role").and_then(Value::as_str) == Some("requester")
+        })
+        .map(|(index, _)| index)
+        .collect::<BTreeSet<_>>();
+    if matched_commitments != required_requester_commitments {
+        return Err(SwapClientError::new(
+            "swp_exit_package_missing",
+            "not every requester exit commitment has a persisted package",
+        ));
     }
     Ok(())
 }
@@ -2240,6 +2351,7 @@ fn refund_action(
 }
 
 fn validate_signed_transaction_matches(
+    package: &ExitPackage,
     unsigned: &[u8],
     signed: &[u8],
 ) -> Result<(), SwapClientError> {
@@ -2267,11 +2379,253 @@ fn validate_signed_transaction_matches(
             format!("could not serialize signed transaction: {error}"),
         )
     })?;
-    if unsigned_base != signed_base || signed.inputs.iter().all(|input| input.witness.is_empty()) {
+    if unsigned_base != signed_base {
         return Err(SwapClientError::new(
             "swp_external_signature_mismatch",
-            "wallet changed the transaction template or returned no witness",
+            "wallet changed the transaction template",
         ));
+    }
+    let [input] = signed.inputs.as_slice() else {
+        return Err(SwapClientError::new(
+            "swp_external_signature_invalid",
+            "exit signing supports exactly one bound input",
+        ));
+    };
+    if input.witness.len() < 3 {
+        return Err(SwapClientError::new(
+            "swp_external_signature_invalid",
+            "wallet returned an incomplete Taproot script-path witness",
+        ));
+    }
+    let control_block = input.witness.last().ok_or_else(|| {
+        SwapClientError::new(
+            "swp_external_signature_invalid",
+            "wallet returned no Taproot control block",
+        )
+    })?;
+    let script = input.witness.get(input.witness.len() - 2).ok_or_else(|| {
+        SwapClientError::new(
+            "swp_external_signature_invalid",
+            "wallet returned no Taproot script",
+        )
+    })?;
+    let signatures = input.witness[..input.witness.len() - 2]
+        .iter()
+        .filter(|item| item.len() == 64)
+        .collect::<Vec<_>>();
+    let [signature] = signatures.as_slice() else {
+        return Err(SwapClientError::new(
+            "swp_external_signature_invalid",
+            "wallet witness must contain exactly one default-SIGHASH Schnorr signature",
+        ));
+    };
+    let root = object(package.document(), "exit package")?;
+    let verification = object(
+        root.get("verification").unwrap_or(&Value::Null),
+        "exit verification",
+    )?;
+    let expected_script = decode_hex(
+        require_string(
+            verification,
+            "taproot_script",
+            None,
+            "swp_exit_package_unusable",
+        )?,
+        "exit Taproot script",
+    )?;
+    let expected_control = decode_hex(
+        require_string(
+            verification,
+            "taproot_control_block",
+            None,
+            "swp_exit_package_unusable",
+        )?,
+        "exit Taproot control block",
+    )?;
+    if script != &expected_script || control_block != &expected_control {
+        return Err(SwapClientError::new(
+            "swp_external_signature_mismatch",
+            "wallet witness changed the bound Taproot path",
+        ));
+    }
+    let instructions = parse_swap_script(script).map_err(|error| {
+        SwapClientError::new(
+            "swp_external_signature_invalid",
+            format!("wallet returned an invalid Taproot script: {error}"),
+        )
+    })?;
+    let signing_keys = instructions
+        .windows(2)
+        .filter_map(|instructions| match instructions {
+            [
+                ScriptInstruction::Push(key),
+                ScriptInstruction::Opcode(opcode),
+            ] if key.len() == 32 && matches!(opcode, 0xac | 0xad) => key.as_slice().try_into().ok(),
+            _ => None,
+        })
+        .collect::<Vec<[u8; 32]>>();
+    let [signing_key] = signing_keys.as_slice() else {
+        return Err(SwapClientError::new(
+            "swp_external_signature_invalid",
+            "bound Taproot path must contain exactly one x-only signing key",
+        ));
+    };
+    let signing_key = XOnlyPublicKey::from_byte_array(*signing_key).map_err(|_| {
+        SwapClientError::new(
+            "swp_external_signature_invalid",
+            "bound Taproot signing key is invalid",
+        )
+    })?;
+    let digest = taproot_exit_sighash(package, &signed)?;
+    let signature: [u8; 64] = signature.as_slice().try_into().map_err(|_| {
+        SwapClientError::new(
+            "swp_external_signature_invalid",
+            "wallet Schnorr signature has an invalid length",
+        )
+    })?;
+    verify_musig2_signature(&signing_key, &digest, &signature).map_err(|error| {
+        SwapClientError::new(
+            "swp_external_signature_invalid",
+            format!("wallet Schnorr signature does not verify: {error}"),
+        )
+    })?;
+    Ok(())
+}
+
+fn taproot_exit_sighash(
+    package: &ExitPackage,
+    transaction: &Transaction,
+) -> Result<[u8; 32], SwapClientError> {
+    let [input] = transaction.inputs.as_slice() else {
+        return Err(SwapClientError::new(
+            "swp_exit_package_unusable",
+            "exit signing supports exactly one bound input",
+        ));
+    };
+    let root = object(package.document(), "exit package")?;
+    let funding = object(root.get("funding").unwrap_or(&Value::Null), "exit funding")?;
+    let verification = object(
+        root.get("verification").unwrap_or(&Value::Null),
+        "exit verification",
+    )?;
+    let amount = canonical_amount(require_string(
+        funding,
+        "amount",
+        None,
+        "swp_exit_package_unusable",
+    )?)?;
+    let script_pubkey = decode_hex(
+        require_string(funding, "script_pubkey", None, "swp_exit_package_unusable")?,
+        "funding scriptPubKey",
+    )?;
+    let taproot_script = decode_hex(
+        require_string(
+            verification,
+            "taproot_script",
+            None,
+            "swp_exit_package_unusable",
+        )?,
+        "exit Taproot script",
+    )?;
+    let control_block = decode_hex(
+        require_string(
+            verification,
+            "taproot_control_block",
+            None,
+            "swp_exit_package_unusable",
+        )?,
+        "exit Taproot control block",
+    )?;
+    let output_key_bytes = script_pubkey.strip_prefix(&[0x51, 0x20]).ok_or_else(|| {
+        SwapClientError::new(
+            "swp_exit_package_unusable",
+            "funding scriptPubKey is not a v1 Taproot output",
+        )
+    })?;
+    let output_key =
+        XOnlyPublicKey::from_byte_array(output_key_bytes.try_into().map_err(|_| {
+            SwapClientError::new(
+                "swp_exit_package_unusable",
+                "funding Taproot output key has an invalid length",
+            )
+        })?)
+        .map_err(|_| {
+            SwapClientError::new(
+                "swp_exit_package_unusable",
+                "funding Taproot output key is invalid",
+            )
+        })?;
+    verify_control_block(&output_key, &taproot_script, &control_block).map_err(|error| {
+        SwapClientError::new(
+            "swp_exit_package_unusable",
+            format!("exit Taproot path does not match the funding output: {error}"),
+        )
+    })?;
+
+    let mut prevout = Vec::with_capacity(36);
+    prevout.extend_from_slice(&input.previous_txid);
+    prevout.extend_from_slice(&input.previous_output.to_le_bytes());
+    let mut encoded_script_pubkey = Vec::new();
+    write_compact_size(script_pubkey.len(), &mut encoded_script_pubkey)?;
+    encoded_script_pubkey.extend_from_slice(&script_pubkey);
+    let mut encoded_outputs = Vec::new();
+    for output in &transaction.outputs {
+        encoded_outputs.extend_from_slice(&output.value_sat.to_le_bytes());
+        write_compact_size(output.script_pubkey.len(), &mut encoded_outputs)?;
+        encoded_outputs.extend_from_slice(&output.script_pubkey);
+    }
+    let mut message = Vec::new();
+    message.push(0);
+    message.push(0);
+    message.extend_from_slice(&transaction.version.to_le_bytes());
+    message.extend_from_slice(&transaction.lock_time.to_le_bytes());
+    message.extend_from_slice(&sha256(&prevout));
+    message.extend_from_slice(&sha256(&amount.to_le_bytes()));
+    message.extend_from_slice(&sha256(&encoded_script_pubkey));
+    message.extend_from_slice(&sha256(&input.sequence.to_le_bytes()));
+    message.extend_from_slice(&sha256(&encoded_outputs));
+    message.push(2);
+    message.extend_from_slice(&0_u32.to_le_bytes());
+    let leaf_version = control_block.first().copied().ok_or_else(|| {
+        SwapClientError::new(
+            "swp_exit_package_unusable",
+            "exit Taproot control block is empty",
+        )
+    })? & 0xfe;
+    message.extend_from_slice(
+        &tapleaf_hash(leaf_version, &taproot_script).map_err(|error| {
+            SwapClientError::new(
+                "swp_exit_package_unusable",
+                format!("exit Taproot leaf is invalid: {error}"),
+            )
+        })?,
+    );
+    message.push(0);
+    message.extend_from_slice(&u32::MAX.to_le_bytes());
+    Ok(tagged_hash("TapSighash", &message))
+}
+
+fn write_compact_size(value: usize, output: &mut Vec<u8>) -> Result<(), SwapClientError> {
+    let value = u64::try_from(value).map_err(|_| {
+        SwapClientError::new(
+            "swp_exit_package_unusable",
+            "serialized exit field length exceeds u64",
+        )
+    })?;
+    match value {
+        0..=0xfc => output.push(value as u8),
+        0xfd..=0xffff => {
+            output.push(0xfd);
+            output.extend_from_slice(&(value as u16).to_le_bytes());
+        }
+        0x1_0000..=0xffff_ffff => {
+            output.push(0xfe);
+            output.extend_from_slice(&(value as u32).to_le_bytes());
+        }
+        _ => {
+            output.push(0xff);
+            output.extend_from_slice(&value.to_le_bytes());
+        }
     }
     Ok(())
 }
@@ -2763,18 +3117,32 @@ fn reject_custody_material(value: &Value) -> Result<(), SwapClientError> {
     match value {
         Value::Object(object) => {
             for (name, child) in object {
+                let normalized = name
+                    .chars()
+                    .filter(|character| character.is_ascii_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect::<String>();
                 if matches!(
-                    name.to_ascii_lowercase().as_str(),
+                    normalized.as_str(),
                     "seed"
-                        | "private_key"
-                        | "claim_private_key"
-                        | "refund_private_key"
+                        | "walletseed"
+                        | "mnemonic"
+                        | "xprv"
+                        | "privatekey"
+                        | "claimprivatekey"
+                        | "refundprivatekey"
                         | "preimage"
                         | "macaroon"
+                        | "lndmacaroon"
                         | "nwc"
-                        | "nwc_string"
-                        | "musig_secret_nonce"
-                        | "signing_nonce"
+                        | "nwcstring"
+                        | "nwcuri"
+                        | "bearertoken"
+                        | "walletcredential"
+                        | "walletrpcpayload"
+                        | "musigsecretnonce"
+                        | "secretnonce"
+                        | "signingnonce"
                 ) {
                     return Err(SwapClientError::new(
                         "swp_secret_material_forbidden",
@@ -2788,6 +3156,16 @@ fn reject_custody_material(value: &Value) -> Result<(), SwapClientError> {
             for child in values {
                 reject_custody_material(child)?;
             }
+        }
+        Value::String(string)
+            if string.starts_with("nostr+walletconnect://")
+                || string.starts_with("xprv")
+                || string.starts_with("tprv") =>
+        {
+            return Err(SwapClientError::new(
+                "swp_secret_material_forbidden",
+                "forbidden custody value",
+            ));
         }
         _ => {}
     }

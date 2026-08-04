@@ -13,6 +13,7 @@ use immortal::{
     },
     mkt_swp_verify::{Transaction, TransactionInput, TransactionOutput, sha256},
 };
+use secp256k1::{Keypair, Secp256k1, SecretKey};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -46,7 +47,7 @@ fn fixture_manifest_is_complete_and_unique() {
     assert!(names.contains("swp-v1-doomsday-keyless-esplora-broadcast"));
 
     let tripwires = fixture["custody_tripwires"].as_array().unwrap();
-    assert_eq!(tripwires.len(), 10);
+    assert_eq!(tripwires.len(), 20);
     let members = tripwires
         .iter()
         .map(|case| case["member"].as_str().unwrap())
@@ -253,6 +254,35 @@ fn doomsday_snapshot_builds_keyless_esplora_request() {
 }
 
 #[test]
+fn exit_commitment_excludes_only_circular_contract_bindings() {
+    let fixture = fixture();
+    let session = build_session(&fixture, SwapType::Submarine, true);
+    let package = &session.exit_packages()[0];
+    let original = package.commitment_sha256().unwrap();
+
+    let mut circular = package.document().clone();
+    circular["swap_contract_ids"] = json!(["aa".repeat(32), "bb".repeat(32)]);
+    circular["contract_sha256"] = json!("cc".repeat(32));
+    assert_eq!(
+        ExitPackage::parse(circular)
+            .unwrap()
+            .commitment_sha256()
+            .unwrap(),
+        original
+    );
+
+    let mut relabeled = package.document().clone();
+    relabeled["order_id"] = json!("dd".repeat(32));
+    assert_ne!(
+        ExitPackage::parse(relabeled)
+            .unwrap()
+            .commitment_sha256()
+            .unwrap(),
+        original
+    );
+}
+
+#[test]
 fn reverse_and_chain_requester_flows_authorize_and_plan_recovery() {
     let fixture = fixture();
     for swap_type in [SwapType::Reverse, SwapType::Chain] {
@@ -387,6 +417,25 @@ fn verification_refusals_cover_contract_rail_timeout_and_secret_boundaries() {
             .unwrap_err()
             .code,
         "swp_contract_missing"
+    );
+
+    let mut no_rfq = session.signed_records().to_vec();
+    no_rfq.retain(|event| event.kind != 39_604);
+    let no_rfq = SwapSession::from_signed_records(
+        session.config().clone(),
+        no_rfq,
+        session.exit_packages().to_vec(),
+    )
+    .unwrap();
+    assert_eq!(
+        no_rfq
+            .verify_before_fund(
+                verification_input(&fixture, SwapType::Submarine),
+                |_| Ok(())
+            )
+            .unwrap_err()
+            .code,
+        "swp_unresolved_loss"
     );
 
     let mut snapshot: Value = serde_json::from_slice(&session.persist().unwrap()).unwrap();
@@ -549,12 +598,30 @@ fn wallet_callback_effect_replay_and_custody_tripwires_are_bounded() {
         .unwrap();
     let signed_exit = authorized
         .sign_exit_with(0, |request| {
-            Ok(add_single_witness(&decode_hex(
+            Ok(add_signed_taproot_witness(
+                &fixture,
                 &request.unsigned_transaction,
-            )))
+                &request.signature_hash,
+            ))
         })
         .unwrap();
     assert_eq!(signed_exit.path, "refund");
+    assert_eq!(
+        authorized
+            .sign_exit_with(0, |request| {
+                let mut invalid = add_signed_taproot_witness(
+                    &fixture,
+                    &request.unsigned_transaction,
+                    &request.signature_hash,
+                );
+                let signature_offset = 4 + 2 + 1 + 41 + 1 + 10 + 1 + 1;
+                invalid[signature_offset] ^= 1;
+                Ok(invalid)
+            })
+            .unwrap_err()
+            .code,
+        "swp_external_signature_invalid"
+    );
 
     let claim_session = build_session_path_mode(
         &fixture,
@@ -567,9 +634,11 @@ fn wallet_callback_effect_replay_and_custody_tripwires_are_bounded() {
         .unwrap();
     let signed_claim = claim_authorized
         .sign_exit_with(0, |request| {
-            Ok(add_single_witness(&decode_hex(
+            Ok(add_signed_taproot_witness(
+                &fixture,
                 &request.unsigned_transaction,
-            )))
+                &request.signature_hash,
+            ))
         })
         .unwrap();
     assert_eq!(signed_claim.path, "claim");
@@ -617,6 +686,18 @@ fn wallet_callback_effect_replay_and_custody_tripwires_are_bounded() {
             "{member}"
         );
     }
+    assert_eq!(
+        factory
+            .rfq(
+                300,
+                &"32".repeat(32),
+                400,
+                json!({"connection":"nostr+walletconnect://secret"}),
+            )
+            .unwrap_err()
+            .code,
+        "swp_secret_material_forbidden"
+    );
 }
 
 struct Setup {
@@ -628,10 +709,8 @@ struct Setup {
 impl Setup {
     fn new(fixture: &Value) -> Self {
         let deterministic = &fixture["deterministic_session"];
-        let requester_byte = deterministic["requester_secret_byte"].as_u64().unwrap() as u8;
-        let provider_byte = deterministic["provider_secret_byte"].as_u64().unwrap() as u8;
-        let requester = MarketSigner::from_secret_bytes([requester_byte; 32]).unwrap();
-        let provider = MarketSigner::from_secret_bytes([provider_byte; 32]).unwrap();
+        let requester = MarketSigner::from_secret_bytes(test_signing_key(b"requester")).unwrap();
+        let provider = MarketSigner::from_secret_bytes(test_signing_key(b"provider")).unwrap();
         let config = SwapClientConfig {
             session_id: deterministic["session_id"].as_str().unwrap().into(),
             requester_pubkey: requester.pubkey().into(),
@@ -730,7 +809,10 @@ fn build_session_path_mode(
     object.insert("quote_id".into(), Value::String(quote.id.clone()));
     object.insert(
         "effect_bindings".into(),
-        json!([{"role":"chain_fund","leg_id":"source"}]),
+        json!([
+            {"role":"chain_fund","leg_id":"source"},
+            {"role":format!("chain_{exit_path}"),"leg_id":"source"}
+        ]),
     );
     object.insert(
         "exit_package_commitments".into(),
@@ -738,6 +820,7 @@ fn build_session_path_mode(
             "participant_role":"requester",
             "leg_id":"source",
             "path":exit_path,
+            "package_mode":exit_mode.unwrap_or("presigned"),
             "package_sha256":package_digest
         }]),
     );
@@ -976,13 +1059,7 @@ fn exit_document(
     )
     .serialize(false)
     .unwrap();
-    let signed = add_single_witness(&unsigned);
-    let (signed_transaction, signer_ref) = if mode == "presigned" {
-        (Value::String(lower_hex(&signed)), Value::Null)
-    } else {
-        (Value::Null, Value::String(format!("wallet:{path}")))
-    };
-    json!({
+    let mut document = json!({
         "schema":"openagents.mkt-swp.exit.v1",
         "profile":"mkt-swp",
         "profile_version":1,
@@ -993,7 +1070,7 @@ fn exit_document(
         "leg_id":"source",
         "network_id":deterministic["network_a"],
         "asset_id":deterministic["chain_asset_a"],
-        "effect_id":lower_hex(&Sha256::digest(format!("{path}-effect").as_bytes())),
+        "effect_id":exit_effect_id(order_id, path, "source"),
         "funding":{
             "transaction_id":funding_txid,
             "transaction_template_sha256":lower_hex(&sha256(&decode_hex(&fixture_string(fixture, "funding_transaction")))),
@@ -1003,11 +1080,11 @@ fn exit_document(
             "confirmation_policy_sha256":"44".repeat(32)
         },
         "exit":{
-            "mode":mode,
+            "mode":if mode == "presigned" { "wallet_sign" } else { mode },
             "path":path,
             "transaction_template_sha256":lower_hex(&sha256(&unsigned)),
-            "signed_transaction":signed_transaction,
-            "signer_ref":signer_ref,
+            "signed_transaction":null,
+            "signer_ref":format!("wallet:{path}"),
             "transaction_version":2,
             "lock_time":140,
             "input_sequence":0,
@@ -1020,7 +1097,9 @@ fn exit_document(
         "verification":{
             "swap_tree_sha256":"55".repeat(32),
             "quote_id":quote_id,
-            "verifier_digest":"66".repeat(32)
+            "verifier_digest":"66".repeat(32),
+            "taproot_script":deterministic["taproot_script"],
+            "taproot_control_block":deterministic["taproot_control_block"]
         },
         "secret_commitments":{
             "payment_hash":deterministic["payment_hash"],
@@ -1030,7 +1109,17 @@ fn exit_document(
             "esplora_urls":["https://esplora.example/api"],
             "minimum_agreeing_sources":1
         }
-    })
+    });
+    if mode == "presigned" {
+        let draft = ExitPackage::parse(document.clone()).unwrap();
+        let signature_hash = lower_hex(&draft.signing_digest().unwrap());
+        let signed = add_signed_taproot_witness(fixture, &lower_hex(&unsigned), &signature_hash);
+        let exit = document["exit"].as_object_mut().unwrap();
+        exit.insert("mode".into(), json!("presigned"));
+        exit.insert("signed_transaction".into(), json!(lower_hex(&signed)));
+        exit.insert("signer_ref".into(), Value::Null);
+    }
+    document
 }
 
 fn signed(request: MktSigningRequest, signer: &MarketSigner) -> immortal::domain::Event {
@@ -1043,12 +1132,27 @@ fn signed(request: MktSigningRequest, signer: &MarketSigner) -> immortal::domain
     request.verify_signed(event).unwrap()
 }
 
-fn add_single_witness(unsigned: &[u8]) -> Vec<u8> {
-    let mut signed = Vec::with_capacity(unsigned.len() + 5);
+fn add_signed_taproot_witness(fixture: &Value, unsigned: &str, signature_hash: &str) -> Vec<u8> {
+    let unsigned = decode_hex(unsigned);
+    let secret = SecretKey::from_byte_array(test_signing_key(b"exit")).unwrap();
+    let keypair = Keypair::from_secret_key(&Secp256k1::new(), &secret);
+    let digest: [u8; 32] = decode_hex(signature_hash).try_into().unwrap();
+    let signature = Secp256k1::new().sign_schnorr_no_aux_rand(&digest, &keypair);
+    let script = decode_hex(&fixture_string(fixture, "taproot_script"));
+    let control = decode_hex(&fixture_string(fixture, "taproot_control_block"));
+    let mut signed = Vec::with_capacity(
+        unsigned.len() + signature.as_ref().len() + script.len() + control.len() + 8,
+    );
     signed.extend_from_slice(&unsigned[..4]);
     signed.extend_from_slice(&[0, 1]);
     signed.extend_from_slice(&unsigned[4..unsigned.len() - 4]);
-    signed.extend_from_slice(&[1, 1, 1]);
+    signed.push(3);
+    signed.push(64);
+    signed.extend_from_slice(signature.as_ref());
+    signed.push(u8::try_from(script.len()).unwrap());
+    signed.extend_from_slice(&script);
+    signed.push(u8::try_from(control.len()).unwrap());
+    signed.extend_from_slice(&control);
     signed.extend_from_slice(&unsigned[unsigned.len() - 4..]);
     signed
 }
@@ -1100,4 +1204,19 @@ fn lower_hex(bytes: &[u8]) -> String {
         output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     output
+}
+
+fn test_signing_key(role: &[u8]) -> [u8; 32] {
+    Sha256::digest([b"immortal-mkt-swp-test-only:".as_slice(), role].concat()).into()
+}
+
+fn exit_effect_id(order_id: &str, path: &str, leg_id: &str) -> String {
+    let mut preimage = b"openagents.mkt-swp.v1".to_vec();
+    preimage.push(0);
+    preimage.extend_from_slice(&decode_hex(order_id));
+    preimage.push(0);
+    preimage.extend_from_slice(format!("chain_{path}").as_bytes());
+    preimage.push(0);
+    preimage.extend_from_slice(leg_id.as_bytes());
+    lower_hex(&sha256(&preimage))
 }

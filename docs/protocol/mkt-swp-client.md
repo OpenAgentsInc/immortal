@@ -54,19 +54,21 @@ verification requirements, public secret commitments, and broadcast mode.
 The final package also carries both Swap Contract event IDs and their shared
 contract digest.
 
-`package_sha256` hashes the execution fields listed above, excluding the two
-contract IDs and `contract_sha256`. This projection avoids an impossible
+`package_sha256` hashes every package member except the two contract IDs and
+`contract_sha256`. This projection avoids an impossible
 circular dependency in which a contract event ID would commit to a package
 that commits back to the event ID. The complete package must still contain
 the exact bilateral IDs and digest, and those bindings are revalidated before
 funding and after restore.
 
 The client assembles claim and refund transactions but delegates signatures
-to a wallet or external signer callback. It rejects a returned transaction if
-the version, lock time, inputs, outputs, or non-witness serialization differs
-from the requested template. Pre-signed packages require no key and can be
-converted into a bounded public Esplora `POST /tx` request by
-`KeylessEsploraExecutor`.
+to a wallet or external signer callback. The request includes the exact
+Taproot script-path sighash. It rejects a returned transaction if the version,
+lock time, inputs, outputs, non-witness serialization, script, or control
+block differs from the requested template, and verifies the returned Schnorr
+signature before accepting it. Pre-signed packages pass the same verification,
+require no key, and can be converted into a bounded public Esplora `POST /tx`
+request by `KeylessEsploraExecutor`.
 
 External wallet, payment, and broadcast operations use deterministic effect
 IDs. Replaying the same result is idempotent; binding one effect ID to a
