@@ -28,6 +28,38 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-04 — Codex 5.6 Sol (Extra High), Operation Diamond Hands Phase 0 / issue #1
+
+- Began from the then-current `origin/main` commit `5dfe786` in the isolated
+  worktree `/tmp/immortal-issue-1.sA6ljv`, following the owner's sequential
+  issue order and no-GitHub-workflow invariant.
+- Read the pinned OpenAgents NIP-OT and NIP-PG contracts and adopted only the
+  four records required for the first public project read path: Organization
+  `32100`, Project `32222`, Project Status `32223`, and Project Update `32226`.
+  NIP-BT credits remain postponed. No numeric NIP-11 claim was added for these
+  proposal identifiers.
+- Packaging decision: retain one Cargo package and one server binary. The
+  default `server` feature owns Tokio/Postgres/gateway code; disabling it
+  exposes a transport-neutral client core usable by both native and wasm
+  applications. No direct dependency was added and no owner dependency
+  approval was required.
+- The client owns bounded REQ construction, local canonical-ID and Schnorr
+  verification, NIP-OT/PG validation, EOSE snapshot truth, live folding,
+  deterministic newest-event selection, reconnect/stale states, diagnostics,
+  and preservation of verified unknown project-address activity. The host
+  application owns the WebSocket, keeping the browser path direct to
+  `wss://relay.openagents.com`.
+- Measured the target boundary twice: server dependencies were first isolated
+  successfully, then Apple clang failed because it has no wasm backend. The
+  repository now uses a small Zig wrapper for the existing allowlisted
+  `secp256k1-sys` C build and supplies the standard `memmove` prototype omitted
+  by that crate's tiny wasm sysroot. Native and wasm client checks then passed.
+- Added the attributed `nipotpg` fixture corpus and six focused tests covering
+  positive/negative OT/PG records, filter bounds, EOSE/live behavior,
+  cryptographic fail-closed behavior, forward-compatible activity, and fresh
+  reconnect snapshots. Omega/OpenAgents browser integration and live proof
+  remain in progress before issue #1 is closed.
+
 ### 2026-08-03 — Codex 5.6 Sol (Extra High), M1 Domain
 
 - Accepted the implementation handoff from Claude Fable 5 at commit

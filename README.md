@@ -54,8 +54,9 @@ TLS is the job of the reverse proxy (nginx or Caddy).
 2. **Hardened.** Prepared SQL statements only. Limits on frame size,
    subscriptions, filters, and query cost. Rate limits per IP and per
    pubkey. Fail closed.
-3. **Simple.** One crate. One binary. Seven direct dependencies (see
-   `AGENTS.md`).
+3. **Simple.** One crate. One server binary. The same crate exposes a
+   transport-neutral client library when built without the `server` feature.
+   Seven direct dependencies (see `AGENTS.md`).
 4. **Easy to deploy.** A new Debian server, Postgres from the package
    manager, and this binary make a relay in minutes.
 5. **Locally proved.** Conformance and deployment acceptance run manually;
@@ -73,6 +74,14 @@ formal work is next. The pinned Block extension lane is also active for agent
 ownership/authentication, observer and turn traffic, private agent data,
 reminders, projects, identity/DM/workspace commands, and relay state. See
 `docs/ROADMAP.md`, `docs/conformance/`, and `docs/deployment/`.
+
+Operation Diamond Hands Phase 0 adds a bounded, transport-neutral Nostr
+project reader for native and browser/WASM applications. It verifies event IDs
+and signatures locally, understands the adopted NIP-OT Organization and NIP-PG
+Project/Status/Update records, and makes EOSE the snapshot boundary. The
+embedding application owns its WebSocket, so a browser connects straight to
+the relay without an Immortal HTTP proxy. See
+[`docs/protocol/openagents-project.md`](docs/protocol/openagents-project.md).
 
 ## Quick start
 
@@ -127,6 +136,13 @@ Podman, or Docker runtime:
 Run the complete manual M1–M7 conformance gate with
 `./scripts/test-conformance.sh`. No GitHub workflow or billed GitHub runner is
 used.
+
+Check the project client on both targets (Zig is required for the existing
+`secp256k1` C backend on `wasm32-unknown-unknown`):
+
+```sh
+./scripts/test-project-client.sh
+```
 
 ## Provenance
 

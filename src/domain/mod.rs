@@ -12,6 +12,7 @@ mod event;
 mod expanded;
 mod filter;
 mod hex;
+mod openagents;
 mod replacement;
 mod timestamp;
 
@@ -37,6 +38,12 @@ pub use expanded::{
     parse_http_authorization_hash,
 };
 pub use filter::{Filter, matches_any, search_terms};
+pub use openagents::{
+    NostrAddress, OPENAGENTS_ORGANIZATION_KIND, OPENAGENTS_PROJECT_KIND,
+    OPENAGENTS_PROJECT_STATUS_KIND, OPENAGENTS_PROJECT_UPDATE_KIND, OpenAgentsOrganization,
+    OpenAgentsProject, OpenAgentsProjectEvent, OpenAgentsProjectStatus, OpenAgentsProjectUpdate,
+    parse_address, references_project, validate_openagents_project_event,
+};
 pub use replacement::{
     EventClass, ReplacementAddress, ReplacementDecision, compare_replacement,
     compare_replacement_order,

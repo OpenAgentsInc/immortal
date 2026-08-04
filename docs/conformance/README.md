@@ -29,6 +29,7 @@ by `AGENTS.md`.
 | Block NIP-AE/AP/ER/MP/PL stored-envelope validation and authenticated author/owner/shared ACLs, including fail-closed push-executor refusal | the matching `tests/fixtures/nip*/server.json` corpora, `tests/block_fixtures.rs`, and the live gateway contract |
 | Block NIP-IA/DV/WP authenticated commands, transactional derived state, relay-signed deltas/snapshots, and cross-process NIP-11 workspace icon | the matching Block fixtures plus the live gateway contract |
 | Block NIP-CW safe WebSocket degradation, NIP-RS addressable/barrier semantics, and NIP-GS no-handler classification | `nipcw/`, `niprs/`, `nipgs/`, filter/store unit tests, and the live gateway contract |
+| OpenAgents NIP-OT Organization plus NIP-PG Project, Project Status, and Project Update validation; direct-relay filter bounds; EOSE/live projection; reconnect replacement; malformed-event exclusion; unknown activity preservation | `tests/fixtures/nipotpg/project-read.json`, `tests/openagents_project_fixtures.rs`, and `scripts/test-project-client.sh` on native + `wasm32-unknown-unknown` |
 | M2 migrations, hash drift, prepared admission/query paths, least privilege, policy branches, FTS, transactional NOTIFY, replacement/deletion concurrency, and ephemeral non-storage | `tests/store_static.rs` and `tests/store_postgres.rs` |
 | M3 indexed fanout by ID/author/kind/tag, broad lane, race-free EOSE, deduplication, queue overflow, query cancellation, limits, rates, frame bounds, and graceful shutdown | gateway unit tests and `tests/gateway_postgres.rs` |
 | M4 two binaries/one Postgres, cross-delivery, bounded sequence-gap recovery, kill-one survival, and fail-closed unbounded gap | `tests/multiprocess_postgres.rs` |
@@ -67,3 +68,14 @@ databases, then removes them on exit:
 The destructive live tests require both a dedicated database URL and
 `IMMORTAL_TEST_ALLOW_DESTRUCTIVE=1`; without that guard they skip. The load
 test is additionally ignored unless the script selects it explicitly.
+
+The Operation Diamond Hands client-only target gate is separate from the
+server/deployment gate because the relay host does not need a wasm toolchain:
+
+```sh
+./scripts/test-project-client.sh
+```
+
+It uses the repository's Zig C-compiler wrapper only for the allowlisted
+`secp256k1` dependency on `wasm32-unknown-unknown`. This remains a manual local
+proof and does not invoke GitHub automation.

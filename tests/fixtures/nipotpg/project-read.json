@@ -1,0 +1,29 @@
+{
+  "sources": [
+    "nips/openagents/OT.md @ d3bb7c51219e2473965ff6f576c1492b2aa99d31",
+    "nips/openagents/PG.md @ d3bb7c51219e2473965ff6f576c1492b2aa99d31"
+  ],
+  "adopted_kinds": {
+    "organization": 32100,
+    "project": 32222,
+    "project_status": 32223,
+    "project_update": 32226
+  },
+  "invalid_cases": [
+    "wrong-authority",
+    "duplicate-required-tag",
+    "wrong-status-kind",
+    "noncanonical-revision",
+    "unknown-status-category",
+    "unknown-update-health",
+    "mismatched-update-subject",
+    "mismatched-content-digest"
+  ],
+  "client_contract": {
+    "canonical_after": "EOSE",
+    "reconnect": "retain-last-complete-snapshot-until-fresh-EOSE",
+    "unknown_project_activity": "preserve-after-id-and-signature-verification",
+    "malformed_known_event": "diagnose-and-exclude",
+    "max_wire_message_bytes": 262144
+  }
+}

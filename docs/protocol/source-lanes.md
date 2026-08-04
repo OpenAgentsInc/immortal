@@ -8,12 +8,12 @@ exception. No M6 exception was approved.
 | --- | --- |
 | `official` | Implement the pinned NIP-17, NIP-29, NIP-40, NIP-45, NIP-50, NIP-65, NIP-70, NIP-86, and NIP-98 behavior described in `nip-expansion.md`. Watch NIP-77 without implementing it. NIP-91 is absent from this pinned lane, so do not advertise or implement it. |
 | `block` | Owner adoption on 2026-08-03 pulled all 15 pinned custom specifications forward: NIP-AA, AE, AM, AO, AP, CW, DV, ER, GS, IA, MP, OA, PL, RS, and WP. The exact server contract and deliberate non-advertisement cases are in `block-nips.md`; no identifier conflicts with the official lane were introduced. |
-| `openagents` | Owner direction on 2026-08-03 lifted the upstream postponement note for NIP-AC, DS, LBR, SA, SKL, and TRN; the owner plans to pull the lane forward. The lane now also pins the five draft hardening modules NIP-SP, SC, FD, SI, and BT. No runtime adoption has happened yet: an adoption decision must still name the exact lane and identifier, add a fixture, and update NIP-11 only after the local conformance gate. |
+| `openagents` | Owner direction on 2026-08-03 lifted the upstream postponement note for NIP-AC, DS, LBR, SA, SKL, and TRN; the owner plans to pull the lane forward. Operation Diamond Hands issue #1 adopts only the NIP-OT Organization kind `32100` and NIP-PG Project/Status/Update kinds `32222`, `32223`, and `32226` as a client read projection, with `nipotpg` fixtures. All other OpenAgents NIPs remain unadopted at runtime. NIP-BT is explicitly postponed. These proposal identifiers are not numeric official NIP numbers and therefore add nothing to NIP-11 `supported_nips`. |
 
 The source files remain pinned protocol inputs, not claims of runtime support.
 A future adoption decision must name the exact lane and identifier, add a
-fixture, and update NIP-11 only after the implementation passes the local
-conformance gate.
+fixture, and update NIP-11 only when it corresponds to a numeric NIP-11
+identifier and the implementation passes the local conformance gate.
 
 ## M7 decision
 

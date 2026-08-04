@@ -34,6 +34,11 @@ names the NIP that owns the behavior.
   `nipam/turn-metrics.json` pin the Block agent ownership, agent-authentication,
   ephemeral observer, and private turn-metric envelopes against Buzz commit
   `027a74a61c8643a1d1086d3e8307fad89d7735f7`.
+- `nipotpg/project-read.json` was written for Immortal from the pinned
+  OpenAgents NIP-OT and NIP-PG texts at upstream commit
+  `d3bb7c51219e2473965ff6f576c1492b2aa99d31`. It pins the four Phase 0
+  project-read kinds, invalid-tag boundaries, and the browser-neutral client
+  EOSE/reconnect/fail-closed contract.
 - `nipae/`, `nipap/`, `niper/`, `nipmp/`, `nippl/`, `nipia/`, `nipdv/`,
   `nipwp/`, `nipcw/`, `niprs/`, and `nipgs/` each contain a committed server
   contract derived from the corresponding pinned Block text. They cover

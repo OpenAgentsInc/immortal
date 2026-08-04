@@ -133,6 +133,35 @@ as early as possible.
       `NOTIFY` storm behavior
 - [ ] Security pass against the AGENTS.md rules; publish the results
 
+## Operation Diamond Hands
+
+The first public proof that OpenAgents project state is relay-native. NIP-BT
+credits remain postponed and are not a Phase 0/1 dependency.
+
+### Phase 0 — read-only project surface
+
+- [x] Adopt and fixture the NIP-OT Organization (`32100`) and NIP-PG Project
+      (`32222`), Project Status (`32223`), and Project Update (`32226`) read
+      contract from the pinned OpenAgents lane
+- [x] Expose one transport-neutral client core from the existing crate, with
+      the server-only Tokio/Postgres closure behind the default `server`
+      feature
+- [x] Build bounded direct-relay filters, local event ID/signature checks,
+      EOSE snapshot/live folding, deterministic replacement selection,
+      reconnect/stale states, malformed-event exclusion, and forward-
+      compatible unknown project activity
+- [x] Prove the library natively and on `wasm32-unknown-unknown` with a manual
+      local command; no GitHub workflow or billed runner
+- [ ] Integrate the WebSocket adapter and `/dh` GPUI surface in Omega and mount
+      its emitted web artifact from OpenAgents (tracked in issue #1)
+
+### Phase 1 — joinable project
+
+- [ ] Select and document one explicit admission path before implementation;
+      no silent open-relay fallback
+- [ ] Add browser identity, admitted publication, read-after-write proof,
+      operator rollback, and public runbook coverage (tracked in issue #2)
+
 ## M9 — Drop-in replacement kit
 
 Everything an operator needs to replace an existing production relay with
