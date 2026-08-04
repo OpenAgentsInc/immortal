@@ -1,0 +1,266 @@
+{
+  "source": {
+    "lane": "openagents",
+    "commit": "a7f5522c0a7430f9f5b1cfa09477dae2d16d3682",
+    "specification": "nips/openagents/MKT-PFI.md",
+    "profile": "mkt-pfi",
+    "version": 1,
+    "qualification_policy_kind": 39630
+  },
+  "relay_observable": {
+    "qualification_policy": {
+      "kind": 39630,
+      "tags": [
+        ["d", "retail-us-v1"],
+        ["profile", "mkt-pfi", "1"],
+        ["status", "active"],
+        ["version", "1"],
+        ["published_at", "1785859200"],
+        ["x", "f7ddd71e16f17f5a8ca871b2c33f535cff22f5abd9bbb109b1dfd53d053c1098"],
+        ["alt", "MKT-PFI qualification policy"],
+        ["expiration", "1817395200"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-pfi",
+        "profile_version": 1,
+        "qualification_policy_id": "retail-us-v1",
+        "policy_version": "1",
+        "jurisdictions": ["US"],
+        "requirements": [
+          {
+            "requirement_id": "identity-basic",
+            "credential_schema_id": "https://schemas.example.invalid/kcc/v1",
+            "accepted_issuer_ids": ["did:key:zfixtureissuer"],
+            "claim_types": ["identity_verified", "jurisdiction_resident"],
+            "presentation_format": "w3c-vp",
+            "presentation_stage": "post_quote_pre_acceptance",
+            "maximum_credential_age_seconds": "2592000"
+          }
+        ],
+        "retention": {
+          "policy_url": "https://provider.example.invalid/credential-retention",
+          "policy_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "maximum_seconds": "86400",
+          "deletion_request_url": "https://provider.example.invalid/privacy"
+        }
+      }
+    },
+    "offering": {
+      "kind": 39601,
+      "tags": [
+        ["d", "usd-bitcoin-mainnet"],
+        ["profile", "mkt-pfi", "1"],
+        ["status", "active"],
+        ["provider", "39600:1111111111111111111111111111111111111111111111111111111111111111:provider-one"],
+        ["published_at", "1785859200"],
+        ["market", "9620a7866d5ea3a6762a65df45b11a9a8356d57690df0ac79cf0913e52e98901"],
+        ["a", "39630:1111111111111111111111111111111111111111111111111111111111111111:retail-us-v1", "", "qualification-policy"],
+        ["e", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "", "qualification-policy"],
+        ["direction", "on_ramp"],
+        ["risk", "guaranteed"],
+        ["rail", "bank-transfer-us"],
+        ["rail", "bitcoin-mainnet"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-pfi",
+        "profile_version": 1,
+        "pfi": {
+          "market_id": "9620a7866d5ea3a6762a65df45b11a9a8356d57690df0ac79cf0913e52e98901",
+          "fiat_asset": {
+            "asset_id": "iso4217:USD",
+            "atomic_unit_exponent": "2",
+            "unit_registry_ref": "https://www.iso.org/iso-4217-currency-codes.html",
+            "unit_registry_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "crypto_asset": {
+            "asset_id": "caip19:bip122:000000000019d6689c085ae165831e93/slip44:0",
+            "atomic_unit_exponent": "8",
+            "unit_registry_ref": "https://registry.example.invalid/assets/v1",
+            "unit_registry_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "on_ramp": {
+            "pay_asset_id": "iso4217:USD",
+            "receive_asset_id": "caip19:bip122:000000000019d6689c085ae165831e93/slip44:0",
+            "min": "1000",
+            "max": "100000"
+          },
+          "off_ramp": {
+            "pay_asset_id": "caip19:bip122:000000000019d6689c085ae165831e93/slip44:0",
+            "receive_asset_id": "iso4217:USD",
+            "min": "0",
+            "max": "0"
+          },
+          "fee_bps": "75",
+          "qualification_policy_event_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "qualification_policy_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "credential_burden": "basic",
+          "rail_ids": ["bank-transfer-us", "bitcoin-mainnet"],
+          "risk_classes": ["guaranteed"],
+          "jurisdictions": ["US"],
+          "custody_dimensions": {
+            "funds_control": "disclosed_in_quote",
+            "execution_control": "provider_and_external_rails",
+            "settlement_authority": "external_rails",
+            "reversibility": "rail_specific",
+            "recourse": "disclosed_in_quote",
+            "credential_exposure": "post_quote_direct_encrypted"
+          }
+        }
+      }
+    },
+    "private_record": {
+      "kind": 39606,
+      "tags": [
+        ["d", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"],
+        ["session", "9999999999999999999999999999999999999999999999999999999999999999"],
+        ["profile", "mkt-pfi", "1"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "provider"],
+        ["alt", "MKT-PFI order"],
+        ["e", "8888888888888888888888888888888888888888888888888888888888888888", "", "quote"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-pfi",
+        "profile_version": 1,
+        "session_id": "9999999999999999999999999999999999999999999999999999999999999999",
+        "mkt_pfi": {
+          "risk_classification": "guaranteed",
+          "credential_commitments": [
+            {
+              "presentation_id": "1111111111111111111111111111111111111111111111111111111111111111",
+              "presentation_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+              "policy_event_id": "3333333333333333333333333333333333333333333333333333333333333333",
+              "requirement_ids": ["identity-basic"],
+              "audience_pubkey": "4444444444444444444444444444444444444444444444444444444444444444",
+              "purpose": "mkt-pfi-order-qualification",
+              "challenge": "5555555555555555555555555555555555555555555555555555555555555555",
+              "expires_at": "1785862800",
+              "transport": "direct-encrypted",
+              "channel_ref": "6666666666666666666666666666666666666666666666666666666666666666"
+            }
+          ],
+          "evidence_refs": [
+            {
+              "evidence_class": "institution_confirmation",
+              "evidence_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+              "authority_id": "fixture-bank-authority",
+              "authority_key": "8888888888888888888888888888888888888888888888888888888888888888",
+              "verifier_id": "bank-transfer-us-v1",
+              "observed_at": "1785859500",
+              "provenance": "verified",
+              "reversibility_until": "1785945600",
+              "external_operation_ref": "fixture-operation-7f5f4e"
+            }
+          ],
+          "dispute": {
+            "dispute_ref": "fixture-dispute-01",
+            "reason_code": "rail_state_conflict",
+            "evidence_digests": ["7777777777777777777777777777777777777777777777777777777777777777"],
+            "authority_refs": ["fixture-dispute-authority"],
+            "opening_deadline": "1786000000",
+            "appeal_deadline": "1787000000"
+          },
+          "recourse": {
+            "remedy": "guarantee_claim",
+            "authority_id": "fixture-guarantee-authority",
+            "terms_url": "https://terms.example.invalid/guarantee/v1",
+            "terms_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "deadline": "1787000000"
+          }
+        }
+      }
+    },
+    "public_policy_errors": [
+      ["wrong_version", "pfi_unsupported_version"],
+      ["digest_mismatch", "pfi_policy_digest_mismatch"],
+      ["unknown_member", "pfi_policy_unknown_member"],
+      ["public_pii_member", "pfi_public_pii_forbidden"],
+      ["public_pii_camel", "pfi_public_pii_forbidden"],
+      ["bearer_url", "pfi_bearer_reference_forbidden"],
+      ["credential_stage", "pfi_policy_unknown_member"]
+    ],
+    "offering_errors": [
+      ["ticker_asset", "pfi_invalid_asset_id"],
+      ["market_mismatch", "pfi_market_id_mismatch"],
+      ["json_number_amount", "pfi_noncanonical_amount"],
+      ["disabled_side_min_nonzero", "pfi_side_disabled"],
+      ["fee_over_10000", "pfi_invalid_fee_promise"],
+      ["policy_event_mismatch", "pfi_policy_missing"],
+      ["unknown_member", "pfi_policy_unknown_member"],
+      ["public_pii_member", "pfi_public_pii_forbidden"],
+      ["bearer_url", "pfi_bearer_reference_forbidden"]
+    ],
+    "private_errors": [
+      ["presentation_bytes", "pfi_public_pii_forbidden"],
+      ["camel_presentation_bytes", "pfi_public_pii_forbidden"],
+      ["bearer_reference", "pfi_bearer_reference_forbidden"],
+      ["nwc_value", "pfi_bearer_reference_forbidden"],
+      ["unknown_risk", "pfi_risk_classification_missing"],
+      ["unknown_evidence", "pfi_settlement_evidence_invalid"],
+      ["unknown_commitment_member", "pfi_credential_binding_mismatch"],
+      ["unknown_dispute_member", "pfi_policy_unknown_member"],
+      ["unknown_recourse_member", "pfi_policy_unknown_member"]
+    ],
+    "public_receipt_errors": [
+      ["wrong_version", "pfi_unsupported_version"],
+      ["market", "pfi_public_pii_forbidden"],
+      ["credential_fact", "pfi_public_pii_forbidden"],
+      ["bearer_reference", "pfi_bearer_reference_forbidden"]
+    ]
+  },
+  "client_only_requirements": {
+    "relay_enforced": false,
+    "external_authorities": ["credential_issuer", "credential_verifier", "rail_adapter", "guarantor", "reserve_verifier", "escrow", "dispute_authority", "settlement_institution"],
+    "case_categories": {
+      "credential_verification": ["pfi-v1/positive-credentials-later.json", "pfi-v1/negative-credential-audience.json", "pfi-v1/negative-credential-challenge-replay.json"],
+      "external_effect_idempotency": ["pfi-v1/replay-external-operation-result.json", "pfi-v1/replay-external-operation-conflict.json"],
+      "sequence_and_fork": ["pfi-v1/gap-provider-status-sequence.json", "pfi-v1/fork-provider-status-sequence.json", "pfi-v1/fork-reservation-equivocation.json"],
+      "recovery": ["pfi-v1/recovery-relay-and-api-down-complete.json", "pfi-v1/recovery-escrow-refund.json", "pfi-v1/recovery-guarantee-claim.json"]
+    }
+  },
+  "upstream_fixture_manifest": [
+    "pfi-v1/positive-qualification-policy.json",
+    "pfi-v1/positive-on-ramp-guaranteed.json",
+    "pfi-v1/positive-off-ramp-escrowed.json",
+    "pfi-v1/positive-best-effort-disclosed.json",
+    "pfi-v1/positive-price-feed-pinned.json",
+    "pfi-v1/positive-credentials-later.json",
+    "pfi-v1/negative-ticker-asset-id.json",
+    "pfi-v1/negative-json-number-amount.json",
+    "pfi-v1/negative-disabled-side.json",
+    "pfi-v1/negative-fee-promise-exceeded.json",
+    "pfi-v1/negative-substitute-price-feed.json",
+    "pfi-v1/negative-stale-price-feed.json",
+    "pfi-v1/negative-policy-head-replaced.json",
+    "pfi-v1/negative-unsupported-critical-member.json",
+    "pfi-v1/negative-credential-before-quote.json",
+    "pfi-v1/negative-credential-audience.json",
+    "pfi-v1/negative-credential-challenge-replay.json",
+    "pfi-v1/negative-guarantee-no-reserve.json",
+    "pfi-v1/negative-atomic-reversible-fiat.json",
+    "pfi-v1/negative-settlement-overclaim.json",
+    "pfi-v1/negative-unauthorized-provider-status.json",
+    "pfi-v1/privacy-public-policy-pii.json",
+    "pfi-v1/privacy-public-bearer-url.json",
+    "pfi-v1/privacy-private-commitment-only.json",
+    "pfi-v1/privacy-public-receipt-redaction.json",
+    "pfi-v1/replay-rewrapped-order.json",
+    "pfi-v1/replay-external-operation-result.json",
+    "pfi-v1/replay-external-operation-conflict.json",
+    "pfi-v1/gap-provider-status-sequence.json",
+    "pfi-v1/fork-provider-status-sequence.json",
+    "pfi-v1/fork-reservation-equivocation.json",
+    "pfi-v1/expiry-quote.json",
+    "pfi-v1/expiry-credential.json",
+    "pfi-v1/expiry-guarantee.json",
+    "pfi-v1/expiry-dispute-window.json",
+    "pfi-v1/recovery-relay-and-api-down-complete.json",
+    "pfi-v1/recovery-escrow-refund.json",
+    "pfi-v1/recovery-guarantee-claim.json",
+    "pfi-v1/recovery-external-result-unknown.json",
+    "pfi-v1/recovery-local-record-loss.json",
+    "pfi-v1/recovery-late-chargeback.json"
+  ]
+}

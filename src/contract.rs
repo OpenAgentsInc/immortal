@@ -9,7 +9,8 @@ use crate::{
         MKT_IDENTIFIER_PATTERN, MKT_MAX_COUNTERPARTIES, MKT_MAX_DISCOVERY_CONTENT_BYTES,
         MKT_MAX_HINTS, MKT_MAX_PRIVATE_EVENT_BYTES, MKT_MAX_PROFILES,
         MKT_MAX_RECEIPT_CONTENT_BYTES, MKT_MAX_REFERENCES, MKT_MAX_TAGS, MKT_OFFERING_KIND,
-        MKT_OFFERING_STATUSES, MKT_ORDER_KIND, MKT_OUTCOMES, MKT_PROFILE_DESCRIPTOR_KIND,
+        MKT_OFFERING_STATUSES, MKT_ORDER_KIND, MKT_OUTCOMES, MKT_PFI_PROFILE_ID,
+        MKT_PFI_PROFILE_VERSION, MKT_PFI_QUALIFICATION_POLICY_KIND, MKT_PROFILE_DESCRIPTOR_KIND,
         MKT_PROVIDER_PROFILE_KIND, MKT_PROVIDER_STATUSES, MKT_PUBLIC_RECEIPT_KIND,
         MKT_PUBLIC_RECEIPT_OUTCOMES, MKT_QUOTE_CLASSES, MKT_QUOTE_KIND, MKT_RELAY_PROFILES,
         MKT_RESERVATION_CLASSES, MKT_RFQ_KIND, MKT_STATUS_KIND, MKT_STATUS_STATES,
@@ -107,6 +108,7 @@ pub struct MktGrammar {
     pub executable_profiles: Vec<ExecutableProfile>,
     pub relay_profiles: Vec<RelayProfile>,
     pub mkt_swp: MktSwpGrammar,
+    pub mkt_pfi: MktPfiGrammar,
     pub required_tags: BTreeMap<&'static str, Vec<&'static str>>,
     pub enums: BTreeMap<&'static str, Vec<&'static str>>,
     pub identifiers: BTreeMap<&'static str, IdentifierGrammar>,
@@ -146,6 +148,26 @@ pub struct MktSwpGrammar {
     pub evidence_reference_validation: &'static str,
     pub public_receipt_outcomes: Vec<&'static str>,
     pub forbidden_custody_members: Vec<&'static str>,
+    pub upstream_fixture_cases: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MktPfiGrammar {
+    pub id: &'static str,
+    pub version: u64,
+    pub qualification_policy_kind: u16,
+    pub scope: &'static str,
+    pub fiat_asset_id_pattern: &'static str,
+    pub crypto_asset_id_pattern: &'static str,
+    pub market_id_preimage: &'static str,
+    pub canonical_amount_pattern: &'static str,
+    pub offering_required_members: Vec<&'static str>,
+    pub risk_classes: Vec<&'static str>,
+    pub evidence_classes: Vec<&'static str>,
+    pub evidence_rungs: Vec<&'static str>,
+    pub credential_transport: &'static str,
+    pub public_receipt: &'static str,
+    pub external_authority: &'static str,
     pub upstream_fixture_cases: usize,
 }
 
@@ -319,6 +341,12 @@ fn supported_protocols() -> Vec<ProtocolDescriptor> {
         protocol("openagents", "NIP-OT/PG", "never", "client_only"),
         protocol("openagents", "nip-mkt", "relay_url", "implemented_base"),
         protocol("openagents", "mkt-swp:1", "relay_url", "relay_observable"),
+        protocol(
+            "openagents",
+            "nip-mkt-pfi:1",
+            "relay_url_and_local_conformance",
+            "relay_observable",
+        ),
     ]
 }
 
@@ -414,6 +442,13 @@ fn mkt_kinds() -> Vec<KindDescriptor> {
             "private_wrapped",
             "exact_signed_coordinate",
             "client_and_internal_store",
+        ),
+        (
+            MKT_PFI_QUALIFICATION_POLICY_KIND,
+            "mkt_pfi_qualification_policy",
+            "public_head",
+            "nip01_addressable",
+            "relay",
         ),
     ]
     .into_iter()
@@ -633,6 +668,29 @@ fn mkt_grammar() -> MktGrammar {
             "d", "session", "profile", "p", "alt", "order e", "quote e", "x", "role",
         ],
     );
+    required_tags.insert(
+        "mkt_pfi_qualification_policy",
+        vec![
+            "d",
+            "profile=mkt-pfi:1",
+            "status",
+            "version",
+            "published_at",
+            "x",
+            "alt",
+        ],
+    );
+    required_tags.insert(
+        "mkt_pfi_offering",
+        vec![
+            "market",
+            "qualification-policy a",
+            "qualification-policy e",
+            "direction",
+            "risk",
+            "rail",
+        ],
+    );
 
     let mut enums = BTreeMap::new();
     enums.insert("cancel_action", MKT_CANCEL_ACTIONS.to_vec());
@@ -770,6 +828,59 @@ fn mkt_grammar() -> MktGrammar {
                 "signing_nonce",
             ],
             upstream_fixture_cases: 70,
+        },
+        mkt_pfi: MktPfiGrammar {
+            id: MKT_PFI_PROFILE_ID,
+            version: MKT_PFI_PROFILE_VERSION,
+            qualification_policy_kind: MKT_PFI_QUALIFICATION_POLICY_KIND,
+            scope: "relay_observable_only",
+            fiat_asset_id_pattern: "^iso4217:[A-Z]{3}$",
+            crypto_asset_id_pattern: "^caip19:<canonical-caip19-asset-id>$",
+            market_id_preimage: "mkt-pfi-v1\\0<fiat_asset_id>\\0<crypto_asset_id>",
+            canonical_amount_pattern: "^(0|[1-9][0-9]*)$",
+            offering_required_members: vec![
+                "market_id",
+                "fiat_asset",
+                "crypto_asset",
+                "on_ramp",
+                "off_ramp",
+                "fee_bps",
+                "qualification_policy_event_id",
+                "qualification_policy_sha256",
+                "credential_burden",
+                "rail_ids",
+                "risk_classes",
+                "jurisdictions",
+                "custody_dimensions",
+            ],
+            risk_classes: vec![
+                "atomic",
+                "escrowed",
+                "reserved",
+                "guaranteed",
+                "best-effort",
+            ],
+            evidence_classes: vec![
+                "rail_receipt",
+                "institution_confirmation",
+                "beneficiary_attestation",
+                "escrow_funding",
+                "escrow_release",
+                "ledger_finality",
+                "reversibility_window_elapsed",
+                "refund_confirmation",
+                "chargeback_confirmation",
+                "guarantee_reserve",
+                "guarantee_payout",
+                "dispute_disposition",
+            ],
+            evidence_rungs: vec![
+                "pledged", "reserved", "observed", "verified", "paid", "settled",
+            ],
+            credential_transport: "commitment_only; presentation_bytes_direct_encrypted_off_relay",
+            public_receipt: "redacted_outcome_only_with_optional_non_bearer_public_safe_reference",
+            external_authority: "credential_rail_guarantee_reserve_escrow_dispute_and_settlement_verification_not_claimed",
+            upstream_fixture_cases: 41,
         },
         required_tags,
         enums,

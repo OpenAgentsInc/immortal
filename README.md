@@ -77,12 +77,12 @@ discovery, immutable internal validation, private wrapped transport, and a
 complete relay/client conformance boundary, and M11's deterministic contract
 export (`immortal contract`, `scripts/export-contract.sh`) is the generation
 source for downstream SDKs. M12 now includes the owned Bitcoin/Lightning
-verification primitives and the relay-observable MKT-SWP v1 adoption: public
-Offering grammar, immutable wrapped Swap Contracts on kind `39610`, typed
-evidence references, exported fixtures, and gated `mkt-swp:1` discovery. The
-next packet is the client swap engine (#12), followed by coordination,
-provider, compatibility, and adversarial-lab work. M8 hardening and formal
-work follow. See `docs/ROADMAP.md`, `docs/conformance/`, and `docs/deployment/`.
+verification primitives and the relay-observable MKT-SWP and MKT-PFI v1
+adoptions: public Offering grammar, immutable wrapped Swap Contracts on kind
+`39610`, public Qualification Policy heads on kind `39630`, bounded
+commitment/evidence shapes, exported fixtures, and gated profile discovery.
+The executable-profile set remains empty. See `docs/ROADMAP.md`,
+`docs/conformance/`, and `docs/deployment/`.
 
 The current feature list is a deployment snapshot, not Immortal's scope
 ceiling. The immediate protocol-totality program targets **every specification
@@ -136,9 +136,9 @@ The adopted NIP-MKT relay contract is documented in
 It covers public discovery, immutable internal records, wrapped transport,
 recipient-gated reads, rate limits, and the client-only boundary. NIP-11
 advertises `nip-mkt` only when `IMMORTAL_RELAY_URL` enables authenticated
-recipient transport. The same gate advertises `mkt-swp:1` for its relay-
-observable v1 grammar; the executable-profile set remains empty until the
-client and coordination packets land.
+recipient transport. The same gate advertises `mkt-swp:1` and
+`nip-mkt-pfi:1` for their relay-observable v1 grammar; the executable-profile
+set remains empty.
 
 The transport-neutral client core also exposes a fail-closed
 [`tbDEX legacy translation audit`](docs/protocol/tbdex-legacy-translation.md).

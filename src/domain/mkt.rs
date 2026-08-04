@@ -5,6 +5,7 @@ use serde::{
     de::{Error as _, MapAccess, SeqAccess, Visitor},
 };
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 
 use super::hex::decode_lower_hex;
 use super::{Event, Tag};
@@ -22,8 +23,14 @@ pub const MKT_CLOSE_KIND: u16 = 39_609;
 pub const MKT_SWP_SWAP_CONTRACT_KIND: u16 = 39_610;
 pub const MKT_SWP_PROFILE_ID: &str = "mkt-swp";
 pub const MKT_SWP_PROFILE_VERSION: u64 = 1;
+pub const MKT_PFI_QUALIFICATION_POLICY_KIND: u16 = 39_630;
+pub const MKT_PFI_PROFILE_ID: &str = "mkt-pfi";
+pub const MKT_PFI_PROFILE_VERSION: u64 = 1;
 pub const MKT_EXECUTABLE_PROFILES: &[(&str, u64)] = &[];
-pub const MKT_RELAY_PROFILES: &[(&str, u64)] = &[(MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION)];
+pub const MKT_RELAY_PROFILES: &[(&str, u64)] = &[
+    (MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION),
+    (MKT_PFI_PROFILE_ID, MKT_PFI_PROFILE_VERSION),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MktImmutableDecision {
@@ -162,7 +169,9 @@ pub struct MktValidatedPrivateRecord {
 }
 
 pub fn validate_mkt_public_event(event: &Event) -> Result<(), String> {
-    if (MKT_PROVIDER_PROFILE_KIND..=MKT_PUBLIC_RECEIPT_KIND).contains(&event.kind) {
+    if (MKT_PROVIDER_PROFILE_KIND..=MKT_PUBLIC_RECEIPT_KIND).contains(&event.kind)
+        || event.kind == MKT_PFI_QUALIFICATION_POLICY_KIND
+    {
         validate_collection_bounds(event)?;
         let maximum = if event.kind == MKT_PUBLIC_RECEIPT_KIND {
             MKT_MAX_RECEIPT_CONTENT_BYTES
@@ -180,6 +189,7 @@ pub fn validate_mkt_public_event(event: &Event) -> Result<(), String> {
         MKT_OFFERING_KIND => validate_offering(event),
         MKT_PROFILE_DESCRIPTOR_KIND => validate_profile_descriptor(event),
         MKT_PUBLIC_RECEIPT_KIND => validate_public_receipt(event),
+        MKT_PFI_QUALIFICATION_POLICY_KIND => validate_mkt_pfi_qualification_policy(event),
         _ => Ok(()),
     }
 }
@@ -284,6 +294,12 @@ pub fn validate_mkt_private_with_profiles(
         && envelope.profile_version == MKT_SWP_PROFILE_VERSION
     {
         validate_mkt_swp_visible_private(event, &envelope)
+            .map_err(|detail| validation_error(MktValidationCode::TagGrammar, detail))?;
+    }
+    if envelope.profile_id == MKT_PFI_PROFILE_ID
+        && envelope.profile_version == MKT_PFI_PROFILE_VERSION
+    {
+        validate_mkt_pfi_visible_private(&envelope)
             .map_err(|detail| validation_error(MktValidationCode::TagGrammar, detail))?;
     }
     Ok(envelope)
@@ -477,6 +493,14 @@ fn validate_offering(event: &Event) -> Result<(), String> {
             ));
         }
         validate_mkt_swp_offering(event)?;
+    } else if profiles[0].0 == MKT_PFI_PROFILE_ID {
+        if profiles[0].1 != MKT_PFI_PROFILE_VERSION {
+            return Err(pfi_error(
+                "pfi_unsupported_version",
+                "only MKT-PFI profile version 1 is relay-observable",
+            ));
+        }
+        validate_mkt_pfi_offering(event)?;
     }
     Ok(())
 }
@@ -540,8 +564,1416 @@ fn validate_public_receipt(event: &Event) -> Result<(), String> {
         reject_swp_secret_material(&content)?;
         reject_swp_public_offering_material(&content)?;
         reject_swp_public_receipt_material(&content)?;
+    } else if profiles[0].0 == MKT_PFI_PROFILE_ID {
+        if profiles[0].1 != MKT_PFI_PROFILE_VERSION {
+            return Err(pfi_error(
+                "pfi_unsupported_version",
+                "only MKT-PFI profile version 1 is relay-observable",
+            ));
+        }
+        let content = parse_unique_json(&event.content, "MKT-PFI public receipt content")?;
+        reject_pfi_forbidden_material(&content)?;
+        validate_mkt_pfi_public_receipt_content(&content)?;
     }
     Ok(())
+}
+
+fn validate_mkt_pfi_qualification_policy(event: &Event) -> Result<(), String> {
+    let profiles = profile_tags(event, "MKT-PFI qualification policy")?;
+    let [(profile_id, profile_version)] = profiles.as_slice() else {
+        return Err(pfi_error(
+            "pfi_unsupported_version",
+            "qualification policy requires exactly one profile tag",
+        ));
+    };
+    if *profile_id != MKT_PFI_PROFILE_ID || *profile_version != MKT_PFI_PROFILE_VERSION {
+        return Err(pfi_error(
+            "pfi_unsupported_version",
+            "kind 39630 requires profile mkt-pfi version 1",
+        ));
+    }
+    let policy_id = single_value(event, "d", "MKT-PFI qualification policy")?;
+    pfi_identifier(policy_id, "qualification policy id", 128)?;
+    require_enum(
+        single_value(event, "status", "MKT-PFI qualification policy")?,
+        MKT_PROVIDER_STATUSES,
+        "MKT-PFI qualification policy status",
+    )
+    .map_err(|detail| pfi_error("pfi_policy_unknown_member", detail))?;
+    let version = canonical_decimal(
+        single_value(event, "version", "MKT-PFI qualification policy")?,
+        true,
+        "MKT-PFI qualification policy version",
+    )
+    .map_err(|detail| pfi_error("pfi_policy_unknown_member", detail))?;
+    canonical_decimal(
+        single_value(event, "published_at", "MKT-PFI qualification policy")?,
+        false,
+        "MKT-PFI qualification policy published_at",
+    )
+    .map_err(|detail| pfi_error("pfi_policy_unknown_member", detail))?;
+    if single_value(event, "alt", "MKT-PFI qualification policy")? != "MKT-PFI qualification policy"
+    {
+        return Err(pfi_error(
+            "pfi_policy_unknown_member",
+            "qualification policy alt tag is not the fixed profile label",
+        ));
+    }
+    let tagged_digest = single_value(event, "x", "MKT-PFI qualification policy")?;
+    pfi_hex_with_code(
+        tagged_digest,
+        "qualification policy content digest",
+        "pfi_policy_digest_mismatch",
+    )?;
+    if tagged_digest != sha256_hex(event.content.as_bytes()) {
+        return Err(pfi_error(
+            "pfi_policy_digest_mismatch",
+            "qualification policy x does not hash the exact content bytes",
+        ));
+    }
+
+    let content = parse_unique_json(&event.content, "MKT-PFI qualification policy content")?;
+    reject_pfi_forbidden_material(&content)?;
+    let body = pfi_object(
+        &content,
+        "qualification policy",
+        "pfi_policy_unknown_member",
+    )?;
+    pfi_closed(
+        body,
+        &[
+            "schema",
+            "profile",
+            "profile_version",
+            "qualification_policy_id",
+            "policy_version",
+            "jurisdictions",
+            "requirements",
+            "retention",
+        ],
+        "qualification policy",
+        "pfi_policy_unknown_member",
+    )?;
+    pfi_exact_string(
+        body,
+        "schema",
+        MKT_ENVELOPE_SCHEMA,
+        "pfi_policy_unknown_member",
+    )?;
+    pfi_exact_string(
+        body,
+        "profile",
+        MKT_PFI_PROFILE_ID,
+        "pfi_policy_unknown_member",
+    )?;
+    if body.get("profile_version").and_then(Value::as_u64) != Some(MKT_PFI_PROFILE_VERSION) {
+        return Err(pfi_error(
+            "pfi_unsupported_version",
+            "qualification policy content requires profile_version 1",
+        ));
+    }
+    if pfi_required_string(body, "qualification_policy_id", "pfi_policy_unknown_member")?
+        != policy_id
+    {
+        return Err(pfi_error(
+            "pfi_policy_missing",
+            "qualification policy d and content identifier differ",
+        ));
+    }
+    let content_version =
+        pfi_decimal_member(body, "policy_version", true, "pfi_policy_unknown_member")?;
+    if content_version != version {
+        return Err(pfi_error(
+            "pfi_policy_missing",
+            "qualification policy version tag and content differ",
+        ));
+    }
+    validate_pfi_jurisdictions(body.get("jurisdictions"), "qualification policy")?;
+
+    let requirements = body
+        .get("requirements")
+        .and_then(Value::as_array)
+        .filter(|requirements| requirements.len() <= 16)
+        .ok_or_else(|| {
+            pfi_error(
+                "pfi_policy_unknown_member",
+                "qualification policy requires at most 16 requirements",
+            )
+        })?;
+    let mut requirement_ids = BTreeSet::new();
+    for requirement in requirements {
+        let requirement = pfi_object(
+            requirement,
+            "qualification requirement",
+            "pfi_policy_unknown_member",
+        )?;
+        pfi_closed(
+            requirement,
+            &[
+                "requirement_id",
+                "credential_schema_id",
+                "accepted_issuer_ids",
+                "claim_types",
+                "presentation_format",
+                "presentation_stage",
+                "maximum_credential_age_seconds",
+            ],
+            "qualification requirement",
+            "pfi_policy_unknown_member",
+        )?;
+        let requirement_id =
+            pfi_required_string(requirement, "requirement_id", "pfi_policy_unknown_member")?;
+        pfi_identifier(requirement_id, "qualification requirement id", 128)?;
+        if !requirement_ids.insert(requirement_id) {
+            return Err(pfi_error(
+                "pfi_policy_unknown_member",
+                "qualification requirement ids must be unique",
+            ));
+        }
+        pfi_public_url(
+            pfi_required_string(
+                requirement,
+                "credential_schema_id",
+                "pfi_policy_unknown_member",
+            )?,
+            "credential schema",
+        )?;
+        let issuers = pfi_string_array(
+            requirement.get("accepted_issuer_ids"),
+            1,
+            16,
+            "accepted issuer ids",
+            "pfi_policy_unknown_member",
+        )?;
+        for issuer in issuers {
+            pfi_bounded_ascii(
+                issuer,
+                "accepted issuer id",
+                512,
+                "pfi_policy_unknown_member",
+            )?;
+        }
+        let claims = pfi_string_array(
+            requirement.get("claim_types"),
+            1,
+            32,
+            "claim types",
+            "pfi_policy_unknown_member",
+        )?;
+        for claim in claims {
+            pfi_identifier(claim, "claim type", 128)?;
+        }
+        pfi_bounded_ascii(
+            pfi_required_string(
+                requirement,
+                "presentation_format",
+                "pfi_policy_unknown_member",
+            )?,
+            "presentation format",
+            128,
+            "pfi_policy_unknown_member",
+        )?;
+        pfi_exact_string(
+            requirement,
+            "presentation_stage",
+            "post_quote_pre_acceptance",
+            "pfi_policy_unknown_member",
+        )?;
+        pfi_decimal_member(
+            requirement,
+            "maximum_credential_age_seconds",
+            false,
+            "pfi_policy_unknown_member",
+        )?;
+    }
+
+    let retention = pfi_object(
+        body.get("retention")
+            .ok_or_else(|| pfi_error("pfi_policy_unknown_member", "retention is required"))?,
+        "retention",
+        "pfi_policy_unknown_member",
+    )?;
+    pfi_closed(
+        retention,
+        &[
+            "policy_url",
+            "policy_sha256",
+            "maximum_seconds",
+            "deletion_request_url",
+        ],
+        "retention",
+        "pfi_policy_unknown_member",
+    )?;
+    for member in ["policy_url", "deletion_request_url"] {
+        pfi_public_url(
+            pfi_required_string(retention, member, "pfi_policy_unknown_member")?,
+            member,
+        )?;
+    }
+    pfi_hex(
+        pfi_required_string(retention, "policy_sha256", "pfi_policy_unknown_member")?,
+        "retention policy digest",
+    )?;
+    pfi_decimal_member(
+        retention,
+        "maximum_seconds",
+        false,
+        "pfi_policy_unknown_member",
+    )?;
+    Ok(())
+}
+
+fn validate_mkt_pfi_offering(event: &Event) -> Result<(), String> {
+    let content = parse_unique_json(&event.content, "MKT-PFI Offering content")?;
+    reject_pfi_forbidden_material(&content)?;
+    let body = pfi_object(&content, "MKT-PFI Offering", "pfi_policy_unknown_member")?;
+    pfi_closed(
+        body,
+        &["schema", "profile", "profile_version", "pfi"],
+        "MKT-PFI Offering",
+        "pfi_policy_unknown_member",
+    )?;
+    pfi_exact_string(
+        body,
+        "schema",
+        MKT_ENVELOPE_SCHEMA,
+        "pfi_policy_unknown_member",
+    )?;
+    pfi_exact_string(
+        body,
+        "profile",
+        MKT_PFI_PROFILE_ID,
+        "pfi_policy_unknown_member",
+    )?;
+    if body.get("profile_version").and_then(Value::as_u64) != Some(MKT_PFI_PROFILE_VERSION) {
+        return Err(pfi_error(
+            "pfi_unsupported_version",
+            "MKT-PFI Offering content requires profile_version 1",
+        ));
+    }
+    let pfi = pfi_object(
+        body.get("pfi")
+            .ok_or_else(|| pfi_error("pfi_policy_unknown_member", "pfi object is required"))?,
+        "MKT-PFI Offering pfi",
+        "pfi_policy_unknown_member",
+    )?;
+    pfi_closed(
+        pfi,
+        &[
+            "market_id",
+            "fiat_asset",
+            "crypto_asset",
+            "on_ramp",
+            "off_ramp",
+            "fee_bps",
+            "qualification_policy_event_id",
+            "qualification_policy_sha256",
+            "credential_burden",
+            "rail_ids",
+            "risk_classes",
+            "jurisdictions",
+            "custody_dimensions",
+        ],
+        "MKT-PFI Offering pfi",
+        "pfi_policy_unknown_member",
+    )?;
+
+    let fiat_asset = validate_pfi_asset(
+        pfi.get("fiat_asset")
+            .ok_or_else(|| pfi_error("pfi_invalid_asset_id", "fiat_asset is required"))?,
+        true,
+    )?;
+    let crypto_asset = validate_pfi_asset(
+        pfi.get("crypto_asset")
+            .ok_or_else(|| pfi_error("pfi_invalid_asset_id", "crypto_asset is required"))?,
+        false,
+    )?;
+    let expected_market = pfi_market_id(fiat_asset, crypto_asset);
+    let market_id = pfi_required_string(pfi, "market_id", "pfi_market_id_mismatch")?;
+    pfi_hex_with_code(market_id, "MKT-PFI market id", "pfi_market_id_mismatch")?;
+    if market_id != expected_market {
+        return Err(pfi_error(
+            "pfi_market_id_mismatch",
+            "market_id does not commit to the ordered asset pair",
+        ));
+    }
+    if single_value(event, "market", "MKT-PFI Offering")? != market_id {
+        return Err(pfi_error(
+            "pfi_market_id_mismatch",
+            "Offering market tag and content differ",
+        ));
+    }
+
+    let on_ramp = validate_pfi_side(
+        pfi.get("on_ramp")
+            .ok_or_else(|| pfi_error("pfi_side_disabled", "on_ramp is required"))?,
+        fiat_asset,
+        crypto_asset,
+        "on_ramp",
+    )?;
+    let off_ramp = validate_pfi_side(
+        pfi.get("off_ramp")
+            .ok_or_else(|| pfi_error("pfi_side_disabled", "off_ramp is required"))?,
+        crypto_asset,
+        fiat_asset,
+        "off_ramp",
+    )?;
+    if !on_ramp && !off_ramp {
+        return Err(pfi_error(
+            "pfi_side_disabled",
+            "Offering must enable at least one direction",
+        ));
+    }
+    let direction_tags = pfi_two_element_tags(event, "direction", 1, 2)?;
+    let expected_directions = [("on_ramp", on_ramp), ("off_ramp", off_ramp)]
+        .into_iter()
+        .filter_map(|(direction, enabled)| enabled.then_some(direction))
+        .collect::<BTreeSet<_>>();
+    if direction_tags.iter().copied().collect::<BTreeSet<_>>() != expected_directions
+        || direction_tags.len() != expected_directions.len()
+    {
+        return Err(pfi_error(
+            "pfi_side_disabled",
+            "direction tags must name exactly the enabled sides",
+        ));
+    }
+
+    let fee_bps = pfi_decimal_member(pfi, "fee_bps", false, "pfi_invalid_fee_promise")?;
+    if fee_bps > 10_000 {
+        return Err(pfi_error(
+            "pfi_invalid_fee_promise",
+            "fee_bps exceeds 10000",
+        ));
+    }
+    let policy_event_id =
+        pfi_required_string(pfi, "qualification_policy_event_id", "pfi_policy_missing")?;
+    pfi_hex_with_code(
+        policy_event_id,
+        "qualification policy event id",
+        "pfi_policy_missing",
+    )?;
+    pfi_hex_with_code(
+        pfi_required_string(pfi, "qualification_policy_sha256", "pfi_policy_missing")?,
+        "qualification policy digest",
+        "pfi_policy_missing",
+    )?;
+    validate_pfi_policy_tags(event, policy_event_id)?;
+
+    require_enum(
+        pfi_required_string(pfi, "credential_burden", "pfi_policy_unknown_member")?,
+        &["none", "basic", "enhanced", "institutional"],
+        "MKT-PFI credential burden",
+    )
+    .map_err(|detail| pfi_error("pfi_policy_unknown_member", detail))?;
+    let rails = pfi_string_array(
+        pfi.get("rail_ids"),
+        1,
+        16,
+        "rail ids",
+        "pfi_policy_unknown_member",
+    )?;
+    for rail in &rails {
+        pfi_identifier(rail, "rail id", MKT_IDENTIFIER_MAX_BYTES)?;
+    }
+    let rail_tags = pfi_two_element_tags(event, "rail", 1, 16)?;
+    pfi_equal_unique_sets(&rails, &rail_tags, "rail tags and content")?;
+
+    let risks = pfi_string_array(
+        pfi.get("risk_classes"),
+        1,
+        5,
+        "risk classes",
+        "pfi_risk_classification_missing",
+    )?;
+    for risk in &risks {
+        validate_pfi_risk_class(risk)?;
+    }
+    let risk_tags = pfi_two_element_tags(event, "risk", 1, 5)?;
+    pfi_equal_unique_sets(&risks, &risk_tags, "risk tags and content")?;
+    validate_pfi_jurisdictions(pfi.get("jurisdictions"), "MKT-PFI Offering")?;
+    validate_pfi_custody_dimensions(pfi.get("custody_dimensions").ok_or_else(|| {
+        pfi_error(
+            "pfi_policy_unknown_member",
+            "custody_dimensions is required",
+        )
+    })?)?;
+    Ok(())
+}
+
+fn validate_mkt_pfi_visible_private(envelope: &MktPrivateEnvelope) -> Result<(), String> {
+    let value = Value::Object(envelope.body.clone());
+    reject_pfi_forbidden_material(&value)?;
+    let profile = envelope
+        .body
+        .get("mkt_pfi")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            pfi_error(
+                "pfi_policy_unknown_member",
+                "private profile record requires an mkt_pfi object",
+            )
+        })?;
+    validate_pfi_observable_members(&Value::Object(profile.clone()))
+}
+
+fn validate_pfi_observable_members(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                match name.as_str() {
+                    "risk_classification" => {
+                        validate_pfi_risk_class(child.as_str().ok_or_else(|| {
+                            pfi_error(
+                                "pfi_risk_classification_missing",
+                                "risk_classification must be a string",
+                            )
+                        })?)?
+                    }
+                    "credential_commitments" => {
+                        let commitments = child
+                            .as_array()
+                            .filter(|values| (1..=16).contains(&values.len()))
+                            .ok_or_else(|| {
+                                pfi_error(
+                                    "pfi_credential_binding_mismatch",
+                                    "credential_commitments requires 1-16 entries",
+                                )
+                            })?;
+                        for commitment in commitments {
+                            validate_pfi_credential_commitment(commitment)?;
+                        }
+                    }
+                    "evidence_refs" => {
+                        let references = child
+                            .as_array()
+                            .filter(|values| values.len() <= MKT_MAX_REFERENCES)
+                            .ok_or_else(|| {
+                                pfi_error(
+                                    "pfi_settlement_evidence_invalid",
+                                    "evidence_refs exceeds the relay bound",
+                                )
+                            })?;
+                        for reference in references {
+                            validate_mkt_pfi_evidence_reference(reference)?;
+                        }
+                    }
+                    "dispute" => validate_pfi_dispute(child)?,
+                    "recourse" => validate_pfi_recourse(child)?,
+                    _ => validate_pfi_observable_members(child)?,
+                }
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                validate_pfi_observable_members(child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn validate_mkt_pfi_evidence_reference(value: &Value) -> Result<(), String> {
+    let evidence = pfi_object(
+        value,
+        "MKT-PFI evidence reference",
+        "pfi_settlement_evidence_invalid",
+    )?;
+    pfi_closed(
+        evidence,
+        &[
+            "evidence_class",
+            "evidence_sha256",
+            "authority_id",
+            "authority_key",
+            "verifier_id",
+            "observed_at",
+            "provenance",
+            "reversibility_until",
+            "external_operation_ref",
+        ],
+        "MKT-PFI evidence reference",
+        "pfi_settlement_evidence_invalid",
+    )?;
+    require_enum(
+        pfi_required_string(
+            evidence,
+            "evidence_class",
+            "pfi_settlement_evidence_invalid",
+        )?,
+        &[
+            "rail_receipt",
+            "institution_confirmation",
+            "beneficiary_attestation",
+            "escrow_funding",
+            "escrow_release",
+            "ledger_finality",
+            "reversibility_window_elapsed",
+            "refund_confirmation",
+            "chargeback_confirmation",
+            "guarantee_reserve",
+            "guarantee_payout",
+            "dispute_disposition",
+        ],
+        "MKT-PFI evidence class",
+    )
+    .map_err(|detail| pfi_error("pfi_settlement_evidence_invalid", detail))?;
+    pfi_hex_with_code(
+        pfi_required_string(
+            evidence,
+            "evidence_sha256",
+            "pfi_settlement_evidence_invalid",
+        )?,
+        "MKT-PFI evidence digest",
+        "pfi_settlement_evidence_invalid",
+    )?;
+    pfi_bounded_ascii(
+        pfi_required_string(evidence, "authority_id", "pfi_settlement_evidence_invalid")?,
+        "MKT-PFI evidence authority",
+        512,
+        "pfi_settlement_evidence_invalid",
+    )?;
+    pfi_hex_with_code(
+        pfi_required_string(evidence, "authority_key", "pfi_settlement_evidence_invalid")?,
+        "MKT-PFI evidence authority key",
+        "pfi_settlement_evidence_invalid",
+    )?;
+    pfi_bounded_ascii(
+        pfi_required_string(evidence, "verifier_id", "pfi_settlement_evidence_invalid")?,
+        "MKT-PFI evidence verifier",
+        128,
+        "pfi_settlement_evidence_invalid",
+    )?;
+    for member in ["observed_at", "reversibility_until"] {
+        pfi_decimal_member(evidence, member, false, "pfi_settlement_evidence_invalid")?;
+    }
+    require_enum(
+        pfi_required_string(evidence, "provenance", "pfi_settlement_evidence_invalid")?,
+        &[
+            "pledged", "reserved", "observed", "verified", "paid", "settled",
+        ],
+        "MKT-PFI evidence provenance",
+    )
+    .map_err(|detail| pfi_error("pfi_settlement_evidence_invalid", detail))?;
+    pfi_non_bearer_reference(
+        pfi_required_string(
+            evidence,
+            "external_operation_ref",
+            "pfi_settlement_evidence_invalid",
+        )?,
+        "external operation reference",
+    )
+}
+
+fn validate_pfi_credential_commitment(value: &Value) -> Result<(), String> {
+    let commitment = pfi_object(
+        value,
+        "credential commitment",
+        "pfi_credential_binding_mismatch",
+    )?;
+    pfi_closed(
+        commitment,
+        &[
+            "presentation_id",
+            "presentation_sha256",
+            "policy_event_id",
+            "requirement_ids",
+            "audience_pubkey",
+            "purpose",
+            "challenge",
+            "expires_at",
+            "transport",
+            "channel_ref",
+        ],
+        "credential commitment",
+        "pfi_credential_binding_mismatch",
+    )?;
+    for member in [
+        "presentation_id",
+        "presentation_sha256",
+        "policy_event_id",
+        "audience_pubkey",
+        "challenge",
+        "channel_ref",
+    ] {
+        pfi_hex_with_code(
+            pfi_required_string(commitment, member, "pfi_credential_binding_mismatch")?,
+            member,
+            "pfi_credential_binding_mismatch",
+        )?;
+    }
+    let requirements = pfi_string_array(
+        commitment.get("requirement_ids"),
+        1,
+        16,
+        "credential requirement ids",
+        "pfi_credential_binding_mismatch",
+    )?;
+    for requirement in requirements {
+        pfi_identifier(requirement, "credential requirement id", 128)?;
+    }
+    pfi_exact_string(
+        commitment,
+        "purpose",
+        "mkt-pfi-order-qualification",
+        "pfi_credential_binding_mismatch",
+    )?;
+    pfi_decimal_member(
+        commitment,
+        "expires_at",
+        false,
+        "pfi_credential_binding_mismatch",
+    )?;
+    pfi_exact_string(
+        commitment,
+        "transport",
+        "direct-encrypted",
+        "pfi_credential_binding_mismatch",
+    )
+}
+
+fn validate_pfi_dispute(value: &Value) -> Result<(), String> {
+    let dispute = pfi_object(value, "dispute", "pfi_policy_unknown_member")?;
+    pfi_closed(
+        dispute,
+        &[
+            "dispute_ref",
+            "reason_code",
+            "evidence_digests",
+            "authority_refs",
+            "opening_deadline",
+            "response_deadline",
+            "adjudication_deadline",
+            "appeal_deadline",
+        ],
+        "dispute",
+        "pfi_policy_unknown_member",
+    )?;
+    pfi_non_bearer_reference(
+        pfi_required_string(dispute, "dispute_ref", "pfi_policy_unknown_member")?,
+        "dispute reference",
+    )?;
+    pfi_identifier(
+        pfi_required_string(dispute, "reason_code", "pfi_policy_unknown_member")?,
+        "dispute reason code",
+        128,
+    )?;
+    for digest in pfi_string_array(
+        dispute.get("evidence_digests"),
+        0,
+        MKT_MAX_REFERENCES,
+        "dispute evidence digests",
+        "pfi_policy_unknown_member",
+    )? {
+        pfi_hex(digest, "dispute evidence digest")?;
+    }
+    for authority in pfi_string_array(
+        dispute.get("authority_refs"),
+        1,
+        16,
+        "dispute authority refs",
+        "pfi_policy_unknown_member",
+    )? {
+        pfi_bounded_ascii(
+            authority,
+            "dispute authority ref",
+            512,
+            "pfi_policy_unknown_member",
+        )?;
+    }
+    for member in [
+        "opening_deadline",
+        "response_deadline",
+        "adjudication_deadline",
+        "appeal_deadline",
+    ] {
+        if dispute.contains_key(member) {
+            pfi_decimal_member(dispute, member, false, "pfi_policy_unknown_member")?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_pfi_recourse(value: &Value) -> Result<(), String> {
+    if value.as_str() == Some("none") {
+        return Ok(());
+    }
+    let recourse = pfi_object(value, "recourse", "pfi_policy_unknown_member")?;
+    pfi_closed(
+        recourse,
+        &[
+            "remedy",
+            "authority_id",
+            "terms_url",
+            "terms_sha256",
+            "deadline",
+        ],
+        "recourse",
+        "pfi_policy_unknown_member",
+    )?;
+    require_enum(
+        pfi_required_string(recourse, "remedy", "pfi_policy_unknown_member")?,
+        &[
+            "refund",
+            "reperformance",
+            "escrow_release",
+            "guarantee_claim",
+            "arbitration",
+            "legal_claim",
+        ],
+        "MKT-PFI recourse remedy",
+    )
+    .map_err(|detail| pfi_error("pfi_policy_unknown_member", detail))?;
+    pfi_bounded_ascii(
+        pfi_required_string(recourse, "authority_id", "pfi_policy_unknown_member")?,
+        "recourse authority",
+        512,
+        "pfi_policy_unknown_member",
+    )?;
+    pfi_public_url(
+        pfi_required_string(recourse, "terms_url", "pfi_policy_unknown_member")?,
+        "recourse terms",
+    )?;
+    pfi_hex(
+        pfi_required_string(recourse, "terms_sha256", "pfi_policy_unknown_member")?,
+        "recourse terms digest",
+    )?;
+    pfi_decimal_member(recourse, "deadline", false, "pfi_policy_unknown_member")?;
+    Ok(())
+}
+
+fn validate_mkt_pfi_public_receipt_content(value: &Value) -> Result<(), String> {
+    let receipt = pfi_object(value, "MKT-PFI public receipt", "pfi_public_pii_forbidden")?;
+    pfi_closed(
+        receipt,
+        &["public_safe_evidence_reference"],
+        "MKT-PFI public receipt",
+        "pfi_public_pii_forbidden",
+    )?;
+    if let Some(reference) = receipt.get("public_safe_evidence_reference") {
+        pfi_non_bearer_reference(
+            reference.as_str().ok_or_else(|| {
+                pfi_error(
+                    "pfi_public_pii_forbidden",
+                    "public-safe evidence reference must be a string",
+                )
+            })?,
+            "public-safe evidence reference",
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_pfi_asset(value: &Value, fiat: bool) -> Result<&str, String> {
+    let asset = pfi_object(value, "MKT-PFI asset", "pfi_invalid_asset_id")?;
+    pfi_closed(
+        asset,
+        &[
+            "asset_id",
+            "atomic_unit_exponent",
+            "unit_registry_ref",
+            "unit_registry_digest",
+        ],
+        "MKT-PFI asset",
+        "pfi_policy_unknown_member",
+    )?;
+    let asset_id = pfi_required_string(asset, "asset_id", "pfi_invalid_asset_id")?;
+    if fiat {
+        let code = asset_id.strip_prefix("iso4217:").unwrap_or_default();
+        if code.len() != 3 || !code.bytes().all(|byte| byte.is_ascii_uppercase()) {
+            return Err(pfi_error(
+                "pfi_invalid_asset_id",
+                "fiat asset id must be iso4217 followed by three uppercase letters",
+            ));
+        }
+    } else {
+        validate_pfi_caip19_asset_id(asset_id)?;
+    }
+    let exponent =
+        pfi_decimal_member(asset, "atomic_unit_exponent", false, "pfi_invalid_asset_id")?;
+    if exponent > 18 {
+        return Err(pfi_error(
+            "pfi_invalid_asset_id",
+            "asset atomic_unit_exponent exceeds 18",
+        ));
+    }
+    pfi_public_url(
+        pfi_required_string(asset, "unit_registry_ref", "pfi_invalid_asset_id")?,
+        "asset unit registry",
+    )?;
+    pfi_hex(
+        pfi_required_string(asset, "unit_registry_digest", "pfi_invalid_asset_id")?,
+        "asset unit registry digest",
+    )?;
+    Ok(asset_id)
+}
+
+fn validate_pfi_caip19_asset_id(value: &str) -> Result<(), String> {
+    let value = value.strip_prefix("caip19:").ok_or_else(|| {
+        pfi_error(
+            "pfi_invalid_asset_id",
+            "cryptographic asset id must use the caip19 prefix",
+        )
+    })?;
+    let (chain, asset) = value.split_once('/').ok_or_else(|| {
+        pfi_error(
+            "pfi_invalid_asset_id",
+            "CAIP-19 asset id requires chain and asset references",
+        )
+    })?;
+    if asset.contains('/') {
+        return Err(pfi_error(
+            "pfi_invalid_asset_id",
+            "CAIP-19 asset id has extra separators",
+        ));
+    }
+    for (subject, component) in [("chain", chain), ("asset", asset)] {
+        let (namespace, reference) = component.split_once(':').ok_or_else(|| {
+            pfi_error(
+                "pfi_invalid_asset_id",
+                format!("CAIP-19 {subject} component is malformed"),
+            )
+        })?;
+        if !(3..=8).contains(&namespace.len())
+            || !namespace
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            || reference.is_empty()
+            || reference.len() > 128
+            || !reference.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'%')
+            })
+        {
+            return Err(pfi_error(
+                "pfi_invalid_asset_id",
+                format!("CAIP-19 {subject} component is noncanonical"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_pfi_side(
+    value: &Value,
+    expected_pay_asset: &str,
+    expected_receive_asset: &str,
+    direction: &str,
+) -> Result<bool, String> {
+    let side = pfi_object(value, direction, "pfi_noncanonical_amount")?;
+    pfi_closed(
+        side,
+        &["pay_asset_id", "receive_asset_id", "min", "max"],
+        direction,
+        "pfi_policy_unknown_member",
+    )?;
+    if pfi_required_string(side, "pay_asset_id", "pfi_invalid_asset_id")? != expected_pay_asset
+        || pfi_required_string(side, "receive_asset_id", "pfi_invalid_asset_id")?
+            != expected_receive_asset
+    {
+        return Err(pfi_error(
+            "pfi_invalid_asset_id",
+            format!("{direction} asset order is invalid"),
+        ));
+    }
+    let minimum = pfi_decimal_member(side, "min", false, "pfi_noncanonical_amount")?;
+    let maximum = pfi_decimal_member(side, "max", false, "pfi_noncanonical_amount")?;
+    if maximum == 0 {
+        if minimum != 0 {
+            return Err(pfi_error(
+                "pfi_side_disabled",
+                format!("disabled {direction} requires min=0 and max=0"),
+            ));
+        }
+        return Ok(false);
+    }
+    if minimum == 0 || minimum > maximum {
+        return Err(pfi_error(
+            "pfi_amount_out_of_range",
+            format!("enabled {direction} requires 0 < min <= max"),
+        ));
+    }
+    Ok(true)
+}
+
+fn validate_pfi_policy_tags(event: &Event, expected_event_id: &str) -> Result<(), String> {
+    let addresses = event
+        .tags
+        .iter()
+        .filter(|tag| tag.name() == Some("a"))
+        .collect::<Vec<_>>();
+    if addresses.len() != 1
+        || addresses[0].as_slice().len() != 4
+        || addresses[0].as_slice().get(3).map(String::as_str) != Some("qualification-policy")
+    {
+        return Err(pfi_error(
+            "pfi_policy_missing",
+            "Offering requires one qualification-policy address reference",
+        ));
+    }
+    let address = addresses[0]
+        .as_slice()
+        .get(1)
+        .map(String::as_str)
+        .unwrap_or_default();
+    let mut parts = address.split(':');
+    if parts.next() != Some("39630")
+        || parts.next() != Some(event.pubkey.as_str())
+        || pfi_identifier(
+            parts.next().unwrap_or_default(),
+            "qualification policy id",
+            128,
+        )
+        .is_err()
+        || parts.next().is_some()
+    {
+        return Err(pfi_error(
+            "pfi_policy_missing",
+            "Offering qualification-policy address is invalid",
+        ));
+    }
+    let events = event
+        .tags
+        .iter()
+        .filter(|tag| tag.name() == Some("e"))
+        .collect::<Vec<_>>();
+    if events.len() != 1
+        || events[0].as_slice().len() != 4
+        || events[0].as_slice().get(1).map(String::as_str) != Some(expected_event_id)
+        || events[0].as_slice().get(3).map(String::as_str) != Some("qualification-policy")
+    {
+        return Err(pfi_error(
+            "pfi_policy_missing",
+            "Offering requires the exact qualification-policy event reference",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_pfi_jurisdictions(value: Option<&Value>, subject: &str) -> Result<(), String> {
+    let jurisdictions =
+        pfi_string_array(value, 1, 32, "jurisdictions", "pfi_policy_unknown_member")?;
+    for jurisdiction in jurisdictions {
+        if jurisdiction.len() != 2 || !jurisdiction.bytes().all(|byte| byte.is_ascii_uppercase()) {
+            return Err(pfi_error(
+                "pfi_policy_unknown_member",
+                format!("{subject} jurisdiction must be ISO 3166-1 alpha-2"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_pfi_custody_dimensions(value: &Value) -> Result<(), String> {
+    let custody = pfi_object(value, "custody dimensions", "pfi_policy_unknown_member")?;
+    pfi_closed(
+        custody,
+        &[
+            "funds_control",
+            "execution_control",
+            "settlement_authority",
+            "reversibility",
+            "recourse",
+            "credential_exposure",
+        ],
+        "custody dimensions",
+        "pfi_policy_unknown_member",
+    )?;
+    for (member, expected) in [
+        ("funds_control", "disclosed_in_quote"),
+        ("execution_control", "provider_and_external_rails"),
+        ("settlement_authority", "external_rails"),
+        ("reversibility", "rail_specific"),
+        ("recourse", "disclosed_in_quote"),
+        ("credential_exposure", "post_quote_direct_encrypted"),
+    ] {
+        pfi_exact_string(custody, member, expected, "pfi_policy_unknown_member")?;
+    }
+    Ok(())
+}
+
+fn validate_pfi_risk_class(value: &str) -> Result<(), String> {
+    require_enum(
+        value,
+        &[
+            "atomic",
+            "escrowed",
+            "reserved",
+            "guaranteed",
+            "best-effort",
+        ],
+        "MKT-PFI risk classification",
+    )
+    .map_err(|detail| pfi_error("pfi_risk_classification_missing", detail))
+}
+
+fn reject_pfi_forbidden_material(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                let normalized = name
+                    .bytes()
+                    .filter(|byte| byte.is_ascii_alphanumeric())
+                    .map(|byte| byte.to_ascii_lowercase() as char)
+                    .collect::<String>();
+                if matches!(
+                    normalized.as_str(),
+                    "name"
+                        | "fullname"
+                        | "dateofbirth"
+                        | "dob"
+                        | "address"
+                        | "email"
+                        | "phone"
+                        | "phonenumber"
+                        | "governmentidentifier"
+                        | "governmentid"
+                        | "credentialidentifier"
+                        | "subjectdid"
+                        | "account"
+                        | "accountnumber"
+                        | "bankaccount"
+                        | "iban"
+                        | "routingnumber"
+                        | "sortcode"
+                        | "walletaddress"
+                        | "credential"
+                        | "credentials"
+                        | "credentialbytes"
+                        | "credentialpresentation"
+                        | "credentialpresentationbytes"
+                        | "presentation"
+                        | "presentationbytes"
+                        | "presentationjwt"
+                        | "verifiablepresentation"
+                        | "vp"
+                        | "vc"
+                        | "sdjwt"
+                        | "bankinstruction"
+                        | "bankinstructions"
+                        | "paymentinstruction"
+                        | "paymentinstructions"
+                        | "settlementendpoint"
+                        | "disputenarrative"
+                        | "userdecision"
+                        | "qualificationdecision"
+                        | "seed"
+                        | "privatekey"
+                        | "claimprivatekey"
+                        | "refundprivatekey"
+                        | "preimage"
+                        | "macaroon"
+                ) {
+                    return Err(pfi_error(
+                        "pfi_public_pii_forbidden",
+                        format!("market record contains forbidden member {name:?}"),
+                    ));
+                }
+                if matches!(
+                    normalized.as_str(),
+                    "accesstoken"
+                        | "bearertoken"
+                        | "cookie"
+                        | "authorization"
+                        | "authorizationheader"
+                        | "retrievalsecret"
+                        | "password"
+                        | "capability"
+                        | "credentialurl"
+                        | "evidenceurl"
+                ) {
+                    return Err(pfi_error(
+                        "pfi_bearer_reference_forbidden",
+                        format!("market record contains bearer member {name:?}"),
+                    ));
+                }
+                reject_pfi_forbidden_material(child)?;
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                reject_pfi_forbidden_material(child)?;
+            }
+        }
+        Value::String(value) if pfi_value_is_bearer_shaped(value) => {
+            return Err(pfi_error(
+                "pfi_bearer_reference_forbidden",
+                "market record contains a bearer-shaped value",
+            ));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn pfi_value_is_bearer_shaped(value: &str) -> bool {
+    let lowercase = value.to_ascii_lowercase();
+    if lowercase.starts_with("bearer ") {
+        return true;
+    }
+    if lowercase.starts_with("nwc:")
+        || lowercase.starts_with("xprv")
+        || lowercase.starts_with("tprv")
+    {
+        return true;
+    }
+    let Some(rest) = lowercase.strip_prefix("https://") else {
+        return false;
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    if rest[..authority_end].contains('@') || lowercase.contains('#') {
+        return true;
+    }
+    lowercase
+        .split_once('?')
+        .map(|(_, query)| query.split('#').next().unwrap_or_default())
+        .is_some_and(|query| {
+            query.split('&').any(|pair| {
+                let name = pair.split('=').next().unwrap_or_default();
+                name.contains("token")
+                    || name.contains("secret")
+                    || name.contains("auth")
+                    || name.contains("cookie")
+                    || name.contains("capability")
+                    || name.ends_with("key")
+            })
+        })
+}
+
+fn pfi_public_url(value: &str, subject: &str) -> Result<(), String> {
+    let rest = value.strip_prefix("https://").ok_or_else(|| {
+        pfi_error(
+            "pfi_bearer_reference_forbidden",
+            format!("{subject} URL must use HTTPS"),
+        )
+    })?;
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    if value.len() > 512
+        || rest.is_empty()
+        || rest[..authority_end].is_empty()
+        || pfi_value_is_bearer_shaped(value)
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii() || byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
+        return Err(pfi_error(
+            "pfi_bearer_reference_forbidden",
+            format!("{subject} URL is unbounded or bearer-shaped"),
+        ));
+    }
+    Ok(())
+}
+
+fn pfi_non_bearer_reference(value: &str, subject: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 512
+        || value.chars().any(char::is_control)
+        || value.contains("://")
+        || pfi_value_is_bearer_shaped(value)
+    {
+        return Err(pfi_error(
+            "pfi_bearer_reference_forbidden",
+            format!("{subject} is unbounded or bearer-shaped"),
+        ));
+    }
+    Ok(())
+}
+
+fn pfi_market_id(fiat_asset: &str, crypto_asset: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"mkt-pfi-v1\0");
+    hasher.update(fiat_asset.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(crypto_asset.as_bytes());
+    digest_hex(hasher.finalize().as_slice())
+}
+
+fn sha256_hex(value: &[u8]) -> String {
+    digest_hex(Sha256::digest(value).as_slice())
+}
+
+fn digest_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(pfi_hex_digit(byte >> 4));
+        output.push(pfi_hex_digit(byte & 0x0f));
+    }
+    output
+}
+
+fn pfi_hex_digit(nibble: u8) -> char {
+    match nibble {
+        0..=9 => char::from(b'0' + nibble),
+        10..=15 => char::from(b'a' + nibble - 10),
+        _ => '?',
+    }
+}
+
+fn pfi_two_element_tags<'a>(
+    event: &'a Event,
+    name: &str,
+    minimum: usize,
+    maximum: usize,
+) -> Result<Vec<&'a str>, String> {
+    let tags = event
+        .tags
+        .iter()
+        .filter(|tag| tag.name() == Some(name))
+        .collect::<Vec<_>>();
+    if !(minimum..=maximum).contains(&tags.len())
+        || tags.iter().any(|tag| tag.as_slice().len() != 2)
+    {
+        return Err(pfi_error(
+            "pfi_policy_unknown_member",
+            format!("MKT-PFI Offering requires {minimum}-{maximum} two-element {name} tags"),
+        ));
+    }
+    Ok(tags.iter().filter_map(|tag| tag.value()).collect())
+}
+
+fn pfi_equal_unique_sets(left: &[&str], right: &[&str], subject: &str) -> Result<(), String> {
+    let left_set = left.iter().copied().collect::<BTreeSet<_>>();
+    let right_set = right.iter().copied().collect::<BTreeSet<_>>();
+    if left_set != right_set || left_set.len() != left.len() || right_set.len() != right.len() {
+        return Err(pfi_error(
+            "pfi_policy_unknown_member",
+            format!("{subject} must be equal and duplicate-free"),
+        ));
+    }
+    Ok(())
+}
+
+fn pfi_closed(
+    object: &Map<String, Value>,
+    allowed: &[&str],
+    subject: &str,
+    code: &str,
+) -> Result<(), String> {
+    if let Some(member) = object
+        .keys()
+        .find(|member| !allowed.contains(&member.as_str()))
+    {
+        return Err(pfi_error(
+            code,
+            format!("{subject} contains unknown member {member:?}"),
+        ));
+    }
+    Ok(())
+}
+
+fn pfi_object<'a>(
+    value: &'a Value,
+    subject: &str,
+    code: &str,
+) -> Result<&'a Map<String, Value>, String> {
+    value
+        .as_object()
+        .ok_or_else(|| pfi_error(code, format!("{subject} must be an object")))
+}
+
+fn pfi_required_string<'a>(
+    object: &'a Map<String, Value>,
+    name: &str,
+    code: &str,
+) -> Result<&'a str, String> {
+    object
+        .get(name)
+        .and_then(Value::as_str)
+        .ok_or_else(|| pfi_error(code, format!("{name} must be a string")))
+}
+
+fn pfi_exact_string(
+    object: &Map<String, Value>,
+    name: &str,
+    expected: &str,
+    code: &str,
+) -> Result<(), String> {
+    if pfi_required_string(object, name, code)? != expected {
+        return Err(pfi_error(code, format!("{name} is unsupported")));
+    }
+    Ok(())
+}
+
+fn pfi_decimal_member(
+    object: &Map<String, Value>,
+    name: &str,
+    positive: bool,
+    code: &str,
+) -> Result<u64, String> {
+    canonical_decimal(pfi_required_string(object, name, code)?, positive, name)
+        .map_err(|detail| pfi_error(code, detail))
+}
+
+fn pfi_string_array<'a>(
+    value: Option<&'a Value>,
+    minimum: usize,
+    maximum: usize,
+    subject: &str,
+    code: &str,
+) -> Result<Vec<&'a str>, String> {
+    let values = value
+        .and_then(Value::as_array)
+        .filter(|values| (minimum..=maximum).contains(&values.len()))
+        .ok_or_else(|| {
+            pfi_error(
+                code,
+                format!("{subject} must contain {minimum}-{maximum} strings"),
+            )
+        })?;
+    let strings = values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| pfi_error(code, format!("{subject} values must be strings")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if strings.iter().copied().collect::<BTreeSet<_>>().len() != strings.len() {
+        return Err(pfi_error(code, format!("{subject} must be duplicate-free")));
+    }
+    Ok(strings)
+}
+
+fn pfi_identifier(value: &str, subject: &str, maximum: usize) -> Result<(), String> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > maximum
+        || !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit()
+        || !bytes[1..].iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+    {
+        return Err(pfi_error(
+            "pfi_policy_unknown_member",
+            format!("{subject} is not a bounded identifier"),
+        ));
+    }
+    Ok(())
+}
+
+fn pfi_bounded_ascii(value: &str, subject: &str, maximum: usize, code: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > maximum
+        || !value.is_ascii()
+        || value.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(pfi_error(
+            code,
+            format!("{subject} is invalid or unbounded"),
+        ));
+    }
+    Ok(())
+}
+
+fn pfi_hex(value: &str, subject: &str) -> Result<(), String> {
+    pfi_hex_with_code(value, subject, "pfi_policy_unknown_member")
+}
+
+fn pfi_hex_with_code(value: &str, subject: &str, code: &str) -> Result<(), String> {
+    lower_hex_32(value, subject).map_err(|detail| pfi_error(code, detail))
+}
+
+fn pfi_error(code: &str, detail: impl fmt::Display) -> String {
+    format!("{code}: {detail}")
 }
 
 fn validate_mkt_swp_offering(event: &Event) -> Result<(), String> {

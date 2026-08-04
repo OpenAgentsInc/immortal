@@ -82,6 +82,12 @@ names the NIP that owns the behavior.
   enforcement here is lower-hex shape plus tag/body equality; RFC 8785
   recomputation, bilateral agreement, lifecycle, funding, exit, and doomsday
   execution remain client/handler cases.
+- `nipmkt/pfi-profile-v1.json` pins the relay-observable MKT-PFI v1 adoption
+  at the same OpenAgents revision: closed public kind-39630 Qualification
+  Policies, Offering asset/market/limit/policy/risk/rail grammar, redacted
+  public receipts, and bounded commitment/evidence/dispute/recourse shapes.
+  It exports all 41 upstream cases while keeping credential, rail, guarantee,
+  reserve, dispute, external-effect, and recovery authority client-only.
 - `nipmkt/tbdex-legacy.json` adapts the field vocabulary and parse-vector
   shapes from `TBD54566975/tbdex` protocol 1.0 at commit
   `7546a079bb860e7ede8125739b7970810a2df314`, Apache-2.0. It records the

@@ -61,8 +61,8 @@
     },
     {
       "path": "tests/fixtures/nip11/document.json",
-      "sha256": "019e6d964853d599c39429a5a2c6dbc2d0337087e019efd85c00919406cf106c",
-      "bytes": 659,
+      "sha256": "2e524d203c9a1a6a6681acded984ba5b656bcf7d774bddf152d8f7f8f80d195e",
+      "bytes": 676,
       "scope": "relay"
     },
     {
@@ -232,6 +232,12 @@
       "sha256": "aac6a6b6629283987dc9d0c0f3cc2f319306a3255f50e0f8e6147edd79971eac",
       "bytes": 860,
       "scope": "relay"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/pfi-profile-v1.json",
+      "sha256": "fceeba47e77740335975f2e82cb6223540b0e13b9aeb739db51abb1f0ed3ccd5",
+      "bytes": 12395,
+      "scope": "relay_and_client"
     },
     {
       "path": "tests/fixtures/nipmkt/public-heads.json",

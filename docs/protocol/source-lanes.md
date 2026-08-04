@@ -216,3 +216,38 @@ This client-only compatibility surface allocates no event kind, changes no
 relay admission or Postgres state, adds no dependency, and changes no NIP-11
 advertisement. Its fixture is exported in the deterministic contract manifest
 for downstream SDK consumers.
+
+## M12 MKT-PFI adoption decision (2026-08-04)
+
+Issue #17 adopts the relay-observable subset of MKT-PFI v1 from the already
+pinned OpenAgents commit `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`.
+Before allocating `kind:39630`, fresh clones of the three NIP lanes and the
+kind registry were reviewed again:
+
+| Source | Reviewed revision | Result |
+| --- | --- | --- |
+| Official NIPs | `c53877571f96eb423661fc23c620d629d37b8f19` | No assignment in `39630-39639`. |
+| Block NIPs | `540b58920cef205b838da8be8442aae62bceaaa5` | No assignment in `39630-39639`. |
+| OpenAgents NIPs | `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682` | MKT-PFI assigns public Qualification Policy `39630`; `39631-39639` remain reserved and unallocated. All other hits are the profile specification or NIP-MKT reservation. |
+| [`nostr-protocol/registry-of-kinds`](https://github.com/nostr-protocol/registry-of-kinds) `schema.yaml` | `2483e752146d171524dcb10dffd06de2aa271bf3` | No entry in `39630-39639`. |
+
+The review found no collision and creates no lane-precedence exception.
+Immortal therefore admits `39630` as an ordinary public addressable
+replacement head. Kinds `39631-39639` and all other unadopted profile kinds
+remain unallocated.
+
+The relay validates the policy's exact tags, content-byte digest, closed
+nested shape, bounds, and public privacy tripwires. It also validates
+MKT-PFI Offering asset pairs, market digest, decimal-string limits, disabled
+sides, fee cap, exact policy references, discovery risk/rail vocabulary, and
+closed custody labels. An authorized profile consumer can apply bounded
+shapes to credential commitments, evidence references, risk, dispute, and
+recourse after decryption. Credential and evidence bytes, bearer references,
+bank instructions, and custody material remain forbidden.
+
+The 41-case upstream manifest is exported without claiming the client-only
+credential, rail, guarantee, reserve, dispute, external-effect, or recovery
+cases as relay enforcement. Those authorities remain external. The contract
+lists `mkt-pfi:1` as `relay_observable_only`, keeps executable profiles empty,
+and advertises `nip-mkt-pfi:1` only under the authenticated relay URL gate
+after the complete local relay-observable conformance gate passes.

@@ -360,10 +360,10 @@ path; #16/#17 are the tbDEX lane and can run beside it; #18 then #19
 close the program. Profiles and rails beyond the Boltz-class replacement
 are the M13 ledger below.
 
-Current M12 status: #9, #10, upstream #9311, and #11 are complete. The pinned
-relay now exposes the MKT-SWP v1 observable contract and verification
-primitives without claiming client execution or coordination-handler support;
-#12 and #13 are the next SWP-spine packets.
+Current M12 status: #9, #10, upstream #9311, #11, #16, and #17 are complete.
+The pinned relay exposes the MKT-SWP and MKT-PFI v1 observable contracts and
+verification primitives without claiming PFI external authority or an
+executable profile. #12 and #13 remain the active SWP-spine packets.
 
 ## M13 — Market extension ledger (post-replacement)
 

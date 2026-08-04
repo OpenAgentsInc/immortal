@@ -8,6 +8,7 @@ use immortal::{
     store::{AdmissionOutcome, AdmissionRejection, NotificationListener, Store, StoreError},
 };
 use secp256k1::{Keypair, Secp256k1, SecretKey};
+use sha2::{Digest, Sha256};
 use tokio::{sync::watch, time::timeout};
 use tokio_postgres::NoTls;
 
@@ -183,6 +184,7 @@ async fn m2_store_contract_against_postgres() {
     );
 
     replacement_race(&database_url, &mut store).await;
+    mkt_pfi_policy_replacement(&mut store).await;
     mkt_immutable_admission(&database_url, &mut store).await;
     deletion_before_event(&database_url, &mut store).await;
     concurrent_deletion_race(&database_url, &mut store).await;
@@ -538,6 +540,67 @@ async fn replacement_race(database_url: &str, store: &mut Store) {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event.id, lower.id, "lowest ID wins timestamp tie");
     assert!(store.event_by_id(&higher.id, NOW).await.unwrap().is_none());
+}
+
+async fn mkt_pfi_policy_replacement(store: &mut Store) {
+    let first = mkt_pfi_policy_event(24, 350, "1", "US");
+    let second = mkt_pfi_policy_event(24, 351, "2", "CA");
+    assert!(matches!(
+        store.admit(&first, NOW).await.unwrap(),
+        AdmissionOutcome::Stored { .. }
+    ));
+    assert!(matches!(
+        store.admit(&second, NOW).await.unwrap(),
+        AdmissionOutcome::Stored { .. }
+    ));
+    assert!(store.event_by_id(&first.id, NOW).await.unwrap().is_none());
+    assert_eq!(
+        store
+            .event_by_id(&second.id, NOW)
+            .await
+            .unwrap()
+            .unwrap()
+            .event,
+        second
+    );
+}
+
+fn mkt_pfi_policy_event(secret_byte: u8, created_at: u64, version: &str, country: &str) -> Event {
+    let content = serde_json::json!({
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-pfi",
+        "profile_version": 1,
+        "qualification_policy_id": "store-policy",
+        "policy_version": version,
+        "jurisdictions": [country],
+        "requirements": [],
+        "retention": {
+            "policy_url": "https://provider.example.invalid/retention",
+            "policy_sha256": "a".repeat(64),
+            "maximum_seconds": "0",
+            "deletion_request_url": "https://provider.example.invalid/deletion"
+        }
+    })
+    .to_string();
+    let digest = Sha256::digest(content.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    signed_event(
+        secret_byte,
+        created_at,
+        39_630,
+        vec![
+            Tag::new(vec!["d".into(), "store-policy".into()]),
+            Tag::new(vec!["profile".into(), "mkt-pfi".into(), "1".into()]),
+            Tag::new(vec!["status".into(), "active".into()]),
+            Tag::new(vec!["version".into(), version.into()]),
+            Tag::new(vec!["published_at".into(), created_at.to_string()]),
+            Tag::new(vec!["x".into(), digest]),
+            Tag::new(vec!["alt".into(), "MKT-PFI qualification policy".into()]),
+        ],
+        &content,
+    )
 }
 
 async fn mkt_immutable_admission(database_url: &str, store: &mut Store) {

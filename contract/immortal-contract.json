@@ -217,6 +217,12 @@
       "identifier": "mkt-swp:1",
       "advertisement": "relay_url",
       "status": "relay_observable"
+    },
+    {
+      "lane": "openagents",
+      "identifier": "nip-mkt-pfi:1",
+      "advertisement": "relay_url_and_local_conformance",
+      "status": "relay_observable"
     }
   ],
   "kinds": [
@@ -329,6 +335,16 @@
       "publication": "private_wrapped",
       "immutability": "exact_signed_coordinate",
       "enforcement_scope": "client_and_internal_store"
+    },
+    {
+      "kind": 39630,
+      "lane": "openagents",
+      "identifier": "NIP-MKT",
+      "name": "mkt_pfi_qualification_policy",
+      "classification": "addressable",
+      "publication": "public_head",
+      "immutability": "nip01_addressable",
+      "enforcement_scope": "relay"
     }
   ],
   "limits": {
@@ -474,6 +490,12 @@
         "version": 1,
         "scope": "relay_observable_only",
         "advertisement": "relay_url_and_local_conformance"
+      },
+      {
+        "id": "mkt-pfi",
+        "version": 1,
+        "scope": "relay_observable_only",
+        "advertisement": "relay_url_and_local_conformance"
       }
     ],
     "mkt_swp": {
@@ -578,6 +600,64 @@
       ],
       "upstream_fixture_cases": 70
     },
+    "mkt_pfi": {
+      "id": "mkt-pfi",
+      "version": 1,
+      "qualification_policy_kind": 39630,
+      "scope": "relay_observable_only",
+      "fiat_asset_id_pattern": "^iso4217:[A-Z]{3}$",
+      "crypto_asset_id_pattern": "^caip19:<canonical-caip19-asset-id>$",
+      "market_id_preimage": "mkt-pfi-v1\\0<fiat_asset_id>\\0<crypto_asset_id>",
+      "canonical_amount_pattern": "^(0|[1-9][0-9]*)$",
+      "offering_required_members": [
+        "market_id",
+        "fiat_asset",
+        "crypto_asset",
+        "on_ramp",
+        "off_ramp",
+        "fee_bps",
+        "qualification_policy_event_id",
+        "qualification_policy_sha256",
+        "credential_burden",
+        "rail_ids",
+        "risk_classes",
+        "jurisdictions",
+        "custody_dimensions"
+      ],
+      "risk_classes": [
+        "atomic",
+        "escrowed",
+        "reserved",
+        "guaranteed",
+        "best-effort"
+      ],
+      "evidence_classes": [
+        "rail_receipt",
+        "institution_confirmation",
+        "beneficiary_attestation",
+        "escrow_funding",
+        "escrow_release",
+        "ledger_finality",
+        "reversibility_window_elapsed",
+        "refund_confirmation",
+        "chargeback_confirmation",
+        "guarantee_reserve",
+        "guarantee_payout",
+        "dispute_disposition"
+      ],
+      "evidence_rungs": [
+        "pledged",
+        "reserved",
+        "observed",
+        "verified",
+        "paid",
+        "settled"
+      ],
+      "credential_transport": "commitment_only; presentation_bytes_direct_encrypted_off_relay",
+      "public_receipt": "redacted_outcome_only_with_optional_non_bearer_public_safe_reference",
+      "external_authority": "credential_rail_guarantee_reserve_escrow_dispute_and_settlement_verification_not_claimed",
+      "upstream_fixture_cases": 41
+    },
     "required_tags": {
       "cancel": [
         "order e",
@@ -588,6 +668,23 @@
         "order e",
         "outcome",
         "terminal_at"
+      ],
+      "mkt_pfi_offering": [
+        "market",
+        "qualification-policy a",
+        "qualification-policy e",
+        "direction",
+        "risk",
+        "rail"
+      ],
+      "mkt_pfi_qualification_policy": [
+        "d",
+        "profile=mkt-pfi:1",
+        "status",
+        "version",
+        "published_at",
+        "x",
+        "alt"
       ],
       "mkt_swp_swap_contract": [
         "d",
