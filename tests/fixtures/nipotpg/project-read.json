@@ -1,5 +1,6 @@
 {
   "sources": [
+    "nips/official/11.md @ pinned official lane",
     "nips/openagents/OT.md @ d3bb7c51219e2473965ff6f576c1492b2aa99d31",
     "nips/openagents/PG.md @ d3bb7c51219e2473965ff6f576c1492b2aa99d31"
   ],
@@ -20,10 +21,24 @@
     "mismatched-content-digest"
   ],
   "client_contract": {
+    "relay_information": "fetch-and-validate-pinned-authority-before-websocket",
     "canonical_after": "EOSE",
     "reconnect": "retain-last-complete-snapshot-until-fresh-EOSE",
     "unknown_project_activity": "preserve-after-id-and-signature-verification",
     "malformed_known_event": "diagnose-and-exclude",
-    "max_wire_message_bytes": 262144
+    "max_wire_message_bytes": 262144,
+    "max_relay_information_bytes": 65536
+  },
+  "relay_information": {
+    "name": "OpenAgents Relay",
+    "pubkey": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+    "supported_nips": [1, 9, 11, 17, 29, 40, 42, 45, 50, 65, 70, 94],
+    "limitation": {
+      "max_message_length": 131072,
+      "max_subscriptions": 32,
+      "max_limit": 1000,
+      "max_subid_length": 64,
+      "restricted_writes": true
+    }
   }
 }

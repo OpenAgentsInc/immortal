@@ -17,6 +17,7 @@ use crate::domain::{
 };
 
 const MAX_WIRE_MESSAGE_BYTES: usize = 256 * 1024;
+const MAX_RELAY_INFORMATION_BYTES: usize = 64 * 1024;
 const MAX_DIAGNOSTICS: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +60,96 @@ impl ProjectClientConfig {
             OPENAGENTS_PROJECT_KIND, self.pinned_authority, self.project_ref
         )
     }
+
+    /// Return the HTTPS endpoint used for NIP-11 relay information discovery.
+    pub fn relay_information_url(&self) -> String {
+        self.relay_url.replacen("wss://", "https://", 1)
+    }
+
+    /// Validate a NIP-11 document against this exact project subscription.
+    pub fn validate_relay_information(&self, text: &str) -> Result<RelayInformation, String> {
+        if text.len() > MAX_RELAY_INFORMATION_BYTES {
+            return Err("relay information exceeds 65536 bytes".to_owned());
+        }
+        let value: Value = serde_json::from_str(text)
+            .map_err(|error| format!("relay information is not JSON: {error}"))?;
+        let document = value
+            .as_object()
+            .ok_or_else(|| "relay information must be a JSON object".to_owned())?;
+        let name = required_bounded_string(document.get("name"), 160, "relay name")?;
+        let pubkey = required_bounded_string(document.get("pubkey"), 64, "relay pubkey")?;
+        validate_lower_hex(&pubkey, 64, "relay pubkey")?;
+        if pubkey != self.pinned_authority {
+            return Err("relay information pubkey is not the pinned authority".to_owned());
+        }
+
+        let supported_nips = document
+            .get("supported_nips")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "relay information requires supported_nips".to_owned())?
+            .iter()
+            .map(|value| {
+                let number = value
+                    .as_u64()
+                    .ok_or_else(|| "supported NIP must be an unsigned integer".to_owned())?;
+                u16::try_from(number).map_err(|_| "supported NIP is out of range".to_owned())
+            })
+            .collect::<Result<BTreeSet<_>, String>>()?;
+        if !supported_nips.contains(&1) || !supported_nips.contains(&11) {
+            return Err("relay must advertise NIP-01 and NIP-11".to_owned());
+        }
+
+        let limitation = document
+            .get("limitation")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "relay information requires a limitation object".to_owned())?;
+        let max_message_length = required_positive_usize(
+            limitation.get("max_message_length"),
+            "maximum message length",
+        )?;
+        let max_subscriptions =
+            required_positive_usize(limitation.get("max_subscriptions"), "maximum subscriptions")?;
+        let max_limit = required_positive_usize(limitation.get("max_limit"), "maximum limit")?;
+        let max_subid_length = required_positive_usize(
+            limitation.get("max_subid_length"),
+            "maximum subscription ID length",
+        )?;
+        let restricted_writes = limitation
+            .get("restricted_writes")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| "relay information requires restricted_writes".to_owned())?;
+        if max_limit < self.max_activity {
+            return Err(
+                "relay maximum limit is smaller than the project activity limit".to_owned(),
+            );
+        }
+        if max_subid_length < self.subscription_id.len() {
+            return Err("relay maximum subscription ID length is too small".to_owned());
+        }
+
+        Ok(RelayInformation {
+            name,
+            pubkey,
+            supported_nips,
+            max_message_length,
+            max_subscriptions,
+            max_limit,
+            max_subid_length,
+            restricted_writes,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayInformation {
+    pub name: String,
+    pub pubkey: String,
+    pub supported_nips: BTreeSet<u16>,
+    pub max_message_length: usize,
+    pub max_subscriptions: usize,
+    pub max_limit: usize,
+    pub max_subid_length: usize,
+    pub restricted_writes: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -502,6 +593,31 @@ fn validate_ref(value: &str, field: &str) -> Result<(), String> {
         return Err(format!("{field} must be a bounded non-whitespace ref"));
     }
     Ok(())
+}
+
+fn required_bounded_string(
+    value: Option<&Value>,
+    maximum_bytes: usize,
+    field: &str,
+) -> Result<String, String> {
+    let value = value
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("relay information requires {field}"))?;
+    if value.is_empty() || value.len() > maximum_bytes || value.chars().any(char::is_control) {
+        return Err(format!("{field} must be bounded display text"));
+    }
+    Ok(value.to_owned())
+}
+
+fn required_positive_usize(value: Option<&Value>, field: &str) -> Result<usize, String> {
+    let value = value
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("relay information requires {field}"))?;
+    let value = usize::try_from(value).map_err(|_| format!("{field} is out of range"))?;
+    if value == 0 {
+        return Err(format!("{field} must be positive"));
+    }
+    Ok(value)
 }
 
 fn validate_lower_hex(value: &str, length: usize, field: &str) -> Result<(), String> {

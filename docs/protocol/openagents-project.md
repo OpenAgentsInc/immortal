@@ -1,10 +1,12 @@
 # OpenAgents Project Read Contract
 
 Operation Diamond Hands Phase 0 is a client read path, not a relay-side API.
-The browser opens `wss://relay.openagents.com` itself and sends the NIP-01
-subscription produced by `immortal::client::ProjectClient`. Immortal does not
-add an HTTP data endpoint, a relay proxy, a second database, or another
-service.
+The browser first fetches `https://relay.openagents.com` with the NIP-11 media
+type, validates the document's relay pubkey and subscription limits against
+its pinned configuration, then opens `wss://relay.openagents.com` itself and
+sends the NIP-01 subscription produced by `immortal::client::ProjectClient`.
+Immortal does not add an HTTP data endpoint, a relay proxy, a second database,
+or another service.
 
 ## Adopted protocol subset
 
@@ -71,11 +73,12 @@ default features:
 immortal = { git = "https://github.com/OpenAgentsInc/immortal", rev = "<pin>", default-features = false }
 ```
 
-The core deliberately performs no I/O. Native applications may adapt their
-existing socket runtime; browser applications adapt the browser WebSocket
-available through their GPUI web renderer. That separation makes the same
-state machine testable on both targets without allowing a server-only runtime
-into the wasm closure.
+The core deliberately performs no I/O. It derives the HTTPS NIP-11 URL and
+validates the bounded response, but the host performs that fetch. Native
+applications may adapt their existing socket runtime; browser applications
+adapt browser fetch and WebSocket primitives available through their GPUI web
+renderer. That separation makes the same state machine testable on both
+targets without allowing a server-only runtime into the wasm closure.
 
 Run both target checks manually:
 

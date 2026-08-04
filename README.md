@@ -79,8 +79,9 @@ Operation Diamond Hands Phase 0 adds a bounded, transport-neutral Nostr
 project reader for native and browser/WASM applications. It verifies event IDs
 and signatures locally, understands the adopted NIP-OT Organization and NIP-PG
 Project/Status/Update records, and makes EOSE the snapshot boundary. The
-embedding application owns its WebSocket, so a browser connects straight to
-the relay without an Immortal HTTP proxy. See
+embedding application first fetches and validates the relay's bounded NIP-11
+document, then owns its WebSocket, so a browser connects straight to the relay
+without an Immortal HTTP proxy. See
 [`docs/protocol/openagents-project.md`](docs/protocol/openagents-project.md).
 That contract also documents the single binary's bounded manual command for
 signing the initial authority-owned records without placing a private key in

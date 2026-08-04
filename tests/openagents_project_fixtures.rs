@@ -121,6 +121,48 @@ fn project_client_builds_a_bounded_direct_relay_subscription() {
 }
 
 #[test]
+fn project_client_discovers_and_pins_the_relay_before_subscribing() {
+    let fixture = fixture();
+    let config = config();
+    assert_eq!(
+        config.relay_information_url(),
+        "https://relay.openagents.com"
+    );
+    let information = config
+        .validate_relay_information(&fixture["relay_information"].to_string())
+        .unwrap();
+    assert_eq!(information.pubkey, pubkey(3));
+    assert!(information.supported_nips.contains(&1));
+    assert!(information.supported_nips.contains(&11));
+    assert_eq!(information.max_subscriptions, 32);
+    assert!(information.restricted_writes);
+
+    let mut wrong_authority = fixture["relay_information"].clone();
+    wrong_authority["pubkey"] = Value::String(pubkey(4));
+    assert!(
+        config
+            .validate_relay_information(&wrong_authority.to_string())
+            .is_err()
+    );
+
+    let mut missing_nip = fixture["relay_information"].clone();
+    missing_nip["supported_nips"] = json!([1]);
+    assert!(
+        config
+            .validate_relay_information(&missing_nip.to_string())
+            .is_err()
+    );
+
+    let mut incompatible_limit = fixture["relay_information"].clone();
+    incompatible_limit["limitation"]["max_limit"] = json!(1);
+    assert!(
+        config
+            .validate_relay_information(&incompatible_limit.to_string())
+            .is_err()
+    );
+}
+
+#[test]
 fn project_client_commits_only_at_eose_then_folds_live_events() {
     let mut client = ProjectClient::new(config()).unwrap();
     let bundle = records(3, 4, 100, 1);

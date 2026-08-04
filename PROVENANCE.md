@@ -702,7 +702,11 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   events under 65,536 bytes, reads the signing key only from the environment,
   validates every signed result, and performs no network or database I/O. Its
   unit tests and the repository's locked all-target test and warnings-denied
-  Clippy gates pass. Production publication, the post-EOSE live-event browser
+  Clippy gates pass. The follow-up client gate derives the NIP-11 HTTPS URL,
+  caps and parses the discovery document, pins its relay identity, requires
+  NIP-01/NIP-11, and refuses subscription limits incompatible with the exact
+  project configuration before a browser opens the WebSocket. Production
+  publication, the post-EOSE live-event browser
   proof, OpenAgents deployment, final documentation, and issue closure remain
   pending because the Google Cloud owner credential requires interactive
   reauthentication.
