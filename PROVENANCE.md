@@ -614,6 +614,32 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   row. Runtime adoption of the OpenAgents specifications still requires
   its own named decision, fixtures, and conformance gate.
 
+### 2026-08-04 — Codex 5.6 Sol (Extra High), hardening NIP sync
+
+- Accepted the owner-directed documentation and source-lane handoff as Codex
+  5.6 Sol (Extra High). Wrote and reviewed the five OpenAgents Bitcoin OSS
+  hardening drafts, then pushed their source repository before syncing the
+  exact published tree into Immortal.
+- Source revision: OpenAgents commit
+  `d3bb7c51219e2473965ff6f576c1492b2aa99d31`. The new pinned drafts are
+  NIP-SP (`32450`-`32451`), NIP-SC (`32460`-`32462`), NIP-FD
+  (`32470`-`32473`), NIP-SI (`32480`-`32482`), and NIP-BT
+  (`32490`-`32492`); the remainder of each ten-kind block stays reserved by
+  its draft. The OpenAgents lane now contains 38 Markdown files.
+- Reviewed the `32450`-`32499` allocation against the pinned official, Block,
+  and pre-existing OpenAgents lanes; no collision exists. Verified that the
+  synced OpenAgents directory is byte-for-byte identical to the pushed source
+  tree and that every local Markdown link in the changed source documents
+  resolves.
+- This is a specification sync only. Immortal does not implement, advertise,
+  admit, or fixture these five draft protocols in this change, and no roadmap
+  milestone is marked complete. A later adoption needs its own owner decision,
+  domain and server work, fixture corpus, NIP-11 update, and conformance gate.
+- The OpenAgents manual fast-policy and SOL-documentation checks passed before
+  its push. Immortal validation is run locally under the repository's
+  no-GitHub-automation invariant; no GitHub workflow or GitHub-billed check is
+  introduced or required.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names
