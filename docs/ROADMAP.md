@@ -357,9 +357,33 @@ they are not gates on this ledger.
 Sequencing inside the ledger: #9 and #10 start immediately (no
 dependencies); the SWP spine (#11 → #12/#13 → #14/#15) is the critical
 path; #16/#17 are the tbDEX lane and can run beside it; #18 then #19
-close the program. MKT-MINT, MKT-LSP, and MKT-RISK profiles are
-deliberately outside this ledger — they extend the market after the
-Boltz-class replacement exists.
+close the program. Profiles and rails beyond the Boltz-class replacement
+are the M13 ledger below.
+
+## M13 — Market extension ledger (post-replacement)
+
+The issue-backed extensions that grow the market after M12's replacement
+capability exists. They may be drafted (specs) in parallel with M12, but
+adoption lands after the SWP spine. Donor evidence: the market-rails
+teardown
+(`openagents/docs/teardowns/2026-08-04-ark-solver-mostro-cashu-rails-teardown.md`),
+`docs/inspiration/arkade.md`, and the `projects/arkade`, `projects/ark`,
+`projects/mostro`, `projects/cashu`, and `projects/tether` reference
+lanes.
+
+| Issue | Packet | Depends on |
+| --- | --- | --- |
+| [openagents#9312](https://github.com/OpenAgentsInc/openagents/issues/9312) | Draft MKT-P2P, MKT-MINT, and MKT-LSP profile NIPs upstream; decide the intent-market shape (Arkade solver model); shared vocabulary harvest (asset-id pairs, decimal-string amounts, price-feed pinning) | — |
+| [#20](https://github.com/OpenAgentsInc/immortal/issues/20) | Ark rail leg: VTXO/operator/exit verification, pre-signed exit packages as the doomsday-drill shape, covenant-reserve evidence, arkd in the lab | M12 #10, #12, #13 |
+| [#21](https://github.com/OpenAgentsInc/immortal/issues/21) | Adopt MKT-P2P: Mostro/NIP-69 bridge, bonds, disputes, per-trade key rotation | 9312 |
+| [#22](https://github.com/OpenAgentsInc/immortal/issues/22) | Adopt MKT-MINT: Cashu NUTs / Fedimint gateway quotes, NIP-87 cross-reference, custody disclosure | 9312 |
+| [#23](https://github.com/OpenAgentsInc/immortal/issues/23) | Adopt MKT-LSP: channel/JIT liquidity negotiation aligned with bLIP-50/51/52 | 9312 |
+
+Distribution surfaces (WDK swidge provider, BTCPay plugin, embed widget)
+are tracked downstream as
+[openagents#9313](https://github.com/OpenAgentsInc/openagents/issues/9313).
+MKT-RISK remains deliberately unscheduled: it requires an actual
+guarantor/underwriter and claims authority before a draft is honest.
 
 ## M8 — Hardening and formal work
 

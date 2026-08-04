@@ -39,6 +39,7 @@ Each review has these sections, in this order:
 | Block Buzz | [`buzz.md`](buzz.md) | `027a74a61c` |
 | Boltz ecosystem | [`boltz.md`](boltz.md) | primary pins recorded per repository |
 | Satora / LendaSwap | [`satora.md`](satora.md) | primary pins recorded per repository |
+| Arkade OS | [`arkade.md`](arkade.md) | primary pins recorded per repository |
 | tbDEX | [`tbdex.md`](tbdex.md) | `62c466774f` |
 
 ## Liquidity Market reading order
