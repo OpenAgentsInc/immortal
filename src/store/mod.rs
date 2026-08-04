@@ -25,8 +25,8 @@ use tokio::{
 use tokio_postgres::{AsyncMessage, Client, NoTls, Row, types::ToSql};
 
 use crate::domain::{
-    BLOCK_GLOBAL_ONLY_KINDS, DM_VISIBILITY_KIND, DeletionRequest, DeletionTombstone, Event,
-    EventClass, Filter, GroupAction, GroupMetadata, IDENTITY_ARCHIVE_LIST_KIND,
+    BLOCK_GLOBAL_ONLY_KINDS, DM_VISIBILITY_KIND, DeletionRequest, DeletionTombstone, DomainError,
+    Event, EventClass, Filter, GroupAction, GroupMetadata, IDENTITY_ARCHIVE_LIST_KIND,
     IDENTITY_ARCHIVED_KIND, IDENTITY_UNARCHIVED_KIND, IdentityArchiveRequest, RelaySigner,
     ReplacementDecision, Tag, compare_replacement_order, search_terms, validate_block_ingest,
 };
@@ -49,6 +49,17 @@ SELECT source.id, source.pubkey, source.created_at, source.kind,
 FROM public.events source
 LEFT JOIN nostr_effect_import_ledger imported ON imported.event_id = source.id
 WHERE imported.event_id IS NULL
+ORDER BY source.created_at ASC,
+         CASE WHEN source.kind = 9007 THEN 0 ELSE 1 END ASC,
+         source.id DESC
+LIMIT 1000
+"#;
+const NOSTR_EFFECT_REJECTED_SQL: &str = r#"
+SELECT source.id, source.pubkey, source.created_at, source.kind,
+       source.tags::text, source.content, source.sig
+FROM public.events source
+JOIN nostr_effect_import_ledger imported ON imported.event_id = source.id
+WHERE imported.outcome = 'rejected'
 ORDER BY source.created_at ASC,
          CASE WHEN source.kind = 9007 THEN 0 ELSE 1 END ASC,
          source.id DESC
@@ -205,6 +216,7 @@ pub struct LegacyImportReport {
     pub duplicate: usize,
     pub ephemeral: usize,
     pub rejected: usize,
+    pub rejection_reasons: BTreeMap<String, usize>,
 }
 
 impl LegacyImportReport {
@@ -218,6 +230,9 @@ impl LegacyImportReport {
         self.duplicate += other.duplicate;
         self.ephemeral += other.ephemeral;
         self.rejected += other.rejected;
+        for (reason, count) in &other.rejection_reasons {
+            *self.rejection_reasons.entry(reason.clone()).or_default() += count;
+        }
     }
 }
 
@@ -765,7 +780,31 @@ impl Store {
         // source table has been proven to exist. Preparing it at every Store
         // connection would make normal fresh deployments fail closed.
         let pending = self.client.prepare(NOSTR_EFFECT_PENDING_SQL).await?;
-        let rows = self.client.query(&pending, &[]).await?;
+        self.import_nostr_effect_rows(&pending, now, relay_signer)
+            .await
+    }
+
+    /// Retry one bounded batch previously rejected during the first pass.
+    /// This is intentionally separate from the drain loop so a permanently
+    /// incompatible legacy row cannot prevent the listener from binding.
+    pub async fn retry_rejected_nostr_effect_events(
+        &mut self,
+        now: u64,
+        relay_signer: Option<&RelaySigner>,
+    ) -> Result<LegacyImportReport, StoreError> {
+        self.ensure_current()?;
+        let rejected = self.client.prepare(NOSTR_EFFECT_REJECTED_SQL).await?;
+        self.import_nostr_effect_rows(&rejected, now, relay_signer)
+            .await
+    }
+
+    async fn import_nostr_effect_rows(
+        &mut self,
+        select: &tokio_postgres::Statement,
+        now: u64,
+        relay_signer: Option<&RelaySigner>,
+    ) -> Result<LegacyImportReport, StoreError> {
+        let rows = self.client.query(select, &[]).await?;
         let mut report = LegacyImportReport::default();
         for row in rows {
             report.scanned += 1;
@@ -784,18 +823,36 @@ impl Store {
                         report.ephemeral += 1;
                         "ephemeral"
                     }
-                    Ok(AdmissionOutcome::Rejected(_))
-                    | Err(StoreError::Domain(_))
-                    | Err(StoreError::TimestampOutOfRange { .. })
-                    | Err(StoreError::Serialization(_))
-                    | Err(StoreError::CorruptRow(_)) => {
+                    Ok(AdmissionOutcome::Rejected(rejection)) => {
                         report.rejected += 1;
+                        record_import_rejection(&mut report, admission_rejection_code(&rejection));
+                        "rejected"
+                    }
+                    Err(StoreError::Domain(error)) => {
+                        report.rejected += 1;
+                        record_import_rejection(&mut report, domain_error_code(&error));
+                        "rejected"
+                    }
+                    Err(StoreError::TimestampOutOfRange { .. }) => {
+                        report.rejected += 1;
+                        record_import_rejection(&mut report, "timestamp_out_of_range");
+                        "rejected"
+                    }
+                    Err(StoreError::Serialization(_)) => {
+                        report.rejected += 1;
+                        record_import_rejection(&mut report, "serialization");
+                        "rejected"
+                    }
+                    Err(StoreError::CorruptRow(_)) => {
+                        report.rejected += 1;
+                        record_import_rejection(&mut report, "corrupt_row");
                         "rejected"
                     }
                     Err(error) => return Err(error),
                 },
                 Err(_) => {
                     report.rejected += 1;
+                    record_import_rejection(&mut report, "decode");
                     "rejected"
                 }
             };
@@ -1713,6 +1770,53 @@ impl Store {
         };
         transaction.commit().await?;
         Ok(result)
+    }
+}
+
+fn record_import_rejection(report: &mut LegacyImportReport, reason: impl Into<String>) {
+    *report.rejection_reasons.entry(reason.into()).or_default() += 1;
+}
+
+fn admission_rejection_code(rejection: &AdmissionRejection) -> &'static str {
+    match rejection {
+        AdmissionRejection::BlockedPubkey(_) => "blocked_pubkey",
+        AdmissionRejection::BlockedKind(_) => "blocked_kind",
+        AdmissionRejection::PubkeyNotAllowed => "pubkey_not_allowed",
+        AdmissionRejection::KindNotAllowed => "kind_not_allowed",
+        AdmissionRejection::NotMember => "not_member",
+        AdmissionRejection::ContentTooLarge { .. } => "content_too_large",
+        AdmissionRejection::TooManyTags { .. } => "too_many_tags",
+        AdmissionRejection::TimestampTooFarInFuture { .. } => "timestamp_future",
+        AdmissionRejection::TimestampTooOld { .. } => "timestamp_old",
+        AdmissionRejection::AuthEvent => "auth_event",
+        AdmissionRejection::Deleted => "deleted",
+        AdmissionRejection::Superseded => "superseded",
+        AdmissionRejection::GroupNotFound => "group_not_found",
+        AdmissionRejection::GroupUnauthorized => "group_unauthorized",
+        AdmissionRejection::GroupClosed => "group_closed",
+        AdmissionRejection::GroupAlreadyMember => "group_already_member",
+        AdmissionRejection::GroupUnsupportedKind => "group_unsupported_kind",
+        AdmissionRejection::GroupPreviousUnknown => "group_previous_unknown",
+        AdmissionRejection::GroupSigningUnavailable => "group_signing_unavailable",
+    }
+}
+
+fn domain_error_code(error: &DomainError) -> String {
+    match error {
+        DomainError::EmptyTag => "empty_tag".to_owned(),
+        DomainError::InvalidHex { field, .. } => format!("invalid_hex:{field}"),
+        DomainError::InvalidPublicKey => "invalid_pubkey".to_owned(),
+        DomainError::EventIdMismatch { .. } => "event_id_mismatch".to_owned(),
+        DomainError::InvalidSignature => "invalid_signature".to_owned(),
+        DomainError::ExpiredEvent { .. } => "expired".to_owned(),
+        DomainError::FutureTimestamp { .. } => "timestamp_future".to_owned(),
+        DomainError::InvalidEvent(reason) => format!("invalid_event:{reason}"),
+        DomainError::InvalidFilter(_) => "invalid_filter".to_owned(),
+        DomainError::InvalidReplacementAddress(_) => "invalid_replacement_address".to_owned(),
+        DomainError::ReplacementAddressMismatch => "replacement_address_mismatch".to_owned(),
+        DomainError::NotReplaceable => "not_replaceable".to_owned(),
+        DomainError::NotDeletionRequest => "not_deletion".to_owned(),
+        DomainError::Serialization(_) => "domain_serialization".to_owned(),
     }
 }
 

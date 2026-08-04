@@ -430,7 +430,8 @@ const LIST_DM_HIDDEN_SQL: &str =
 const RECORD_NOSTR_EFFECT_IMPORT_SQL: &str = r#"
 INSERT INTO nostr_effect_import_ledger (event_id, outcome)
 VALUES ($1, $2)
-ON CONFLICT DO NOTHING
+ON CONFLICT (event_id) DO UPDATE
+SET outcome = EXCLUDED.outcome, processed_at = clock_timestamp()
 "#;
 
 #[derive(Clone)]

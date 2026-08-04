@@ -520,6 +520,22 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   with the no-DNS, no-GitHub-automation shadow/cutover/rollback procedure.
 - Production mutation, canary evidence, traffic promotion, canonical-domain
   verification, and final commit hashes are recorded below as they complete.
+- Pushed the first compatibility candidate as `166b954` and built it manually
+  with Google Cloud Build `ce317d84-239f-4571-ad63-a6b876031379`; no GitHub
+  automation ran. The pre-cutover Cloud SQL on-demand backup operation
+  `49b5afb5-6dae-47d4-a273-d73200000032` completed before schema mutation.
+  A first zero-traffic revision failed closed because nostr-effect's
+  authority-less Node `DATABASE_URL` is not a valid `tokio-postgres` config;
+  the next revision used the already-deployed Cloud SQL socket variables and
+  password secret without reading either secret value.
+- Zero-traffic revision `openagents-nostr-relay-00014-niy` became healthy on
+  the immutable `166b954` image. Its full source-table drain exposed 5,963
+  legacy rows rather than the old relay's public-query sample of 946; 5,013
+  entered Immortal and 950 were rejected. Production stayed on nostr-effect
+  revision `00011-57g`. Promotion is blocked while the rejected rows are
+  classified. The follow-up candidate adds bounded retry and safe aggregate
+  reason codes so state-order rejections can be separated from invalid source
+  data without logging event content, IDs, or secrets.
 
 ## Rules
 

@@ -121,6 +121,10 @@ impl Gateway {
                     break;
                 }
             }
+            let retry = migration_store
+                .retry_rejected_nostr_effect_events(unix_now(), config.relay_signer.as_ref())
+                .await?;
+            total.merge(&retry);
             print_legacy_import_report("startup", &total);
         }
         let policy = migration_store.relay_policy().await?;
@@ -431,6 +435,7 @@ fn print_legacy_import_report(phase: &str, report: &crate::store::LegacyImportRe
             "duplicate": report.duplicate,
             "ephemeral": report.ephemeral,
             "rejected": report.rejected,
+            "rejection_reasons": report.rejection_reasons,
         })
     );
 }

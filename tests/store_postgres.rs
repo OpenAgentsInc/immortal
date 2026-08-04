@@ -261,6 +261,13 @@ VALUES ($1, $2, $3, $4, $5::text::jsonb, $6, $7, NULL)
             .is_empty(),
         "ledger makes the compatibility import idempotent"
     );
+    assert!(
+        store
+            .retry_rejected_nostr_effect_events(NOW, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 async fn replacement_race(database_url: &str, store: &mut Store) {
