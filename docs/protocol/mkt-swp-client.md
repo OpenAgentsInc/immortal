@@ -22,9 +22,14 @@ the Quote terms. An Order may choose only the Quote's finite `input_amount`,
 `fee_payer`, `confirmation_policy`, and `public_receipt_consent` options; the
 contract freezes the exact selection and recomputed output amount.
 Status projection is maintained independently per signer. Sequence gaps and
-forks remain visible; signer-invalid states and lifecycle regressions fail
-closed. Conflicting mutual-close records remain separate evidence rather than
-being collapsed into settlement truth.
+forks remain visible. Signer-invalid states, regressions, and every descendant
+of a gap, fork, or invalid claim remain retained but cannot advance the last
+valid rung. An effective Cancel binds the requester request and provider
+acceptance as two exact references and is refused when either persisted
+effects or signed Status history shows that funds moved. Conflicting Close
+records remain separate evidence rather than being collapsed into settlement
+truth. Terminal evidence binds the exact transaction, invoice, or persisted
+effect-result digest and the verifier authority frozen in the contract.
 
 ## Verify before fund
 
@@ -33,6 +38,10 @@ restore. It can become `SwapSession<FundingAuthorized>` only after all of
 these checks pass:
 
 - the bilateral contracts and Quote remain bound to the same terms;
+- local observed time is within the RFQ, Quote, reservation, and optional
+  profile timeout after the bounded clock skew, and the reservation proof
+  class, capacity commitment, allocation, and covenant inputs match the
+  contract commitment;
 - the submarine, reverse, or chain timeout ladder matches the contract and
   preserves the required safety margin;
 - the payment hash and amountful BOLT-11 network, amount, signature, hash,
@@ -55,6 +64,13 @@ always revalidates its signed records, exit packages, and effect ledger and
 returns `AwaitingVerification`, so a persisted boolean cannot bypass the
 gate.
 
+The RFQ comparison covers the ordered asset pair, exact or ranged amount, fee
+cap, confirmation and replacement constraints, script mode, completion time,
+invoice digest, payment hash, firm-Quote requirement, and requester spend
+keys. The deterministic amount equation, `fee_bps`, provider fee, quoted rail
+fees, and `floor_output_sats` rounding must reproduce the output for fixed and
+selected amounts.
+
 ## Exit packages and external effects
 
 An exit package binds the participant role, leg, network, asset, effect ID,
@@ -70,8 +86,12 @@ that commits back to the event ID. The complete package must still contain
 the exact bilateral IDs and digest, and those bindings are revalidated before
 funding and after restore.
 
-The client accepts only exact hashlock-claim, CLTV-refund, and CSV-refund
-Taproot leaves. It executes the leaf condition against the transaction and
+The client accepts only exact two-leaf hashlock-claim plus CLTV/CSV-refund
+Taproot trees. It derives the cooperative internal key from distinct ordered
+requester/provider wallet spend keys, which are separate from Nostr identity
+keys, and binds the full raw funding transaction, derived txid, output, asset,
+network, verifier digest, and confirmation policy. It executes the selected
+leaf condition against the transaction and
 witness: claims require the committed 32-byte preimage and signer; CLTV and
 CSV refunds require the bound lock or delay and signer. Extra branches or
 stack elements fail closed. The client assembles claim and refund transactions
@@ -81,12 +101,18 @@ transaction if the version, lock time, inputs, outputs, non-witness
 serialization, script, control block, or exact witness shape differs from the
 requested path. Pre-signed packages are restricted to timeout exits, pass the
 same verification, require no key, and can be converted into a bounded public
-Esplora `POST /tx` request by `KeylessEsploraExecutor`.
+Esplora `POST /tx` request by `KeylessEsploraExecutor`. Plaintext Esplora is
+restricted to IPv4, IPv6, or `localhost` loopback; remote endpoints require
+HTTPS.
 
 External wallet, payment, and broadcast operations use deterministic effect
-IDs. Replaying the same result is idempotent; binding one effect ID to a
-different result fails closed. Recovery is rail-specific. A reverse requester
-claims the destination output when it is claimable. A chain requester claims
+IDs. The snapshot stores only the exact request digest, external identifier,
+and result digest. After restart, a matching funding or wallet-signing result
+suppresses the callback and returns the prior operation; binding one effect ID
+to a different request or result fails closed. Recovery observations bind the
+session, Order, and canonical per-rail digest before any action is selected.
+Recovery is rail-specific. A reverse requester claims the destination output
+when it is claimable. A chain requester claims
 the destination first, waits while that output remains funded and unclaimed,
 and refunds the source only when the destination was never funded or its
 refund is final. Missing rail state becomes an explicit unresolved-loss
@@ -100,6 +126,12 @@ Recursive tripwires reject seeds, private or claim/refund keys, preimages,
 macaroons, NWC connection strings, and signing nonces. Lightning node control,
 wallet policy, secret generation, signing, broadcasting, chain indexing, and
 finality remain outside Immortal.
+
+NIP-59 transport also has callback APIs for event signing, NIP-44 encryption,
+and NIP-44 decryption. The embedding identity service receives typed public
+requests for the sender and one-time wrapper identities; it never gives
+Immortal a secret key. `MarketSigner` remains a deterministic development and
+fixture adapter for the same requests.
 
 This client capability does not change relay admission or NIP-11. The relay
 continues to advertise only its gated observable `mkt-swp:1` surface and keeps

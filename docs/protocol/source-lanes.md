@@ -326,3 +326,19 @@ no dependency, server handler, database state, custody material, rail
 credential, or settlement authority. It does not change NIP-11: the relay's
 `mkt-swp:1` claim stays observable-only and its executable-profile set remains
 empty until issue #13 passes its active-configuration conformance gate.
+
+The final #12 audit keeps invalid Status claims and their descendants visible
+without advancing them; binds effective cancellation to separate requester
+request and provider-accept references; and derives the irreversible boundary
+from signed Status history as well as the persisted effect ledger. Close
+evidence must name the exact contract artifact or persisted result digest and
+use the contract-pinned local or external verifier authority. Failure,
+dispute, and unresolved outcomes retain their distinct section-15 accounting
+bases.
+
+Client transport now exposes typed callback requests for event signing and
+NIP-44 encryption/decryption for both the participant and one-time NIP-59
+wrapper identity. This is an API adoption of the existing M10 transport lane,
+not a new protocol source: browser and GPUI identity services can fulfill the
+plan without exporting raw secret bytes, while `MarketSigner` remains the
+deterministic fixture/development adapter.

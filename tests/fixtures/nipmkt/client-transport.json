@@ -13,6 +13,11 @@
     "outer_event_id": "70e5a057d61d4f453a62d926d84a4783f7c7c3f489a24fcd6b640b56b2725ee4",
     "expected": "exact_signed_inner_bytes"
   },
+  "external_callback_round_trip": {
+    "outer_event_id": "70e5a057d61d4f453a62d926d84a4783f7c7c3f489a24fcd6b640b56b2725ee4",
+    "secret_export_required": false,
+    "operations": ["sign", "nip44_encrypt", "nip44_decrypt"]
+  },
   "privacy": {
     "private_keys_in_trace": false,
     "relay_can_read_inner": false,

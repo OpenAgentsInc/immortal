@@ -11,10 +11,10 @@ pub mod domain;
 #[cfg(feature = "server")]
 pub mod gateway;
 pub mod market;
-#[cfg(feature = "server")]
-pub mod mkt_swp_coordination;
 #[cfg(feature = "mkt-swp-verify")]
 pub mod mkt_swp_client;
+#[cfg(feature = "server")]
+pub mod mkt_swp_coordination;
 #[cfg(feature = "mkt-swp-verify")]
 pub mod mkt_swp_verify;
 pub mod nip44;

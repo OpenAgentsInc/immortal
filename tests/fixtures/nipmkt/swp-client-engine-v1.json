@@ -94,11 +94,24 @@
     {"name": "swp-v1-negative-restore-does-not-trust-authorized-bit", "error": "swp_funding_not_authorized"},
     {"name": "swp-v1-negative-quote-expired", "error": "swp_quote_expired"},
     {"name": "swp-v1-negative-order-selection", "error": "swp_order_selection_invalid"}
+    ,{"name": "swp-v1-negative-rfq-constraint-weakened", "error": "swp_contract_terms_mismatch"}
+    ,{"name": "swp-v1-negative-exit-funding-txid", "error": "swp_exit_package_mismatch"}
+    ,{"name": "swp-v1-negative-exit-hidden-taproot-sibling", "error": "swp_exit_package_mismatch"}
+    ,{"name": "swp-v1-negative-exit-signing-key", "error": "swp_exit_package_mismatch"}
+    ,{"name": "swp-v1-negative-exit-lock-value", "error": "swp_exit_package_mismatch"}
+    ,{"name": "swp-v1-negative-exit-internal-key", "error": "swp_exit_package_mismatch"}
+    ,{"name": "swp-v1-negative-exit-verifier-digest", "error": "swp_exit_package_mismatch"}
+    ,{"name": "swp-v1-negative-status-wrong-order", "error": "swp_contract_terms_mismatch"}
+    ,{"name": "swp-v1-negative-leg-execution-field-mutation", "error": "swp_contract_terms_mismatch"}
+    ,{"name": "swp-v1-cooperative-spend-keys-distinct-from-nostr", "result": "verified"}
+    ,{"name": "swp-v1-wallet-sign-null-funding-txid-derived", "result": "signed_transaction_validated"}
   ],
   "sequencing": [
     {"name": "swp-v1-status-contiguous", "result": "advanced"},
     {"name": "swp-v1-status-gap", "error": "swp_status_gap"},
+    {"name": "swp-v1-status-gap-unknown-previous", "error": "swp_status_gap"},
     {"name": "swp-v1-status-fork", "error": "swp_status_fork"},
+    {"name": "swp-v1-status-after-fork-retained", "error": "swp_status_fork"},
     {"name": "swp-v1-negative-provider-claims-requester-verification", "error": "swp_status_signer_invalid"},
     {"name": "swp-v1-status-illegal-transition", "error": "swp_status_transition_invalid"},
     {"name": "swp-v1-recovery-mutual-close-disagreement", "result": "both_retained"}
@@ -114,6 +127,13 @@
     {"name": "swp-v1-client-refund-cltv-premature", "error": "swp_exit_package_unusable"},
     {"name": "swp-v1-client-refund-csv-satisfied", "result": "signed_transaction_validated"},
     {"name": "swp-v1-client-refund-csv-premature", "error": "swp_exit_package_unusable"}
+    ,{"name": "swp-v1-negative-arbitrary-effect-id", "error": "swp_external_effect_conflict"}
+    ,{"name": "swp-v1-negative-arbitrary-effect-request", "error": "swp_external_effect_conflict"}
+    ,{"name": "swp-v1-replay-funding-effect-skips-callback", "result": "prior_result"}
+    ,{"name": "swp-v1-negative-restored-effect-binding", "error": "swp_external_effect_conflict"}
+    ,{"name": "swp-v1-replay-exit-signing-skips-callback", "result": "prior_result"}
+    ,{"name": "swp-v1-external-sign-wrap-decrypt-callbacks", "result": "exact_signed_inner_bytes"}
+    ,{"name": "swp-v1-presigned-null-funding-txid", "error": "swp_exit_package_unusable"}
   ],
   "recovery": [
     {"name": "swp-v1-client-crash-restore-revalidates", "result": "verification_required"},
@@ -125,6 +145,28 @@
     {"name": "swp-v1-chain-recovery-claim-destination-first", "action": "claim_destination"},
     {"name": "swp-v1-chain-recovery-wait-destination-refund", "action": "wait_destination_refund"},
     {"name": "swp-v1-chain-recovery-source-refund-after-destination", "action": "refund_source"}
+    ,{"name": "swp-v1-recovery-local-observation-required", "result": "adapter_request"}
+    ,{"name": "swp-v1-recovery-source-refund-requires-destination-final", "action": "wait_destination_refund"}
+    ,{"name": "swp-v1-recovery-restored-contract-revalidated", "error": "swp_contract_terms_mismatch"}
+    ,{"name": "swp-v1-doomsday-loopback-http-esplora", "result": "public_post_request"}
+    ,{"name": "swp-v1-negative-plaintext-non-loopback-esplora", "error": "swp_exit_package_unusable"}
+  ],
+  "lifecycle": [
+    {"name": "swp-v1-cancel-effective-with-mutual-consent", "result": "cancelled"},
+    {"name": "swp-v1-negative-cancel-effective-without-consent", "error": "swp_cancel_ineffective"},
+    {"name": "swp-v1-negative-cancel-after-external-effect", "error": "swp_cancel_ineffective"},
+    {"name": "swp-v1-close-completed-with-terminal-evidence", "result": "completed"},
+    {"name": "swp-v1-negative-close-wrong-order", "error": "swp_contract_terms_mismatch"},
+    {"name": "swp-v1-negative-close-overclaims-outcome", "error": "swp_unresolved_loss"},
+    {"name": "swp-v1-negative-close-loss-accounting", "error": "swp_unresolved_loss"}
+    ,{"name": "swp-v1-negative-cancel-effective-missing-accept", "error": "swp_cancel_ineffective"}
+    ,{"name": "swp-v1-negative-cancel-effective-swapped-refs", "error": "swp_cancel_ineffective"}
+    ,{"name": "swp-v1-negative-cancel-effective-duplicate-refs", "error": "swp_cancel_ineffective"}
+    ,{"name": "swp-v1-negative-cancel-after-signed-funding-status", "error": "swp_cancel_ineffective"}
+    ,{"name": "swp-v1-close-failed-with-zero-loss-and-failure-evidence", "result": "failed"}
+    ,{"name": "swp-v1-close-disputed-with-contested-evidence", "result": "disputed"}
+    ,{"name": "swp-v1-close-unresolved-with-unknown-field", "result": "unresolved"}
+    ,{"name": "swp-v1-negative-close-forged-artifact-or-verifier", "error": "swp_unresolved_loss"}
   ],
   "custody_tripwires": [
     {"member": "seed", "error": "swp_secret_material_forbidden"},

@@ -61,6 +61,56 @@ pub struct WrapMaterial {
     pub wrap_secret: [u8; 32],
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ExternalWrapMaterial {
+    pub seal_created_at: u64,
+    pub wrap_created_at: u64,
+    pub seal_nonce: [u8; 32],
+    pub wrap_nonce: [u8; 32],
+}
+
+#[derive(Debug, Clone)]
+pub struct MarketEventSigningRequest {
+    pub pubkey: String,
+    pub created_at: u64,
+    pub kind: u16,
+    pub tags: Vec<Tag>,
+    pub content: String,
+}
+
+impl MarketEventSigningRequest {
+    pub fn verify_signed(&self, event: Event) -> Result<Event, String> {
+        if event.pubkey != self.pubkey
+            || event.created_at != self.created_at
+            || event.kind != self.kind
+            || event.tags != self.tags
+            || event.content != self.content
+        {
+            return Err("external signer changed the requested market event".to_owned());
+        }
+        event
+            .validate_structure()
+            .and_then(|()| event.validate_crypto())
+            .map_err(|error| format!("external market signature is invalid: {error}"))?;
+        Ok(event)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Nip44EncryptRequest {
+    pub actor_pubkey: String,
+    pub peer_pubkey: String,
+    pub plaintext: String,
+    pub nonce: [u8; 32],
+}
+
+#[derive(Debug, Clone)]
+pub struct Nip44DecryptRequest {
+    pub recipient_pubkey: String,
+    pub peer_pubkey: String,
+    pub ciphertext: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct WrappedMktRecord {
     pub event: Event,
@@ -91,6 +141,61 @@ pub fn wrap_mkt_record(
     recipient: &str,
     material: WrapMaterial,
 ) -> Result<WrappedMktRecord, String> {
+    let one_time = MarketSigner::from_secret_bytes(material.wrap_secret)?;
+    let external_material = ExternalWrapMaterial {
+        seal_created_at: material.seal_created_at,
+        wrap_created_at: material.wrap_created_at,
+        seal_nonce: material.seal_nonce,
+        wrap_nonce: material.wrap_nonce,
+    };
+    wrap_mkt_record_with_callbacks(
+        raw_signed_event,
+        sender.pubkey(),
+        recipient,
+        one_time.pubkey(),
+        external_material,
+        |request| {
+            let signer = if request.pubkey == sender.pubkey() {
+                sender
+            } else if request.pubkey == one_time.pubkey() {
+                &one_time
+            } else {
+                return Err("market signing request names an unknown key".to_owned());
+            };
+            Ok(signer.sign(
+                request.created_at,
+                request.kind,
+                request.tags.clone(),
+                request.content.clone(),
+            ))
+        },
+        |request| {
+            let signer = if request.actor_pubkey == sender.pubkey() {
+                sender
+            } else if request.actor_pubkey == one_time.pubkey() {
+                &one_time
+            } else {
+                return Err("NIP-44 request names an unknown market key".to_owned());
+            };
+            let key = signer.conversation_key(&request.peer_pubkey)?;
+            nip44::encrypt(&request.plaintext, &key, request.nonce)
+        },
+    )
+}
+
+pub fn wrap_mkt_record_with_callbacks<Sign, Encrypt>(
+    raw_signed_event: &[u8],
+    sender_pubkey: &str,
+    recipient: &str,
+    wrapper_pubkey: &str,
+    material: ExternalWrapMaterial,
+    mut sign_event: Sign,
+    mut encrypt: Encrypt,
+) -> Result<WrappedMktRecord, String>
+where
+    Sign: FnMut(&MarketEventSigningRequest) -> Result<Event, String>,
+    Encrypt: FnMut(&Nip44EncryptRequest) -> Result<String, String>,
+{
     let inner: Event = serde_json::from_slice(raw_signed_event)
         .map_err(|error| format!("private MKT record is not an event: {error}"))?;
     inner
@@ -100,15 +205,20 @@ pub fn wrap_mkt_record(
     if !is_mkt_private_kind(inner.kind) {
         return Err("only private NIP-MKT records may be gift-wrapped".to_owned());
     }
-    if inner.pubkey != sender.pubkey() {
+    if inner.pubkey != sender_pubkey {
         return Err("private MKT record signer does not match wrapping sender".to_owned());
     }
     decode_hex_32(recipient)?;
+    decode_hex_32(sender_pubkey)?;
+    decode_hex_32(wrapper_pubkey)?;
+    if wrapper_pubkey == sender_pubkey {
+        return Err("gift-wrap key must be distinct from the sender key".to_owned());
+    }
     let raw = std::str::from_utf8(raw_signed_event)
         .map_err(|_| "private MKT record is not UTF-8".to_owned())?;
     let mut rumor = Rumor {
         id: String::new(),
-        pubkey: sender.pubkey().to_owned(),
+        pubkey: sender_pubkey.to_owned(),
         created_at: inner.created_at,
         kind: inner.kind,
         tags: vec![Tag::new(vec!["p".to_owned(), recipient.to_owned()])],
@@ -117,28 +227,36 @@ pub fn wrap_mkt_record(
     rumor.id = rumor_id(&rumor)?;
     let rumor_json = serde_json::to_string(&rumor)
         .map_err(|error| format!("failed to serialize MKT rumor: {error}"))?;
-    let sender_key = sender.conversation_key(recipient)?;
-    let sealed_content = nip44::encrypt(&rumor_json, &sender_key, material.seal_nonce)?;
-    let seal = sender.sign(
-        material.seal_created_at,
-        SEAL_KIND,
-        Vec::new(),
-        sealed_content,
-    );
+    let sealed_content = encrypt(&Nip44EncryptRequest {
+        actor_pubkey: sender_pubkey.to_owned(),
+        peer_pubkey: recipient.to_owned(),
+        plaintext: rumor_json,
+        nonce: material.seal_nonce,
+    })?;
+    let seal_request = MarketEventSigningRequest {
+        pubkey: sender_pubkey.to_owned(),
+        created_at: material.seal_created_at,
+        kind: SEAL_KIND,
+        tags: Vec::new(),
+        content: sealed_content,
+    };
+    let seal = seal_request.verify_signed(sign_event(&seal_request)?)?;
     let seal_json = serde_json::to_string(&seal)
         .map_err(|error| format!("failed to serialize MKT seal: {error}"))?;
-    let one_time = MarketSigner::from_secret_bytes(material.wrap_secret)?;
-    if one_time.pubkey() == sender.pubkey() {
-        return Err("gift-wrap key must be distinct from the sender key".to_owned());
-    }
-    let wrap_key = one_time.conversation_key(recipient)?;
-    let wrap_content = nip44::encrypt(&seal_json, &wrap_key, material.wrap_nonce)?;
-    let event = one_time.sign(
-        material.wrap_created_at,
-        GIFT_WRAP_KIND,
-        vec![Tag::new(vec!["p".to_owned(), recipient.to_owned()])],
-        wrap_content,
-    );
+    let wrap_content = encrypt(&Nip44EncryptRequest {
+        actor_pubkey: wrapper_pubkey.to_owned(),
+        peer_pubkey: recipient.to_owned(),
+        plaintext: seal_json,
+        nonce: material.wrap_nonce,
+    })?;
+    let wrap_request = MarketEventSigningRequest {
+        pubkey: wrapper_pubkey.to_owned(),
+        created_at: material.wrap_created_at,
+        kind: GIFT_WRAP_KIND,
+        tags: vec![Tag::new(vec!["p".to_owned(), recipient.to_owned()])],
+        content: wrap_content,
+    };
+    let event = wrap_request.verify_signed(sign_event(&wrap_request)?)?;
     Ok(WrappedMktRecord {
         event,
         inner_event_id: inner.id,
@@ -150,7 +268,22 @@ pub fn unwrap_mkt_record(
     recipient: &MarketSigner,
     supported_profiles: &[MktProfileSupport<'_>],
 ) -> Result<DeliveredMktRecord, String> {
-    let rumor = unwrap_rumor(wrap, recipient)?;
+    unwrap_mkt_record_with_callback(wrap, recipient.pubkey(), supported_profiles, |request| {
+        let key = recipient.conversation_key(&request.peer_pubkey)?;
+        nip44::decrypt(&request.ciphertext, &key)
+    })
+}
+
+pub fn unwrap_mkt_record_with_callback<Decrypt>(
+    wrap: &Event,
+    recipient_pubkey: &str,
+    supported_profiles: &[MktProfileSupport<'_>],
+    decrypt: Decrypt,
+) -> Result<DeliveredMktRecord, String>
+where
+    Decrypt: FnMut(&Nip44DecryptRequest) -> Result<String, String>,
+{
+    let rumor = unwrap_rumor_with_callback(wrap, recipient_pubkey, decrypt)?;
     validate_rumor_record(wrap, rumor, supported_profiles)
 }
 
@@ -170,15 +303,33 @@ pub(crate) fn unwrap_mkt_record_for_handler(
 }
 
 fn unwrap_rumor(wrap: &Event, recipient: &MarketSigner) -> Result<Rumor, String> {
+    unwrap_rumor_with_callback(wrap, recipient.pubkey(), |request| {
+        let key = recipient.conversation_key(&request.peer_pubkey)?;
+        nip44::decrypt(&request.ciphertext, &key)
+    })
+}
+
+fn unwrap_rumor_with_callback<Decrypt>(
+    wrap: &Event,
+    recipient_pubkey: &str,
+    mut decrypt: Decrypt,
+) -> Result<Rumor, String>
+where
+    Decrypt: FnMut(&Nip44DecryptRequest) -> Result<String, String>,
+{
     wrap.validate_structure()
         .and_then(|()| wrap.validate_crypto())
         .map_err(|error| format!("gift wrap is invalid: {error}"))?;
     if wrap.kind != GIFT_WRAP_KIND {
         return Err("wrapped MKT record must use kind 1059".to_owned());
     }
-    require_recipient(wrap, recipient.pubkey(), "gift wrap")?;
-    let wrap_key = recipient.conversation_key(&wrap.pubkey)?;
-    let seal_json = nip44::decrypt(&wrap.content, &wrap_key)?;
+    decode_hex_32(recipient_pubkey)?;
+    require_recipient(wrap, recipient_pubkey, "gift wrap")?;
+    let seal_json = decrypt(&Nip44DecryptRequest {
+        recipient_pubkey: recipient_pubkey.to_owned(),
+        peer_pubkey: wrap.pubkey.clone(),
+        ciphertext: wrap.content.clone(),
+    })?;
     let seal: Event = serde_json::from_str(&seal_json)
         .map_err(|error| format!("gift wrap seal is not an event: {error}"))?;
     seal.validate_structure()
@@ -187,8 +338,11 @@ fn unwrap_rumor(wrap: &Event, recipient: &MarketSigner) -> Result<Rumor, String>
     if seal.kind != SEAL_KIND || !seal.tags.is_empty() {
         return Err("gift wrap seal must be kind 13 with no tags".to_owned());
     }
-    let seal_key = recipient.conversation_key(&seal.pubkey)?;
-    let rumor_json = nip44::decrypt(&seal.content, &seal_key)?;
+    let rumor_json = decrypt(&Nip44DecryptRequest {
+        recipient_pubkey: recipient_pubkey.to_owned(),
+        peer_pubkey: seal.pubkey.clone(),
+        ciphertext: seal.content.clone(),
+    })?;
     let rumor: Rumor = serde_json::from_str(&rumor_json)
         .map_err(|error| format!("gift wrap rumor is invalid: {error}"))?;
     if rumor.id != rumor_id(&rumor)? {
@@ -197,7 +351,7 @@ fn unwrap_rumor(wrap: &Event, recipient: &MarketSigner) -> Result<Rumor, String>
     if rumor.pubkey != seal.pubkey {
         return Err("gift wrap rumor author does not match the seal signer".to_owned());
     }
-    require_rumor_recipient(&rumor, recipient.pubkey())?;
+    require_rumor_recipient(&rumor, recipient_pubkey)?;
     Ok(rumor)
 }
 
@@ -360,6 +514,107 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(delivered.sender, sender.pubkey());
+        assert_eq!(delivered.record.raw_signed_event, raw);
+    }
+
+    #[test]
+    fn external_sign_encrypt_and_decrypt_callbacks_need_no_secret_material() {
+        let sender = MarketSigner::from_secret_bytes([1; 32]).unwrap();
+        let recipient = MarketSigner::from_secret_bytes([2; 32]).unwrap();
+        let wrapper = MarketSigner::from_secret_bytes([5; 32]).unwrap();
+        let session = "11".repeat(32);
+        let event = sender.sign(
+            10,
+            MKT_RFQ_KIND,
+            vec![
+                Tag::new(vec!["d".into(), "22".repeat(32)]),
+                Tag::new(vec!["session".into(), session.clone()]),
+                Tag::new(vec!["profile".into(), "local-dev".into(), "1".into()]),
+                Tag::new(vec![
+                    "p".into(),
+                    recipient.pubkey().into(),
+                    "".into(),
+                    "provider".into(),
+                ]),
+                Tag::new(vec!["alt".into(), "Local development RFQ".into()]),
+            ],
+            json!({
+                "schema": MKT_ENVELOPE_SCHEMA,
+                "profile": "local-dev",
+                "profile_version": 1,
+                "session_id": session
+            })
+            .to_string(),
+        );
+        let raw = serde_json::to_vec(&event).unwrap();
+        let wrapped = wrap_mkt_record_with_callbacks(
+            &raw,
+            sender.pubkey(),
+            recipient.pubkey(),
+            wrapper.pubkey(),
+            ExternalWrapMaterial {
+                seal_created_at: 8,
+                wrap_created_at: 9,
+                seal_nonce: [3; 32],
+                wrap_nonce: [4; 32],
+            },
+            |request| {
+                let signer = if request.pubkey == sender.pubkey() {
+                    &sender
+                } else if request.pubkey == wrapper.pubkey() {
+                    &wrapper
+                } else {
+                    return Err("unexpected signing identity".to_owned());
+                };
+                Ok(signer.sign(
+                    request.created_at,
+                    request.kind,
+                    request.tags.clone(),
+                    request.content.clone(),
+                ))
+            },
+            |request| {
+                let actor = if request.actor_pubkey == sender.pubkey() {
+                    &sender
+                } else if request.actor_pubkey == wrapper.pubkey() {
+                    &wrapper
+                } else {
+                    return Err("unexpected encryption identity".to_owned());
+                };
+                nip44::encrypt(
+                    &request.plaintext,
+                    &actor.conversation_key(&request.peer_pubkey)?,
+                    request.nonce,
+                )
+            },
+        )
+        .unwrap();
+        let profiles = [MktProfileSupport {
+            profile_id: "local-dev",
+            version: 1,
+            critical_members: &[],
+            understood_members: &[],
+        }];
+        let delivered = unwrap_mkt_record_with_callback(
+            &wrapped.event,
+            recipient.pubkey(),
+            &profiles,
+            |request| {
+                nip44::decrypt(
+                    &request.ciphertext,
+                    &recipient.conversation_key(&request.peer_pubkey)?,
+                )
+            },
+        )
+        .unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/nipmkt/client-transport.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            wrapped.event.id,
+            fixture["external_callback_round_trip"]["outer_event_id"]
+        );
         assert_eq!(delivered.record.raw_signed_event, raw);
     }
 

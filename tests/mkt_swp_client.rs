@@ -1,22 +1,27 @@
 #![cfg(feature = "mkt-swp-verify")]
 
-use std::collections::BTreeSet;
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeSet,
+};
 
 use immortal::{
     market::MarketSigner,
     mkt_swp_client::{
         AwaitingVerification, BitcoinObservationRequest, Cancellation, ChainRecoveryState,
-        CloseOutcome, ExitPackage, ExternalEffectResult, FundingAction, FundingVerificationInput,
-        InvoiceVerificationInput, KeylessEsploraExecutor, LocalBitcoinObservation,
-        MktSigningRequest, ParticipantRole, QuotePolicy, RecoveryAction, RecoveryObservation,
-        StatusState, SwapClientConfig, SwapContractReferences, SwapRecordFactory, SwapSession,
-        SwapType, TimeoutLadder, VerifyBeforeFundInput,
+        CloseOutcome, ExitPackage, ExitSigningOutcome, ExternalEffectRequest, ExternalEffectResult,
+        FundingAction, FundingVerificationInput, InvoiceVerificationInput, KeylessEsploraExecutor,
+        LightningRecoveryState, LocalBitcoinObservation, LocalRecoveryObservation,
+        MktSigningRequest, ParticipantRole, QuotePolicy, RecoveryAction, StatusState,
+        SwapClientConfig, SwapContractReferences, SwapRecordFactory, SwapSession, SwapType,
+        TimeoutLadder, VerifyBeforeFundInput,
     },
     mkt_swp_verify::{
-        Transaction, TransactionInput, TransactionOutput, sha256, tapleaf_hash, taproot_output_key,
+        Transaction, TransactionInput, TransactionOutput, musig2_aggregate_key, sha256,
+        tagged_hash, tapleaf_hash, taproot_output_key,
     },
 };
-use secp256k1::{Keypair, Parity, Secp256k1, SecretKey};
+use secp256k1::{Keypair, Parity, PublicKey, Secp256k1, SecretKey};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -40,13 +45,14 @@ fn fixture_manifest_is_complete_and_unique() {
         "sequencing",
         "external_effects",
         "recovery",
+        "lifecycle",
     ] {
         for case in fixture[section].as_array().unwrap() {
             let name = case["name"].as_str().unwrap();
             assert!(names.insert(name), "duplicate client case {name}");
         }
     }
-    assert_eq!(names.len(), 63);
+    assert_eq!(names.len(), 103);
     assert!(names.contains("swp-v1-doomsday-submarine-provider-gone"));
     assert!(names.contains("swp-v1-doomsday-keyless-esplora-broadcast"));
 
@@ -186,6 +192,7 @@ fn deterministic_record_factory_covers_all_private_base_records() {
                     action: "request",
                     reason: "user_request",
                     request_id: None,
+                    accepted_id: None,
                 },
                 json!({}),
             )
@@ -248,15 +255,21 @@ fn doomsday_snapshot_builds_keyless_esplora_request() {
     let snapshot = session.persist().unwrap();
     let restored = SwapSession::<AwaitingVerification>::restore(&snapshot).unwrap();
     let action = restored
-        .recovery_action(&RecoveryObservation {
-            counterparty_available: false,
-            timeout_reached: true,
-            claim_observed: false,
-            claim_ready: false,
-            completed: false,
-            record_loss: false,
-            rail_state_unknown: false,
-            chain_state: None,
+        .recovery_action_with(|request| {
+            assert_eq!(request.swap_type, SwapType::Submarine);
+            Ok(LocalRecoveryObservation {
+                session_id: request.session_id.clone(),
+                order_id: request.order_id.clone(),
+                binding_sha256: request.binding_sha256.clone(),
+                current_height: 140,
+                source_funding_confirmation_height: Some(100),
+                counterparty_available: false,
+                completed: false,
+                record_loss: false,
+                rail_state_unknown: false,
+                lightning_state: Some(LightningRecoveryState::UnpaidFinal),
+                chain_state: None,
+            })
         })
         .unwrap();
     assert!(matches!(action, RecoveryAction::BroadcastPresigned { .. }));
@@ -324,16 +337,20 @@ fn reverse_and_chain_requester_flows_authorize_and_plan_recovery() {
             _ => panic!("requester funding action does not match swap topology"),
         }
         let action = authorized
-            .recovery_action(&RecoveryObservation {
-                counterparty_available: false,
-                timeout_reached: true,
-                claim_ready: swap_type == SwapType::Reverse,
-                claim_observed: false,
-                completed: false,
-                record_loss: false,
-                rail_state_unknown: false,
-                chain_state: (swap_type == SwapType::Chain)
-                    .then_some(ChainRecoveryState::DestinationClaimable),
+            .recovery_action_with(|request| {
+                Ok(LocalRecoveryObservation {
+                    session_id: request.session_id.clone(),
+                    order_id: request.order_id.clone(),
+                    binding_sha256: request.binding_sha256.clone(),
+                    current_height: 140,
+                    source_funding_confirmation_height: Some(100),
+                    counterparty_available: false,
+                    completed: false,
+                    record_loss: false,
+                    rail_state_unknown: false,
+                    lightning_state: Some(LightningRecoveryState::UnpaidFinal),
+                    chain_state: Some(ChainRecoveryState::DestinationClaimable),
+                })
             })
             .unwrap();
         assert!(matches!(action, RecoveryAction::RequestWalletClaim { .. }));
@@ -417,7 +434,7 @@ fn quote_expiry_and_order_selection_are_checked_before_funding() {
         "public_receipt_consent":[false,true]
     });
     let selection = json!({
-        "input_amount":"120000",
+        "input_amount":"100000",
         "fee_payer":"requester",
         "confirmation_policy":"one_confirmation",
         "public_receipt_consent":false
@@ -527,10 +544,12 @@ fn exit_leaf_execution_rejects_wrong_hashlock_and_premature_timeouts() {
     let mut premature_cltv = exit_document(
         &fixture,
         SwapType::Submarine,
-        &"03".repeat(32),
-        &"04".repeat(32),
-        &contract_ids,
-        &"05".repeat(32),
+        ExitDocumentBindings {
+            order_id: &"03".repeat(32),
+            quote_id: &"04".repeat(32),
+            contract_ids: &contract_ids,
+            contract_sha256: &"05".repeat(32),
+        },
         flow_exit_specs(SwapType::Submarine)[0],
         "wallet_sign",
     );
@@ -544,10 +563,12 @@ fn exit_leaf_execution_rejects_wrong_hashlock_and_premature_timeouts() {
     let mut premature_csv = exit_document(
         &fixture,
         SwapType::Chain,
-        &"03".repeat(32),
-        &"04".repeat(32),
-        &contract_ids,
-        &"05".repeat(32),
+        ExitDocumentBindings {
+            order_id: &"03".repeat(32),
+            quote_id: &"04".repeat(32),
+            contract_ids: &contract_ids,
+            contract_sha256: &"05".repeat(32),
+        },
         flow_exit_specs(SwapType::Chain)[0],
         "wallet_sign",
     );
@@ -563,32 +584,51 @@ fn exit_leaf_execution_rejects_wrong_hashlock_and_premature_timeouts() {
 fn chain_recovery_waits_for_destination_before_source_refund() {
     let fixture = fixture();
     let session = build_session(&fixture, SwapType::Chain, true);
-    let observation = |chain_state| RecoveryObservation {
+    let observation = |request: &immortal::mkt_swp_client::RecoveryObservationRequest,
+                       chain_state| LocalRecoveryObservation {
+        session_id: request.session_id.clone(),
+        order_id: request.order_id.clone(),
+        binding_sha256: request.binding_sha256.clone(),
+        current_height: 140,
+        source_funding_confirmation_height: Some(100),
         counterparty_available: false,
-        timeout_reached: true,
-        claim_ready: false,
-        claim_observed: false,
         completed: false,
         record_loss: false,
         rail_state_unknown: false,
+        lightning_state: None,
         chain_state: Some(chain_state),
     };
     assert!(matches!(
         session
-            .recovery_action(&observation(ChainRecoveryState::DestinationClaimable))
+            .recovery_action_with(|request| {
+                Ok(observation(
+                    request,
+                    ChainRecoveryState::DestinationClaimable,
+                ))
+            })
             .unwrap(),
         RecoveryAction::RequestWalletClaim { .. }
     ));
     assert_eq!(
         session
-            .recovery_action(&observation(ChainRecoveryState::DestinationFundedUnclaimed))
+            .recovery_action_with(|request| {
+                Ok(observation(
+                    request,
+                    ChainRecoveryState::DestinationFundedUnclaimed,
+                ))
+            })
             .unwrap(),
         RecoveryAction::WaitForDestinationRefund
     );
     let source_effect = session.exit_packages()[0].effect_id().unwrap();
     assert_eq!(
         session
-            .recovery_action(&observation(ChainRecoveryState::DestinationRefundedFinal))
+            .recovery_action_with(|request| {
+                Ok(observation(
+                    request,
+                    ChainRecoveryState::DestinationRefundedFinal,
+                ))
+            })
             .unwrap(),
         RecoveryAction::BroadcastPresigned {
             effect_id: source_effect.to_owned()
@@ -808,7 +848,7 @@ fn status_streams_surface_gaps_forks_and_illegal_regressions() {
                 &order_id,
                 StatusState {
                     sequence: 2,
-                    previous: Some(&first.id),
+                    previous: Some(&"ff".repeat(32)),
                     base_state: "refund_pending",
                     swp_state: "refund_prepared",
                 },
@@ -871,6 +911,86 @@ fn status_streams_surface_gaps_forks_and_illegal_regressions() {
         "swp_status_fork"
     );
 
+    let first_fork = signed(
+        factory
+            .status(
+                ParticipantRole::Requester,
+                201,
+                &"25".repeat(32),
+                &order_id,
+                StatusState {
+                    sequence: 1,
+                    previous: Some(&first.id),
+                    base_state: "funding_observed",
+                    swp_state: "requester_funding_broadcast",
+                },
+                Default::default(),
+            )
+            .unwrap(),
+        &setup.requester,
+    );
+    let second_fork = signed(
+        factory
+            .status(
+                ParticipantRole::Requester,
+                202,
+                &"26".repeat(32),
+                &order_id,
+                StatusState {
+                    sequence: 1,
+                    previous: Some(&first.id),
+                    base_state: "refund_pending",
+                    swp_state: "refund_prepared",
+                },
+                Default::default(),
+            )
+            .unwrap(),
+        &setup.requester,
+    );
+    let after_fork = signed(
+        factory
+            .status(
+                ParticipantRole::Requester,
+                203,
+                &"27".repeat(32),
+                &order_id,
+                StatusState {
+                    sequence: 2,
+                    previous: Some(&first_fork.id),
+                    base_state: "refund_pending",
+                    swp_state: "refund_pending",
+                },
+                Default::default(),
+            )
+            .unwrap(),
+        &setup.requester,
+    );
+    let after_fork_id = after_fork.id.clone();
+    let mut after_fork_records = base.signed_records().to_vec();
+    after_fork_records.extend([first.clone(), first_fork, second_fork, after_fork]);
+    let after_fork_session = SwapSession::from_signed_records(
+        base.config().clone(),
+        after_fork_records,
+        base.exit_packages().to_vec(),
+    )
+    .unwrap();
+    assert_eq!(
+        after_fork_session
+            .status_projection()
+            .unwrap()
+            .require_contiguous()
+            .unwrap_err()
+            .code,
+        "swp_status_fork"
+    );
+    assert!(
+        after_fork_session
+            .status_projection()
+            .unwrap()
+            .invalid_claims
+            .contains_key(&after_fork_id)
+    );
+
     let regression = signed(
         factory
             .status(
@@ -889,17 +1009,293 @@ fn status_streams_surface_gaps_forks_and_illegal_regressions() {
             .unwrap(),
         &setup.requester,
     );
+    let regression_id = regression.id.clone();
     let mut regression_records = base.signed_records().to_vec();
     regression_records.extend([first, regression]);
+    let regression_session = SwapSession::from_signed_records(
+        base.config().clone(),
+        regression_records,
+        base.exit_packages().to_vec(),
+    )
+    .unwrap();
+    let projection = regression_session.status_projection().unwrap();
+    assert!(projection.invalid_claims.contains_key(&regression_id));
+    assert_eq!(
+        projection.require_contiguous().unwrap_err().code,
+        "swp_status_transition_invalid"
+    );
+}
+
+#[test]
+fn cancellation_requires_two_exact_consents_and_refuses_funded_history() {
+    let fixture = fixture();
+    let setup = Setup::new(&fixture);
+    let factory = SwapRecordFactory::new(setup.config.clone()).unwrap();
+    let base = build_session(&fixture, SwapType::Submarine, true);
+    let order_id = base
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == 39_606)
+        .unwrap()
+        .id
+        .clone();
+    let request = signed(
+        factory
+            .cancel(
+                ParticipantRole::Requester,
+                200,
+                &"51".repeat(32),
+                &order_id,
+                Cancellation {
+                    action: "request",
+                    reason: "user_request",
+                    request_id: None,
+                    accepted_id: None,
+                },
+                json!({}),
+            )
+            .unwrap(),
+        &setup.requester,
+    );
+    let accepted = signed(
+        factory
+            .cancel(
+                ParticipantRole::Provider,
+                201,
+                &"52".repeat(32),
+                &order_id,
+                Cancellation {
+                    action: "accepted",
+                    reason: "user_request",
+                    request_id: Some(&request.id),
+                    accepted_id: None,
+                },
+                json!({}),
+            )
+            .unwrap(),
+        &setup.provider,
+    );
+    let effective_request = factory
+        .cancel(
+            ParticipantRole::Requester,
+            202,
+            &"53".repeat(32),
+            &order_id,
+            Cancellation {
+                action: "effective",
+                reason: "user_request",
+                request_id: Some(&request.id),
+                accepted_id: Some(&accepted.id),
+            },
+            json!({}),
+        )
+        .unwrap();
+    let effective = signed(effective_request.clone(), &setup.requester);
+    let terms = base_terms(&fixture, SwapType::Submarine);
+    let close = signed(
+        factory
+            .close(
+                ParticipantRole::Requester,
+                203,
+                &"54".repeat(32),
+                &order_id,
+                CloseOutcome {
+                    outcome: "cancelled",
+                    terminal_at: 203,
+                },
+                json!({
+                    "cancel_id":effective.id,
+                    "loss_accounting":empty_loss_accounting(&terms)
+                }),
+            )
+            .unwrap(),
+        &setup.requester,
+    );
+    let mut valid_records = base.signed_records().to_vec();
+    valid_records.extend([request.clone(), accepted.clone(), effective.clone(), close]);
+    let cancelled = SwapSession::from_signed_records(
+        base.config().clone(),
+        valid_records,
+        base.exit_packages().to_vec(),
+    )
+    .unwrap();
+    assert_eq!(
+        cancelled.status_projection().unwrap().close_records.len(),
+        1
+    );
+    assert_eq!(
+        cancelled
+            .verify_before_fund(
+                verification_input(&fixture, SwapType::Submarine),
+                |_| Ok(())
+            )
+            .unwrap_err()
+            .code,
+        "swp_cancel_ineffective"
+    );
+
+    let assert_bad_effective = |bad_effective| {
+        let mut records = base.signed_records().to_vec();
+        records.extend([request.clone(), accepted.clone(), bad_effective]);
+        assert_eq!(
+            SwapSession::from_signed_records(
+                base.config().clone(),
+                records,
+                base.exit_packages().to_vec(),
+            )
+            .unwrap_err()
+            .code,
+            "swp_cancel_ineffective"
+        );
+    };
+    let mut missing_tags = effective_request.tags.clone();
+    missing_tags.retain(|tag| tag.as_slice().get(3).map(String::as_str) != Some("cancel-accept"));
+    assert_bad_effective(setup.requester.sign(
+        effective_request.created_at,
+        effective_request.kind,
+        missing_tags,
+        effective_request.content.clone(),
+    ));
+    let mut swapped_tags = effective_request.tags.clone();
+    for tag in &mut swapped_tags {
+        if tag.as_slice().get(3).map(String::as_str) == Some("cancel-request") {
+            *tag.0.get_mut(3).unwrap() = "cancel-accept".into();
+        } else if tag.as_slice().get(3).map(String::as_str) == Some("cancel-accept") {
+            *tag.0.get_mut(3).unwrap() = "cancel-request".into();
+        }
+    }
+    assert_bad_effective(setup.requester.sign(
+        effective_request.created_at,
+        effective_request.kind,
+        swapped_tags,
+        effective_request.content.clone(),
+    ));
+    let duplicate = signed(
+        factory
+            .cancel(
+                ParticipantRole::Requester,
+                202,
+                &"55".repeat(32),
+                &order_id,
+                Cancellation {
+                    action: "effective",
+                    reason: "user_request",
+                    request_id: Some(&request.id),
+                    accepted_id: Some(&request.id),
+                },
+                json!({}),
+            )
+            .unwrap(),
+        &setup.requester,
+    );
+    assert_bad_effective(duplicate);
+
+    let funded_status = signed(
+        factory
+            .status(
+                ParticipantRole::Requester,
+                201,
+                &"56".repeat(32),
+                &order_id,
+                StatusState {
+                    sequence: 0,
+                    previous: None,
+                    base_state: "funding_observed",
+                    swp_state: "requester_funding_broadcast",
+                },
+                Default::default(),
+            )
+            .unwrap(),
+        &setup.requester,
+    );
+    let mut funded_records = base.signed_records().to_vec();
+    funded_records.extend([request, accepted, funded_status, effective]);
     assert_eq!(
         SwapSession::from_signed_records(
             base.config().clone(),
-            regression_records,
+            funded_records,
             base.exit_packages().to_vec(),
         )
         .unwrap_err()
         .code,
-        "swp_status_transition_invalid"
+        "swp_cancel_ineffective"
+    );
+}
+
+#[test]
+fn close_terminal_variants_bind_failure_evidence_or_explicit_unknowns() {
+    let fixture = fixture();
+    let setup = Setup::new(&fixture);
+    let factory = SwapRecordFactory::new(setup.config.clone()).unwrap();
+    let base = build_session(&fixture, SwapType::Submarine, true);
+    let order_id = base
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == 39_606)
+        .unwrap()
+        .id
+        .clone();
+    let terms = base_terms(&fixture, SwapType::Submarine);
+    let evidence = bound_failure_evidence(&terms, setup.requester.pubkey());
+    let terminal = |distinct: &str, outcome: &str, loss_accounting: Value| {
+        signed(
+            factory
+                .close(
+                    ParticipantRole::Requester,
+                    300,
+                    distinct,
+                    &order_id,
+                    CloseOutcome {
+                        outcome,
+                        terminal_at: 300,
+                    },
+                    json!({"loss_accounting":loss_accounting}),
+                )
+                .unwrap(),
+            &setup.requester,
+        )
+    };
+    let mut failed_loss = empty_loss_accounting(&terms);
+    failed_loss["evidence_refs"] = json!([evidence.clone()]);
+    let failed = terminal(&"61".repeat(32), "failed", failed_loss);
+    let mut disputed_loss = empty_loss_accounting(&terms);
+    disputed_loss["evidence_refs"] = json!([evidence]);
+    let disputed = terminal(&"62".repeat(32), "disputed", disputed_loss);
+    let mut unresolved_loss = empty_loss_accounting(&terms);
+    unresolved_loss
+        .as_object_mut()
+        .unwrap()
+        .remove("principal_unresolved");
+    unresolved_loss["unknown_fields"] = json!(["principal_unresolved"]);
+    let unresolved = terminal(&"63".repeat(32), "unresolved", unresolved_loss);
+    for close in [failed, disputed, unresolved] {
+        let mut records = base.signed_records().to_vec();
+        records.push(close);
+        SwapSession::from_signed_records(
+            base.config().clone(),
+            records,
+            base.exit_packages().to_vec(),
+        )
+        .unwrap();
+    }
+
+    let mut forged_loss = empty_loss_accounting(&terms);
+    let mut forged_evidence = bound_failure_evidence(&terms, setup.requester.pubkey());
+    forged_evidence["artifact_sha256"] = json!("ff".repeat(32));
+    forged_evidence["verifier_pubkey"] = json!(setup.provider.pubkey());
+    forged_loss["evidence_refs"] = json!([forged_evidence]);
+    let forged = terminal(&"64".repeat(32), "failed", forged_loss);
+    let mut records = base.signed_records().to_vec();
+    records.push(forged);
+    assert_eq!(
+        SwapSession::from_signed_records(
+            base.config().clone(),
+            records,
+            base.exit_packages().to_vec(),
+        )
+        .unwrap_err()
+        .code,
+        "swp_unresolved_loss"
     );
 }
 
@@ -924,7 +1320,10 @@ fn wallet_callback_effect_replay_and_custody_tripwires_are_bounded() {
             ))
         })
         .unwrap();
-    assert_eq!(signed_exit.path, "refund");
+    assert!(matches!(
+        signed_exit,
+        ExitSigningOutcome::Signed(ref signed) if signed.path == "refund"
+    ));
     assert_eq!(
         authorized
             .sign_exit_with(0, |request| {
@@ -957,32 +1356,42 @@ fn wallet_callback_effect_replay_and_custody_tripwires_are_bounded() {
             ))
         })
         .unwrap();
-    assert_eq!(signed_claim.path, "claim");
+    assert!(matches!(
+        signed_claim,
+        ExitSigningOutcome::Signed(ref signed) if signed.path == "claim"
+    ));
 
+    let effect_request =
+        ExternalEffectRequest::Funding(authorized.funding_request().unwrap().clone());
     let effect = ExternalEffectResult {
+        order_id: authorized.funding_request().unwrap().order_id.clone(),
         effect_id: authorized
             .funding_request()
             .unwrap()
             .action
             .effect_id()
             .to_owned(),
-        request_sha256: "77".repeat(32),
+        request_sha256: effect_request.sha256().unwrap(),
         external_identifier: "regtest:funding:0".into(),
         result_sha256: "88".repeat(32),
     };
     assert_eq!(
-        authorized.record_external_effect(effect.clone()).unwrap(),
+        authorized
+            .record_external_effect(&effect_request, effect.clone())
+            .unwrap(),
         &effect
     );
     assert_eq!(
-        authorized.record_external_effect(effect.clone()).unwrap(),
+        authorized
+            .record_external_effect(&effect_request, effect.clone())
+            .unwrap(),
         &effect
     );
     let mut conflict = effect;
     conflict.result_sha256 = "99".repeat(32);
     assert_eq!(
         authorized
-            .record_external_effect(conflict)
+            .record_external_effect(&effect_request, conflict)
             .unwrap_err()
             .code,
         "swp_external_effect_conflict"
@@ -1015,6 +1424,133 @@ fn wallet_callback_effect_replay_and_custody_tripwires_are_bounded() {
             .code,
         "swp_secret_material_forbidden"
     );
+}
+
+#[test]
+fn persisted_effect_digests_suppress_funding_and_wallet_callbacks_after_restart() {
+    let fixture = fixture();
+    let session = build_session_mode(&fixture, SwapType::Reverse, Some("wallet_sign"));
+    let mut authorized = session
+        .verify_before_fund(verification_input(&fixture, SwapType::Reverse), |_| Ok(()))
+        .unwrap();
+    let funding_request =
+        ExternalEffectRequest::Funding(authorized.funding_request().unwrap().clone());
+    let funding_effect = ExternalEffectResult {
+        order_id: authorized.funding_request().unwrap().order_id.clone(),
+        effect_id: funding_request.effect_id().to_owned(),
+        request_sha256: funding_request.sha256().unwrap(),
+        external_identifier: "lightning:test-payment:1".into(),
+        result_sha256: "81".repeat(32),
+    };
+    authorized
+        .record_external_effect(&funding_request, funding_effect)
+        .unwrap();
+
+    let captured_wallet_request = RefCell::new(None);
+    assert_eq!(
+        authorized
+            .sign_exit_with(0, |request| {
+                captured_wallet_request.replace(Some(request.clone()));
+                Err("capture request before delegating to wallet".into())
+            })
+            .unwrap_err()
+            .code,
+        "swp_funding_not_authorized"
+    );
+    let wallet_request = captured_wallet_request.into_inner().unwrap();
+    let wallet_effect_request = ExternalEffectRequest::WalletSigning(wallet_request.clone());
+    authorized
+        .record_external_effect(
+            &wallet_effect_request,
+            ExternalEffectResult {
+                order_id: authorized.funding_request().unwrap().order_id.clone(),
+                effect_id: wallet_request.effect_id.clone(),
+                request_sha256: wallet_effect_request.sha256().unwrap(),
+                external_identifier: "wallet:test-signature:1".into(),
+                result_sha256: "82".repeat(32),
+            },
+        )
+        .unwrap();
+
+    let snapshot = authorized.persist().unwrap();
+    let snapshot_value: Value = serde_json::from_slice(&snapshot).unwrap();
+    for effect in snapshot_value["external_effects"].as_array().unwrap() {
+        assert_eq!(effect.as_object().unwrap().len(), 5);
+        assert!(effect.get("request_type").is_none());
+        assert!(effect.get("body").is_none());
+    }
+    let restored = SwapSession::<AwaitingVerification>::restore(&snapshot).unwrap();
+    let funding_callback_called = Cell::new(false);
+    let restored = restored
+        .verify_before_fund(verification_input(&fixture, SwapType::Reverse), |_| {
+            funding_callback_called.set(true);
+            Ok(())
+        })
+        .unwrap();
+    assert!(!funding_callback_called.get());
+    let wallet_callback_called = Cell::new(false);
+    assert!(matches!(
+        restored
+            .sign_exit_with(0, |_| {
+                wallet_callback_called.set(true);
+                Err("callback must be suppressed".into())
+            })
+            .unwrap(),
+        ExitSigningOutcome::AlreadyExecuted { ref effect_id, .. }
+            if effect_id == &wallet_request.effect_id
+    ));
+    assert!(!wallet_callback_called.get());
+}
+
+#[test]
+fn wallet_signing_derives_null_funding_txid_and_presigned_requires_it() {
+    let fixture = fixture();
+    let wallet_session = build_session_with_options(
+        &fixture,
+        SwapType::Reverse,
+        BuildOptions {
+            null_funding_transaction_id: true,
+            ..BuildOptions::default()
+        },
+    );
+    wallet_session
+        .verify_before_fund(verification_input(&fixture, SwapType::Reverse), |_| Ok(()))
+        .unwrap();
+
+    let presigned_session = build_session(&fixture, SwapType::Submarine, true);
+    let mut document = presigned_session.exit_packages()[0].document().clone();
+    document["funding"]["transaction_id"] = Value::Null;
+    assert_eq!(
+        ExitPackage::parse(document).unwrap_err().code,
+        "swp_exit_package_unusable"
+    );
+}
+
+#[test]
+fn keyless_esplora_allows_only_https_or_loopback_http() {
+    let fixture = fixture();
+    let session = build_session(&fixture, SwapType::Submarine, true);
+    let package = &session.exit_packages()[0];
+    for endpoint in [
+        "https://esplora.example/api",
+        "http://127.0.0.1:3002/api",
+        "http://localhost:3002/api",
+        "http://[::1]:3002/api",
+    ] {
+        assert!(KeylessEsploraExecutor::request(package, endpoint).is_ok());
+    }
+    for endpoint in [
+        "http://esplora.example/api",
+        "http://192.168.1.10/api",
+        "http://user@localhost/api",
+    ] {
+        assert_eq!(
+            KeylessEsploraExecutor::request(package, endpoint)
+                .unwrap_err()
+                .code,
+            "swp_exit_package_unusable"
+        );
+    }
 }
 
 struct Setup {
@@ -1086,6 +1622,7 @@ struct BuildOptions<'a> {
     quote_selectable: Option<&'a Value>,
     order_selection: Option<&'a Value>,
     contract_selection: Option<&'a Value>,
+    null_funding_transaction_id: bool,
 }
 
 impl Default for BuildOptions<'_> {
@@ -1098,6 +1635,7 @@ impl Default for BuildOptions<'_> {
             quote_selectable: None,
             order_selection: None,
             contract_selection: None,
+            null_funding_transaction_id: false,
         }
     }
 }
@@ -1148,19 +1686,49 @@ fn build_session_with_options(
 ) -> SwapSession<AwaitingVerification> {
     let setup = Setup::new(fixture);
     let factory = SwapRecordFactory::new(setup.config.clone()).unwrap();
+    let terms = base_terms(fixture, swap_type);
     let rfq = signed(
         factory
             .rfq(
                 100,
                 &"11".repeat(32),
                 1_000,
-                json!({"swap_type":swap_name(swap_type)}),
+                json!({
+                    "constraints": {
+                        "swap_type": terms["swap_type"],
+                        "asset_pair": terms["asset_pair"],
+                        "input_amount": terms["input_amount"],
+                        "maximum_total_fee": terms["maximum_total_fee"],
+                        "confirmation_policy": terms["confirmation_policy"],
+                        "allowed_script_modes": ["taproot-musig2-script-exit"],
+                        "desired_completion_time": terms["desired_completion_time"],
+                        "firm_quote_required": true,
+                        "payment_hash": terms["payment_hash"],
+                        "invoice_sha256": if swap_type == SwapType::Chain {
+                            Value::Null
+                        } else {
+                            verifier_inputs_for(&terms, "lightning")["invoice_sha256"].clone()
+                        },
+                        "requester_public_keys": requester_public_keys(&terms)
+                    }
+                }),
             )
             .unwrap(),
         &setup.requester,
     );
-    let terms = base_terms(fixture, swap_type);
-    let mut quote_profile = json!({"terms":terms});
+    let reservation_terms = json!({
+        "reservation_id":"ab".repeat(32),
+        "capacity_bucket_id":"test-capacity",
+        "reserved_asset_id":terms["asset_pair"][1],
+        "reserved_amount":terms["output_amount"],
+        "handler_committed_capacity":terms["output_amount"],
+        "allocation_sequence":"1",
+        "proof_class":"provider_signed",
+        "proof_ref":"provider-signed:test-capacity:1",
+        "capacity_commitment_sha256":"cd".repeat(32),
+        "reservation_expires_at":900
+    });
+    let mut quote_profile = json!({"terms":terms,"reservation_terms":reservation_terms});
     if let Some(selectable) = options.quote_selectable {
         quote_profile["selectable"] = selectable.clone();
     }
@@ -1199,17 +1767,22 @@ fn build_session_with_options(
         .iter()
         .map(|spec| {
             let mode = options.exit_mode.unwrap_or(spec.mode);
-            ExitPackage::parse(exit_document(
+            let mut document = exit_document(
                 fixture,
                 swap_type,
-                &order.id,
-                &quote.id,
-                &["01".repeat(32), "02".repeat(32)],
-                &"03".repeat(32),
+                ExitDocumentBindings {
+                    order_id: &order.id,
+                    quote_id: &quote.id,
+                    contract_ids: &["01".repeat(32), "02".repeat(32)],
+                    contract_sha256: &"03".repeat(32),
+                },
                 *spec,
                 mode,
-            ))
-            .unwrap()
+            );
+            if options.null_funding_transaction_id {
+                document["funding"]["transaction_id"] = Value::Null;
+            }
+            ExitPackage::parse(document).unwrap()
         })
         .collect::<Vec<_>>();
     let mut contract = base_terms(fixture, swap_type);
@@ -1219,7 +1792,25 @@ fn build_session_with_options(
         if let Some(input_amount) = selection.get("input_amount").and_then(Value::as_str) {
             object.insert("input_amount".into(), json!(input_amount));
             let input = input_amount.parse::<u64>().unwrap();
-            object.insert("output_amount".into(), json!((input - 1_000).to_string()));
+            let provider_fee = object["provider_fee"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap();
+            let miner_fee = object["miner_fee_budget"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap();
+            let lightning_fee = object["lightning_routing_fee_budget"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap();
+            object.insert(
+                "output_amount".into(),
+                json!((input - provider_fee - miner_fee - lightning_fee).to_string()),
+            );
         }
         for name in ["fee_payer", "confirmation_policy", "public_receipt_consent"] {
             if let Some(value) = selection.get(name) {
@@ -1259,7 +1850,26 @@ fn build_session_with_options(
         })
         .collect();
     object.insert("exit_package_commitments".into(), Value::Array(commitments));
-    object.insert("reservation_commitment".into(), json!({}));
+    let reservation_commitment = json!({
+        "session_id":setup.config.session_id,
+        "rfq_id":rfq.id,
+        "quote_id":quote.id,
+        "reservation_id":"ab".repeat(32),
+        "reservation_class":"soft",
+        "capacity_bucket_id":"test-capacity",
+        "reserved_asset_id":object["asset_pair"][1],
+        "reserved_amount":object["output_amount"],
+        "handler_committed_capacity":object["output_amount"],
+        "allocation_sequence":"1",
+        "proof_class":"provider_signed",
+        "proof_strength":10,
+        "proof_ref_sha256":lower_hex(&sha256(b"provider-signed:test-capacity:1")),
+        "capacity_commitment_sha256":"cd".repeat(32),
+        "reservation_expires_at":900,
+        "profile_timeout_at":null,
+        "covenant_commitment":null
+    });
+    object.insert("reservation_commitment".into(), reservation_commitment);
     let requester_contract = signed(
         factory
             .swap_contract(
@@ -1302,17 +1912,25 @@ fn build_session_with_options(
         flow_exit_specs(swap_type)
             .iter()
             .map(|spec| {
-                ExitPackage::parse(exit_document(
+                let mut document = exit_document(
                     fixture,
                     swap_type,
-                    &order.id,
-                    &quote.id,
-                    &[requester_contract.id.clone(), provider_contract.id.clone()],
-                    contract_sha256,
+                    ExitDocumentBindings {
+                        order_id: &order.id,
+                        quote_id: &quote.id,
+                        contract_ids: &[
+                            requester_contract.id.clone(),
+                            provider_contract.id.clone(),
+                        ],
+                        contract_sha256,
+                    },
                     *spec,
                     options.exit_mode.unwrap_or(spec.mode),
-                ))
-                .unwrap()
+                );
+                if options.null_funding_transaction_id {
+                    document["funding"]["transaction_id"] = Value::Null;
+                }
+                ExitPackage::parse(document).unwrap()
             })
             .collect()
     } else {
@@ -1343,13 +1961,23 @@ fn base_terms(fixture: &Value, swap_type: SwapType) -> Value {
         ]),
     };
     let payment_hash = flow_payment_hash(fixture, swap_type);
+    let (input_amount, output_amount, fee_bps, provider_fee, miner_fee, amount_equation) =
+        flow_amounts(swap_type);
+    let bitcoin_amount = |leg_id| bitcoin_leg_amount(swap_type, leg_id);
     let mut verifier_inputs = flow_exit_specs(swap_type)
         .iter()
-        .map(|spec| bitcoin_verifier(&exit_material(&payment_hash, *spec), *spec))
+        .map(|spec| {
+            bitcoin_verifier(
+                &exit_material(&payment_hash, *spec, bitcoin_amount(spec.leg_id)),
+                *spec,
+            )
+        })
         .collect::<Vec<_>>();
     if !matches!(swap_type, SwapType::Chain) {
         verifier_inputs.push(json!({
             "leg_id":"lightning",
+            "verifier_policy":"mkt-swp-lightning-v1",
+            "evidence_authority":{"mode":"local","pubkeys":[]},
             "invoice_sha256": lower_hex(&sha256(fixture_string(fixture, "invoice").as_bytes())),
             "invoice_amount_msat": deterministic["invoice_amount_msat"],
             "invoice_network":"bitcoin",
@@ -1357,7 +1985,7 @@ fn base_terms(fixture: &Value, swap_type: SwapType) -> Value {
             "invoice_minimum_final_cltv_delta":deterministic["invoice_minimum_final_cltv_delta"].to_string()
         }));
     }
-    let legs = match swap_type {
+    let mut legs = match swap_type {
         SwapType::Submarine => json!([
             {"leg_id":"source","rail":"bitcoin","funding_role":"requester","receiving_role":"provider"},
             {"leg_id":"lightning","rail":"lightning","funding_role":"provider","receiving_role":"requester"}
@@ -1371,23 +1999,228 @@ fn base_terms(fixture: &Value, swap_type: SwapType) -> Value {
             {"leg_id":"destination","rail":"bitcoin","funding_role":"provider","receiving_role":"requester"}
         ]),
     };
+    for (index, leg) in legs.as_array_mut().unwrap().iter_mut().enumerate() {
+        let leg_id = leg["leg_id"].as_str().unwrap();
+        let verifier = verifier_inputs
+            .iter()
+            .find(|verifier| verifier["leg_id"] == leg_id)
+            .unwrap();
+        let asset_id = asset_pair[index].clone();
+        let network_id = asset_id
+            .as_str()
+            .unwrap()
+            .strip_prefix("swp:1:")
+            .unwrap()
+            .split(":btc:")
+            .next()
+            .unwrap();
+        let leg = leg.as_object_mut().unwrap();
+        leg.insert("network_id".into(), json!(network_id));
+        leg.insert("asset_id".into(), asset_id);
+        leg.insert("payment_hash".into(), json!(payment_hash));
+        leg.insert(
+            "verifier_digest".into(),
+            json!(lower_hex(&sha256(&canonical_json_test(verifier)))),
+        );
+        leg.insert(
+            "verifier_policy".into(),
+            verifier["verifier_policy"].clone(),
+        );
+        if verifier.get("funding_transaction_sha256").is_some() {
+            leg.insert("amount".into(), verifier["amount"].clone());
+            leg.insert("script_pubkey".into(), verifier["script_pubkey"].clone());
+            leg.insert(
+                "confirmation_policy".into(),
+                json!({
+                    "minimum_confirmations":verifier["minimum_confirmations"],
+                    "replacement_policy":verifier["replacement_policy"]
+                }),
+            );
+            let tree = verifier["taproot_tree"].as_array().unwrap();
+            for path in ["claim", "refund"] {
+                let leaf = tree.iter().find(|leaf| leaf["path"] == path).unwrap();
+                leg.insert(format!("{path}_public_key"), leaf["signing_pubkey"].clone());
+                if path == "refund" {
+                    leg.insert("refund_condition".into(), leaf["condition"].clone());
+                    leg.insert("refund_lock_value".into(), leaf["lock_value"].clone());
+                }
+            }
+        } else {
+            leg.insert(
+                "amount".into(),
+                json!(if swap_type == SwapType::Reverse {
+                    input_amount
+                } else {
+                    output_amount
+                }),
+            );
+            for member in [
+                "invoice_sha256",
+                "invoice_expiry_seconds",
+                "invoice_minimum_final_cltv_delta",
+            ] {
+                leg.insert(member.into(), verifier[member].clone());
+            }
+        }
+    }
     json!({
         "swap_type":swap_name(swap_type),
         "asset_pair":asset_pair,
         "payment_hash":payment_hash,
-        "input_amount":"100000",
-        "output_amount":"99000",
-        "fee_bps":"100",
-        "provider_fee":"1000",
-        "miner_fee_budget":"0",
+        "input_amount":input_amount,
+        "output_amount":output_amount,
+        "fee_bps":fee_bps,
+        "provider_fee":provider_fee,
+        "miner_fee_budget":miner_fee,
         "lightning_routing_fee_budget":"0",
-        "amount_equation":"input_minus_provider_and_quoted_fees",
+        "maximum_total_fee":(provider_fee.parse::<u64>().unwrap() + miner_fee.parse::<u64>().unwrap()).to_string(),
+        "confirmation_policy":{
+            "minimum_confirmations":"1",
+            "zero_confirmation":"forbidden",
+            "rbf":"reject",
+            "replacement":"reject",
+            "reorg_safety_blocks":"6"
+        },
+        "script_mode":"taproot-musig2-script-exit",
+        "desired_completion_time":2000,
+        "clock_skew_seconds":"60",
+        "amount_equation":amount_equation,
+        "rounding":"floor_output_sats",
+        "fee_payer":"requester",
         "legs":legs,
         "timeout_ladder":timeout_ladder(swap_type),
         "verifier_inputs":verifier_inputs,
-        "recovery":{"channel":"direct_or_relay_agnostic"},
+        "recovery":{
+            "channel":"direct_or_relay_agnostic",
+            "exit_policy":{
+                "earliest_broadcast_height":"140",
+                "latest_safe_broadcast_height":"200",
+                "target_blocks":2,
+                "maximum_fee":miner_fee,
+                "bump_mode":"cpfp"
+            }
+        },
+        "reservation_commitment":{},
+        "cancellation":{"effective_before_external_effect":true},
+        "evidence_requirements":{"minimum_rung":"verified"},
+        "price_feed":null,
         "evm_leg":null
     })
+}
+
+fn empty_loss_accounting(terms: &Value) -> Value {
+    json!({
+        "input_asset_id":terms["asset_pair"][0],
+        "output_asset_id":terms["asset_pair"][1],
+        "input_committed":"0",
+        "input_recovered":"0",
+        "output_received":"0",
+        "provider_fee_paid":"0",
+        "miner_fee_paid":"0",
+        "lightning_routing_fee_paid":"0",
+        "guarantee_recovery_received":"0",
+        "principal_unresolved":"0",
+        "reservation_released":terms["output_amount"],
+        "evidence_refs":[]
+    })
+}
+
+fn bound_failure_evidence(terms: &Value, producer_pubkey: &str) -> Value {
+    let verifier = verifier_inputs_for(terms, "source");
+    let raw = decode_hex(verifier["funding_transaction"].as_str().unwrap());
+    let transaction = Transaction::parse(&raw).unwrap();
+    json!({
+        "class":"replacement",
+        "rung":"measured",
+        "rail":"bitcoin",
+        "reference":lower_hex(&transaction.txid().unwrap()),
+        "artifact_sha256":verifier["funding_transaction_sha256"],
+        "producer_pubkey":producer_pubkey,
+        "verifier_pubkey":null,
+        "verifier_policy":verifier["verifier_policy"],
+        "observed_at":300,
+        "view":"regtest-height:300"
+    })
+}
+
+fn flow_amounts(
+    swap_type: SwapType,
+) -> (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+) {
+    match swap_type {
+        SwapType::Submarine => (
+            "100000",
+            "1000",
+            "9800",
+            "98000",
+            "1000",
+            "input_minus_provider_and_quoted_fees",
+        ),
+        SwapType::Reverse => (
+            "1000",
+            "890",
+            "100",
+            "10",
+            "100",
+            "input_minus_provider_and_quoted_fees",
+        ),
+        SwapType::Chain => (
+            "100000",
+            "98000",
+            "100",
+            "1000",
+            "1000",
+            "one_to_one_less_quoted_fees",
+        ),
+    }
+}
+
+fn bitcoin_leg_amount(swap_type: SwapType, leg_id: &str) -> u64 {
+    let (input, output, _, _, _, _) = flow_amounts(swap_type);
+    if leg_id == "source" {
+        input.parse().unwrap()
+    } else {
+        output.parse().unwrap()
+    }
+}
+
+fn verifier_inputs_for<'a>(terms: &'a Value, leg_id: &str) -> &'a Value {
+    terms["verifier_inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|verifier| verifier["leg_id"] == leg_id)
+        .unwrap()
+}
+
+fn requester_public_keys(terms: &Value) -> Value {
+    let mut keys = terms["verifier_inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|verifier| {
+            verifier["taproot_tree"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|leaf| leaf["participant_role"] == "requester")
+                .map(|leaf| {
+                    json!({
+                        "leg_id":verifier["leg_id"],
+                        "path":leaf["path"],
+                        "public_key":leaf["signing_pubkey"]
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    keys.sort_by_key(|key| key.to_string());
+    Value::Array(keys)
 }
 
 fn verification_input(fixture: &Value, swap_type: SwapType) -> VerifyBeforeFundInput {
@@ -1397,13 +2230,15 @@ fn verification_input(fixture: &Value, swap_type: SwapType) -> VerifyBeforeFundI
         SwapType::Submarine | SwapType::Chain => flow_exit_specs(swap_type)[0],
         SwapType::Reverse => flow_exit_specs(swap_type)[0],
     };
-    let material = exit_material(&payment_hash, verifier_spec);
+    let funding_amount = bitcoin_leg_amount(swap_type, verifier_spec.leg_id);
+    let material = exit_material(&payment_hash, verifier_spec, funding_amount);
     VerifyBeforeFundInput {
+        observed_at: 500,
         payment_hash,
         funding: FundingVerificationInput {
             raw_transaction: material.funding_transaction,
             output_index: 0,
-            expected_amount: "100000".into(),
+            expected_amount: funding_amount.to_string(),
             expected_script_pubkey: format!("5120{}", material.output_key),
             taproot_output_key: material.output_key,
             taproot_script: material.script,
@@ -1466,24 +2301,36 @@ fn timeout_ladder(swap_type: SwapType) -> Value {
     serde_json::to_value(ladder(swap_type)).unwrap()
 }
 
+struct ExitDocumentBindings<'a> {
+    order_id: &'a str,
+    quote_id: &'a str,
+    contract_ids: &'a [String; 2],
+    contract_sha256: &'a str,
+}
+
 fn exit_document(
     fixture: &Value,
     swap_type: SwapType,
-    order_id: &str,
-    quote_id: &str,
-    contract_ids: &[String; 2],
-    contract_sha256: &str,
+    bindings: ExitDocumentBindings<'_>,
     spec: ExitSpec,
     mode: &str,
 ) -> Value {
     let deterministic = &fixture["deterministic_session"];
     let payment_hash = flow_payment_hash(fixture, swap_type);
-    let material = exit_material(&payment_hash, spec);
+    let funding_amount = bitcoin_leg_amount(swap_type, spec.leg_id);
+    let material = exit_material(&payment_hash, spec, funding_amount);
+    let verifier = bitcoin_verifier(&material, spec);
+    let verifier_digest = lower_hex(&sha256(&canonical_json_test(&verifier)));
+    let confirmation_policy = json!({
+        "minimum_confirmations":"1",
+        "replacement_policy":"reject"
+    });
+    let confirmation_policy_sha256 = lower_hex(&sha256(&canonical_json_test(&confirmation_policy)));
     let funding = Transaction::parse(&decode_hex(&material.funding_transaction)).unwrap();
     let funding_txid = lower_hex(&funding.txid().unwrap());
     let mut txid_wire = funding.txid().unwrap();
     txid_wire.reverse();
-    let maximum_fee = 1_000_u64;
+    let maximum_fee = flow_amounts(swap_type).4.parse::<u64>().unwrap();
     let (lock_time, input_sequence) = match spec.condition {
         "cltv" => (140, u32::MAX - 1),
         "csv" => (0, 20),
@@ -1500,7 +2347,7 @@ fn exit_document(
             witness: Vec::new(),
         }],
         vec![TransactionOutput {
-            value_sat: 100_000 - maximum_fee,
+            value_sat: funding_amount - maximum_fee,
             script_pubkey: decode_hex(deterministic["destination_script_pubkey"].as_str().unwrap()),
         }],
         lock_time,
@@ -1521,21 +2368,22 @@ fn exit_document(
         "schema":"openagents.mkt-swp.exit.v1",
         "profile":"mkt-swp",
         "profile_version":1,
-        "order_id":order_id,
-        "swap_contract_ids":contract_ids,
-        "contract_sha256":contract_sha256,
+        "order_id":bindings.order_id,
+        "swap_contract_ids":bindings.contract_ids,
+        "contract_sha256":bindings.contract_sha256,
         "participant_role":"requester",
         "leg_id":spec.leg_id,
         "network_id":network_id,
         "asset_id":asset_id,
-        "effect_id":exit_effect_id(order_id, spec.path, spec.leg_id),
+        "effect_id":exit_effect_id(bindings.order_id, spec.path, spec.leg_id),
         "funding":{
             "transaction_id":funding_txid,
             "transaction_template_sha256":lower_hex(&sha256(&decode_hex(&material.funding_transaction))),
+            "transaction_template":material.funding_transaction,
             "output_index":0,
-            "amount":"100000",
+            "amount":funding_amount.to_string(),
             "script_pubkey":format!("5120{}", material.output_key),
-            "confirmation_policy_sha256":"44".repeat(32)
+            "confirmation_policy_sha256":confirmation_policy_sha256
         },
         "exit":{
             "mode":if mode == "presigned" { "wallet_sign" } else { mode },
@@ -1550,14 +2398,15 @@ fn exit_document(
             "destination_script_pubkey":deterministic["destination_script_pubkey"],
             "earliest_broadcast_height":"140",
             "latest_safe_broadcast_height":"200",
-            "fee_policy":{"target_blocks":2,"maximum_fee":"1000","bump_mode":"cpfp"}
+            "fee_policy":{"target_blocks":2,"maximum_fee":maximum_fee.to_string(),"bump_mode":"cpfp"}
         },
         "verification":{
-            "swap_tree_sha256":"55".repeat(32),
-            "quote_id":quote_id,
-            "verifier_digest":"66".repeat(32),
+            "swap_tree_sha256":material.swap_tree_sha256,
+            "quote_id":bindings.quote_id,
+            "verifier_digest":verifier_digest,
             "taproot_script":material.script,
-            "taproot_control_block":material.control_block
+            "taproot_control_block":material.control_block,
+            "taproot_tree":material.taproot_tree
         },
         "secret_commitments":{
             "payment_hash":payment_hash,
@@ -1643,9 +2492,15 @@ fn add_signed_taproot_witness(
 
 struct ExitMaterial {
     funding_transaction: String,
+    funding_amount: u64,
     output_key: String,
     script: String,
     control_block: String,
+    signing_key: String,
+    internal_key: String,
+    swap_tree_sha256: String,
+    taproot_merkle_root: String,
+    taproot_tree: Value,
 }
 
 fn flow_payment_hash(fixture: &Value, swap_type: SwapType) -> String {
@@ -1660,45 +2515,97 @@ fn test_released_preimage() -> [u8; 32] {
     sha256(b"immortal-mkt-swp-test-only:released-preimage")
 }
 
-fn exit_material(payment_hash: &str, spec: ExitSpec) -> ExitMaterial {
-    let signer_label = format!("exit:{}:{}", spec.leg_id, spec.path);
-    let signer_secret =
-        SecretKey::from_byte_array(test_signing_key(signer_label.as_bytes())).unwrap();
-    let signer_keypair = Keypair::from_secret_key(&Secp256k1::new(), &signer_secret);
-    let signer_key = signer_keypair.x_only_public_key().0.serialize();
-    let mut script = Vec::new();
-    match spec.condition {
-        "hashlock" => {
-            script.extend_from_slice(&[0x82, 1, 32, 0x88, 0xa8, 32]);
-            script.extend_from_slice(&decode_hex(payment_hash));
-            script.extend_from_slice(&[0x88, 32]);
+fn exit_material(payment_hash: &str, spec: ExitSpec, funding_amount: u64) -> ExitMaterial {
+    fn leaf_script(
+        payment_hash: &str,
+        leg_id: &str,
+        path: &str,
+        condition: &str,
+    ) -> (Vec<u8>, [u8; 32]) {
+        let signer_label = format!("exit:{leg_id}:{path}");
+        let signer_secret =
+            SecretKey::from_byte_array(test_signing_key(signer_label.as_bytes())).unwrap();
+        let signer_keypair = Keypair::from_secret_key(&Secp256k1::new(), &signer_secret);
+        let signer_key = signer_keypair.x_only_public_key().0.serialize();
+        let mut script = Vec::new();
+        match condition {
+            "hashlock" => {
+                script.extend_from_slice(&[0x82, 1, 32, 0x88, 0xa8, 32]);
+                script.extend_from_slice(&decode_hex(payment_hash));
+                script.extend_from_slice(&[0x88, 32]);
+            }
+            "cltv" => {
+                let lock = script_number_bytes(140);
+                script.push(u8::try_from(lock.len()).unwrap());
+                script.extend_from_slice(&lock);
+                script.extend_from_slice(&[0xb1, 0x75, 32]);
+            }
+            "csv" => {
+                let delay = script_number_bytes(20);
+                script.push(u8::try_from(delay.len()).unwrap());
+                script.extend_from_slice(&delay);
+                script.extend_from_slice(&[0xb2, 0x75, 32]);
+            }
+            _ => panic!("unknown test exit condition"),
         }
-        "cltv" => {
-            let lock = script_number_bytes(140);
-            script.push(u8::try_from(lock.len()).unwrap());
-            script.extend_from_slice(&lock);
-            script.extend_from_slice(&[0xb1, 0x75, 32]);
-        }
-        "csv" => {
-            let delay = script_number_bytes(20);
-            script.push(u8::try_from(delay.len()).unwrap());
-            script.extend_from_slice(&delay);
-            script.extend_from_slice(&[0xb2, 0x75, 32]);
-        }
-        _ => panic!("unknown test exit condition"),
+        script.extend_from_slice(&signer_key);
+        script.push(0xac);
+        (script, signer_key)
     }
-    script.extend_from_slice(&signer_key);
-    script.push(0xac);
-
-    let internal_label = format!("internal:{}:{}", spec.leg_id, spec.path);
-    let internal_secret =
-        SecretKey::from_byte_array(test_signing_key(internal_label.as_bytes())).unwrap();
-    let internal_keypair = Keypair::from_secret_key(&Secp256k1::new(), &internal_secret);
-    let internal_key = internal_keypair.x_only_public_key().0;
-    let leaf_hash = tapleaf_hash(0xc0, &script).unwrap();
-    let (output_key, parity) = taproot_output_key(internal_key, Some(leaf_hash)).unwrap();
+    let other_path = if spec.path == "claim" {
+        "refund"
+    } else {
+        "claim"
+    };
+    let other_condition = if other_path == "claim" {
+        "hashlock"
+    } else {
+        "cltv"
+    };
+    let (script, signer_key) = leaf_script(payment_hash, spec.leg_id, spec.path, spec.condition);
+    let (other_script, other_signing_key) =
+        leaf_script(payment_hash, spec.leg_id, other_path, other_condition);
+    let selected_leaf_hash = tapleaf_hash(0xc0, &script).unwrap();
+    let other_leaf_hash = tapleaf_hash(0xc0, &other_script).unwrap();
+    let merkle_root = test_tapbranch_hash(selected_leaf_hash, other_leaf_hash);
+    let internal_key = cooperative_test_key();
+    let (output_key, parity) = taproot_output_key(internal_key, Some(merkle_root)).unwrap();
     let mut control_block = vec![0xc0 | u8::from(parity == Parity::Odd)];
     control_block.extend_from_slice(&internal_key.serialize());
+    control_block.extend_from_slice(&other_leaf_hash);
+
+    let leaf_document = |path: &str,
+                         condition: &str,
+                         participant_role: &str,
+                         script: &[u8],
+                         signing_key: &[u8; 32]| {
+        json!({
+            "path":path,
+            "condition":condition,
+            "participant_role":participant_role,
+            "script":lower_hex(script),
+            "signing_pubkey":lower_hex(signing_key),
+            "lock_value":match condition {
+                "cltv" => json!("140"),
+                "csv" => json!("20"),
+                _ => Value::Null,
+            }
+        })
+    };
+    let selected_document =
+        leaf_document(spec.path, spec.condition, "requester", &script, &signer_key);
+    let other_document = leaf_document(
+        other_path,
+        other_condition,
+        "provider",
+        &other_script,
+        &other_signing_key,
+    );
+    let taproot_tree = if spec.path == "claim" {
+        json!([selected_document, other_document])
+    } else {
+        json!([other_document, selected_document])
+    };
 
     let previous_txid = sha256(format!("funding:{}:{}", spec.leg_id, spec.path).as_bytes());
     let funding = Transaction::new(
@@ -1711,7 +2618,7 @@ fn exit_material(payment_hash: &str, spec: ExitSpec) -> ExitMaterial {
             witness: Vec::new(),
         }],
         vec![TransactionOutput {
-            value_sat: 100_000,
+            value_sat: funding_amount,
             script_pubkey: [vec![0x51, 0x20], output_key.serialize().to_vec()].concat(),
         }],
         0,
@@ -1720,10 +2627,61 @@ fn exit_material(payment_hash: &str, spec: ExitSpec) -> ExitMaterial {
     .unwrap();
     ExitMaterial {
         funding_transaction: lower_hex(&funding),
+        funding_amount,
         output_key: lower_hex(&output_key.serialize()),
         script: lower_hex(&script),
         control_block: lower_hex(&control_block),
+        signing_key: lower_hex(&signer_key),
+        internal_key: lower_hex(&internal_key.serialize()),
+        swap_tree_sha256: lower_hex(&sha256(&canonical_json_test(&taproot_tree))),
+        taproot_merkle_root: lower_hex(&merkle_root),
+        taproot_tree,
     }
+}
+
+fn cooperative_test_key() -> secp256k1::XOnlyPublicKey {
+    let keys = ["requester", "provider"]
+        .into_iter()
+        .map(|role| {
+            let secret = SecretKey::from_byte_array(test_signing_key(
+                format!("cooperative-spend:{role}").as_bytes(),
+            ))
+            .unwrap();
+            PublicKey::from_secret_key(&Secp256k1::new(), &secret)
+        })
+        .collect::<Vec<_>>();
+    musig2_aggregate_key(&keys).unwrap()
+}
+
+fn cooperative_test_pubkeys() -> Value {
+    Value::Array(
+        ["requester", "provider"]
+            .into_iter()
+            .map(|role| {
+                let secret = SecretKey::from_byte_array(test_signing_key(
+                    format!("cooperative-spend:{role}").as_bytes(),
+                ))
+                .unwrap();
+                let key = PublicKey::from_secret_key(&Secp256k1::new(), &secret);
+                json!({
+                    "participant_role": role,
+                    "public_key": lower_hex(&key.serialize())
+                })
+            })
+            .collect(),
+    )
+}
+
+fn test_tapbranch_hash(left: [u8; 32], right: [u8; 32]) -> [u8; 32] {
+    let (left, right) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    let mut branch = [0_u8; 64];
+    branch[..32].copy_from_slice(&left);
+    branch[32..].copy_from_slice(&right);
+    tagged_hash("TapBranch", &branch)
 }
 
 fn script_number_bytes(value: u32) -> Vec<u8> {
@@ -1740,18 +2698,77 @@ fn script_number_bytes(value: u32) -> Vec<u8> {
 }
 
 fn bitcoin_verifier(material: &ExitMaterial, spec: ExitSpec) -> Value {
+    let exit_lock_value = match spec.condition {
+        "cltv" => json!("140"),
+        "csv" => json!("20"),
+        "hashlock" => Value::Null,
+        _ => panic!("unknown test exit condition"),
+    };
     json!({
         "leg_id":spec.leg_id,
+        "verifier_policy":"mkt-swp-bitcoin-v1",
+        "evidence_authority":{"mode":"local","pubkeys":[]},
         "funding_transaction_sha256":lower_hex(&sha256(&decode_hex(&material.funding_transaction))),
+        "funding_transaction":material.funding_transaction,
         "output_index":0,
-        "amount":"100000",
+        "amount":material.funding_amount.to_string(),
         "script_pubkey":format!("5120{}", material.output_key),
         "taproot_output_key":material.output_key,
         "taproot_script":material.script,
         "taproot_control_block":material.control_block,
+        "swap_tree_sha256":material.swap_tree_sha256,
+        "taproot_merkle_root":material.taproot_merkle_root,
+        "taproot_tree":material.taproot_tree,
+        "cooperative_internal_key":material.internal_key,
+        "cooperative_pubkeys":cooperative_test_pubkeys(),
+        "exit_path":spec.path,
+        "exit_condition":spec.condition,
+        "exit_signing_pubkey":material.signing_key,
+        "exit_lock_value":exit_lock_value,
         "minimum_confirmations":"1",
         "replacement_policy":"reject"
+        ,"zero_confirmation":"forbidden"
+        ,"rbf_policy":"reject"
+        ,"reorg_safety_blocks":"6"
     })
+}
+
+fn canonical_json_test(value: &Value) -> Vec<u8> {
+    fn write(value: &Value, output: &mut String) {
+        match value {
+            Value::Null => output.push_str("null"),
+            Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
+            Value::Number(value) => output.push_str(&value.to_string()),
+            Value::String(value) => output.push_str(&serde_json::to_string(value).unwrap()),
+            Value::Array(values) => {
+                output.push('[');
+                for (index, value) in values.iter().enumerate() {
+                    if index > 0 {
+                        output.push(',');
+                    }
+                    write(value, output);
+                }
+                output.push(']');
+            }
+            Value::Object(values) => {
+                output.push('{');
+                let mut values = values.iter().collect::<Vec<_>>();
+                values.sort_by(|left, right| left.0.cmp(right.0));
+                for (index, (name, value)) in values.into_iter().enumerate() {
+                    if index > 0 {
+                        output.push(',');
+                    }
+                    output.push_str(&serde_json::to_string(name).unwrap());
+                    output.push(':');
+                    write(value, output);
+                }
+                output.push('}');
+            }
+        }
+    }
+    let mut output = String::new();
+    write(value, &mut output);
+    output.into_bytes()
 }
 
 fn local_bitcoin_observation(

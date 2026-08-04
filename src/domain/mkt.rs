@@ -2812,7 +2812,10 @@ fn validate_references(
         let swp_contract_marker = marker == "contract"
             && profile_id == MKT_SWP_PROFILE_ID
             && profile_version == MKT_SWP_PROFILE_VERSION;
-        if values.len() < 4 || !(common_marker || swp_contract_marker) {
+        let swp_cancel_marker = matches!(marker, "cancel-request" | "cancel-accept")
+            && profile_id == MKT_SWP_PROFILE_ID
+            && profile_version == MKT_SWP_PROFILE_VERSION;
+        if values.len() < 4 || !(common_marker || swp_contract_marker || swp_cancel_marker) {
             return Err("private MKT e tag has an unknown or missing marker".to_owned());
         }
         lower_hex_32(&values[1], "private MKT event reference")?;
