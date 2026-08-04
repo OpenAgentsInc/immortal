@@ -27,8 +27,9 @@ use tokio_postgres::{AsyncMessage, Client, NoTls, Row, types::ToSql};
 use crate::domain::{
     BLOCK_GLOBAL_ONLY_KINDS, DM_VISIBILITY_KIND, DeletionRequest, DeletionTombstone, DomainError,
     Event, EventClass, Filter, GroupAction, GroupMetadata, IDENTITY_ARCHIVE_LIST_KIND,
-    IDENTITY_ARCHIVED_KIND, IDENTITY_UNARCHIVED_KIND, IdentityArchiveRequest, RelaySigner,
-    ReplacementDecision, Tag, compare_replacement_order, search_terms, validate_block_ingest,
+    IDENTITY_ARCHIVED_KIND, IDENTITY_UNARCHIVED_KIND, IdentityArchiveRequest, MktImmutableDecision,
+    RelaySigner, ReplacementDecision, Tag, compare_replacement_order,
+    decide_mkt_immutable_admission, is_mkt_private_kind, search_terms, validate_block_ingest,
     validate_mkt_public_event,
 };
 
@@ -66,6 +67,8 @@ ORDER BY source.created_at ASC,
          source.id DESC
 LIMIT 1000
 "#;
+
+pub const MKT_IDEMPOTENCY_CONFLICT_REASON: &str = "invalid: idempotency-conflict";
 
 /// A successfully committed admission or a protocol-level refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +112,7 @@ pub enum AdmissionRejection {
     GroupUnsupportedKind,
     GroupPreviousUnknown,
     GroupSigningUnavailable,
+    MktIdempotencyConflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -374,12 +378,13 @@ impl Store {
         if event.kind == 22_242 {
             return Ok(AdmissionOutcome::Rejected(AdmissionRejection::AuthEvent));
         }
-        if let Some(expiration) = event.expiration() {
-            if expiration <= now {
-                return Err(crate::domain::DomainError::ExpiredEvent { expiration, now }.into());
-            }
+        let immutable_mkt = is_mkt_private_kind(event.kind);
+        if !immutable_mkt
+            && let Some(expiration) = event.expiration()
+            && expiration <= now
+        {
+            return Err(crate::domain::DomainError::ExpiredEvent { expiration, now }.into());
         }
-
         let created_at = pg_i64(event.created_at, "created_at")?;
         let expires_at = event
             .expiration()
@@ -401,13 +406,50 @@ impl Store {
         let statements = self.statements.clone();
         let transaction = self.client.transaction().await?;
 
-        if transaction
-            .query_opt(&statements.duplicate, &[&event.id])
-            .await?
-            .is_some()
+        if immutable_mkt {
+            let address = replacement.as_ref().ok_or_else(|| {
+                crate::domain::DomainError::InvalidEvent(
+                    "private MKT kind must have an addressable event class".to_owned(),
+                )
+            })?;
+            if let Some((stored_event_id, stored_signature)) =
+                mkt_immutable_binding(&transaction, &statements, address).await?
+            {
+                let outcome = match decide_mkt_immutable_admission(
+                    Some((&stored_event_id, &stored_signature)),
+                    &event.id,
+                    &event.sig,
+                ) {
+                    MktImmutableDecision::Replay => AdmissionOutcome::Duplicate,
+                    MktImmutableDecision::Conflict => {
+                        AdmissionOutcome::Rejected(AdmissionRejection::MktIdempotencyConflict)
+                    }
+                    MktImmutableDecision::StoreFirst => {
+                        return Err(StoreError::CorruptRow(
+                            "stored private MKT binding disappeared".to_owned(),
+                        ));
+                    }
+                };
+                transaction.commit().await?;
+                return Ok(outcome);
+            }
+        }
+
+        if !immutable_mkt
+            && transaction
+                .query_opt(&statements.duplicate, &[&event.id])
+                .await?
+                .is_some()
         {
             transaction.commit().await?;
             return Ok(AdmissionOutcome::Duplicate);
+        }
+
+        if immutable_mkt
+            && let Some(expiration) = event.expiration()
+            && expiration <= now
+        {
+            return Err(crate::domain::DomainError::ExpiredEvent { expiration, now }.into());
         }
 
         let policy_row = transaction
@@ -641,12 +683,41 @@ impl Store {
             }
         }
 
+        if immutable_mkt {
+            let address = replacement.as_ref().ok_or_else(|| {
+                crate::domain::DomainError::InvalidEvent(
+                    "private MKT kind must have an addressable event class".to_owned(),
+                )
+            })?;
+            let stored_binding = mkt_immutable_binding(&transaction, &statements, address).await?;
+            match decide_mkt_immutable_admission(
+                stored_binding
+                    .as_ref()
+                    .map(|(event_id, signature)| (event_id.as_str(), signature.as_str())),
+                &event.id,
+                &event.sig,
+            ) {
+                MktImmutableDecision::StoreFirst => {}
+                MktImmutableDecision::Replay => {
+                    transaction.commit().await?;
+                    return Ok(AdmissionOutcome::Duplicate);
+                }
+                MktImmutableDecision::Conflict => {
+                    transaction.commit().await?;
+                    return Ok(AdmissionOutcome::Rejected(
+                        AdmissionRejection::MktIdempotencyConflict,
+                    ));
+                }
+            }
+        }
+
         // A conflicting process may have committed while this transaction
-        // waited for an address or event lock.
-        if transaction
-            .query_opt(&statements.duplicate, &[&event.id])
-            .await?
-            .is_some()
+        // waited for an event lock.
+        if !immutable_mkt
+            && transaction
+                .query_opt(&statements.duplicate, &[&event.id])
+                .await?
+                .is_some()
         {
             transaction.commit().await?;
             return Ok(AdmissionOutcome::Duplicate);
@@ -674,7 +745,7 @@ impl Store {
         }
 
         let mut replaced_event_id = None;
-        if let Some(address) = &replacement {
+        if !immutable_mkt && let Some(address) = &replacement {
             let address_kind = i32::from(address.kind);
             let params: &[&(dyn ToSql + Sync)] =
                 &[&address_kind, &address.pubkey, &address.identifier];
@@ -735,10 +806,40 @@ impl Store {
             .query_opt(&statements.insert_event, insert_params)
             .await?
         else {
+            if immutable_mkt {
+                return Err(StoreError::CorruptRow(
+                    "private MKT event exists without an immutable coordinate".to_owned(),
+                ));
+            }
             transaction.commit().await?;
             return Ok(AdmissionOutcome::Duplicate);
         };
         let ingest_seq = row.get::<_, i64>(0);
+
+        if immutable_mkt {
+            let address = replacement.as_ref().ok_or_else(|| {
+                crate::domain::DomainError::InvalidEvent(
+                    "private MKT kind must have an addressable event class".to_owned(),
+                )
+            })?;
+            let address_kind = i32::from(address.kind);
+            let params: &[&(dyn ToSql + Sync)] = &[
+                &address.pubkey,
+                &address_kind,
+                &address.identifier,
+                &event.id,
+                &event.sig,
+            ];
+            if transaction
+                .execute(&statements.insert_mkt_immutable_coordinate, params)
+                .await?
+                != 1
+            {
+                return Err(StoreError::CorruptRow(
+                    "private MKT coordinate changed while its address lock was held".to_owned(),
+                ));
+            }
+        }
 
         for (tag_name, tag_value) in event.indexed_tags() {
             let tag_name = tag_name.to_string();
@@ -746,7 +847,7 @@ impl Store {
             transaction.execute(&statements.insert_tag, params).await?;
         }
 
-        if let Some(address) = &replacement {
+        if !immutable_mkt && let Some(address) = &replacement {
             let address_kind = i32::from(address.kind);
             let params: &[&(dyn ToSql + Sync)] = &[
                 &address_kind,
@@ -1857,6 +1958,7 @@ fn admission_rejection_code(rejection: &AdmissionRejection) -> &'static str {
         AdmissionRejection::GroupUnsupportedKind => "group_unsupported_kind",
         AdmissionRejection::GroupPreviousUnknown => "group_previous_unknown",
         AdmissionRejection::GroupSigningUnavailable => "group_signing_unavailable",
+        AdmissionRejection::MktIdempotencyConflict => "mkt_idempotency_conflict",
     }
 }
 
@@ -2033,6 +2135,21 @@ async fn open_client(
         task_current.store(false, Ordering::Release);
     });
     Ok((client, connection_current, connection_task))
+}
+
+async fn mkt_immutable_binding(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    address: &crate::domain::ReplacementAddress,
+) -> Result<Option<(String, String)>, StoreError> {
+    let kind = i32::from(address.kind);
+    let row = transaction
+        .query_opt(
+            &statements.mkt_immutable_coordinate,
+            &[&address.pubkey, &kind, &address.identifier],
+        )
+        .await?;
+    Ok(row.map(|row| (row.get::<_, String>(0), row.get::<_, String>(1))))
 }
 
 fn admission_lock_keys(

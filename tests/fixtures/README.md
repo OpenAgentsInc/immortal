@@ -45,6 +45,11 @@ names the NIP that owns the behavior.
   required tags, identifier and enum boundaries, and content limits for the
   four public discovery kinds without treating relay acceptance as proof of
   provider capacity or settlement.
+- `nipmkt/immutability.json` pins the NIP-MKT private-kind allocation, exact
+  replay, changed-ID and changed-signature conflict outcomes, stable gateway
+  reason, and bounded-model action space. The corresponding model exhausts
+  admission, deletion, expiration, and restart histories without using the
+  implementation transition as its oracle.
 - `nipae/`, `nipap/`, `niper/`, `nipmp/`, `nippl/`, `nipia/`, `nipdv/`,
   `nipwp/`, `nipcw/`, `niprs/`, and `nipgs/` each contain a committed server
   contract derived from the corresponding pinned Block text. They cover

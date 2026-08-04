@@ -223,7 +223,7 @@ after the base. NIP-90 job kinds are frozen per
       `39601`, Profile Descriptor `39602` (required tags, status enums,
       16 KiB content bound) and Public Market Receipt `39603` (unique `d`,
       required `profile`/`outcome`/`x`/`role` tags, 4 KiB bound)
-- [ ] Domain: private record kinds `39604-39609` are
+- [x] Domain: private record kinds `39604-39609` are
       **immutable-by-contract** — identical signed bytes under an existing
       `(pubkey, kind, d)` are idempotent replay returning the prior `OK`;
       different bytes are an idempotency conflict and fail closed. This
@@ -236,7 +236,7 @@ after the base. NIP-90 job kinds are frozen per
       agreement, duplicate-JSON-member rejection, 32 KiB private-record
       bound, and the tag caps (64 tags, 8 `p`, 32 causal refs, 16
       profiles, 8 hints)
-- [ ] Store: MKT admission inside the existing single transaction with a
+- [x] Store: MKT admission inside the existing single transaction with a
       distinct machine-readable `OK` reason for idempotency conflicts
 - [ ] Gateway: reject bare publication of `39604-39609` (private records
       travel only inside NIP-59 gift wraps); confirm wrapped negotiation
@@ -254,7 +254,7 @@ after the base. NIP-90 job kinds are frozen per
       supersession, double reservation, sequence gap/fork, signer
       mismatch, settlement overclaim) live in the exported corpus for SDK
       consumers (M11)
-- [ ] Formal model where the state space is bounded: the
+- [x] Formal model where the state space is bounded: the
       replay/conflict/immutability admission machine for `39604-39609`;
       counterexamples become fixtures
 - [ ] NIP-11: advertise NIP-MKT only after the local conformance gate

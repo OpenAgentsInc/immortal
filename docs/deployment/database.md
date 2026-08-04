@@ -43,6 +43,14 @@ It also allows a durable deletion tombstone to retain its signed source ID
 after NIP-40 expires and physically removes the source event. The tombstone's
 deletion effect therefore does not disappear when its publication does.
 
+`migrations/0008_mkt_immutable.sql` adds
+`mkt_immutable_coordinate`, the durable NIP-MKT private-record binding from
+`(pubkey, kind, d)` to the exact event ID and signature. It has no foreign key
+to `nostr_event`: NIP-09 deletion and NIP-40 cleanup may remove the visible
+event, but they cannot permit changed signed bytes to reuse its idempotency
+key. The migration backfills any existing private MKT records and removes
+their generic `replaceable_head` rows.
+
 The database independently rejects malformed identity widths, negative or
 out-of-range protocol numbers, ephemeral kinds, inconsistent replacement
 identifiers, and malformed tombstone shapes. Indexed access paths cover IDs,
@@ -80,6 +88,15 @@ transaction-scoped advisory locks, checks tombstones, compares replacement
 heads, inserts the event and indexed tags, applies deletion tombstones and
 deletes superseded rows, updates the head, allocates `ingest_seq`, and calls
 `pg_notify`. A stored result is returned only after commit.
+
+Kinds `39604-39609` use a distinct path inside that transaction. An existing
+durable coordinate is checked before generic duplicate, expiration,
+tombstone, and policy decisions: an exact event-ID-and-signature replay
+returns the prior successful duplicate result, while any changed ID or
+signature returns `idempotency-conflict`. A first candidate passes normal
+policy, expiry, and tombstone checks, takes the address advisory lock, repeats
+the binding check, and inserts its event and binding atomically. These kinds
+never enter `replaceable_head`; deletion and cleanup clear visibility only.
 
 The advisory-lock keys serialize every conflicting event ID and replacement
 address across relay processes. Keys are sorted before acquisition, avoiding

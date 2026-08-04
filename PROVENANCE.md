@@ -28,6 +28,26 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-04 — Codex 5.6 Sol, M10 NIP-MKT immutable admission / issue #4
+
+- Continued from the reviewed issue #3 implementation at `dd9fc38` in the
+  isolated `/Users/christopherdavid/work/immortal-codex-mkt` worktree.
+- Implemented the distinct private-kind store path for RFQ through Close
+  (`39604-39609`). A durable coordinate binds `(pubkey, kind, d)` to both the
+  event ID and signature, so an exact replay returns the prior successful
+  duplicate result while any changed ID or valid alternate signature fails
+  with the pinned `invalid: idempotency-conflict` reason.
+- The binding deliberately has no event foreign key and survives NIP-09
+  deletion and NIP-40 cleanup. Private MKT records do not use generic
+  `replaceable_head` state. The binding lookup precedes replay-sensitive
+  expiry, tombstone, and policy checks; a first rejected candidate creates no
+  binding, and the accepted event plus binding commit atomically after an
+  address advisory lock.
+- Added fixture anchors, live sequential/concurrent/deletion/expiry/policy
+  proofs, complete `39600-39699` classification pins, and an independent
+  bounded reference model that exhausts admission, deletion, expiration, and
+  restart action histories while checking binding and visibility invariants.
+
 ### 2026-08-04 — Codex 5.6 Sol, M10 NIP-MKT public discovery / issue #3
 
 - Began from `ad223aa` in the isolated worktree

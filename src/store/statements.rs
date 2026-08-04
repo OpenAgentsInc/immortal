@@ -52,6 +52,16 @@ FROM replaceable_head
 WHERE kind = $1 AND pubkey = $2 AND identifier = $3
 FOR UPDATE
 "#;
+const MKT_IMMUTABLE_COORDINATE_SQL: &str = r#"
+SELECT event_id, sig
+FROM mkt_immutable_coordinate
+WHERE pubkey = $1 AND kind = $2 AND identifier = $3
+"#;
+const INSERT_MKT_IMMUTABLE_COORDINATE_SQL: &str = r#"
+INSERT INTO mkt_immutable_coordinate (pubkey, kind, identifier, event_id, sig)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT DO NOTHING
+"#;
 const INSERT_EVENT_SQL: &str = r#"
 INSERT INTO nostr_event (
     id, pubkey, created_at, kind, tags, content, sig,
@@ -449,6 +459,8 @@ pub(crate) struct Statements {
     pub ingest_lock: Statement,
     pub tombstone_match: Statement,
     pub head: Statement,
+    pub mkt_immutable_coordinate: Statement,
+    pub insert_mkt_immutable_coordinate: Statement,
     pub insert_event: Statement,
     pub insert_tag: Statement,
     pub upsert_head: Statement,
@@ -529,6 +541,10 @@ impl Statements {
             ingest_lock: client.prepare(INGEST_LOCK_SQL).await?,
             tombstone_match: client.prepare(TOMBSTONE_MATCH_SQL).await?,
             head: client.prepare(HEAD_SQL).await?,
+            mkt_immutable_coordinate: client.prepare(MKT_IMMUTABLE_COORDINATE_SQL).await?,
+            insert_mkt_immutable_coordinate: client
+                .prepare(INSERT_MKT_IMMUTABLE_COORDINATE_SQL)
+                .await?,
             insert_event: client.prepare(INSERT_EVENT_SQL).await?,
             insert_tag: client.prepare(INSERT_TAG_SQL).await?,
             upsert_head: client.prepare(UPSERT_HEAD_SQL).await?,

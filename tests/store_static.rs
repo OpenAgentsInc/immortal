@@ -96,3 +96,23 @@ fn legacy_expiration_migration_adds_a_terminal_outcome() {
     assert!(sql.contains("'expired'"));
     assert!(sql.contains("DROP CONSTRAINT nostr_effect_import_outcome"));
 }
+
+#[test]
+fn mkt_immutable_migration_keeps_coordinates_after_event_removal() {
+    let sql = include_str!("../migrations/0008_mkt_immutable.sql");
+    for required in [
+        "CREATE TABLE mkt_immutable_coordinate",
+        "PRIMARY KEY (pubkey, kind, identifier)",
+        "kind BETWEEN 39604 AND 39609",
+        "event_id text COLLATE \"C\" NOT NULL UNIQUE",
+        "sig text COLLATE \"C\" NOT NULL",
+        "INSERT INTO mkt_immutable_coordinate",
+        "DELETE FROM replaceable_head",
+    ] {
+        assert!(sql.contains(required), "migration is missing {required:?}");
+    }
+    assert!(
+        !sql.contains("REFERENCES nostr_event"),
+        "coordinate binding must survive NIP-09 deletion and NIP-40 cleanup"
+    );
+}

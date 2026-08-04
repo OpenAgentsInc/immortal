@@ -40,8 +40,10 @@ pub use expanded::{
 };
 pub use filter::{Filter, matches_any, search_terms};
 pub use mkt::{
-    MKT_OFFERING_KIND, MKT_PROFILE_DESCRIPTOR_KIND, MKT_PROVIDER_PROFILE_KIND,
-    MKT_PUBLIC_RECEIPT_KIND, validate_mkt_public_event,
+    MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_OFFERING_KIND, MKT_ORDER_KIND,
+    MKT_PROFILE_DESCRIPTOR_KIND, MKT_PROVIDER_PROFILE_KIND, MKT_PUBLIC_RECEIPT_KIND,
+    MKT_QUOTE_KIND, MKT_RFQ_KIND, MKT_STATUS_KIND, MktImmutableDecision,
+    decide_mkt_immutable_admission, is_mkt_private_kind, validate_mkt_public_event,
 };
 pub use openagents::{
     NostrAddress, OPENAGENTS_ORGANIZATION_KIND, OPENAGENTS_PROJECT_KIND,

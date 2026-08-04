@@ -31,8 +31,8 @@ use crate::{
         validate_block_ingest, verify_agent_auth_attestation, verify_owner_binding, workspace_icon,
     },
     store::{
-        AdmissionOutcome, AdmissionRejection, NotificationListener, Store, StoreError,
-        StoreNotification,
+        AdmissionOutcome, AdmissionRejection, MKT_IDEMPOTENCY_CONFLICT_REASON,
+        NotificationListener, Store, StoreError, StoreNotification,
     },
 };
 
@@ -1761,6 +1761,9 @@ fn admission_response(outcome: AdmissionOutcome) -> (bool, String) {
                 false,
                 "error: relay group signing key is unavailable".to_owned(),
             ),
+            AdmissionRejection::MktIdempotencyConflict => {
+                (false, MKT_IDEMPOTENCY_CONFLICT_REASON.to_owned())
+            }
         },
     }
 }
@@ -1808,9 +1811,33 @@ pub fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::{domain::Filter, gateway::GatewayConfig};
+    use crate::{
+        domain::Filter,
+        gateway::GatewayConfig,
+        store::{AdmissionOutcome, AdmissionRejection},
+    };
 
-    use super::validate_and_clamp_filters;
+    use super::{admission_response, validate_and_clamp_filters};
+
+    #[test]
+    fn mkt_idempotency_conflict_has_a_stable_ok_reason() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/nipmkt/immutability.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            admission_response(AdmissionOutcome::Rejected(
+                AdmissionRejection::MktIdempotencyConflict,
+            )),
+            (
+                false,
+                fixture["gateway_conflict_reason"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            )
+        );
+    }
 
     #[test]
     fn req_limits_reject_empty_arrays_and_expensive_queries_and_clamp_limits() {

@@ -5,6 +5,19 @@ pub const MKT_PROVIDER_PROFILE_KIND: u16 = 39_600;
 pub const MKT_OFFERING_KIND: u16 = 39_601;
 pub const MKT_PROFILE_DESCRIPTOR_KIND: u16 = 39_602;
 pub const MKT_PUBLIC_RECEIPT_KIND: u16 = 39_603;
+pub const MKT_RFQ_KIND: u16 = 39_604;
+pub const MKT_QUOTE_KIND: u16 = 39_605;
+pub const MKT_ORDER_KIND: u16 = 39_606;
+pub const MKT_STATUS_KIND: u16 = 39_607;
+pub const MKT_CANCEL_KIND: u16 = 39_608;
+pub const MKT_CLOSE_KIND: u16 = 39_609;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MktImmutableDecision {
+    StoreFirst,
+    Replay,
+    Conflict,
+}
 
 const MAX_DISCOVERY_CONTENT_BYTES: usize = 16 * 1024;
 const MAX_RECEIPT_CONTENT_BYTES: usize = 4 * 1024;
@@ -16,6 +29,34 @@ pub fn validate_mkt_public_event(event: &Event) -> Result<(), String> {
         MKT_PROFILE_DESCRIPTOR_KIND => validate_profile_descriptor(event),
         MKT_PUBLIC_RECEIPT_KIND => validate_public_receipt(event),
         _ => Ok(()),
+    }
+}
+
+pub const fn is_mkt_private_kind(kind: u16) -> bool {
+    matches!(
+        kind,
+        MKT_RFQ_KIND
+            | MKT_QUOTE_KIND
+            | MKT_ORDER_KIND
+            | MKT_STATUS_KIND
+            | MKT_CANCEL_KIND
+            | MKT_CLOSE_KIND
+    )
+}
+
+pub fn decide_mkt_immutable_admission(
+    stored_signed_event: Option<(&str, &str)>,
+    candidate_event_id: &str,
+    candidate_signature: &str,
+) -> MktImmutableDecision {
+    match stored_signed_event {
+        None => MktImmutableDecision::StoreFirst,
+        Some((stored_event_id, stored_signature))
+            if stored_event_id == candidate_event_id && stored_signature == candidate_signature =>
+        {
+            MktImmutableDecision::Replay
+        }
+        Some((_, _)) => MktImmutableDecision::Conflict,
     }
 }
 

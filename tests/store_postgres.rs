@@ -27,7 +27,7 @@ async fn m2_store_contract_against_postgres() {
     }
 
     let (mut store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(report.applied_versions, vec![1, 2, 3, 4, 5, 6, 7, 8]);
     assert!(store.is_current());
 
     let (_second_store, report) = Store::connect_with_report(&database_url).await.unwrap();
@@ -177,6 +177,7 @@ async fn m2_store_contract_against_postgres() {
     );
 
     replacement_race(&database_url, &mut store).await;
+    mkt_immutable_admission(&database_url, &mut store).await;
     deletion_before_event(&database_url, &mut store).await;
     concurrent_deletion_race(&database_url, &mut store).await;
     concurrent_media_quota(&database_url, &mut store).await;
@@ -229,6 +230,20 @@ CREATE TABLE events (
         vec![Tag::new(vec!["expiration".into(), "60".into()])],
         "expired legacy event",
     );
+    let private = signed_event(
+        96,
+        96,
+        39_604,
+        vec![Tag::new(vec!["d".into(), "9".repeat(64)])],
+        "legacy private first",
+    );
+    let private_conflict = signed_event(
+        96,
+        97,
+        39_604,
+        private.tags.clone(),
+        "legacy private changed bytes",
+    );
     let insert = client
         .prepare(
             r#"
@@ -238,7 +253,7 @@ VALUES ($1, $2, $3, $4, $5::text::jsonb, $6, $7, NULL)
         )
         .await
         .unwrap();
-    for source in [&event, &group_event, &expired] {
+    for source in [&event, &group_event, &expired, &private, &private_conflict] {
         let tags = serde_json::to_string(&source.tags).unwrap();
         let created_at = source.created_at as i64;
         let kind = i32::from(source.kind);
@@ -260,10 +275,11 @@ VALUES ($1, $2, $3, $4, $5::text::jsonb, $6, $7, NULL)
     }
 
     let report = store.import_nostr_effect_events(NOW, None).await.unwrap();
-    assert_eq!(report.scanned, 3);
-    assert_eq!(report.stored, 2);
+    assert_eq!(report.scanned, 5);
+    assert_eq!(report.stored, 3);
     assert_eq!(report.expired, 1);
-    assert_eq!(report.rejected, 0);
+    assert_eq!(report.rejected, 1);
+    assert_eq!(report.rejection_reasons["mkt_idempotency_conflict"], 1);
     assert_eq!(
         store
             .event_by_id(&event.id, NOW)
@@ -284,6 +300,14 @@ VALUES ($1, $2, $3, $4, $5::text::jsonb, $6, $7, NULL)
         "legacy group history bypasses only newer group-derived admission"
     );
     assert!(store.event_by_id(&expired.id, NOW).await.unwrap().is_none());
+    assert!(store.event_by_id(&private.id, NOW).await.unwrap().is_some());
+    assert!(
+        store
+            .event_by_id(&private_conflict.id, NOW)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(
         store
             .import_nostr_effect_events(NOW, None)
@@ -292,13 +316,13 @@ VALUES ($1, $2, $3, $4, $5::text::jsonb, $6, $7, NULL)
             .is_empty(),
         "ledger makes the compatibility import idempotent"
     );
-    assert!(
-        store
-            .retry_rejected_nostr_effect_events(NOW, None)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    let retry = store
+        .retry_rejected_nostr_effect_events(NOW, None)
+        .await
+        .unwrap();
+    assert_eq!(retry.scanned, 1);
+    assert_eq!(retry.rejected, 1);
+    assert_eq!(retry.rejection_reasons["mkt_idempotency_conflict"], 1);
 }
 
 async fn replacement_race(database_url: &str, store: &mut Store) {
@@ -335,6 +359,324 @@ async fn replacement_race(database_url: &str, store: &mut Store) {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event.id, lower.id, "lowest ID wins timestamp tie");
     assert!(store.event_by_id(&higher.id, NOW).await.unwrap().is_none());
+}
+
+async fn mkt_immutable_admission(database_url: &str, store: &mut Store) {
+    for (offset, kind) in (39_604..=39_609).enumerate() {
+        let identifier = format!("{:064x}", offset + 1);
+        let first = signed_event(
+            20,
+            1_000,
+            kind,
+            vec![Tag::new(vec!["d".into(), identifier.clone()])],
+            "first signed bytes",
+        );
+        assert!(matches!(
+            store.admit(&first, NOW).await.unwrap(),
+            AdmissionOutcome::Stored { .. }
+        ));
+        assert_eq!(
+            store.admit(&first, NOW).await.unwrap(),
+            AdmissionOutcome::Duplicate
+        );
+        if kind == 39_604 {
+            let alternate_signature = with_alternate_signature(&first, 20);
+            assert_ne!(alternate_signature.sig, first.sig);
+            assert_eq!(alternate_signature.id, first.id);
+            assert_eq!(
+                store.admit(&alternate_signature, NOW).await.unwrap(),
+                AdmissionOutcome::Rejected(AdmissionRejection::MktIdempotencyConflict),
+                "event ID plus signature binds the exact signed event"
+            );
+        }
+
+        for created_at in [999, 1_001] {
+            let conflicting = signed_event(
+                20,
+                created_at,
+                kind,
+                vec![Tag::new(vec!["d".into(), identifier.clone()])],
+                "changed signed bytes",
+            );
+            assert_eq!(
+                store.admit(&conflicting, NOW).await.unwrap(),
+                AdmissionOutcome::Rejected(AdmissionRejection::MktIdempotencyConflict),
+                "private MKT conflict must not depend on timestamp ordering"
+            );
+        }
+        assert!(store.event_by_id(&first.id, NOW).await.unwrap().is_some());
+    }
+
+    mkt_binding_survives_deletion_and_expiry(store).await;
+    rejected_first_candidates_do_not_bind(database_url, store).await;
+
+    let identifier = "f".repeat(64);
+    let left = signed_event(
+        21,
+        1_100,
+        39_604,
+        vec![Tag::new(vec!["d".into(), identifier.clone()])],
+        "concurrent left",
+    );
+    let right = signed_event(
+        21,
+        1_101,
+        39_604,
+        vec![Tag::new(vec!["d".into(), identifier])],
+        "concurrent right",
+    );
+    let mut other = Store::connect(database_url).await.unwrap();
+    let (left_outcome, right_outcome) =
+        tokio::join!(store.admit(&left, NOW), other.admit(&right, NOW));
+    let left_outcome = left_outcome.unwrap();
+    let right_outcome = right_outcome.unwrap();
+    assert!(matches!(
+        (&left_outcome, &right_outcome),
+        (
+            AdmissionOutcome::Stored { .. },
+            AdmissionOutcome::Rejected(AdmissionRejection::MktIdempotencyConflict)
+        ) | (
+            AdmissionOutcome::Rejected(AdmissionRejection::MktIdempotencyConflict),
+            AdmissionOutcome::Stored { .. }
+        )
+    ));
+
+    let (stored, conflicting) = if matches!(left_outcome, AdmissionOutcome::Stored { .. }) {
+        (&left, &right)
+    } else {
+        (&right, &left)
+    };
+    assert_eq!(
+        store.admit(stored, NOW).await.unwrap(),
+        AdmissionOutcome::Duplicate
+    );
+    assert_eq!(
+        store.admit(conflicting, NOW).await.unwrap(),
+        AdmissionOutcome::Rejected(AdmissionRejection::MktIdempotencyConflict)
+    );
+
+    let same_id = signed_event(
+        26,
+        1_102,
+        39_604,
+        vec![Tag::new(vec!["d".into(), "a".repeat(64)])],
+        "same ID signature race",
+    );
+    let alternate_signature = with_alternate_signature(&same_id, 26);
+    let mut other = Store::connect(database_url).await.unwrap();
+    let (original_outcome, alternate_outcome) = tokio::join!(
+        store.admit(&same_id, NOW),
+        other.admit(&alternate_signature, NOW)
+    );
+    assert!(matches!(
+        (original_outcome.unwrap(), alternate_outcome.unwrap()),
+        (
+            AdmissionOutcome::Stored { .. },
+            AdmissionOutcome::Rejected(AdmissionRejection::MktIdempotencyConflict)
+        ) | (
+            AdmissionOutcome::Rejected(AdmissionRejection::MktIdempotencyConflict),
+            AdmissionOutcome::Stored { .. }
+        )
+    ));
+
+    let (client, connection) = tokio_postgres::connect(database_url, NoTls).await.unwrap();
+    let driver = tokio::spawn(connection);
+    let private_heads = client
+        .query_one(
+            "SELECT count(*) FROM replaceable_head WHERE kind BETWEEN 39604 AND 39609",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0);
+    assert_eq!(private_heads, 0, "private MKT bypasses generic head state");
+    drop(client);
+    driver.await.unwrap().unwrap();
+}
+
+async fn mkt_binding_survives_deletion_and_expiry(store: &mut Store) {
+    let deleted = signed_event(
+        22,
+        1_200,
+        39_605,
+        vec![Tag::new(vec!["d".into(), "d".repeat(64)])],
+        "delete-visible-copy",
+    );
+    assert!(matches!(
+        store.admit(&deleted, NOW).await.unwrap(),
+        AdmissionOutcome::Stored { .. }
+    ));
+    let deletion = signed_event(
+        22,
+        1_201,
+        5,
+        vec![Tag::new(vec!["e".into(), deleted.id.clone()])],
+        "NIP-09 is not market cancellation",
+    );
+    store.admit(&deletion, NOW).await.unwrap();
+    assert!(store.event_by_id(&deleted.id, NOW).await.unwrap().is_none());
+    let high_water = store.latest_ingest_seq().await.unwrap();
+    assert_eq!(
+        store.admit(&deleted, NOW).await.unwrap(),
+        AdmissionOutcome::Duplicate,
+        "replay after deletion returns the prior result without reinsertion"
+    );
+    assert_eq!(store.latest_ingest_seq().await.unwrap(), high_water);
+    let deleted_conflict = signed_event(
+        22,
+        1_202,
+        39_605,
+        deleted.tags.clone(),
+        "changed after deletion",
+    );
+    assert_eq!(
+        store.admit(&deleted_conflict, NOW).await.unwrap(),
+        AdmissionOutcome::Rejected(AdmissionRejection::MktIdempotencyConflict)
+    );
+    assert!(store.event_by_id(&deleted.id, NOW).await.unwrap().is_none());
+
+    let expiration = NOW + 100;
+    let expired = signed_event(
+        23,
+        1_300,
+        39_606,
+        vec![
+            Tag::new(vec!["d".into(), "e".repeat(64)]),
+            Tag::new(vec!["expiration".into(), expiration.to_string()]),
+        ],
+        "expires visibly",
+    );
+    store.admit(&expired, NOW).await.unwrap();
+    assert!(store.delete_expired(expiration).await.unwrap() >= 1);
+    assert!(
+        store
+            .event_by_id(&expired.id, expiration)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let high_water = store.latest_ingest_seq().await.unwrap();
+    assert_eq!(
+        store.admit(&expired, expiration).await.unwrap(),
+        AdmissionOutcome::Duplicate,
+        "binding lookup precedes expiration and does not resurrect the row"
+    );
+    assert_eq!(store.latest_ingest_seq().await.unwrap(), high_water);
+    let expired_conflict = signed_event(
+        23,
+        1_301,
+        39_606,
+        vec![Tag::new(vec!["d".into(), "e".repeat(64)])],
+        "changed after expiry",
+    );
+    assert_eq!(
+        store.admit(&expired_conflict, expiration).await.unwrap(),
+        AdmissionOutcome::Rejected(AdmissionRejection::MktIdempotencyConflict)
+    );
+}
+
+async fn rejected_first_candidates_do_not_bind(database_url: &str, store: &mut Store) {
+    let expired_first = signed_event(
+        24,
+        1_400,
+        39_607,
+        vec![
+            Tag::new(vec!["d".into(), "1".repeat(64)]),
+            Tag::new(vec!["expiration".into(), NOW.to_string()]),
+        ],
+        "first candidate is expired",
+    );
+    assert!(matches!(
+        store.admit(&expired_first, NOW).await,
+        Err(StoreError::Domain(_))
+    ));
+    let after_expired = signed_event(
+        24,
+        1_401,
+        39_607,
+        vec![Tag::new(vec!["d".into(), "1".repeat(64)])],
+        "valid first acceptance",
+    );
+    assert!(matches!(
+        store.admit(&after_expired, NOW).await.unwrap(),
+        AdmissionOutcome::Stored { .. }
+    ));
+
+    let deleted_identifier = "2".repeat(64);
+    let deleted_address = format!("39608:{}:{deleted_identifier}", after_expired.pubkey);
+    let deletion = signed_event(
+        24,
+        1_500,
+        5,
+        vec![Tag::new(vec!["a".into(), deleted_address])],
+        "delete before first arrival",
+    );
+    store.admit(&deletion, NOW).await.unwrap();
+    let deleted_first = signed_event(
+        24,
+        1_499,
+        39_608,
+        vec![Tag::new(vec!["d".into(), deleted_identifier.clone()])],
+        "covered first candidate",
+    );
+    assert_eq!(
+        store.admit(&deleted_first, NOW).await.unwrap(),
+        AdmissionOutcome::Rejected(AdmissionRejection::Deleted)
+    );
+    let after_deleted = signed_event(
+        24,
+        1_501,
+        39_608,
+        vec![Tag::new(vec!["d".into(), deleted_identifier])],
+        "accepted after tombstone boundary",
+    );
+    assert!(matches!(
+        store.admit(&after_deleted, NOW).await.unwrap(),
+        AdmissionOutcome::Stored { .. }
+    ));
+
+    let (client, connection) = tokio_postgres::connect(database_url, NoTls).await.unwrap();
+    let driver = tokio::spawn(connection);
+    client
+        .execute(
+            "INSERT INTO relay_blocked_kind (kind, reason) VALUES ($1, $2)",
+            &[&39_609_i32, &"MKT policy test"],
+        )
+        .await
+        .unwrap();
+    let blocked = signed_event(
+        25,
+        1_600,
+        39_609,
+        vec![Tag::new(vec!["d".into(), "3".repeat(64)])],
+        "policy-rejected first candidate",
+    );
+    assert_eq!(
+        store.admit(&blocked, NOW).await.unwrap(),
+        AdmissionOutcome::Rejected(AdmissionRejection::BlockedKind(
+            "MKT policy test".to_owned()
+        ))
+    );
+    client
+        .execute(
+            "DELETE FROM relay_blocked_kind WHERE kind = $1",
+            &[&39_609_i32],
+        )
+        .await
+        .unwrap();
+    drop(client);
+    driver.await.unwrap().unwrap();
+    let after_policy = signed_event(
+        25,
+        1_601,
+        39_609,
+        blocked.tags,
+        "accepted after policy rejection",
+    );
+    assert!(matches!(
+        store.admit(&after_policy, NOW).await.unwrap(),
+        AdmissionOutcome::Stored { .. }
+    ));
 }
 
 async fn deletion_before_event(_database_url: &str, store: &mut Store) {
@@ -639,6 +981,7 @@ async fn least_privilege_runtime(database_url: &str) {
         "GRANT SELECT, INSERT, DELETE ON nostr_event TO immortal_runtime_m2_test",
         "GRANT SELECT, INSERT ON nostr_indexed_tag TO immortal_runtime_m2_test",
         "GRANT SELECT, INSERT, UPDATE ON replaceable_head TO immortal_runtime_m2_test",
+        "GRANT SELECT, INSERT ON mkt_immutable_coordinate TO immortal_runtime_m2_test",
         "GRANT SELECT, INSERT, UPDATE ON deletion_tombstone TO immortal_runtime_m2_test",
         "GRANT SELECT ON relay_policy, relay_allowed_pubkey, relay_allowed_kind, relay_member_pubkey, relay_blocked_pubkey, relay_blocked_kind TO immortal_runtime_m2_test",
         "GRANT USAGE, SELECT ON SEQUENCE nostr_event_ingest_seq_seq TO immortal_runtime_m2_test",
@@ -657,6 +1000,28 @@ async fn least_privilege_runtime(database_url: &str) {
         AdmissionOutcome::Stored { .. }
     ));
     assert!(runtime.event_by_id(&event.id, NOW).await.unwrap().is_some());
+    let private = signed_event(
+        6,
+        51,
+        39_604,
+        vec![Tag::new(vec!["d".into(), "6".repeat(64)])],
+        "least privilege immutable write",
+    );
+    assert!(matches!(
+        runtime.admit(&private, NOW).await.unwrap(),
+        AdmissionOutcome::Stored { .. }
+    ));
+    assert!(
+        runtime
+            .event_by_id(&private.id, NOW)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        runtime.admit(&private, NOW).await.unwrap(),
+        AdmissionOutcome::Duplicate
+    );
 }
 
 async fn migration_hash_drift_fails_closed(database_url: &str) {
@@ -706,4 +1071,16 @@ fn signed_event(
         .sign_schnorr_no_aux_rand(&id_bytes, &keypair)
         .to_string();
     event
+}
+
+fn with_alternate_signature(event: &Event, secret_byte: u8) -> Event {
+    let secp = Secp256k1::new();
+    let secret = SecretKey::from_byte_array([secret_byte; 32]).unwrap();
+    let keypair = Keypair::from_secret_key(&secp, &secret);
+    let mut alternate = event.clone();
+    let id_bytes = alternate.computed_id_bytes().unwrap();
+    alternate.sig = secp
+        .sign_schnorr_with_aux_rand(&id_bytes, &keypair, &[1; 32])
+        .to_string();
+    alternate
 }
