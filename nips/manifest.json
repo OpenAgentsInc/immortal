@@ -25,10 +25,10 @@
       "repo": "https://github.com/OpenAgentsInc/openagents",
       "subdir": "docs/nips",
       "branch": "main",
-      "commit": "52447a85440a015c28277cd95b75622d5d2ef104",
-      "tree_url": "https://github.com/OpenAgentsInc/openagents/tree/52447a85440a015c28277cd95b75622d5d2ef104/docs/nips",
-      "synced_at": "2026-08-04T03:40:11Z",
-      "files": 8
+      "commit": "889c3f51c8f903e31e83d6c5464d1485f18908e6",
+      "tree_url": "https://github.com/OpenAgentsInc/openagents/tree/889c3f51c8f903e31e83d6c5464d1485f18908e6/docs/nips",
+      "synced_at": "2026-08-04T03:50:07Z",
+      "files": 12
     }
   ]
 }
