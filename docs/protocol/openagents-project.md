@@ -108,3 +108,15 @@ OT/PG validator before emitting anything. It does not accept a secret in argv,
 connect to the network, start another service, or write a database. Operators
 publish the signed result through an ordinary Nostr client and wait for the
 relay's post-commit `OK` response.
+
+When the protected key is a Google Secret Manager value, the manual helper
+`scripts/sign-openagents-project-events-gcloud.sh` retrieves it into one shell
+variable, checks its shape, passes it only in the signer process environment,
+and unsets it on exit. The helper writes signed public events to stdout and
+never writes or prints the private key:
+
+```sh
+scripts/sign-openagents-project-events-gcloud.sh \
+  <gcp-project> <secret-name> ./target/release/immortal unsigned-events.json \
+  > signed-events.json
+```

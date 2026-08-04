@@ -135,8 +135,11 @@ as early as possible.
 
 ## Operation Diamond Hands
 
-The first public proof that OpenAgents project state is relay-native. NIP-BT
-credits remain postponed and are not a Phase 0/1 dependency.
+**Stood down by owner direction on 2026-08-04.** Do not publish program records,
+deploy `/dh`, or continue Phase 1 without a new owner decision. The generic
+OT/PG validation, NIP-11-pinned client, bounded signer, browser transport, and
+GPUI/wasm build infrastructure remain available for unrelated future use.
+NIP-BT credits remain postponed.
 
 ### Phase 0 — read-only project surface
 
@@ -152,15 +155,14 @@ credits remain postponed and are not a Phase 0/1 dependency.
       compatible unknown project activity
 - [x] Prove the library natively and on `wasm32-unknown-unknown` with a manual
       local command; no GitHub workflow or billed runner
-- [ ] Integrate the WebSocket adapter and `/dh` GPUI surface in Omega and mount
-      its emitted web artifact from OpenAgents (tracked in issue #1)
+- [ ] Cancelled: deploy the completed local WebSocket adapter and `/dh`
+      GPUI/wasm artifact (issue #1 closed by stand-down)
 
 ### Phase 1 — joinable project
 
-- [ ] Select and document one explicit admission path before implementation;
-      no silent open-relay fallback
-- [ ] Add browser identity, admitted publication, read-after-write proof,
-      operator rollback, and public runbook coverage (tracked in issue #2)
+- [ ] Cancelled: select and implement a contributor admission path
+- [ ] Cancelled: add project-specific identity, publication, read-after-write,
+      rollback, and public runbook work (issue #2 closed by stand-down)
 
 ## M9 — Drop-in replacement kit
 

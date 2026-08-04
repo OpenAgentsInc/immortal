@@ -705,11 +705,23 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   Clippy gates pass. The follow-up client gate derives the NIP-11 HTTPS URL,
   caps and parses the discovery document, pins its relay identity, requires
   NIP-01/NIP-11, and refuses subscription limits incompatible with the exact
-  project configuration before a browser opens the WebSocket. Production
-  publication, the post-EOSE live-event browser
-  proof, OpenAgents deployment, final documentation, and issue closure remain
-  pending because the Google Cloud owner credential requires interactive
-  reauthentication.
+  project configuration before a browser opens the WebSocket.
+- At approximately 01:39 America/Chicago the owner stood down from Operation
+  Diamond Hands and the broader forensics effort. No `/dh` Cloud Run deploy
+  occurred. No project event reached the relay: signing completed locally, but
+  the publisher failed on a missing local Node module before it constructed a
+  WebSocket. The local signed-event artifacts were discarded.
+- Preserved the reusable infrastructure already on `main`: strict OT/PG
+  validation and fixtures, the native/wasm client, NIP-11 identity pinning,
+  bounded operator signing, GPUI/wasm page source and assets, route/header
+  integration, and browser proof. The Google Secret Manager helper retains the
+  key only in one shell variable, validates its shape, passes it only through
+  the signer environment, and unsets it on exit. It never prints or writes the
+  secret.
+- Issues #1 and #2 are being closed as cancelled rather than completed. Any
+  publication, deployment, or contributor-admission work requires a fresh
+  owner decision. The repository-wide ban on GitHub workflows and
+  GitHub-billed automation remains unchanged.
 
 ## Rules
 
