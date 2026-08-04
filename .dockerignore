@@ -3,7 +3,9 @@
 target
 docs
 nips
+!nips/manifest.json
 tests
+!tests/fixtures
 deploy
 scripts
 PROVENANCE.md
