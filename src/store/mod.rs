@@ -30,7 +30,7 @@ use crate::domain::{
     IDENTITY_ARCHIVED_KIND, IDENTITY_UNARCHIVED_KIND, IdentityArchiveRequest, MktImmutableDecision,
     RelaySigner, ReplacementDecision, Tag, compare_replacement_order,
     decide_mkt_immutable_admission, is_mkt_private_kind, search_terms, validate_block_ingest,
-    validate_mkt_public_event,
+    validate_mkt_private_base, validate_mkt_public_event,
 };
 
 pub use error::StoreError;
@@ -443,6 +443,11 @@ impl Store {
         {
             transaction.commit().await?;
             return Ok(AdmissionOutcome::Duplicate);
+        }
+
+        if immutable_mkt && mode == AdmissionMode::Public {
+            validate_mkt_private_base(event)
+                .map_err(|error| crate::domain::DomainError::InvalidEvent(error.to_string()))?;
         }
 
         if immutable_mkt

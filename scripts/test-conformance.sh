@@ -8,6 +8,7 @@ cargo fmt --all -- --check
 cargo check --locked --all-targets
 cargo test --locked --test mkt_fixtures
 cargo test --locked --test mkt_immutability_model
+cargo test --locked --test mkt_common_fixtures
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps

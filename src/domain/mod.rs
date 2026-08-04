@@ -40,10 +40,16 @@ pub use expanded::{
 };
 pub use filter::{Filter, matches_any, search_terms};
 pub use mkt::{
-    MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_OFFERING_KIND, MKT_ORDER_KIND,
-    MKT_PROFILE_DESCRIPTOR_KIND, MKT_PROVIDER_PROFILE_KIND, MKT_PUBLIC_RECEIPT_KIND,
-    MKT_QUOTE_KIND, MKT_RFQ_KIND, MKT_STATUS_KIND, MktImmutableDecision,
-    decide_mkt_immutable_admission, is_mkt_private_kind, validate_mkt_public_event,
+    MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_ENVELOPE_SCHEMA, MKT_EXECUTABLE_PROFILES,
+    MKT_IDENTIFIER_MAX_BYTES, MKT_IDENTIFIER_PATTERN, MKT_MAX_COUNTERPARTIES,
+    MKT_MAX_DISCOVERY_CONTENT_BYTES, MKT_MAX_HINTS, MKT_MAX_PRIVATE_EVENT_BYTES, MKT_MAX_PROFILES,
+    MKT_MAX_RECEIPT_CONTENT_BYTES, MKT_MAX_REFERENCES, MKT_MAX_TAGS, MKT_OFFERING_KIND,
+    MKT_ORDER_KIND, MKT_PROFILE_DESCRIPTOR_KIND, MKT_PROVIDER_PROFILE_KIND,
+    MKT_PUBLIC_RECEIPT_KIND, MKT_QUOTE_KIND, MKT_RFQ_KIND, MKT_STATUS_KIND, MktImmutableDecision,
+    MktPrivateEnvelope, MktProfileSupport, MktValidatedPrivateRecord, MktValidationCode,
+    MktValidationError, decide_mkt_immutable_admission, is_mkt_private_kind,
+    validate_mkt_private_base, validate_mkt_private_raw, validate_mkt_private_with_profiles,
+    validate_mkt_public_event,
 };
 pub use openagents::{
     NostrAddress, OPENAGENTS_ORGANIZATION_KIND, OPENAGENTS_PROJECT_KIND,

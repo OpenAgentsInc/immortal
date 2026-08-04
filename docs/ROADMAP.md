@@ -230,7 +230,7 @@ after the base. NIP-90 job kinds are frozen per
       deliberately overrides the generic NIP-01 addressable
       newest-head replacement for these six kinds and needs its own store
       path and fixtures
-- [ ] Domain: common-grammar checks — exactly-one `d`/`session`/`profile`/
+- [x] Domain: common-grammar checks — exactly-one `d`/`session`/`profile`/
       `alt`, at least one role-marked `p` tag, 64-lower-hex `session` and
       `d`, the `openagents.mkt.v1` content envelope with tag/body
       agreement, duplicate-JSON-member rejection, 32 KiB private-record

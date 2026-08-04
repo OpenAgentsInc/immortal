@@ -28,6 +28,25 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-04 — Codex 5.6 Sol, M10 NIP-MKT common grammar / issue #5
+
+- Continued from the reviewed issue #4 implementation at `2b9c59e` in the
+  isolated `/Users/christopherdavid/work/immortal-codex-mkt` worktree.
+- Added profile-neutral validation for visible private records after durable
+  replay/conflict lookup: exact common tags, lower-hex and identifier grammar,
+  recursive duplicate-free JSON, private envelope agreement, references, and
+  inclusive size/tag/reference/profile/hint bounds. Public MKT content remains
+  a duplicate-free JSON object without inheriting the private session envelope.
+- Added an exact raw-byte validator that parses one signed record and verifies
+  its event structure and signature before base grammar. A separate
+  profile-aware API takes explicit caller-pinned contracts; runtime exports no
+  executable profiles, and synthetic fixture profile `conformance` is not a
+  capability or advertisement.
+- Documented the observable boundary: the relay cannot inspect encrypted
+  NIP-59 inner records, prove randomness or business authority, or enforce
+  profile state/settlement semantics. Those cases remain client/future-handler
+  work for the M11 exported corpus.
+
 ### 2026-08-04 — Codex 5.6 Sol, M10 NIP-MKT immutable admission / issue #4
 
 - Continued from the reviewed issue #3 implementation at `dd9fc38` in the

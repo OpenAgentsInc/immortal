@@ -2,7 +2,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::{
-    domain::{Event, Filter, MAX_REMINDER_HORIZON_SECONDS},
+    domain::{
+        Event, Filter, MAX_REMINDER_HORIZON_SECONDS, MKT_MAX_PRIVATE_EVENT_BYTES,
+        is_mkt_private_kind,
+    },
     store::RelayPolicy,
 };
 
@@ -33,6 +36,38 @@ pub struct WireError {
 }
 
 pub fn parse_client_message(input: &str) -> Result<ClientMessage, WireError> {
+    if let Some(raw_event) = event_object_raw(input) {
+        #[derive(serde::Deserialize)]
+        struct EventHeader {
+            id: Option<String>,
+            kind: u16,
+        }
+
+        let header = serde_json::from_str::<EventHeader>(raw_event)
+            .ok()
+            .map(|header| (header.id, header.kind))
+            .or_else(|| {
+                let value = serde_json::from_str::<Value>(raw_event).ok()?;
+                let kind = value
+                    .get("kind")
+                    .and_then(Value::as_u64)
+                    .and_then(|kind| u16::try_from(kind).ok())?;
+                let id = value.get("id").and_then(Value::as_str).map(str::to_owned);
+                Some((id, kind))
+            });
+        if let Some((event_id, kind)) = header
+            && is_mkt_private_kind(kind)
+            && raw_event.len() > MKT_MAX_PRIVATE_EVENT_BYTES
+        {
+            return Err(WireError {
+                event_id,
+                subscription_id: None,
+                reason: format!(
+                    "private MKT signed record exceeds {MKT_MAX_PRIVATE_EVENT_BYTES} raw bytes"
+                ),
+            });
+        }
+    }
     let value = serde_json::from_str::<Value>(input).map_err(|_| wire("malformed JSON"))?;
     let array = value
         .as_array()
@@ -142,6 +177,67 @@ pub fn parse_client_message(input: &str) -> Result<ClientMessage, WireError> {
         }
         _ => Err(wire(format!("unsupported message verb {verb:?}"))),
     }
+}
+
+fn event_object_raw(input: &str) -> Option<&str> {
+    let bytes = input.as_bytes();
+    let mut offset = bytes.iter().position(|byte| *byte == b'[')? + 1;
+    offset += bytes
+        .get(offset..)?
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())?;
+
+    let mut first = serde_json::Deserializer::from_str(input.get(offset..)?).into_iter::<Value>();
+    if first.next()?.ok()?.as_str()? != "EVENT" {
+        return None;
+    }
+    offset += first.byte_offset();
+    offset += bytes
+        .get(offset..)?
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())?;
+    if *bytes.get(offset)? != b',' {
+        return None;
+    }
+    offset += 1;
+    offset += bytes
+        .get(offset..)?
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())?;
+    let start = offset;
+    if *bytes.get(start)? != b'{' {
+        return None;
+    }
+    let mut depth = 0_usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut end = None;
+    for (index, byte) in bytes.get(start..)?.iter().copied().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' | b'[' => depth = depth.checked_add(1)?,
+            b'}' | b']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    end = Some(start + index + 1);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let end = end?;
+    input.get(start..end)
 }
 
 pub fn event_message(subscription_id: &str, event: &Event) -> String {
@@ -320,7 +416,7 @@ mod tests {
     use serde::Deserialize;
     use serde_json::{Value, json};
 
-    use crate::store::RelayPolicy;
+    use crate::{domain::MKT_MAX_PRIVATE_EVENT_BYTES, store::RelayPolicy};
 
     use super::{ClientMessage, nip11_json, parse_client_message};
     use crate::gateway::{GatewayConfig, RelayIdentity};
@@ -335,6 +431,38 @@ mod tests {
     struct InvalidMessage {
         message: Value,
         reason: String,
+    }
+
+    #[test]
+    fn visible_private_event_uses_exact_raw_object_bound() {
+        let mut event = json!({
+            "id": "0".repeat(64),
+            "pubkey": "1".repeat(64),
+            "created_at": 1,
+            "kind": 39604,
+            "tags": [],
+            "content": "",
+            "sig": "2".repeat(128),
+        });
+        let fixed = event.to_string().len();
+        event["content"] = Value::String("x".repeat(MKT_MAX_PRIVATE_EVENT_BYTES - fixed));
+        let raw_event = event.to_string();
+        assert_eq!(raw_event.len(), MKT_MAX_PRIVATE_EVENT_BYTES);
+        assert!(matches!(
+            parse_client_message(&format!("[\"EVENT\",{raw_event}]")),
+            Ok(ClientMessage::Event(_))
+        ));
+
+        event["content"] = Value::String("x".repeat(MKT_MAX_PRIVATE_EVENT_BYTES - fixed + 1));
+        let raw_event = event.to_string();
+        assert_eq!(raw_event.len(), MKT_MAX_PRIVATE_EVENT_BYTES + 1);
+        let error = parse_client_message(&format!("[\"EVENT\",{raw_event}]")).unwrap_err();
+        assert!(error.reason.contains("exceeds 32768 raw bytes"));
+
+        let duplicate_kind =
+            raw_event.replacen("\"kind\":39604", "\"kind\":39604,\"kind\":39604", 1);
+        let error = parse_client_message(&format!("[\"EVENT\",{duplicate_kind}]")).unwrap_err();
+        assert!(error.reason.contains("exceeds 32768 raw bytes"));
     }
 
     #[test]

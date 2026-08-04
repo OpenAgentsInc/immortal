@@ -1049,20 +1049,52 @@ fn signed_event(
     secret_byte: u8,
     created_at: u64,
     kind: u16,
-    tags: Vec<Tag>,
+    mut tags: Vec<Tag>,
     content: &str,
 ) -> Event {
     let secp = Secp256k1::new();
     let secret = SecretKey::from_byte_array([secret_byte; 32]).unwrap();
     let keypair = Keypair::from_secret_key(&secp, &secret);
     let pubkey = keypair.x_only_public_key().0.to_string();
+    let content = if (39_604..=39_609).contains(&kind) {
+        let session = tags
+            .iter()
+            .find(|tag| tag.name() == Some("session"))
+            .and_then(|tag| tag.0.get(1))
+            .cloned()
+            .unwrap_or_else(|| {
+                let session = format!("{secret_byte:02x}").repeat(32);
+                tags.extend([
+                    Tag::new(vec!["session".into(), session.clone()]),
+                    Tag::new(vec!["profile".into(), "conformance".into(), "1".into()]),
+                    Tag::new(vec![
+                        "p".into(),
+                        "c".repeat(64),
+                        String::new(),
+                        "provider".into(),
+                    ]),
+                    Tag::new(vec!["alt".into(), "NIP-MKT store fixture".into()]),
+                ]);
+                session
+            });
+        serde_json::json!({
+            "schema": "openagents.mkt.v1",
+            "profile": "conformance",
+            "profile_version": 1,
+            "session_id": session,
+            "payload": content,
+        })
+        .to_string()
+    } else {
+        content.to_owned()
+    };
     let mut event = Event {
         id: "0".repeat(64),
         pubkey,
         created_at,
         kind,
         tags,
-        content: content.to_owned(),
+        content,
         sig: "0".repeat(128),
     };
     let id_bytes = event.computed_id_bytes().unwrap();

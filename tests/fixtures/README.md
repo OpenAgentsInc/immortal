@@ -50,6 +50,14 @@ names the NIP that owns the behavior.
   reason, and bounded-model action space. The corresponding model exhausts
   admission, deletion, expiration, and restart histories without using the
   implementation transition as its oracle.
+- `nipmkt/common-grammar.json` pins the profile-neutral grammar, recursive
+  duplicate-JSON rejection, envelope agreement, reference/tag failures,
+  inclusive bounds, stable validation error codes, the empty executable-profile
+  posture, and a synthetic profile contract used only to prove profile-aware
+  fail-closed behavior and authoritative raw-byte retention.
+  `tests/mkt_common_fixtures.rs` labels relay-visible, raw client/handler, and
+  profile-aware assertions rather than claiming the relay can inspect an
+  encrypted NIP-59 payload.
 - `nipae/`, `nipap/`, `niper/`, `nipmp/`, `nippl/`, `nipia/`, `nipdv/`,
   `nipwp/`, `nipcw/`, `niprs/`, and `nipgs/` each contain a committed server
   contract derived from the corresponding pinned Block text. They cover
