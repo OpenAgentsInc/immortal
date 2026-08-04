@@ -7,7 +7,7 @@
       "branch": "master",
       "commit": "c53877571f96eb423661fc23c620d629d37b8f19",
       "tree_url": "https://github.com/nostr-protocol/nips/tree/c53877571f96eb423661fc23c620d629d37b8f19",
-      "synced_at": "2026-08-04T04:46:51Z",
+      "synced_at": "2026-08-04T08:30:51Z",
       "files": 99
     },
     {
@@ -15,9 +15,9 @@
       "repo": "https://github.com/block/buzz",
       "subdir": "docs/nips",
       "branch": "main",
-      "commit": "631b05c883f58e9533e9038b4669ebdfb1d9cf27",
-      "tree_url": "https://github.com/block/buzz/tree/631b05c883f58e9533e9038b4669ebdfb1d9cf27/docs/nips",
-      "synced_at": "2026-08-04T04:46:54Z",
+      "commit": "feccf4eabc23fdba94ce3537a194357ed17b197c",
+      "tree_url": "https://github.com/block/buzz/tree/feccf4eabc23fdba94ce3537a194357ed17b197c/docs/nips",
+      "synced_at": "2026-08-04T08:30:53Z",
       "files": 15
     },
     {
@@ -25,10 +25,10 @@
       "repo": "https://github.com/OpenAgentsInc/openagents",
       "subdir": "docs/nips",
       "branch": "main",
-      "commit": "d3bb7c51219e2473965ff6f576c1492b2aa99d31",
-      "tree_url": "https://github.com/OpenAgentsInc/openagents/tree/d3bb7c51219e2473965ff6f576c1492b2aa99d31/docs/nips",
-      "synced_at": "2026-08-04T04:46:56Z",
-      "files": 38
+      "commit": "b839dd43bad7915a35639b562d4d7ebf7d51c3f6",
+      "tree_url": "https://github.com/OpenAgentsInc/openagents/tree/b839dd43bad7915a35639b562d4d7ebf7d51c3f6/docs/nips",
+      "synced_at": "2026-08-04T08:30:55Z",
+      "files": 40
     }
   ]
 }
