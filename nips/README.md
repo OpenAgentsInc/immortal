@@ -16,6 +16,12 @@ in this repository.
 a `tree_url` link to browse that commit. Use those links to see the
 upstream history for any file.
 
+A lane may carry a repo-owned `README.md` that summarizes its specs when
+the upstream does not publish one (currently `nips/block/README.md`).
+The sync script preserves that file, and an upstream-provided README
+(the `openagents` lane) always replaces the local copy. The manifest
+file count records upstream files only.
+
 ## How the sync works
 
 1. Run `./scripts/sync-nips.sh`.

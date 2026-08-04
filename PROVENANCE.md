@@ -600,6 +600,20 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   `49b5afb5-6dae-47d4-a273-d73200000032` remains `DONE`; automated backups and
   seven-day point-in-time recovery were also confirmed enabled.
 
+### 2026-08-04 — Claude Fable 5: NIP lane READMEs and openagents lane refresh
+
+- Owner-directed documentation pass, no runtime change. Added the
+  repo-owned `nips/block/README.md` summarizing all 15 pinned Buzz
+  specifications, taught `scripts/sync-nips.sh` to preserve a repo-owned
+  lane README when the upstream does not publish one (an upstream README
+  always wins), and recorded the convention in `nips/README.md`.
+- Refreshed the `openagents` lane to upstream commit `514b47bda` — the
+  owner lifted the recorded postponement note there and replaced the
+  lane README with per-specification summaries — and updated
+  `nips/manifest.json` plus the `docs/protocol/source-lanes.md` decision
+  row. Runtime adoption of the OpenAgents specifications still requires
+  its own named decision, fixtures, and conformance gate.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names
