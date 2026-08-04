@@ -319,10 +319,15 @@ Replacement capability is what the ledger proves; a public replacement
 claim additionally needs live deployment evidence.
 
 Sources: the pinned inspiration reviews (`docs/inspiration/boltz.md`,
-`docs/inspiration/tbdex.md`), the workspace teardowns
-(`openagents/docs/teardowns/2026-08-03-boltz-ecosystem-nostr-rebuild-teardown.md`
-and `...2026-08-04-tbdex-liquidity-protocol-teardown.md` §7 harvest map),
-and the frozen `~/work/projects/tbd/` reference lane. The noncustodial
+`docs/inspiration/tbdex.md`, `docs/inspiration/satora.md`), the workspace
+teardowns
+(`openagents/docs/teardowns/2026-08-03-boltz-ecosystem-nostr-rebuild-teardown.md`,
+`...2026-08-04-tbdex-liquidity-protocol-teardown.md` §7 harvest map, and
+`...2026-08-04-satora-lendaswap-outage-teardown.md`), and the frozen
+`~/work/projects/tbd/` and `~/work/projects/satora/` reference lanes. The
+Satora review adds the doomsday drill (#12/#18), the covenant-reservation
+proof class (#13), and the reserved EVM-leg vocabulary (openagents#9311)
+to the existing packets without new ledger rows. The noncustodial
 boundary stated in the immediate program above governs every item.
 
 | Issue | Packet | Depends on |
