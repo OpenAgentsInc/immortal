@@ -18,6 +18,10 @@ pub enum ClientMessage {
     Close {
         subscription_id: String,
     },
+    Count {
+        query_id: String,
+        filters: Vec<Filter>,
+    },
     Auth(Event),
 }
 
@@ -95,6 +99,29 @@ pub fn parse_client_message(input: &str) -> Result<ClientMessage, WireError> {
                 .map(|subscription_id| ClientMessage::Close { subscription_id })
                 .ok_or_else(|| wire("CLOSE subscription id must contain 1 to 64 characters"))
         }
+        "COUNT" => {
+            let query_id = array.get(1).and_then(subscription_id_hint);
+            if array.len() < 3 {
+                return Err(WireError {
+                    event_id: None,
+                    subscription_id: query_id,
+                    reason: "COUNT must contain a query id and at least one filter".to_owned(),
+                });
+            }
+            let Some(query_id) = query_id else {
+                return Err(wire("COUNT query id must contain 1 to 64 characters"));
+            };
+            let filters = array[2..]
+                .iter()
+                .map(|value| serde_json::from_value::<Filter>(value.clone()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| WireError {
+                    event_id: None,
+                    subscription_id: Some(query_id.clone()),
+                    reason: "COUNT contains an invalid or unsupported filter".to_owned(),
+                })?;
+            Ok(ClientMessage::Count { query_id, filters })
+        }
         "AUTH" => {
             let event_value = array.get(1);
             let event_id = event_value.and_then(event_id_hint);
@@ -147,6 +174,11 @@ pub fn auth_message(challenge: &str) -> String {
         .expect("serializing an AUTH message cannot fail")
 }
 
+pub fn count_message(query_id: &str, count: usize) -> String {
+    serde_json::to_string(&json!(["COUNT", query_id, { "count": count }]))
+        .expect("serializing a COUNT message cannot fail")
+}
+
 #[derive(Debug, Serialize)]
 pub struct Nip11Document<'a> {
     pub name: &'a str,
@@ -160,6 +192,13 @@ pub struct Nip11Document<'a> {
     pub software: &'static str,
     pub version: &'static str,
     pub limitation: Nip11Limitation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nip29: Option<Nip29Capabilities>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Nip29Capabilities {
+    pub subgroups: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -178,9 +217,15 @@ pub struct Nip11Limitation {
 }
 
 pub fn nip11_json(config: &GatewayConfig, policy: &RelayPolicy) -> String {
-    let mut supported_nips = vec![1, 9, 11, 40];
+    let mut supported_nips = vec![1, 9, 11, 40, 45, 50, 65];
     if config.relay_url.is_some() {
-        supported_nips.push(42);
+        supported_nips.extend([17, 42, 70]);
+    }
+    if config.relay_signer.is_some() {
+        supported_nips.push(29);
+    }
+    if config.management_pubkey.is_some() {
+        supported_nips.extend([86, 98]);
     }
     let document = Nip11Document {
         name: &config.identity.name,
@@ -203,6 +248,10 @@ pub fn nip11_json(config: &GatewayConfig, policy: &RelayPolicy) -> String {
                 .then_some(policy.max_past_seconds),
             default_limit: config.limits.max_limit,
         },
+        nip29: config
+            .relay_signer
+            .is_some()
+            .then_some(Nip29Capabilities { subgroups: false }),
     };
     serde_json::to_string(&document).expect("serializing NIP-11 cannot fail")
 }
@@ -267,6 +316,10 @@ mod tests {
             parse_client_message(&fixture.valid[1].to_string()).unwrap(),
             ClientMessage::Close { .. }
         ));
+        assert!(matches!(
+            parse_client_message(&fixture.valid[2].to_string()).unwrap(),
+            ClientMessage::Count { .. }
+        ));
         for case in fixture.invalid {
             let error = parse_client_message(&case.message.to_string()).unwrap_err();
             assert!(
@@ -275,6 +328,21 @@ mod tests {
                 case.reason,
                 error.reason
             );
+        }
+    }
+
+    #[test]
+    fn nip45_count_message_fixture_corpus() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/nip45/count.json")).unwrap();
+        for message in fixture["valid"].as_array().unwrap() {
+            assert!(matches!(
+                parse_client_message(&message.to_string()).unwrap(),
+                ClientMessage::Count { .. }
+            ));
+        }
+        for message in fixture["invalid"].as_array().unwrap() {
+            assert!(parse_client_message(&message.to_string()).is_err());
         }
     }
 

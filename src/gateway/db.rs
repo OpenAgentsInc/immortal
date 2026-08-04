@@ -12,8 +12,8 @@ use tokio::{
 };
 
 use crate::{
-    domain::{Event, Filter},
-    store::{AdmissionOutcome, Store, StoreError, StoredEvent},
+    domain::{Event, Filter, RelaySigner},
+    store::{AdmissionOutcome, ManagementRequest, Store, StoreError, StoredEvent},
 };
 
 use super::GatewayError;
@@ -39,7 +39,22 @@ enum DbRequest {
         now: u64,
         max_results: usize,
         cancel: watch::Receiver<bool>,
+        read_pubkeys: Vec<String>,
         response: oneshot::Sender<Result<HistoryResult, StoreError>>,
+    },
+    Count {
+        filters: Vec<Filter>,
+        now: u64,
+        max_count: usize,
+        read_pubkeys: Vec<String>,
+        response: oneshot::Sender<Result<Option<usize>, StoreError>>,
+    },
+    Manage {
+        authorization_id: String,
+        authorization_pubkey: String,
+        request: ManagementRequest,
+        now: u64,
+        response: oneshot::Sender<Result<serde_json::Value, StoreError>>,
     },
     CatchUp {
         after: i64,
@@ -70,6 +85,7 @@ impl DbPool {
         shutdown: watch::Sender<bool>,
         shutdown_receiver: watch::Receiver<bool>,
         current: Arc<AtomicBool>,
+        relay_signer: Option<RelaySigner>,
     ) -> Result<(Self, Vec<JoinHandle<()>>), GatewayError> {
         let mut stores = Vec::with_capacity(workers);
         for _ in 0..workers {
@@ -84,6 +100,7 @@ impl DbPool {
             let mut worker_shutdown = shutdown_receiver.clone();
             let failure_shutdown = shutdown.clone();
             let worker_current = Arc::clone(&current);
+            let relay_signer = relay_signer.clone();
             tasks.push(tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -94,7 +111,7 @@ impl DbPool {
                         }
                         request = receiver.recv() => {
                             let Some(request) = request else { break };
-                            let fatal = handle_request(&mut store, request).await;
+                            let fatal = handle_request(&mut store, request, relay_signer.as_ref()).await;
                             if fatal || !store.is_current() {
                                 worker_current.store(false, Ordering::Release);
                                 let _ = failure_shutdown.send(true);
@@ -132,6 +149,7 @@ impl DbPool {
         now: u64,
         max_results: usize,
         cancel: watch::Receiver<bool>,
+        read_pubkeys: Vec<String>,
     ) -> Result<HistoryResult, StoreError> {
         let (response, result) = oneshot::channel();
         self.send(DbRequest::History {
@@ -139,6 +157,43 @@ impl DbPool {
             now,
             max_results,
             cancel,
+            read_pubkeys,
+            response,
+        })?;
+        result.await.map_err(|_| StoreError::ConnectionClosed)?
+    }
+
+    pub async fn count(
+        &self,
+        filters: Vec<Filter>,
+        now: u64,
+        max_count: usize,
+        read_pubkeys: Vec<String>,
+    ) -> Result<Option<usize>, StoreError> {
+        let (response, result) = oneshot::channel();
+        self.send(DbRequest::Count {
+            filters,
+            now,
+            max_count,
+            read_pubkeys,
+            response,
+        })?;
+        result.await.map_err(|_| StoreError::ConnectionClosed)?
+    }
+
+    pub async fn manage(
+        &self,
+        authorization_id: String,
+        authorization_pubkey: String,
+        request: ManagementRequest,
+        now: u64,
+    ) -> Result<serde_json::Value, StoreError> {
+        let (response, result) = oneshot::channel();
+        self.send(DbRequest::Manage {
+            authorization_id,
+            authorization_pubkey,
+            request,
+            now,
             response,
         })?;
         result.await.map_err(|_| StoreError::ConnectionClosed)?
@@ -179,14 +234,18 @@ impl DbPool {
     }
 }
 
-async fn handle_request(store: &mut Store, request: DbRequest) -> bool {
+async fn handle_request(
+    store: &mut Store,
+    request: DbRequest,
+    relay_signer: Option<&RelaySigner>,
+) -> bool {
     match request {
         DbRequest::Admit {
             event,
             now,
             response,
         } => {
-            let result = store.admit(&event, now).await;
+            let result = store.admit_with_signer(&event, now, relay_signer).await;
             let fatal = result.as_ref().is_err_and(is_fatal);
             let _ = response.send(result);
             fatal
@@ -196,9 +255,45 @@ async fn handle_request(store: &mut Store, request: DbRequest) -> bool {
             now,
             max_results,
             cancel,
+            read_pubkeys,
             response,
         } => {
-            let result = query_history(store, filters, now, max_results, cancel).await;
+            let result =
+                query_history(store, filters, now, max_results, cancel, read_pubkeys).await;
+            let fatal = result.as_ref().is_err_and(is_fatal);
+            let _ = response.send(result);
+            fatal
+        }
+        DbRequest::Count {
+            filters,
+            now,
+            max_count,
+            read_pubkeys,
+            response,
+        } => {
+            let result = store
+                .count_filters(&filters, now, max_count, &read_pubkeys)
+                .await;
+            let fatal = result.as_ref().is_err_and(is_fatal);
+            let _ = response.send(result);
+            fatal
+        }
+        DbRequest::Manage {
+            authorization_id,
+            authorization_pubkey,
+            request,
+            now,
+            response,
+        } => {
+            let result = store
+                .manage(
+                    &authorization_id,
+                    &authorization_pubkey,
+                    request,
+                    now,
+                    relay_signer,
+                )
+                .await;
             let fatal = result.as_ref().is_err_and(is_fatal);
             let _ = response.send(result);
             fatal
@@ -236,29 +331,52 @@ async fn query_history(
     now: u64,
     max_results: usize,
     cancel: watch::Receiver<bool>,
+    read_pubkeys: Vec<String>,
 ) -> Result<HistoryResult, StoreError> {
     if *cancel.borrow() {
         return Err(StoreError::QueryCancelled);
     }
     let high_water = store.latest_ingest_seq().await?;
+    let search_order = filters.iter().any(|filter| filter.search.is_some());
     let mut events = HashMap::new();
+    let mut order = Vec::new();
     let per_filter = max_results.div_ceil(filters.len().max(1));
     for filter in filters {
         let rows = store
-            .query_filter_cancellable(&filter, now, per_filter, high_water, cancel.clone())
+            .query_filter_for(
+                &filter,
+                now,
+                per_filter,
+                high_water,
+                cancel.clone(),
+                &read_pubkeys,
+            )
             .await?;
         for stored in rows {
-            events.entry(stored.event.id.clone()).or_insert(stored);
+            let id = stored.event.id.clone();
+            if let std::collections::hash_map::Entry::Vacant(entry) = events.entry(id.clone()) {
+                order.push(id);
+                entry.insert(stored);
+            }
         }
     }
-    let mut events = events.into_values().collect::<Vec<_>>();
-    events.sort_by(|left, right| {
-        right
-            .event
-            .created_at
-            .cmp(&left.event.created_at)
-            .then_with(|| left.event.id.cmp(&right.event.id))
-    });
+    let mut events = if search_order {
+        order
+            .into_iter()
+            .filter_map(|id| events.remove(&id))
+            .collect::<Vec<_>>()
+    } else {
+        events.into_values().collect::<Vec<_>>()
+    };
+    if !search_order {
+        events.sort_by(|left, right| {
+            right
+                .event
+                .created_at
+                .cmp(&left.event.created_at)
+                .then_with(|| left.event.id.cmp(&right.event.id))
+        });
+    }
     events.truncate(max_results);
     Ok(HistoryResult { high_water, events })
 }
@@ -273,5 +391,6 @@ fn is_fatal(error: &StoreError) -> bool {
             | StoreError::InvalidLimit(_)
             | StoreError::Serialization(_)
             | StoreError::EphemeralTooLarge(_)
+            | StoreError::Management(_)
     )
 }

@@ -27,6 +27,14 @@ pub struct HttpHead {
     headers: HashMap<String, String>,
 }
 
+impl HttpHead {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
+    }
+}
+
 pub struct SocketIo {
     stream: TcpStream,
     prefix: Cursor<Vec<u8>>,
@@ -192,7 +200,30 @@ pub async fn serve_http(
     .await
 }
 
-async fn write_http(
+pub async fn read_http_body(
+    stream: &mut TcpStream,
+    head: &HttpHead,
+    max_bytes: usize,
+) -> Result<Vec<u8>, GatewayError> {
+    if head.header("transfer-encoding").is_some() {
+        return Err(invalid_http("chunked request bodies are not supported"));
+    }
+    let length = head
+        .header("content-length")
+        .ok_or_else(|| invalid_http("Content-Length is required"))?
+        .parse::<usize>()
+        .map_err(|_| invalid_http("invalid Content-Length"))?;
+    if length > max_bytes {
+        return Err(invalid_http("request body exceeds configured limit"));
+    }
+    let mut body = vec![0_u8; length];
+    timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut body))
+        .await
+        .map_err(|_| GatewayError::Io(io::Error::new(io::ErrorKind::TimedOut, "HTTP body")))??;
+    Ok(body)
+}
+
+pub async fn write_http(
     stream: &mut TcpStream,
     status: u16,
     reason: &str,
@@ -200,7 +231,7 @@ async fn write_http(
     body: &str,
 ) -> Result<(), GatewayError> {
     let response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: Accept, Content-Type\r\nAccess-Control-Allow-Methods: GET, OPTIONS\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(response.as_bytes()).await?;

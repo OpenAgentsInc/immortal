@@ -30,11 +30,18 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "store",
-    sql: include_str!("../../migrations/0001_store.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "store",
+        sql: include_str!("../../migrations/0001_store.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "nip_expansion",
+        sql: include_str!("../../migrations/0002_nip_expansion.sql"),
+    },
+];
 
 type AppliedMigrations = BTreeMap<i64, (String, String)>;
 

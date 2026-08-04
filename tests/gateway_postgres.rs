@@ -2,22 +2,24 @@
 //! through `scripts/test-postgres.sh` against its disposable database.
 
 use std::{
-    io::ErrorKind,
+    io::{ErrorKind, Read, Write},
     net::{SocketAddr, TcpStream as StdTcpStream},
     time::Duration,
 };
 
 use immortal::{
-    domain::{Event, Tag},
+    domain::{Event, RelaySigner, Tag},
     gateway::{Gateway, GatewayConfig},
 };
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 use serde_json::{Value, json};
+use sha2::Digest;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     time::timeout,
 };
+use tokio_postgres::NoTls;
 use tokio_tungstenite::tungstenite::{Message, WebSocket, client};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -38,15 +40,21 @@ async fn m3_gateway_contract_against_postgres() {
     let stop_one = gateway_one.shutdown_handle();
     let server_one = tokio::spawn(gateway_one.run());
 
+    let verification_database_url = database_url.clone();
     let gateway_two = Gateway::start(test_config(database_url)).await.unwrap();
     let address_two = gateway_two.local_addr();
     let stop_two = gateway_two.shutdown_handle();
     let server_two = tokio::spawn(gateway_two.run());
 
     assert_nip11_http(address_one).await;
-    tokio::task::spawn_blocking(move || websocket_contract(address_one, address_two))
-        .await
-        .unwrap();
+    let expired_id = tokio::task::spawn_blocking(move || {
+        websocket_contract(address_one, address_two);
+        management_contract(address_one);
+        expanded_protocol_contract(address_one, address_two)
+    })
+    .await
+    .unwrap();
+    assert_physically_expired(&verification_database_url, &expired_id).await;
 
     stop_one.shutdown();
     stop_two.shutdown();
@@ -68,6 +76,13 @@ fn test_config(database_url: String) -> GatewayConfig {
     config.auth_required = true;
     config.db_connections = 2;
     config.shutdown_grace = Duration::from_secs(2);
+    config.expiration_sweep = Duration::from_secs(1);
+    config.relay_signer = Some(RelaySigner::from_secret_hex(&hex(&[90; 32])).unwrap());
+    config.identity.pubkey = config
+        .relay_signer
+        .as_ref()
+        .map(|signer| signer.pubkey().to_owned());
+    config.management_pubkey = Some(pubkey(91));
     config.limits.max_frame_bytes = 131_072;
     config.limits.max_subscriptions = 8;
     config.limits.max_filters = 4;
@@ -104,6 +119,15 @@ async fn assert_nip11_http(address: SocketAddr) {
             .unwrap()
             .contains(&json!(42))
     );
+    for nip in [17, 29, 45, 50, 65, 70, 86, 98] {
+        assert!(
+            document["supported_nips"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(nip)),
+            "missing NIP-{nip}"
+        );
+    }
 }
 
 fn websocket_contract(address_one: SocketAddr, address_two: SocketAddr) {
@@ -183,6 +207,413 @@ fn websocket_contract(address_one: SocketAddr, address_two: SocketAddr) {
 
     subscriber.close(None).unwrap();
     publisher.close(None).unwrap();
+}
+
+fn management_contract(address: SocketAddr) {
+    let methods = rpc_request(address, "supportedmethods", json!([]));
+    assert!(methods["error"].is_null());
+    for method in ["banpubkey", "allowkind", "creategroup", "putgroupuser"] {
+        assert!(
+            methods["result"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(method))
+        );
+    }
+
+    let created = rpc_request(
+        address,
+        "creategroup",
+        json!([
+            "fixture-group",
+            "Fixture Group",
+            "M6 live group",
+            "",
+            false,
+            pubkey(30),
+            [1]
+        ]),
+    );
+    assert_eq!(created["result"], true);
+    let duplicate = rpc_request(
+        address,
+        "creategroup",
+        json!([
+            "fixture-group",
+            "Duplicate Fixture Group",
+            "must not restart the relay",
+            "",
+            false,
+            pubkey(30),
+            [1]
+        ]),
+    );
+    assert!(
+        duplicate["error"]
+            .as_str()
+            .unwrap()
+            .contains("already exists")
+    );
+    assert!(
+        rpc_request(address, "supportedmethods", json!([]))["error"].is_null(),
+        "a rejected management mutation leaves the process current"
+    );
+
+    let banned = rpc_request(address, "banpubkey", json!([pubkey(88), "fixture block"]));
+    assert_eq!(banned["result"], true);
+    let listed = rpc_request(address, "listbannedpubkeys", json!([]));
+    assert!(
+        listed["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| { entry["pubkey"] == pubkey(88) && entry["reason"] == "fixture block" })
+    );
+    assert_eq!(
+        rpc_request(address, "unbanpubkey", json!([pubkey(88)]))["result"],
+        true
+    );
+}
+
+fn expanded_protocol_contract(address_one: SocketAddr, address_two: SocketAddr) -> String {
+    protected_and_private_contract(address_one, address_two);
+    search_and_count_contract(address_one, address_two);
+    group_contract(address_one, address_two);
+    expiration_contract(address_one, address_two)
+}
+
+fn protected_and_private_contract(address_one: SocketAddr, address_two: SocketAddr) {
+    let mut publisher = connect_client(address_one);
+    let publisher_challenge = expect_auth_challenge(&mut publisher);
+    authenticate(&mut publisher, 21, &publisher_challenge);
+
+    let protected = signed_event(21, now(), 1, vec![Tag::new(vec!["-".into()])], "protected");
+    send_json(&mut publisher, json!(["EVENT", protected]));
+    assert_eq!(read_json(&mut publisher)[2], true);
+
+    let forwarded = signed_event(22, now(), 1, vec![Tag::new(vec!["-".into()])], "forwarded");
+    send_json(&mut publisher, json!(["EVENT", forwarded]));
+    let refusal = read_json(&mut publisher);
+    assert_eq!(refusal[2], false);
+    assert!(refusal[3].as_str().unwrap().starts_with("auth-required:"));
+
+    let repost = signed_event(
+        21,
+        now(),
+        6,
+        Vec::new(),
+        &serde_json::to_string(&protected).unwrap(),
+    );
+    send_json(&mut publisher, json!(["EVENT", repost]));
+    assert_eq!(read_json(&mut publisher)[2], false);
+    let generic_repost = signed_event(
+        21,
+        now(),
+        16,
+        Vec::new(),
+        &serde_json::to_string(&protected).unwrap(),
+    );
+    send_json(&mut publisher, json!(["EVENT", generic_repost]));
+    assert_eq!(read_json(&mut publisher)[2], false);
+
+    let mut recipient = connect_client(address_two);
+    let challenge = expect_auth_challenge(&mut recipient);
+    authenticate(&mut recipient, 30, &challenge);
+    send_json(&mut recipient, json!(["REQ", "dm", {"kinds": [1059]}]));
+    assert_eq!(read_json(&mut recipient), json!(["EOSE", "dm"]));
+
+    let mut outsider = connect_client(address_two);
+    let challenge = expect_auth_challenge(&mut outsider);
+    authenticate(&mut outsider, 31, &challenge);
+    send_json(
+        &mut outsider,
+        json!(["REQ", "not-my-dm", {"kinds": [1059]}]),
+    );
+    assert_eq!(read_json(&mut outsider), json!(["EOSE", "not-my-dm"]));
+
+    let wrap = signed_event(
+        55,
+        now(),
+        1_059,
+        vec![Tag::new(vec!["p".into(), pubkey(30)])],
+        "encrypted gift wrap",
+    );
+    send_json(&mut publisher, json!(["EVENT", wrap]));
+    assert_eq!(read_json(&mut publisher)[2], true);
+    assert_eq!(read_json(&mut recipient)[2]["id"], wrap.id);
+    assert_no_message(&mut outsider);
+
+    recipient.close(None).unwrap();
+    outsider.close(None).unwrap();
+    publisher.close(None).unwrap();
+}
+
+fn search_and_count_contract(address_one: SocketAddr, address_two: SocketAddr) {
+    let mut publisher = connect_client(address_one);
+    let challenge = expect_auth_challenge(&mut publisher);
+    authenticate(&mut publisher, 21, &challenge);
+    let searchable = signed_event(21, now(), 1, Vec::new(), "violet protocol expansion marker");
+    let unrelated = signed_event(21, now(), 1, Vec::new(), "ordinary unrelated text");
+    for event in [&searchable, &unrelated] {
+        send_json(&mut publisher, json!(["EVENT", event]));
+        assert_eq!(read_json(&mut publisher)[2], true);
+    }
+
+    let mut reader = connect_client(address_two);
+    let challenge = expect_auth_challenge(&mut reader);
+    authenticate(&mut reader, 20, &challenge);
+    send_json(
+        &mut reader,
+        json!(["REQ", "search", {"search": "violet expansion"}]),
+    );
+    let result = read_json(&mut reader);
+    assert_eq!(result[0], "EVENT");
+    assert_eq!(result[2]["id"], searchable.id);
+    assert_eq!(read_json(&mut reader), json!(["EOSE", "search"]));
+
+    send_json(
+        &mut reader,
+        json!(["COUNT", "count-search", {"search": "violet expansion"}]),
+    );
+    assert_eq!(
+        read_json(&mut reader),
+        json!(["COUNT", "count-search", {"count": 1}])
+    );
+    reader.close(None).unwrap();
+    publisher.close(None).unwrap();
+}
+
+fn group_contract(address_one: SocketAddr, address_two: SocketAddr) {
+    let mut metadata_reader = connect_client(address_two);
+    let challenge = expect_auth_challenge(&mut metadata_reader);
+    authenticate(&mut metadata_reader, 20, &challenge);
+    send_json(
+        &mut metadata_reader,
+        json!(["REQ", "metadata", {
+            "kinds": [39000, 39001, 39002, 39003, 39004, 39005],
+            "#d": ["fixture-group"]
+        }]),
+    );
+    let mut metadata_kinds = Vec::new();
+    loop {
+        let message = read_json(&mut metadata_reader);
+        if message == json!(["EOSE", "metadata"]) {
+            break;
+        }
+        let event: Event = serde_json::from_value(message[2].clone()).unwrap();
+        event.validate_crypto().unwrap();
+        assert_eq!(event.pubkey, pubkey(90));
+        metadata_kinds.push(event.kind);
+    }
+    metadata_kinds.sort_unstable();
+    assert_eq!(
+        metadata_kinds,
+        vec![39_000, 39_001, 39_002, 39_003, 39_004, 39_005]
+    );
+    metadata_reader.close(None).unwrap();
+
+    let mut admin = connect_client(address_one);
+    let challenge = expect_auth_challenge(&mut admin);
+    authenticate(&mut admin, 30, &challenge);
+    let group_message = signed_event(
+        30,
+        now(),
+        1,
+        vec![Tag::new(vec!["h".into(), "fixture-group".into()])],
+        "member message",
+    );
+    let group_message_prefix = group_message.id[..8].to_owned();
+    send_json(&mut admin, json!(["EVENT", group_message]));
+    assert_eq!(read_json(&mut admin)[2], true);
+
+    let mut member = connect_client(address_one);
+    let challenge = expect_auth_challenge(&mut member);
+    authenticate(&mut member, 31, &challenge);
+    let refused = signed_event(
+        31,
+        now(),
+        1,
+        vec![Tag::new(vec!["h".into(), "fixture-group".into()])],
+        "not a member",
+    );
+    send_json(&mut member, json!(["EVENT", refused]));
+    assert_eq!(read_json(&mut member)[2], false);
+
+    let put_user = signed_event(
+        30,
+        now(),
+        9_000,
+        vec![
+            Tag::new(vec!["h".into(), "fixture-group".into()]),
+            Tag::new(vec!["p".into(), pubkey(31)]),
+        ],
+        "",
+    );
+    send_json(&mut admin, json!(["EVENT", put_user]));
+    assert_eq!(read_json(&mut admin)[2], true);
+    let admitted = signed_event(
+        31,
+        now(),
+        1,
+        vec![
+            Tag::new(vec!["h".into(), "fixture-group".into()]),
+            Tag::new(vec!["previous".into(), group_message_prefix]),
+        ],
+        "now a member",
+    );
+    send_json(&mut member, json!(["EVENT", admitted]));
+    assert_eq!(read_json(&mut member)[2], true);
+    let unknown_previous = signed_event(
+        31,
+        now(),
+        1,
+        vec![
+            Tag::new(vec!["h".into(), "fixture-group".into()]),
+            Tag::new(vec!["previous".into(), "deadbeef".into()]),
+        ],
+        "unknown timeline",
+    );
+    send_json(&mut member, json!(["EVENT", unknown_previous]));
+    assert_eq!(read_json(&mut member)[2], false);
+
+    let mut joiner = connect_client(address_one);
+    let challenge = expect_auth_challenge(&mut joiner);
+    authenticate(&mut joiner, 32, &challenge);
+    let join = signed_event(
+        32,
+        now(),
+        9_021,
+        vec![Tag::new(vec!["h".into(), "fixture-group".into()])],
+        "",
+    );
+    send_json(&mut joiner, json!(["EVENT", join]));
+    assert_eq!(read_json(&mut joiner)[2], true);
+    let joined_message = signed_event(
+        32,
+        now(),
+        1,
+        vec![Tag::new(vec!["h".into(), "fixture-group".into()])],
+        "joined",
+    );
+    send_json(&mut joiner, json!(["EVENT", joined_message]));
+    assert_eq!(read_json(&mut joiner)[2], true);
+    let leave = signed_event(
+        32,
+        now(),
+        9_022,
+        vec![Tag::new(vec!["h".into(), "fixture-group".into()])],
+        "",
+    );
+    send_json(&mut joiner, json!(["EVENT", leave]));
+    assert_eq!(read_json(&mut joiner)[2], true);
+    let after_leave = signed_event(
+        32,
+        now(),
+        1,
+        vec![Tag::new(vec!["h".into(), "fixture-group".into()])],
+        "after leave",
+    );
+    send_json(&mut joiner, json!(["EVENT", after_leave]));
+    assert_eq!(read_json(&mut joiner)[2], false);
+
+    send_json(
+        &mut joiner,
+        json!(["REQ", "relay-membership-history", {
+            "authors": [pubkey(90)],
+            "kinds": [9000, 9001],
+            "#h": ["fixture-group"],
+            "#p": [pubkey(32)]
+        }]),
+    );
+    let mut accepted_requests = std::collections::HashSet::new();
+    loop {
+        let message = read_json(&mut joiner);
+        if message == json!(["EOSE", "relay-membership-history"]) {
+            break;
+        }
+        let event: Event = serde_json::from_value(message[2].clone()).unwrap();
+        event.validate_crypto().unwrap();
+        accepted_requests.extend(event.tag_values("e").map(str::to_owned));
+    }
+    assert_eq!(
+        accepted_requests,
+        std::collections::HashSet::from([join.id, leave.id])
+    );
+
+    admin.close(None).unwrap();
+    member.close(None).unwrap();
+    joiner.close(None).unwrap();
+}
+
+fn expiration_contract(address_one: SocketAddr, address_two: SocketAddr) -> String {
+    let mut publisher = connect_client(address_one);
+    let challenge = expect_auth_challenge(&mut publisher);
+    authenticate(&mut publisher, 21, &challenge);
+    let expires_at = now() + 2;
+    let event = signed_event(
+        21,
+        now(),
+        1,
+        vec![Tag::new(vec!["expiration".into(), expires_at.to_string()])],
+        "swept",
+    );
+    send_json(&mut publisher, json!(["EVENT", event]));
+    assert_eq!(read_json(&mut publisher)[2], true);
+
+    std::thread::sleep(Duration::from_secs(4));
+    let mut reader = connect_client(address_two);
+    let challenge = expect_auth_challenge(&mut reader);
+    authenticate(&mut reader, 20, &challenge);
+    send_json(&mut reader, json!(["REQ", "expired", {"ids": [event.id]}]));
+    assert_eq!(read_json(&mut reader), json!(["EOSE", "expired"]));
+    reader.close(None).unwrap();
+    publisher.close(None).unwrap();
+    event.id
+}
+
+async fn assert_physically_expired(database_url: &str, event_id: &str) {
+    let (client, connection) = tokio_postgres::connect(database_url, NoTls).await.unwrap();
+    let driver = tokio::spawn(connection);
+    let statement = client
+        .prepare("SELECT count(*) FROM nostr_event WHERE id = $1")
+        .await
+        .unwrap();
+    let count = client
+        .query_one(&statement, &[&event_id])
+        .await
+        .unwrap()
+        .get::<_, i64>(0);
+    assert_eq!(count, 0, "NIP-40 sweeper must physically delete expiration");
+    drop(client);
+    driver.await.unwrap().unwrap();
+}
+
+fn rpc_request(address: SocketAddr, method: &str, params: Value) -> Value {
+    let body = json!({ "method": method, "params": params }).to_string();
+    let payload_hash = hex(&sha2::Sha256::digest(body.as_bytes()));
+    let event = signed_event(
+        91,
+        now(),
+        27_235,
+        vec![
+            Tag::new(vec!["u".into(), "http://relay.test/manage".into()]),
+            Tag::new(vec!["method".into(), "POST".into()]),
+            Tag::new(vec!["payload".into(), payload_hash]),
+        ],
+        "",
+    );
+    let authorization = base64(&serde_json::to_vec(&event).unwrap());
+    let mut stream = StdTcpStream::connect(address).unwrap();
+    write!(
+        stream,
+        "POST /manage HTTP/1.1\r\nHost: relay.test\r\nContent-Type: application/nostr+json+rpc\r\nAuthorization: Nostr {authorization}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+    serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap()
 }
 
 fn subscription_limit_contract(address: SocketAddr) {
@@ -308,6 +739,52 @@ fn signed_event(
     event.id = event.computed_id().unwrap();
     event.sig = secp.sign_schnorr_no_aux_rand(&id, &keypair).to_string();
     event
+}
+
+fn pubkey(secret_byte: u8) -> String {
+    let secp = Secp256k1::new();
+    let secret = SecretKey::from_byte_array([secret_byte; 32]).unwrap();
+    Keypair::from_secret_key(&secp, &secret)
+        .x_only_public_key()
+        .0
+        .to_string()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::new();
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(char::from(TABLE[usize::from(first >> 2)]));
+        output.push(char::from(
+            TABLE[usize::from((first & 0x03) << 4 | second >> 4)],
+        ));
+        if chunk.len() > 1 {
+            output.push(char::from(
+                TABLE[usize::from((second & 0x0f) << 2 | third >> 6)],
+            ));
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(char::from(TABLE[usize::from(third & 0x3f)]));
+        } else {
+            output.push('=');
+        }
+    }
+    output
 }
 
 fn now() -> u64 {

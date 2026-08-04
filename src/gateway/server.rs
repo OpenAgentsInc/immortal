@@ -33,13 +33,17 @@ use super::{
     GatewayConfig, GatewayError,
     auth::{AuthState, make_challenge, read_process_secret},
     db::DbPool,
+    management::{is_management_request, serve_management},
     rate::{ConnectionPermit, RateLimiter},
     socket::{
         ServerWebSocket, effective_ip, is_websocket_upgrade, read_http_head, serve_http,
         websocket_handshake,
     },
     subscription::{ConnectionId, HubHandle, PublishedEvent},
-    wire::{self, ClientMessage, closed_message, notice_message, ok_message, parse_client_message},
+    wire::{
+        self, ClientMessage, closed_message, count_message, notice_message, ok_message,
+        parse_client_message,
+    },
 };
 
 const MAX_PROCESS_CONNECTIONS: usize = 4_096;
@@ -111,8 +115,36 @@ impl Gateway {
             shutdown.clone(),
             shutdown_receiver.clone(),
             Arc::clone(&current),
+            config.relay_signer.clone(),
         )
         .await?;
+
+        let expiration_store = Store::connect_verified(&config.database_url).await?;
+        let expiration_shutdown = shutdown.clone();
+        let expiration_current = Arc::clone(&current);
+        let mut expiration_stop = shutdown_receiver.clone();
+        let expiration_interval = config.expiration_sweep;
+        background.push(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(expiration_interval);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    changed = expiration_stop.changed() => {
+                        if changed.is_err() || *expiration_stop.borrow() {
+                            break;
+                        }
+                    }
+                    _ = interval.tick() => {
+                        if expiration_store.delete_expired(unix_now()).await.is_err()
+                            || !expiration_store.is_current()
+                        {
+                            fail_process(&expiration_current, &expiration_shutdown);
+                            break;
+                        }
+                    }
+                }
+            }
+        }));
         let (hub, hub_task) = HubHandle::start(
             HUB_COMMAND_CAPACITY,
             (config.limits.send_queue_capacity.saturating_sub(1) / 2).max(1),
@@ -333,6 +365,9 @@ async fn handle_socket(
 ) -> Result<(), GatewayError> {
     let (request_bytes, head) = read_http_head(&mut stream).await?;
     if !is_websocket_upgrade(&head) {
+        if is_management_request(&head) {
+            return serve_management(stream, &head, &state.config, &state.db).await;
+        }
         return serve_http(
             stream,
             &head,
@@ -521,6 +556,9 @@ async fn handle_client_text(
             subscription_id,
             filters,
         } => handle_req(context, subscription_id, filters, pending).await,
+        ClientMessage::Count { query_id, filters } => {
+            handle_count(context, query_id, filters, pending).await
+        }
         ClientMessage::Close { subscription_id } => {
             if let Some(cancellation) = context.cancellations.remove(&subscription_id) {
                 let _ = cancellation.send(true);
@@ -597,6 +635,27 @@ async fn handle_event(
             &event.id,
             false,
             "auth-required: authenticate before publishing",
+        ));
+        return Ok(());
+    }
+    if event.is_protected()
+        && !context
+            .auth
+            .as_ref()
+            .is_some_and(|auth| auth.is_authenticated_as(&event.pubkey))
+    {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "auth-required: protected event may only be published by its authenticated author",
+        ));
+        return Ok(());
+    }
+    if event.embeds_protected_repost() {
+        pending.push_back(ok_message(
+            &event.id,
+            false,
+            "invalid: repost must not embed a protected event",
         ));
         return Ok(());
     }
@@ -730,11 +789,18 @@ async fn handle_req(
     if !context
         .state
         .hub
-        .register(
+        .register_for(
             context.connection_id,
             subscription_id.clone(),
             generation,
             filters.clone(),
+            context
+                .auth
+                .as_ref()
+                .map(AuthState::authenticated_pubkeys)
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
         )
         .await?
     {
@@ -763,9 +829,20 @@ async fn handle_req(
             / 2)
         .max(1),
     );
+    let read_pubkeys = context
+        .auth
+        .as_ref()
+        .map(AuthState::authenticated_pubkeys)
+        .unwrap_or_default();
     context.query_tasks.spawn(async move {
         match db
-            .history(filters, unix_now(), max_results, cancel_receiver)
+            .history(
+                filters,
+                unix_now(),
+                max_results,
+                cancel_receiver,
+                read_pubkeys,
+            )
             .await
         {
             Ok(history) => {
@@ -789,6 +866,69 @@ async fn handle_req(
             }
         }
     });
+    Ok(())
+}
+
+async fn handle_count(
+    context: &mut ConnectionContext,
+    query_id: String,
+    filters: Vec<Filter>,
+    pending: &mut VecDeque<String>,
+) -> Result<(), GatewayError> {
+    if !context.state.rate.req_from_ip(context.ip) {
+        pending.push_back(closed_message(
+            &query_id,
+            "rate-limited: COUNT rate exceeded",
+        ));
+        return Ok(());
+    }
+    if filters.len() > context.state.config.limits.max_filters {
+        pending.push_back(closed_message(&query_id, "restricted: too many filters"));
+        return Ok(());
+    }
+    let filters = match validate_and_clamp_filters(filters, &context.state.config) {
+        Ok(filters) => filters,
+        Err(reason) => {
+            pending.push_back(closed_message(&query_id, &reason));
+            return Ok(());
+        }
+    };
+    let read_pubkeys = context
+        .auth
+        .as_ref()
+        .map(AuthState::authenticated_pubkeys)
+        .unwrap_or_default();
+    if filters.iter().any(|filter| {
+        filter
+            .kinds
+            .as_ref()
+            .is_some_and(|kinds| kinds.contains(&1_059))
+    }) && read_pubkeys.is_empty()
+    {
+        pending.push_back(closed_message(
+            &query_id,
+            "auth-required: cannot count gift wraps without recipient authentication",
+        ));
+        return Ok(());
+    }
+    match context
+        .state
+        .db
+        .count(
+            filters,
+            unix_now(),
+            context.state.config.limits.max_query_cost,
+            read_pubkeys,
+        )
+        .await
+    {
+        Ok(Some(count)) => pending.push_back(count_message(&query_id, count)),
+        Ok(None) => pending.push_back(closed_message(
+            &query_id,
+            "restricted: count exceeds the configured query bound",
+        )),
+        Err(_) => pending.push_back(closed_message(&query_id, "error: count query failed")),
+    }
     Ok(())
 }
 
@@ -832,7 +972,9 @@ fn validate_and_clamp_filters(
             + filter.authors.as_ref().map_or(0, Vec::len)
             + filter.kinds.as_ref().map_or(0, Vec::len)
             + filter.tags.values().map(Vec::len).sum::<usize>();
-        let factor = if filter.ids.is_some() {
+        let factor = if filter.search.is_some() {
+            100
+        } else if filter.ids.is_some() {
             1
         } else if filter.authors.is_some() && filter.kinds.is_some() {
             4
@@ -892,6 +1034,29 @@ fn admission_response(outcome: AdmissionOutcome) -> (bool, String) {
             AdmissionRejection::Superseded => (
                 true,
                 "duplicate: newer replaceable event already stored".to_owned(),
+            ),
+            AdmissionRejection::GroupNotFound => {
+                (false, "restricted: group does not exist".to_owned())
+            }
+            AdmissionRejection::GroupUnauthorized => (
+                false,
+                "restricted: group membership or administrator role required".to_owned(),
+            ),
+            AdmissionRejection::GroupClosed => (false, "restricted: group is closed".to_owned()),
+            AdmissionRejection::GroupAlreadyMember => {
+                (false, "duplicate: already a group member".to_owned())
+            }
+            AdmissionRejection::GroupUnsupportedKind => (
+                false,
+                "restricted: event kind is not supported by this group".to_owned(),
+            ),
+            AdmissionRejection::GroupPreviousUnknown => (
+                false,
+                "invalid: group previous reference is not in recent relay history".to_owned(),
+            ),
+            AdmissionRejection::GroupSigningUnavailable => (
+                false,
+                "error: relay group signing key is unavailable".to_owned(),
             ),
         },
     }

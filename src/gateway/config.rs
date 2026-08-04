@@ -1,5 +1,7 @@
 use std::{env, net::SocketAddr, str::FromStr, time::Duration};
 
+use crate::domain::RelaySigner;
+
 use super::GatewayError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,9 +60,12 @@ pub struct GatewayConfig {
     pub bind_addr: SocketAddr,
     pub relay_url: Option<String>,
     pub auth_required: bool,
+    pub management_pubkey: Option<String>,
+    pub relay_signer: Option<RelaySigner>,
     pub trust_proxy: bool,
     pub db_connections: usize,
     pub shutdown_grace: Duration,
+    pub expiration_sweep: Duration,
     pub limits: GatewayLimits,
     pub identity: RelayIdentity,
     pub log_level: String,
@@ -73,9 +78,12 @@ impl GatewayConfig {
             bind_addr,
             relay_url: None,
             auth_required: false,
+            management_pubkey: None,
+            relay_signer: None,
             trust_proxy: false,
             db_connections: 4,
             shutdown_grace: Duration::from_secs(10),
+            expiration_sweep: Duration::from_secs(60),
             limits: GatewayLimits::default(),
             identity: RelayIdentity::default(),
             log_level: "info".to_owned(),
@@ -95,10 +103,17 @@ impl GatewayConfig {
         let mut config = Self::new(database_url, SocketAddr::new(bind_ip, port));
         config.relay_url = optional_string("IMMORTAL_RELAY_URL")?;
         config.auth_required = parse_bool("IMMORTAL_AUTH_REQUIRED", false)?;
+        config.management_pubkey = optional_string("IMMORTAL_MANAGEMENT_PUBKEY")?;
+        config.relay_signer = optional_string("IMMORTAL_RELAY_SECRET_KEY")?
+            .map(|secret| RelaySigner::from_secret_hex(&secret))
+            .transpose()
+            .map_err(|error| GatewayError::Config(error.to_string()))?;
         config.trust_proxy = parse_bool("IMMORTAL_TRUST_PROXY", false)?;
         config.db_connections = parse_or("IMMORTAL_DB_CONNECTIONS", "4")?;
         config.shutdown_grace =
             Duration::from_secs(parse_or("IMMORTAL_SHUTDOWN_GRACE_SECONDS", "10")?);
+        config.expiration_sweep =
+            Duration::from_secs(parse_or("IMMORTAL_EXPIRATION_SWEEP_SECONDS", "60")?);
         config.limits = GatewayLimits {
             max_frame_bytes: parse_or("IMMORTAL_MAX_FRAME_BYTES", "131072")?,
             max_subscriptions: parse_or("IMMORTAL_MAX_SUBSCRIPTIONS", "32")?,
@@ -117,6 +132,19 @@ impl GatewayConfig {
             contact: optional_string("IMMORTAL_RELAY_CONTACT")?,
             pubkey: optional_string("IMMORTAL_RELAY_PUBKEY")?,
         };
+        if let Some(signer) = &config.relay_signer {
+            if config
+                .identity
+                .pubkey
+                .as_ref()
+                .is_some_and(|pubkey| pubkey != signer.pubkey())
+            {
+                return Err(GatewayError::Config(
+                    "IMMORTAL_RELAY_PUBKEY does not match IMMORTAL_RELAY_SECRET_KEY".to_owned(),
+                ));
+            }
+            config.identity.pubkey = Some(signer.pubkey().to_owned());
+        }
         config.log_level = env::var("IMMORTAL_LOG_LEVEL").unwrap_or_else(|_| "info".to_owned());
         config.validate()?;
         Ok(config)
@@ -131,6 +159,11 @@ impl GatewayConfig {
         }
         if self.shutdown_grace.is_zero() {
             return Err(config("IMMORTAL_SHUTDOWN_GRACE_SECONDS must be positive"));
+        }
+        if self.expiration_sweep.is_zero() || self.expiration_sweep > Duration::from_secs(86_400) {
+            return Err(config(
+                "IMMORTAL_EXPIRATION_SWEEP_SECONDS must be between 1 and 86400",
+            ));
         }
         if !(1_024..=16_777_216).contains(&self.limits.max_frame_bytes) {
             return Err(config(
@@ -208,6 +241,18 @@ impl GatewayConfig {
             if pubkey.len() != 64 || !is_lower_hex(pubkey) {
                 return Err(config(
                     "IMMORTAL_RELAY_PUBKEY must be 64 lowercase hexadecimal characters",
+                ));
+            }
+        }
+        if let Some(pubkey) = &self.management_pubkey {
+            if pubkey.len() != 64 || !is_lower_hex(pubkey) {
+                return Err(config(
+                    "IMMORTAL_MANAGEMENT_PUBKEY must be 64 lowercase hexadecimal characters",
+                ));
+            }
+            if self.relay_url.is_none() {
+                return Err(config(
+                    "IMMORTAL_RELAY_URL is required when management is enabled",
                 ));
             }
         }

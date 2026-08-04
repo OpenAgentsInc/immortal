@@ -20,6 +20,7 @@ pub struct Filter {
     pub since: Option<u64>,
     pub until: Option<u64>,
     pub limit: Option<usize>,
+    pub search: Option<String>,
 }
 
 impl Filter {
@@ -50,6 +51,18 @@ impl Filter {
                 "tag selectors must be one ASCII letter".to_owned(),
             ));
         }
+        if let Some(search) = &self.search {
+            if search.chars().count() > 256 {
+                return Err(DomainError::InvalidFilter(
+                    "search must contain at most 256 characters".to_owned(),
+                ));
+            }
+            if search_terms(search).is_empty() {
+                return Err(DomainError::InvalidFilter(
+                    "search must contain at least one non-extension term".to_owned(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -66,6 +79,11 @@ impl Filter {
                 event.indexed_tags().any(|(event_key, event_value)| {
                     event_key == *key && values.iter().any(|v| v == event_value)
                 })
+            })
+            && self.search.as_ref().is_none_or(|search| {
+                let content = event.content.to_lowercase();
+                let terms = search_terms(search);
+                !terms.is_empty() && terms.iter().all(|term| content.contains(term))
             })
     }
 }
@@ -92,6 +110,8 @@ struct RawFilter {
     until: Option<u64>,
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    search: Option<String>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -122,6 +142,7 @@ impl<'de> Deserialize<'de> for Filter {
             since: raw.since,
             until: raw.until,
             limit: raw.limit,
+            search: raw.search,
         })
     }
 }
@@ -137,6 +158,7 @@ impl Serialize for Filter {
             + usize::from(self.since.is_some())
             + usize::from(self.until.is_some())
             + usize::from(self.limit.is_some())
+            + usize::from(self.search.is_some())
             + self.tags.len();
         let mut map = serializer.serialize_map(Some(field_count))?;
         if let Some(ids) = &self.ids {
@@ -163,6 +185,19 @@ impl Serialize for Filter {
         if let Some(limit) = self.limit {
             map.serialize_entry("limit", &limit)?;
         }
+        if let Some(search) = &self.search {
+            map.serialize_entry("search", search)?;
+        }
         map.end()
     }
+}
+
+/// NIP-50 extension tokens are ignored; remaining words are matched using
+/// Postgres' simple text-search configuration by the store.
+pub fn search_terms(search: &str) -> Vec<String> {
+    search
+        .split_whitespace()
+        .filter(|term| !term.contains(':'))
+        .map(str::to_lowercase)
+        .collect()
 }

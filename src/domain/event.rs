@@ -2,6 +2,7 @@ use secp256k1::{Secp256k1, XOnlyPublicKey, schnorr::Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::expanded::validate_expanded_event;
 use super::hex::{decode_lower_hex, encode_lower_hex};
 use super::{DomainError, EventClass, ReplacementAddress, TimestampPolicy};
 
@@ -87,6 +88,7 @@ impl Event {
         if self.tags.iter().any(|tag| tag.0.is_empty()) {
             return Err(DomainError::EmptyTag);
         }
+        validate_expanded_event(self)?;
         Ok(())
     }
 
@@ -178,5 +180,32 @@ impl Event {
     pub fn is_expired(&self, now: u64) -> bool {
         self.expiration()
             .is_some_and(|expiration| expiration <= now)
+    }
+
+    pub fn has_exact_tag(&self, name: &str) -> bool {
+        self.tags
+            .iter()
+            .any(|tag| tag.as_slice().len() == 1 && tag.name() == Some(name))
+    }
+
+    pub fn is_protected(&self) -> bool {
+        self.has_exact_tag("-")
+    }
+
+    pub fn gift_wrap_recipient(&self) -> Option<&str> {
+        (self.kind == 1_059)
+            .then(|| self.tag_values("p").next())
+            .flatten()
+    }
+
+    pub fn group_id(&self) -> Option<&str> {
+        self.tag_values("h").next()
+    }
+
+    pub fn embeds_protected_repost(&self) -> bool {
+        matches!(self.kind, 6 | 16)
+            && serde_json::from_str::<Self>(&self.content)
+                .ok()
+                .is_some_and(|event| event.is_protected())
     }
 }

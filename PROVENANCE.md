@@ -288,6 +288,57 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   used apt Rust 1.85 and PostgreSQL 17; systemd verification, signed-event
   publish/query, graceful shutdown, and the real backup restore all passed.
 
+### 2026-08-03 — Codex 5.6 Sol (Extra High), M6 NIP Expansion
+
+- Began M6 from commit `172c4bc` on a clean `main`, current with
+  `origin/main`, and continued the owner-directed handoff as Codex 5.6 Sol
+  (Extra High). Read the binding repository doctrine and the pinned official
+  NIP-17, NIP-29, NIP-40, NIP-45, NIP-50, NIP-65, NIP-70, NIP-77, NIP-86,
+  and NIP-98 specifications before changing the implementation. NIP-91 is not
+  present in the pinned official lane.
+- Dependency and architecture decision: M6 adds no crate, service, cache,
+  broker, sync engine, or second database. Relay signing, NIP-98 Base64 and
+  payload verification, group semantics, COUNT, and search use the existing
+  allowlisted Rust dependencies. Expiration cleanup is an in-process task on
+  a dedicated connection to the same Postgres database and fails the process
+  closed if it cannot remain current.
+- Added migration 2 and prepared statements for authoritative group members,
+  invites, metadata, and management replay protection. Admission now applies
+  group state and signed metadata atomically, while query and count paths
+  apply expiry, full-text search, and authenticated gift-wrap recipient
+  gating. The scheduled NIP-40 sweep physically removes expired rows.
+- Added owned domain validation and signing for NIP-17 routing lists and gift
+  wraps, the supported NIP-29 moderation/join/leave subset, NIP-70 protected
+  events, and NIP-98 HTTP authorization. Accepted group joins/leaves also
+  create relay-signed 9000/9001 history events; current signed 39000–39005
+  documents are regenerated after state transitions.
+- Expanded the one-listener gateway with bounded exact NIP-45 COUNT,
+  Postgres-backed NIP-50 search, same-connection protected publication, and a
+  65,536-byte NIP-86 JSON-RPC path authenticated by exact URL, method, payload
+  hash, timestamp, signature, configured owner pubkey, and one-use event ID.
+  Standard policy methods and explicit group administration extensions change
+  the same tables used by admission.
+- Recorded exact source-lane decisions and deliberate subsets: NIP-65 relay
+  lists remain client routing metadata; NIP-77 stays watched without adding a
+  sync engine; absent NIP-91 is not advertised; all Block specs stay parked;
+  and the OpenAgents lane remains postponed by its recorded owner direction.
+  Added committed fixture corpora for each implemented M6 protocol surface.
+- The pre-close audit added relay-signed join/leave history, validated recent
+  group timeline references and NIP-65 relay lists, covered generic protected
+  reposts, made duplicate group creation a non-fatal management error, and
+  preserved deletion tombstones after an expiring deletion event is physically
+  swept. Each issue became a fixture or live contract assertion before close.
+- The first complete manual-gate invocation stopped immediately on a formatting
+  diff introduced during that audit. After formatting, the clean rerun passed
+  all locked all-target tests, warnings-denied Clippy and rustdoc, shell/static
+  checks, fresh-Postgres store and expanded two-gateway contracts, two-process
+  gap/chaos, release load, and fresh-Debian acceptance. The five-run load sample
+  was 6,240.41 committed events/sec median, 0.40 ms connect-p99 median, and
+  2.52 ms REQ-to-EOSE-p99 median. Debian 13's apt Rust 1.85 and PostgreSQL 17
+  built and ran the relay, published/queried a signed event, shut down cleanly,
+  and restored a real backup. The final `immortal:m6` production image also
+  rebuilt successfully.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

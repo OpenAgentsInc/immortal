@@ -1,5 +1,5 @@
 #!/bin/sh
-# Complete manual M1-M5 gate. No GitHub workflow or billed runner is used.
+# Complete manual M1-M6 gate. No GitHub workflow or billed runner is used.
 set -eu
 
 cd "$(dirname "$0")/.."

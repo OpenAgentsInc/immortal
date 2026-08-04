@@ -1,6 +1,6 @@
 # Postgres Store and Roles
 
-Immortal uses one Postgres database. The M2 store owns migrations, event
+Immortal uses one Postgres database. The M2–M6 store owns migrations, event
 admission, policy checks, indexed reads, process notification, and gap
 recovery. No cache, broker, or second database participates.
 
@@ -17,6 +17,17 @@ recovery. No cache, broker, or second database participates.
 - `relay_policy`, allow/block lists for pubkeys and kinds, and
   `relay_member_pubkey`: operator admission policy state; and
 - `schema_migrations`: applied version, name, SHA-256, and timestamp.
+
+`migrations/0002_nip_expansion.sql` adds:
+
+- `relay_group`, `relay_group_member`, and `relay_group_invite`: authoritative
+  NIP-29 group state used before admission; and
+- `management_request`: consumed NIP-98 authorization event IDs for replay
+  protection.
+
+It also allows a durable deletion tombstone to retain its signed source ID
+after NIP-40 expires and physically removes the source event. The tombstone's
+deletion effect therefore does not disappear when its publication does.
 
 The database independently rejects malformed identity widths, negative or
 out-of-range protocol numbers, ephemeral kinds, inconsistent replacement
@@ -44,7 +55,7 @@ statement is prepared once through `tokio-postgres` and uses typed parameters.
 `Store::connect_verified` checks that all known migration names and hashes are
 current without executing DDL. Gateway startup first runs migrations with its
 single configured database credential, then creates its fixed set of verified
-workers and the dedicated notification connection before the network listener
+workers and dedicated notification and expiration connections before the network listener
 binds. M5 therefore deploys one database-owner login; the binary does not yet
 expose separate migrator/runtime credentials or a migration-only command.
 
@@ -93,8 +104,11 @@ allowlists: an empty table permits every value, while a non-empty table permits
 only listed values. `relay_blocked_pubkey` and `relay_blocked_kind` always deny
 matching values and take precedence over the allowlists. When
 `closed_membership` is true, the author must also exist in
-`relay_member_pubkey`. Operators update these rows through the database owner;
-each admission transaction reads the current committed policy.
+`relay_member_pubkey`. Each admission transaction reads the current committed
+policy. M6's authenticated NIP-86 HTTP API provides ordinary policy and group
+administration, so operators do not need direct SQL for those supported
+operations. The database owner remains responsible for broader bootstrap and
+recovery work.
 
 ## Roles
 

@@ -11,6 +11,7 @@ pub enum StoreError {
     WorkQueueFull,
     MigrationDrift(String),
     InvalidPolicy(String),
+    Management(String),
     QueryCancelled,
     EphemeralTooLarge(usize),
     TimestampOutOfRange { field: &'static str, value: u64 },
@@ -28,6 +29,7 @@ impl fmt::Display for StoreError {
             Self::WorkQueueFull => f.write_str("database work queue is full"),
             Self::MigrationDrift(reason) => write!(f, "schema migration drift: {reason}"),
             Self::InvalidPolicy(reason) => write!(f, "invalid relay admission policy: {reason}"),
+            Self::Management(reason) => write!(f, "management request failed: {reason}"),
             Self::QueryCancelled => f.write_str("database query was cancelled"),
             Self::EphemeralTooLarge(bytes) => {
                 write!(f, "ephemeral event is {bytes} bytes; maximum is 1048576")

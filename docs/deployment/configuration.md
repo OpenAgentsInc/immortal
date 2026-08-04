@@ -16,8 +16,8 @@ sees one flat, typed contract.
 2. **No secrets in argv.** Secrets pass only through the environment (or
    through files the environment points to). Command-line arguments are
    visible to other local users via `ps`.
-3. **No secrets in logs.** The database credential never appears in any log
-   line, error message, or panic output.
+3. **No secrets in logs.** Database credentials and relay signing keys never
+   appear in a log line, error message, or panic output.
 4. **Typed values.** Sizes are bytes, times are seconds, counts are
    integers. A value like `IMMORTAL_MAX_FRAME_BYTES=abc` is a startup
    error, not a silent default.
@@ -49,7 +49,7 @@ Platform + Managed Postgres unsupported for the current binary.
 
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
-| `IMMORTAL_DB_CONNECTIONS` | no | `4` | Worker database connections (1–64). One additional dedicated connection is used for `LISTEN/NOTIFY`. |
+| `IMMORTAL_DB_CONNECTIONS` | no | `4` | Worker database connections (1–64). Two additional dedicated connections are used for `LISTEN/NOTIFY` and the expiration sweep. |
 
 ### Network
 
@@ -60,6 +60,20 @@ Platform + Managed Postgres unsupported for the current binary.
 | `PORT` | no | — | Platform-injected port (for example Cloud Run). When set, it overrides `IMMORTAL_PORT`. |
 | `IMMORTAL_RELAY_URL` | for NIP-42 | — | Public URL of this relay, e.g. `wss://relay.example.com`. Used to validate the `relay` tag in NIP-42 AUTH events and to advertise NIP-42 support in NIP-11. |
 | `IMMORTAL_AUTH_REQUIRED` | no | `false` | Require a valid per-connection NIP-42 authentication event before EVENT or REQ. `IMMORTAL_RELAY_URL` must be set when this is true. |
+
+### Protocol expansion
+
+| Variable | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `IMMORTAL_EXPIRATION_SWEEP_SECONDS` | no | `60` | Interval for physical NIP-40 cleanup (1–86,400). Queries exclude expired events independently of the sweep. |
+| `IMMORTAL_RELAY_SECRET_KEY` | for NIP-29 | — | Relay's 32-byte secret as 64 lowercase hexadecimal characters. Enables relay-managed groups and signed group history/metadata. The derived public key becomes the NIP-11 relay pubkey; if `IMMORTAL_RELAY_PUBKEY` is also set, it must match. This is a secret and belongs only in the protected runtime environment. |
+| `IMMORTAL_MANAGEMENT_PUBKEY` | for NIP-86 | — | Exact 32-byte owner public key as 64 lowercase hexadecimal characters. Enables the NIP-98-authenticated management endpoint. `IMMORTAL_RELAY_URL` is required so HTTP authorization can bind the public URL. |
+
+NIP-17/NIP-70 delivery and publication checks are enabled when
+`IMMORTAL_RELAY_URL` creates per-connection NIP-42 state. NIP-45 COUNT,
+NIP-50 search, and NIP-65 relay-list storage need no extra variable. The full
+contract and deliberate NIP-29 subset are in
+`docs/protocol/nip-expansion.md`.
 
 TLS terminates at the reverse proxy. The binary itself never speaks TLS and
 has no certificate configuration.
@@ -123,10 +137,20 @@ IMMORTAL_BIND_ADDR=127.0.0.1
 IMMORTAL_PORT=8080
 IMMORTAL_RELAY_URL=wss://relay.example.com
 IMMORTAL_TRUST_PROXY=true
+IMMORTAL_EXPIRATION_SWEEP_SECONDS=60
 IMMORTAL_LOG_LEVEL=info
+```
+
+To enable groups and management, add the relay secret and management public
+key to the installed protected file; never add their real values to the
+repository or shell history:
+
+```sh
+IMMORTAL_RELAY_SECRET_KEY=<64-lowercase-hex-secret>
+IMMORTAL_MANAGEMENT_PUBKEY=<64-lowercase-hex-public-key>
 ```
 
 ## Status note
 
-The M1 domain, M2 Postgres store, and M3 executable gateway implement this
-contract. If implementation must diverge, change this file in the same commit.
+The M1–M6 executable relay implements this contract. If implementation must
+diverge, change this file in the same commit.

@@ -7,6 +7,7 @@
 mod deletion;
 mod error;
 mod event;
+mod expanded;
 mod filter;
 mod hex;
 mod replacement;
@@ -15,7 +16,8 @@ mod timestamp;
 pub use deletion::{DeletionRequest, DeletionTombstone};
 pub use error::DomainError;
 pub use event::{Event, Tag};
-pub use filter::{Filter, matches_any};
+pub use expanded::{GroupAction, GroupMetadata, HttpAuth, RelaySigner, parse_http_authorization};
+pub use filter::{Filter, matches_any, search_terms};
 pub use replacement::{
     EventClass, ReplacementAddress, ReplacementDecision, compare_replacement,
     compare_replacement_order,

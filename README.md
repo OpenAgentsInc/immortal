@@ -20,7 +20,7 @@ Nostr clients  <=>  immortal (one binary: WebSocket + NIP-11 HTTP)
                         |
                     Postgres
                     events, tag indexes, replaceable heads,
-                    deletion tombstones, policy, full-text search,
+                    deletion tombstones, policy, groups, full-text search,
                     LISTEN/NOTIFY, ingest sequence
 ```
 
@@ -61,10 +61,12 @@ TLS is the job of the reverse proxy (nginx or Caddy).
 
 ## Status
 
-M1 through M5 are complete: the protocol domain, Postgres store,
+M1 through M6 are complete: the protocol domain, Postgres store,
 HTTP/WebSocket gateway, pinned per-NIP fixtures, locally executable
 conformance, actual-process chaos and load proofs, and the production
-deployment kit. M6 is the next protocol-expansion phase. See
+deployment kit. The relay also provides expiration cleanup, protected and
+recipient-gated events, relay-managed groups, authenticated management,
+bounded COUNT, and full-text search. M7 media is next. See
 `docs/ROADMAP.md`, `docs/conformance/`, and `docs/deployment/`.
 
 ## Quick start
@@ -108,7 +110,7 @@ Podman, or Docker runtime:
 ./scripts/run-debian-acceptance.sh
 ```
 
-Run the complete manual M1–M5 conformance gate with
+Run the complete manual M1–M6 conformance gate with
 `./scripts/test-conformance.sh`. No GitHub workflow or billed GitHub runner is
 used.
 

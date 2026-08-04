@@ -27,7 +27,7 @@ async fn m2_store_contract_against_postgres() {
     }
 
     let (mut store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![1]);
+    assert_eq!(report.applied_versions, vec![1, 2]);
     assert!(store.is_current());
 
     let (_second_store, report) = Store::connect_with_report(&database_url).await.unwrap();
@@ -145,6 +145,33 @@ async fn m2_store_contract_against_postgres() {
             .await
             .unwrap()
             .is_none()
+    );
+
+    let expiring_target = signed_event(12, 121, 1, Vec::new(), "remains deleted");
+    let expiring_deletion = signed_event(
+        12,
+        122,
+        5,
+        vec![
+            Tag::new(vec!["e".into(), expiring_target.id.clone()]),
+            Tag::new(vec!["expiration".into(), "200".into()]),
+        ],
+        "expiring deletion publication",
+    );
+    store.admit(&expiring_deletion, 150).await.unwrap();
+    assert!(store.delete_expired(200).await.unwrap() >= 2);
+    assert!(
+        store
+            .event_by_id(&expiring_deletion.id, 199)
+            .await
+            .unwrap()
+            .is_none(),
+        "the deletion publication was physically removed"
+    );
+    assert_eq!(
+        store.admit(&expiring_target, NOW).await.unwrap(),
+        AdmissionOutcome::Rejected(AdmissionRejection::Deleted),
+        "the durable tombstone outlives its expired source event"
     );
 
     replacement_race(&database_url, &mut store).await;

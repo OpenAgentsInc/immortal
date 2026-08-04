@@ -39,6 +39,7 @@ enum HubCommand {
         key: SubscriptionKey,
         generation: u64,
         filters: Vec<Filter>,
+        read_pubkeys: HashSet<String>,
         response: oneshot::Sender<bool>,
     },
     HistoryReady {
@@ -87,6 +88,7 @@ enum IndexKey {
 struct Subscription {
     generation: u64,
     filters: Vec<Filter>,
+    read_pubkeys: HashSet<String>,
     index_keys: HashSet<IndexKey>,
     state: SubscriptionState,
 }
@@ -184,12 +186,31 @@ impl HubHandle {
         })
     }
 
+    #[cfg(test)]
     pub async fn register(
         &self,
         connection_id: ConnectionId,
         subscription_id: String,
         generation: u64,
         filters: Vec<Filter>,
+    ) -> Result<bool, GatewayError> {
+        self.register_for(
+            connection_id,
+            subscription_id,
+            generation,
+            filters,
+            HashSet::new(),
+        )
+        .await
+    }
+
+    pub async fn register_for(
+        &self,
+        connection_id: ConnectionId,
+        subscription_id: String,
+        generation: u64,
+        filters: Vec<Filter>,
+        read_pubkeys: HashSet<String>,
     ) -> Result<bool, GatewayError> {
         let (response, acknowledged) = oneshot::channel();
         self.sender
@@ -200,6 +221,7 @@ impl HubHandle {
                 },
                 generation,
                 filters,
+                read_pubkeys,
                 response,
             })
             .await
@@ -302,9 +324,10 @@ impl Hub {
                 key,
                 generation,
                 filters,
+                read_pubkeys,
                 response,
             } => {
-                let registered = self.register(key, generation, filters);
+                let registered = self.register(key, generation, filters, read_pubkeys);
                 let _ = response.send(registered);
             }
             HubCommand::HistoryReady {
@@ -326,7 +349,13 @@ impl Hub {
         }
     }
 
-    fn register(&mut self, key: SubscriptionKey, generation: u64, filters: Vec<Filter>) -> bool {
+    fn register(
+        &mut self,
+        key: SubscriptionKey,
+        generation: u64,
+        filters: Vec<Filter>,
+        read_pubkeys: HashSet<String>,
+    ) -> bool {
         if !self.connections.contains_key(&key.connection_id) {
             return false;
         }
@@ -343,6 +372,7 @@ impl Hub {
             Subscription {
                 generation,
                 filters,
+                read_pubkeys,
                 index_keys,
                 state: SubscriptionState::Buffering {
                     events: Vec::new(),
@@ -431,6 +461,14 @@ impl Hub {
                 continue;
             };
             if !matches_any(&subscription.filters, &published.event) {
+                continue;
+            }
+            if published.event.kind == 1_059
+                && !published
+                    .event
+                    .gift_wrap_recipient()
+                    .is_some_and(|recipient| subscription.read_pubkeys.contains(recipient))
+            {
                 continue;
             }
             match &mut subscription.state {

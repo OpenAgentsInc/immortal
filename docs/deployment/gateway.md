@@ -1,8 +1,9 @@
 # Gateway Runtime
 
-M3 turns the domain and store libraries into the single Immortal relay binary.
+M3–M6 turn the domain and store libraries into the single Immortal relay binary.
 The binary validates every environment value, migrates and verifies Postgres,
-opens a fixed set of database workers plus one notification connection, and
+opens a fixed set of database workers plus notification and expiration-sweep
+connections, and
 only then binds its TCP listener. A startup failure therefore exposes no
 partially current relay.
 
@@ -12,7 +13,8 @@ One listener serves all paths consistently:
 
 - `GET /health` reports whether the process is current;
 - a GET with `Accept: application/nostr+json` returns NIP-11 with CORS headers;
-- a valid WebSocket upgrade enters the NIP-01 connection state machine; and
+- a valid WebSocket upgrade enters the NIP-01 connection state machine;
+- an authenticated NIP-86 JSON-RPC POST uses that listener when enabled; and
 - other GET requests receive `426 Upgrade Required`.
 
 Public TLS stays at Caddy, nginx, or the cloud edge. The binary speaks plain
@@ -24,6 +26,29 @@ authenticated for the life of that connection. Setting
 kind-22242 event matches the challenge, configured relay URL, signature, and
 ten-minute timestamp window. Authentication events are never published,
 stored, or broadcast.
+
+NIP-70 protected publishing binds the author to that same per-connection
+authentication state. NIP-17 gift wraps remain visible only to their single
+authenticated recipient in historical reads, live fanout, and COUNT.
+
+## Expanded protocol paths
+
+COUNT uses the same bounded filters and query-cost policy as REQ and returns
+an exact unique-event count or closes an over-budget query. Search terms use
+the Postgres `simple` full-text vector and ordinary result limits.
+
+When relay signing is configured, NIP-29 admission checks group membership
+and supported kinds before storage, then commits the event, group-state
+transition, relay-signed moderation history, and current 39000–39005 metadata
+together. The in-process expiration worker deletes expired rows on schedule;
+query-time expiry remains authoritative between sweeps. Any failure of this
+dedicated database path fails the process closed.
+
+The NIP-86 endpoint accepts at most 65,536 body bytes and requires an exact
+NIP-98 URL/method/payload signature by the configured management pubkey.
+Policy and group changes use the fixed database worker pool and prepared
+statements. See `docs/protocol/nip-expansion.md` for method signatures and the
+supported NIP-29 subset.
 
 ## Subscriptions and EOSE
 
@@ -61,8 +86,9 @@ publisher process's notification echo.
 
 The gateway enforces the advertised frame, event, subscription, filter,
 result, query-cost, and connection limits. Fixed-window rate limits apply per
-IP to EVENT/AUTH and REQ and per pubkey to EVENT/AUTH. Database work uses only the fixed
-`IMMORTAL_DB_CONNECTIONS` workers; connection send queues, EOSE buffers,
+IP to EVENT/AUTH and REQ and per pubkey to EVENT/AUTH. Database work uses only
+the fixed `IMMORTAL_DB_CONNECTIONS` workers plus the notification and
+expiration connections; connection send queues, EOSE buffers,
 notification queues, command queues, handshake headers, WebSocket buffers,
 and recent ephemeral IDs are all bounded.
 

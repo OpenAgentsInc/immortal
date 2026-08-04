@@ -136,6 +136,22 @@ WHERE ($1::text[] IS NULL OR e.id = ANY($1))
   AND ($5::bigint IS NULL OR e.created_at <= $5)
   AND (e.expires_at IS NULL OR e.expires_at > $7)
   AND e.ingest_seq <= $9
+  AND (
+      e.kind <> 1059
+      OR (
+          $10::text[] IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM nostr_indexed_tag recipient
+              WHERE recipient.event_id = e.id
+                AND recipient.tag_name = 'p'
+                AND recipient.tag_value = ANY($10)
+          )
+      )
+  )
+  AND (
+      $11::text IS NULL
+      OR e.search_vector @@ plainto_tsquery('simple'::regconfig, $11)
+  )
   AND NOT EXISTS (
       SELECT 1
       FROM jsonb_each($6::text::jsonb) requested(tag_name, tag_values)
@@ -149,9 +165,139 @@ WHERE ($1::text[] IS NULL OR e.id = ANY($1))
             )
       )
   )
-ORDER BY e.created_at DESC, e.id ASC
+ORDER BY
+    CASE WHEN $11::text IS NOT NULL
+         THEN ts_rank(e.search_vector, plainto_tsquery('simple'::regconfig, $11))
+    END DESC NULLS LAST,
+    e.created_at DESC, e.id ASC
 LIMIT $8
 "#;
+
+const QUERY_FILTER_IDS_SQL: &str = r#"
+SELECT e.id
+FROM nostr_event e
+WHERE ($1::text[] IS NULL OR e.id = ANY($1))
+  AND ($2::text[] IS NULL OR e.pubkey = ANY($2))
+  AND ($3::integer[] IS NULL OR e.kind = ANY($3))
+  AND ($4::bigint IS NULL OR e.created_at >= $4)
+  AND ($5::bigint IS NULL OR e.created_at <= $5)
+  AND (e.expires_at IS NULL OR e.expires_at > $7)
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_each($6::text::jsonb) requested(tag_name, tag_values)
+      WHERE NOT EXISTS (
+          SELECT 1
+          FROM nostr_indexed_tag indexed
+          WHERE indexed.event_id = e.id
+            AND indexed.tag_name = requested.tag_name
+            AND indexed.tag_value IN (
+                SELECT jsonb_array_elements_text(requested.tag_values)
+            )
+      )
+  )
+  AND (
+      e.kind <> 1059
+      OR (
+          $8::text[] IS NOT NULL
+          AND EXISTS (
+              SELECT 1 FROM nostr_indexed_tag recipient
+              WHERE recipient.event_id = e.id
+                AND recipient.tag_name = 'p'
+                AND recipient.tag_value = ANY($8)
+          )
+      )
+  )
+  AND (
+      $9::text IS NULL
+      OR e.search_vector @@ plainto_tsquery('simple'::regconfig, $9)
+  )
+ORDER BY e.id
+LIMIT $10
+"#;
+
+const DELETE_EXPIRED_SQL: &str =
+    "DELETE FROM nostr_event WHERE expires_at IS NOT NULL AND expires_at <= $1";
+const GROUP_SQL: &str = r#"
+SELECT name, about, picture, closed, supported_kinds, pins::text
+FROM relay_group WHERE id = $1 FOR UPDATE
+"#;
+const GROUP_MEMBER_SQL: &str =
+    "SELECT roles FROM relay_group_member WHERE group_id = $1 AND pubkey = $2";
+const GROUP_MEMBERS_SQL: &str =
+    "SELECT pubkey, roles FROM relay_group_member WHERE group_id = $1 ORDER BY pubkey";
+const GROUP_INVITE_SQL: &str = "SELECT 1 FROM relay_group_invite WHERE group_id = $1 AND code = $2";
+const GROUP_RECENT_IDS_SQL: &str = r#"
+SELECT e.id
+FROM nostr_event e
+JOIN nostr_indexed_tag scope
+  ON scope.event_id = e.id AND scope.tag_name = 'h' AND scope.tag_value = $1
+WHERE e.pubkey <> $2
+  AND (e.expires_at IS NULL OR e.expires_at > $3)
+ORDER BY e.ingest_seq DESC
+LIMIT 50
+"#;
+const PUT_GROUP_MEMBER_SQL: &str = r#"
+INSERT INTO relay_group_member (group_id, pubkey, roles)
+VALUES ($1, $2, $3)
+ON CONFLICT (group_id, pubkey) DO UPDATE SET roles = EXCLUDED.roles
+"#;
+const REMOVE_GROUP_MEMBER_SQL: &str =
+    "DELETE FROM relay_group_member WHERE group_id = $1 AND pubkey = $2";
+const UPDATE_GROUP_METADATA_SQL: &str = r#"
+UPDATE relay_group SET name = $2, about = $3, picture = $4,
+    closed = $5, supported_kinds = $6, updated_at = clock_timestamp()
+WHERE id = $1
+"#;
+const UPDATE_GROUP_PINS_SQL: &str = r#"
+UPDATE relay_group SET pins = $2::text::jsonb, updated_at = clock_timestamp()
+WHERE id = $1
+"#;
+const CREATE_GROUP_INVITE_SQL: &str = r#"
+INSERT INTO relay_group_invite (group_id, code) VALUES ($1, $2)
+ON CONFLICT DO NOTHING
+"#;
+const DELETE_GROUP_EVENT_SQL: &str = r#"
+DELETE FROM nostr_event e
+WHERE e.id = $1
+  AND EXISTS (
+      SELECT 1 FROM nostr_indexed_tag tag
+      WHERE tag.event_id = e.id AND tag.tag_name = 'h' AND tag.tag_value = $2
+  )
+"#;
+const CREATE_GROUP_SQL: &str = r#"
+INSERT INTO relay_group (id, name, about, picture, closed, supported_kinds)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT DO NOTHING
+"#;
+const DELETE_GROUP_SQL: &str = "DELETE FROM relay_group WHERE id = $1";
+const LIST_GROUPS_SQL: &str = r#"
+SELECT id, name, about, picture, closed, supported_kinds
+FROM relay_group ORDER BY id LIMIT 1000
+"#;
+const ACCEPT_MANAGEMENT_SQL: &str = r#"
+INSERT INTO management_request (event_id, pubkey) VALUES ($1, $2)
+ON CONFLICT DO NOTHING RETURNING event_id
+"#;
+const BAN_PUBKEY_SQL: &str = r#"
+INSERT INTO relay_blocked_pubkey (pubkey, reason) VALUES ($1, $2)
+ON CONFLICT (pubkey) DO UPDATE SET reason = EXCLUDED.reason
+"#;
+const UNBAN_PUBKEY_SQL: &str = "DELETE FROM relay_blocked_pubkey WHERE pubkey = $1";
+const LIST_BANNED_PUBKEYS_SQL: &str =
+    "SELECT pubkey, reason FROM relay_blocked_pubkey ORDER BY pubkey LIMIT 10000";
+const ALLOW_PUBKEY_MUTATION_SQL: &str = r#"
+INSERT INTO relay_allowed_pubkey (pubkey, reason) VALUES ($1, $2)
+ON CONFLICT (pubkey) DO UPDATE SET reason = EXCLUDED.reason
+"#;
+const UNALLOW_PUBKEY_SQL: &str = "DELETE FROM relay_allowed_pubkey WHERE pubkey = $1";
+const LIST_ALLOWED_PUBKEYS_SQL: &str =
+    "SELECT pubkey, reason FROM relay_allowed_pubkey ORDER BY pubkey LIMIT 10000";
+const ALLOW_KIND_MUTATION_SQL: &str = r#"
+INSERT INTO relay_allowed_kind (kind) VALUES ($1) ON CONFLICT DO NOTHING
+"#;
+const DISALLOW_KIND_SQL: &str = "DELETE FROM relay_allowed_kind WHERE kind = $1";
+const LIST_ALLOWED_KINDS_SQL: &str =
+    "SELECT kind FROM relay_allowed_kind ORDER BY kind LIMIT 65536";
 
 #[derive(Clone)]
 pub(crate) struct Statements {
@@ -181,6 +327,32 @@ pub(crate) struct Statements {
     pub latest_ingest: Statement,
     pub events_after: Statement,
     pub query_filter: Statement,
+    pub query_filter_ids: Statement,
+    pub delete_expired: Statement,
+    pub group: Statement,
+    pub group_member: Statement,
+    pub group_members: Statement,
+    pub group_invite: Statement,
+    pub group_recent_ids: Statement,
+    pub put_group_member: Statement,
+    pub remove_group_member: Statement,
+    pub update_group_metadata: Statement,
+    pub update_group_pins: Statement,
+    pub create_group_invite: Statement,
+    pub delete_group_event: Statement,
+    pub create_group: Statement,
+    pub delete_group: Statement,
+    pub list_groups: Statement,
+    pub accept_management: Statement,
+    pub ban_pubkey: Statement,
+    pub unban_pubkey: Statement,
+    pub list_banned_pubkeys: Statement,
+    pub allow_pubkey_mutation: Statement,
+    pub unallow_pubkey: Statement,
+    pub list_allowed_pubkeys: Statement,
+    pub allow_kind_mutation: Statement,
+    pub disallow_kind: Statement,
+    pub list_allowed_kinds: Statement,
 }
 
 impl Statements {
@@ -212,6 +384,32 @@ impl Statements {
             latest_ingest: client.prepare(LATEST_INGEST_SQL).await?,
             events_after: client.prepare(EVENTS_AFTER_SQL).await?,
             query_filter: client.prepare(QUERY_FILTER_SQL).await?,
+            query_filter_ids: client.prepare(QUERY_FILTER_IDS_SQL).await?,
+            delete_expired: client.prepare(DELETE_EXPIRED_SQL).await?,
+            group: client.prepare(GROUP_SQL).await?,
+            group_member: client.prepare(GROUP_MEMBER_SQL).await?,
+            group_members: client.prepare(GROUP_MEMBERS_SQL).await?,
+            group_invite: client.prepare(GROUP_INVITE_SQL).await?,
+            group_recent_ids: client.prepare(GROUP_RECENT_IDS_SQL).await?,
+            put_group_member: client.prepare(PUT_GROUP_MEMBER_SQL).await?,
+            remove_group_member: client.prepare(REMOVE_GROUP_MEMBER_SQL).await?,
+            update_group_metadata: client.prepare(UPDATE_GROUP_METADATA_SQL).await?,
+            update_group_pins: client.prepare(UPDATE_GROUP_PINS_SQL).await?,
+            create_group_invite: client.prepare(CREATE_GROUP_INVITE_SQL).await?,
+            delete_group_event: client.prepare(DELETE_GROUP_EVENT_SQL).await?,
+            create_group: client.prepare(CREATE_GROUP_SQL).await?,
+            delete_group: client.prepare(DELETE_GROUP_SQL).await?,
+            list_groups: client.prepare(LIST_GROUPS_SQL).await?,
+            accept_management: client.prepare(ACCEPT_MANAGEMENT_SQL).await?,
+            ban_pubkey: client.prepare(BAN_PUBKEY_SQL).await?,
+            unban_pubkey: client.prepare(UNBAN_PUBKEY_SQL).await?,
+            list_banned_pubkeys: client.prepare(LIST_BANNED_PUBKEYS_SQL).await?,
+            allow_pubkey_mutation: client.prepare(ALLOW_PUBKEY_MUTATION_SQL).await?,
+            unallow_pubkey: client.prepare(UNALLOW_PUBKEY_SQL).await?,
+            list_allowed_pubkeys: client.prepare(LIST_ALLOWED_PUBKEYS_SQL).await?,
+            allow_kind_mutation: client.prepare(ALLOW_KIND_MUTATION_SQL).await?,
+            disallow_kind: client.prepare(DISALLOW_KIND_SQL).await?,
+            list_allowed_kinds: client.prepare(LIST_ALLOWED_KINDS_SQL).await?,
         })
     }
 }

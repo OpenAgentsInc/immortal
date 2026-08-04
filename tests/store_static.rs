@@ -18,3 +18,16 @@ fn m2_migration_contains_the_required_store_contract() {
         assert!(sql.contains(required), "migration is missing {required:?}");
     }
 }
+
+#[test]
+fn m6_migration_contains_group_and_management_state() {
+    let sql = include_str!("../migrations/0002_nip_expansion.sql");
+    for required in [
+        "CREATE TABLE relay_group",
+        "CREATE TABLE relay_group_member",
+        "CREATE TABLE relay_group_invite",
+        "CREATE TABLE management_request",
+    ] {
+        assert!(sql.contains(required), "migration is missing {required:?}");
+    }
+}

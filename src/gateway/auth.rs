@@ -38,6 +38,14 @@ impl AuthState {
         !self.authenticated.is_empty()
     }
 
+    pub fn is_authenticated_as(&self, pubkey: &str) -> bool {
+        self.authenticated.contains(pubkey)
+    }
+
+    pub fn authenticated_pubkeys(&self) -> Vec<String> {
+        self.authenticated.iter().cloned().collect()
+    }
+
     pub fn authenticate(&mut self, event: &Event, now: u64) -> Result<(), String> {
         event
             .validate_structure()

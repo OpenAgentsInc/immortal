@@ -1,7 +1,7 @@
 # Conformance
 
 M4 makes the proof surface executable on a contributor machine. The repository
-carries pinned fixtures for every NIP implemented through M3, live contracts
+carries pinned fixtures for every implemented NIP, live contracts
 against a fresh Postgres database, an actual two-process chaos proof, and a
 repeatable release-mode load harness. `scripts/test-postgres.sh` runs the live
 proofs locally; GitHub workflows and GitHub-billed automation are prohibited
@@ -17,14 +17,22 @@ by `AGENTS.md`.
 | NIP-11 document fields, advertised limits, same-path HTTP, health, and required CORS headers | `nip11/document.json` plus gateway unit/live contracts |
 | NIP-40 admission and query-time expiration boundaries | `nip40/expiration.json` plus domain/live store contracts |
 | NIP-42 challenge, relay tag, timestamp, signature, connection authentication, refusal prefixes, and non-publication of kind 22242 | `nip42/auth.json` plus gateway unit/live contracts |
+| NIP-17 one-recipient gift-wrap validation and authenticated historical/live/count gating; kind-10050 relay lists | `nip17/routing.json`, expanded fixtures, and the live gateway contract |
+| NIP-29 group scoping, pre-store membership and supported-kind policy, moderation/join/leave state, relay-signed history and 39000–39005 metadata | `nip29/groups.json`, expanded fixtures, and the live gateway contract |
+| NIP-45 bounded exact COUNT, unique results across filters, and private-event gating | `nip45/count.json`, wire fixtures, and the live gateway contract |
+| NIP-50 bounded search parsing, ignored extensions, Postgres simple FTS, and result ranking | `nip50/search.json`, expanded fixtures, and the live gateway contract |
+| NIP-65 relay-list shape, normal replaceable storage, and indexed `r` tags | `nip65/relay-list.json`, expanded fixtures, and the store/gateway contracts |
+| NIP-70 same-connection protected publication and embedded-repost refusal | `nip70/protected.json`, expanded fixtures, and the live gateway contract |
+| NIP-86/NIP-98 method shapes, exact URL/method/payload authentication, owner authorization, replay prevention, policy methods, and group extensions | `nip86/management.json`, `nip98/http-auth.json`, unit/expanded fixtures, and the live HTTP/Postgres contract |
 | M2 migrations, hash drift, prepared admission/query paths, least privilege, policy branches, FTS, transactional NOTIFY, replacement/deletion concurrency, and ephemeral non-storage | `tests/store_static.rs` and `tests/store_postgres.rs` |
 | M3 indexed fanout by ID/author/kind/tag, broad lane, race-free EOSE, deduplication, queue overflow, query cancellation, limits, rates, frame bounds, and graceful shutdown | gateway unit tests and `tests/gateway_postgres.rs` |
 | M4 two binaries/one Postgres, cross-delivery, bounded sequence-gap recovery, kill-one survival, and fail-closed unbounded gap | `tests/multiprocess_postgres.rs` |
 | M4 events/sec, WebSocket connect p99, and REQ-to-EOSE p99 | `tests/load_postgres.rs` and [`load-report.md`](load-report.md) |
+| M6 migration, physical expiration sweep, group state, and management replay state | `tests/store_static.rs`, `tests/store_postgres.rs`, and `tests/gateway_postgres.rs` |
 
 ## Running locally
 
-The complete M1–M5 manual gate is:
+The complete M1–M6 manual gate is:
 
 ```sh
 ./scripts/test-conformance.sh

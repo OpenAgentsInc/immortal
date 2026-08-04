@@ -22,6 +22,7 @@ pub enum DomainError {
         created_at: u64,
         latest_allowed: u64,
     },
+    InvalidEvent(String),
     InvalidFilter(String),
     InvalidReplacementAddress(String),
     ReplacementAddressMismatch,
@@ -60,6 +61,7 @@ impl fmt::Display for DomainError {
                 f,
                 "event timestamp {created_at} is later than allowed maximum {latest_allowed}"
             ),
+            Self::InvalidEvent(reason) => write!(f, "invalid event: {reason}"),
             Self::InvalidFilter(reason) => write!(f, "invalid NIP-01 filter: {reason}"),
             Self::InvalidReplacementAddress(value) => {
                 write!(f, "invalid replacement address: {value:?}")

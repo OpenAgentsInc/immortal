@@ -17,6 +17,7 @@ use std::{
     },
 };
 
+use serde_json::{Value, json};
 use tokio::{
     sync::{mpsc, watch},
     task::JoinHandle,
@@ -24,8 +25,8 @@ use tokio::{
 use tokio_postgres::{AsyncMessage, Client, NoTls, Row, types::ToSql};
 
 use crate::domain::{
-    DeletionRequest, DeletionTombstone, Event, EventClass, Filter, ReplacementDecision,
-    compare_replacement_order,
+    DeletionRequest, DeletionTombstone, Event, EventClass, Filter, GroupAction, GroupMetadata,
+    RelaySigner, ReplacementDecision, Tag, compare_replacement_order, search_terms,
 };
 
 pub use error::StoreError;
@@ -75,6 +76,58 @@ pub enum AdmissionRejection {
     AuthEvent,
     Deleted,
     Superseded,
+    GroupNotFound,
+    GroupUnauthorized,
+    GroupClosed,
+    GroupAlreadyMember,
+    GroupUnsupportedKind,
+    GroupPreviousUnknown,
+    GroupSigningUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagementRequest {
+    BanPubkey {
+        pubkey: String,
+        reason: String,
+    },
+    UnbanPubkey {
+        pubkey: String,
+    },
+    ListBannedPubkeys,
+    AllowPubkey {
+        pubkey: String,
+        reason: String,
+    },
+    UnallowPubkey {
+        pubkey: String,
+    },
+    ListAllowedPubkeys,
+    AllowKind {
+        kind: u16,
+    },
+    DisallowKind {
+        kind: u16,
+    },
+    ListAllowedKinds,
+    CreateGroup {
+        id: String,
+        metadata: GroupMetadata,
+        admin_pubkey: String,
+    },
+    DeleteGroup {
+        id: String,
+    },
+    ListGroups,
+    PutGroupUser {
+        id: String,
+        pubkey: String,
+        roles: Vec<String>,
+    },
+    RemoveGroupUser {
+        id: String,
+        pubkey: String,
+    },
 }
 
 /// The operator-owned limits that the gateway advertises in NIP-11.
@@ -164,6 +217,15 @@ impl Store {
     /// Validate and atomically admit one event. A `Stored` result is returned
     /// only after the transaction, including its `NOTIFY`, has committed.
     pub async fn admit(&mut self, event: &Event, now: u64) -> Result<AdmissionOutcome, StoreError> {
+        self.admit_with_signer(event, now, None).await
+    }
+
+    pub async fn admit_with_signer(
+        &mut self,
+        event: &Event,
+        now: u64,
+        relay_signer: Option<&RelaySigner>,
+    ) -> Result<AdmissionOutcome, StoreError> {
         self.ensure_current()?;
         event.validate_structure()?;
         event.validate_crypto()?;
@@ -188,6 +250,7 @@ impl Store {
         } else {
             None
         };
+        let group_action = GroupAction::from_event(event)?;
         let lock_keys = admission_lock_keys(event, replacement.as_ref(), deletion.as_ref());
         let statements = self.statements.clone();
         let transaction = self.client.transaction().await?;
@@ -301,6 +364,121 @@ impl Store {
             transaction
                 .query_one(&statements.advisory_lock, &[&lock_key])
                 .await?;
+        }
+
+        let group_id = event.group_id();
+        if (39_000..=39_005).contains(&event.kind)
+            && relay_signer.is_none_or(|signer| signer.pubkey() != event.pubkey)
+        {
+            transaction.commit().await?;
+            return Ok(AdmissionOutcome::Rejected(
+                AdmissionRejection::GroupUnauthorized,
+            ));
+        }
+        if let Some(group_id) = group_id {
+            let group = load_group(&transaction, &statements, group_id).await?;
+            if !group_previous_references_are_current(
+                &transaction,
+                &statements,
+                event,
+                group_id,
+                now,
+            )
+            .await?
+            {
+                transaction.commit().await?;
+                return Ok(AdmissionOutcome::Rejected(
+                    AdmissionRejection::GroupPreviousUnknown,
+                ));
+            }
+            match &group_action {
+                Some(GroupAction::CreateGroup) => {
+                    if group.is_some()
+                        || relay_signer.is_none_or(|signer| signer.pubkey() != event.pubkey)
+                    {
+                        transaction.commit().await?;
+                        return Ok(AdmissionOutcome::Rejected(
+                            AdmissionRejection::GroupUnauthorized,
+                        ));
+                    }
+                }
+                _ if group.is_none() => {
+                    transaction.commit().await?;
+                    return Ok(AdmissionOutcome::Rejected(
+                        AdmissionRejection::GroupNotFound,
+                    ));
+                }
+                Some(GroupAction::Join { code }) => {
+                    if group_member(&transaction, &statements, group_id, &event.pubkey)
+                        .await?
+                        .is_some()
+                    {
+                        transaction.commit().await?;
+                        return Ok(AdmissionOutcome::Rejected(
+                            AdmissionRejection::GroupAlreadyMember,
+                        ));
+                    }
+                    if group.as_ref().is_some_and(|group| group.closed)
+                        && !valid_group_invite(&transaction, &statements, group_id, code.as_deref())
+                            .await?
+                    {
+                        transaction.commit().await?;
+                        return Ok(AdmissionOutcome::Rejected(AdmissionRejection::GroupClosed));
+                    }
+                }
+                Some(GroupAction::Leave) => {
+                    if group_member(&transaction, &statements, group_id, &event.pubkey)
+                        .await?
+                        .is_none()
+                    {
+                        transaction.commit().await?;
+                        return Ok(AdmissionOutcome::Rejected(
+                            AdmissionRejection::GroupUnauthorized,
+                        ));
+                    }
+                }
+                Some(_) => {
+                    let relay_author =
+                        relay_signer.is_some_and(|signer| signer.pubkey() == event.pubkey);
+                    let admin = group_member(&transaction, &statements, group_id, &event.pubkey)
+                        .await?
+                        .is_some_and(|roles| !roles.is_empty());
+                    if !relay_author && !admin {
+                        transaction.commit().await?;
+                        return Ok(AdmissionOutcome::Rejected(
+                            AdmissionRejection::GroupUnauthorized,
+                        ));
+                    }
+                }
+                None => {
+                    if group_member(&transaction, &statements, group_id, &event.pubkey)
+                        .await?
+                        .is_none()
+                    {
+                        transaction.commit().await?;
+                        return Ok(AdmissionOutcome::Rejected(
+                            AdmissionRejection::GroupUnauthorized,
+                        ));
+                    }
+                    if group.as_ref().is_some_and(|group| {
+                        group
+                            .supported_kinds
+                            .as_ref()
+                            .is_some_and(|kinds| !kinds.contains(&event.kind))
+                    }) {
+                        transaction.commit().await?;
+                        return Ok(AdmissionOutcome::Rejected(
+                            AdmissionRejection::GroupUnsupportedKind,
+                        ));
+                    }
+                }
+            }
+            if group_action.is_some() && relay_signer.is_none() {
+                transaction.commit().await?;
+                return Ok(AdmissionOutcome::Rejected(
+                    AdmissionRejection::GroupSigningUnavailable,
+                ));
+            }
         }
 
         // A conflicting process may have committed while this transaction
@@ -429,6 +607,39 @@ impl Store {
             apply_deletion(&transaction, &statements, &request).await?;
         }
 
+        if let (Some(group_id), Some(action)) = (group_id, group_action.as_ref()) {
+            apply_group_action(&transaction, &statements, group_id, &event.pubkey, action).await?;
+            if !matches!(action, GroupAction::DeleteGroup) {
+                if matches!(action, GroupAction::Join { .. } | GroupAction::Leave) {
+                    let signer = relay_signer.expect("group actions require a relay signer");
+                    let (kind, content) = if matches!(action, GroupAction::Join { .. }) {
+                        (9_000, "accepted group join")
+                    } else {
+                        (9_001, "accepted group leave")
+                    };
+                    let relay_action = signer.sign(
+                        now,
+                        kind,
+                        vec![
+                            Tag::new(vec!["h".into(), group_id.into()]),
+                            Tag::new(vec!["p".into(), event.pubkey.clone()]),
+                            Tag::new(vec!["e".into(), event.id.clone()]),
+                        ],
+                        content.into(),
+                    );
+                    insert_internal_regular_event(&transaction, &statements, &relay_action).await?;
+                }
+                generate_group_metadata(
+                    &transaction,
+                    &statements,
+                    relay_signer.expect("group actions require a relay signer"),
+                    group_id,
+                    now,
+                )
+                .await?;
+            }
+        }
+
         let payload = ingest_seq.to_string();
         transaction
             .query_one(&statements.notify, &[&payload])
@@ -521,7 +732,7 @@ impl Store {
         max_results: usize,
         through: i64,
     ) -> Result<Vec<StoredEvent>, StoreError> {
-        self.query_filter_inner(filter, now, max_results, through, None)
+        self.query_filter_inner(filter, now, max_results, through, None, None)
             .await
     }
 
@@ -535,8 +746,28 @@ impl Store {
         through: i64,
         cancel: watch::Receiver<bool>,
     ) -> Result<Vec<StoredEvent>, StoreError> {
-        self.query_filter_inner(filter, now, max_results, through, Some(cancel))
+        self.query_filter_inner(filter, now, max_results, through, Some(cancel), None)
             .await
+    }
+
+    pub async fn query_filter_for(
+        &self,
+        filter: &Filter,
+        now: u64,
+        max_results: usize,
+        through: i64,
+        cancel: watch::Receiver<bool>,
+        read_pubkeys: &[String],
+    ) -> Result<Vec<StoredEvent>, StoreError> {
+        self.query_filter_inner(
+            filter,
+            now,
+            max_results,
+            through,
+            Some(cancel),
+            Some(read_pubkeys),
+        )
+        .await
     }
 
     async fn query_filter_inner(
@@ -546,6 +777,7 @@ impl Store {
         max_results: usize,
         through: i64,
         mut cancel: Option<watch::Receiver<bool>>,
+        read_pubkeys: Option<&[String]>,
     ) -> Result<Vec<StoredEvent>, StoreError> {
         self.ensure_current()?;
         filter.validate()?;
@@ -575,8 +807,23 @@ impl Store {
             .collect::<BTreeMap<_, _>>();
         let tags_json = serde_json::to_string(&tag_map)
             .map_err(|error| StoreError::Serialization(error.to_string()))?;
+        let read_pubkeys = read_pubkeys.map(<[String]>::to_vec);
+        let search = filter
+            .search
+            .as_ref()
+            .map(|search| search_terms(search).join(" "));
         let params: &[&(dyn ToSql + Sync)] = &[
-            &ids, &authors, &kinds, &since, &until, &tags_json, &now, &limit, &through,
+            &ids,
+            &authors,
+            &kinds,
+            &since,
+            &until,
+            &tags_json,
+            &now,
+            &limit,
+            &through,
+            &read_pubkeys,
+            &search,
         ];
         let rows = if let Some(cancel) = &mut cancel {
             if *cancel.borrow() {
@@ -600,6 +847,271 @@ impl Store {
                 .await?
         };
         rows.into_iter().map(decode_event_row).collect()
+    }
+
+    pub async fn count_filters(
+        &self,
+        filters: &[Filter],
+        now: u64,
+        max_count: usize,
+        read_pubkeys: &[String],
+    ) -> Result<Option<usize>, StoreError> {
+        self.ensure_current()?;
+        let now = pg_i64(now, "now")?;
+        let scan_limit = pg_limit(max_count.saturating_add(1))?;
+        let read_pubkeys = (!read_pubkeys.is_empty()).then(|| read_pubkeys.to_vec());
+        let mut ids = BTreeSet::new();
+        for filter in filters {
+            filter.validate()?;
+            let filter_ids = filter.ids.clone();
+            let authors = filter.authors.clone();
+            let kinds = filter.kinds.as_ref().map(|values| {
+                values
+                    .iter()
+                    .map(|value| i32::from(*value))
+                    .collect::<Vec<_>>()
+            });
+            let since = filter
+                .since
+                .map(|value| pg_i64(value, "since"))
+                .transpose()?;
+            let until = filter
+                .until
+                .map(|value| pg_i64(value, "until"))
+                .transpose()?;
+            let tag_map = filter
+                .tags
+                .iter()
+                .map(|(key, values)| (key.to_string(), values))
+                .collect::<BTreeMap<_, _>>();
+            let tags_json = serde_json::to_string(&tag_map)
+                .map_err(|error| StoreError::Serialization(error.to_string()))?;
+            let search = filter
+                .search
+                .as_ref()
+                .map(|search| search_terms(search).join(" "));
+            let params: &[&(dyn ToSql + Sync)] = &[
+                &filter_ids,
+                &authors,
+                &kinds,
+                &since,
+                &until,
+                &tags_json,
+                &now,
+                &read_pubkeys,
+                &search,
+                &scan_limit,
+            ];
+            for row in self
+                .client
+                .query(&self.statements.query_filter_ids, params)
+                .await?
+            {
+                ids.insert(row.get::<_, String>(0));
+                if ids.len() > max_count {
+                    return Ok(None);
+                }
+            }
+        }
+        Ok(Some(ids.len()))
+    }
+
+    pub async fn delete_expired(&self, now: u64) -> Result<u64, StoreError> {
+        self.ensure_current()?;
+        let now = pg_i64(now, "now")?;
+        Ok(self
+            .client
+            .execute(&self.statements.delete_expired, &[&now])
+            .await?)
+    }
+
+    pub async fn manage(
+        &mut self,
+        authorization_id: &str,
+        authorization_pubkey: &str,
+        request: ManagementRequest,
+        now: u64,
+        relay_signer: Option<&RelaySigner>,
+    ) -> Result<Value, StoreError> {
+        self.ensure_current()?;
+        let statements = self.statements.clone();
+        let transaction = self.client.transaction().await?;
+        if transaction
+            .query_opt(
+                &statements.accept_management,
+                &[&authorization_id, &authorization_pubkey],
+            )
+            .await?
+            .is_none()
+        {
+            transaction.commit().await?;
+            return Err(StoreError::Management(
+                "authorization event was already used".into(),
+            ));
+        }
+
+        let result = match request {
+            ManagementRequest::BanPubkey { pubkey, reason } => {
+                transaction
+                    .execute(&statements.ban_pubkey, &[&pubkey, &reason])
+                    .await?;
+                json!(true)
+            }
+            ManagementRequest::UnbanPubkey { pubkey } => {
+                transaction
+                    .execute(&statements.unban_pubkey, &[&pubkey])
+                    .await?;
+                json!(true)
+            }
+            ManagementRequest::ListBannedPubkeys => json!(
+                transaction
+                    .query(&statements.list_banned_pubkeys, &[])
+                    .await?
+                    .into_iter()
+                    .map(|row| json!({
+                        "pubkey": row.get::<_, String>(0),
+                        "reason": row.get::<_, String>(1),
+                    }))
+                    .collect::<Vec<_>>()
+            ),
+            ManagementRequest::AllowPubkey { pubkey, reason } => {
+                transaction
+                    .execute(&statements.allow_pubkey_mutation, &[&pubkey, &reason])
+                    .await?;
+                json!(true)
+            }
+            ManagementRequest::UnallowPubkey { pubkey } => {
+                transaction
+                    .execute(&statements.unallow_pubkey, &[&pubkey])
+                    .await?;
+                json!(true)
+            }
+            ManagementRequest::ListAllowedPubkeys => json!(
+                transaction
+                    .query(&statements.list_allowed_pubkeys, &[])
+                    .await?
+                    .into_iter()
+                    .map(|row| json!({
+                        "pubkey": row.get::<_, String>(0),
+                        "reason": row.get::<_, String>(1),
+                    }))
+                    .collect::<Vec<_>>()
+            ),
+            ManagementRequest::AllowKind { kind } => {
+                let kind = i32::from(kind);
+                transaction
+                    .execute(&statements.allow_kind_mutation, &[&kind])
+                    .await?;
+                json!(true)
+            }
+            ManagementRequest::DisallowKind { kind } => {
+                let kind = i32::from(kind);
+                transaction
+                    .execute(&statements.disallow_kind, &[&kind])
+                    .await?;
+                json!(true)
+            }
+            ManagementRequest::ListAllowedKinds => json!(
+                transaction
+                    .query(&statements.list_allowed_kinds, &[])
+                    .await?
+                    .into_iter()
+                    .map(|row| row.get::<_, i32>(0))
+                    .collect::<Vec<_>>()
+            ),
+            ManagementRequest::CreateGroup {
+                id,
+                metadata,
+                admin_pubkey,
+            } => {
+                let signer = relay_signer.ok_or_else(|| {
+                    StoreError::Management("relay signing key is not configured".into())
+                })?;
+                let kinds = metadata.supported_kinds.as_ref().map(|kinds| {
+                    kinds
+                        .iter()
+                        .map(|kind| i32::from(*kind))
+                        .collect::<Vec<_>>()
+                });
+                transaction
+                    .query_one(&statements.advisory_lock, &[&format!("group:{id}")])
+                    .await?;
+                let inserted = transaction
+                    .execute(
+                        &statements.create_group,
+                        &[
+                            &id,
+                            &metadata.name,
+                            &metadata.about,
+                            &metadata.picture,
+                            &metadata.closed,
+                            &kinds,
+                        ],
+                    )
+                    .await?;
+                if inserted == 0 {
+                    return Err(StoreError::Management("group already exists".into()));
+                }
+                let roles = vec!["admin".to_owned()];
+                transaction
+                    .execute(&statements.put_group_member, &[&id, &admin_pubkey, &roles])
+                    .await?;
+                transaction.query_one(&statements.ingest_lock, &[]).await?;
+                generate_group_metadata(&transaction, &statements, signer, &id, now).await?;
+                json!(true)
+            }
+            ManagementRequest::DeleteGroup { id } => {
+                transaction
+                    .execute(&statements.delete_group, &[&id])
+                    .await?;
+                json!(true)
+            }
+            ManagementRequest::ListGroups => json!(
+                transaction
+                    .query(&statements.list_groups, &[])
+                    .await?
+                    .into_iter()
+                    .map(|row| json!({
+                        "id": row.get::<_, String>(0),
+                        "name": row.get::<_, String>(1),
+                        "about": row.get::<_, String>(2),
+                        "picture": row.get::<_, String>(3),
+                        "closed": row.get::<_, bool>(4),
+                        "supported_kinds": row.get::<_, Option<Vec<i32>>>(5),
+                    }))
+                    .collect::<Vec<_>>()
+            ),
+            ManagementRequest::PutGroupUser { id, pubkey, roles } => {
+                let signer = relay_signer.ok_or_else(|| {
+                    StoreError::Management("relay signing key is not configured".into())
+                })?;
+                if load_group(&transaction, &statements, &id).await?.is_none() {
+                    return Err(StoreError::Management("group does not exist".into()));
+                }
+                transaction
+                    .execute(&statements.put_group_member, &[&id, &pubkey, &roles])
+                    .await?;
+                transaction.query_one(&statements.ingest_lock, &[]).await?;
+                generate_group_metadata(&transaction, &statements, signer, &id, now).await?;
+                json!(true)
+            }
+            ManagementRequest::RemoveGroupUser { id, pubkey } => {
+                let signer = relay_signer.ok_or_else(|| {
+                    StoreError::Management("relay signing key is not configured".into())
+                })?;
+                if load_group(&transaction, &statements, &id).await?.is_none() {
+                    return Err(StoreError::Management("group does not exist".into()));
+                }
+                transaction
+                    .execute(&statements.remove_group_member, &[&id, &pubkey])
+                    .await?;
+                transaction.query_one(&statements.ingest_lock, &[]).await?;
+                generate_group_metadata(&transaction, &statements, signer, &id, now).await?;
+                json!(true)
+            }
+        };
+        transaction.commit().await?;
+        Ok(result)
     }
 }
 
@@ -739,7 +1251,416 @@ fn admission_lock_keys(
                 .map(|address| format!("address:{address}")),
         );
     }
+    if let Some(group_id) = event.group_id() {
+        keys.insert(format!("group:{group_id}"));
+    }
     keys
+}
+
+struct GroupRow {
+    name: String,
+    about: String,
+    picture: String,
+    closed: bool,
+    supported_kinds: Option<Vec<u16>>,
+    pins: Vec<Tag>,
+}
+
+async fn load_group(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    group_id: &str,
+) -> Result<Option<GroupRow>, StoreError> {
+    transaction
+        .query_opt(&statements.group, &[&group_id])
+        .await?
+        .map(|row| {
+            let supported_kinds = row
+                .get::<_, Option<Vec<i32>>>(4)
+                .map(|kinds| {
+                    kinds
+                        .into_iter()
+                        .map(|kind| {
+                            u16::try_from(kind).map_err(|_| {
+                                StoreError::CorruptRow(
+                                    "group has an out-of-range supported kind".into(),
+                                )
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?;
+            let pins = serde_json::from_str::<Vec<Tag>>(&row.get::<_, String>(5))
+                .map_err(|error| StoreError::CorruptRow(format!("invalid group pins: {error}")))?;
+            Ok(GroupRow {
+                name: row.get(0),
+                about: row.get(1),
+                picture: row.get(2),
+                closed: row.get(3),
+                supported_kinds,
+                pins,
+            })
+        })
+        .transpose()
+}
+
+async fn group_member(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    group_id: &str,
+    pubkey: &str,
+) -> Result<Option<Vec<String>>, StoreError> {
+    Ok(transaction
+        .query_opt(&statements.group_member, &[&group_id, &pubkey])
+        .await?
+        .map(|row| row.get(0)))
+}
+
+async fn valid_group_invite(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    group_id: &str,
+    code: Option<&str>,
+) -> Result<bool, StoreError> {
+    let Some(code) = code else {
+        return Ok(false);
+    };
+    Ok(transaction
+        .query_opt(&statements.group_invite, &[&group_id, &code])
+        .await?
+        .is_some())
+}
+
+async fn group_previous_references_are_current(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    event: &Event,
+    group_id: &str,
+    now: u64,
+) -> Result<bool, StoreError> {
+    let references = event
+        .tags
+        .iter()
+        .filter(|tag| tag.name() == Some("previous"))
+        .flat_map(|tag| tag.as_slice().iter().skip(1))
+        .collect::<Vec<_>>();
+    if references.is_empty() {
+        return Ok(true);
+    }
+    let now = pg_i64(now, "now")?;
+    let prefixes = transaction
+        .query(
+            &statements.group_recent_ids,
+            &[&group_id, &event.pubkey, &now],
+        )
+        .await?
+        .into_iter()
+        .map(|row| row.get::<_, String>(0)[..8].to_owned())
+        .collect::<BTreeSet<_>>();
+    Ok(references
+        .into_iter()
+        .all(|reference| prefixes.contains(reference)))
+}
+
+async fn apply_group_action(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    group_id: &str,
+    author: &str,
+    action: &GroupAction,
+) -> Result<(), StoreError> {
+    match action {
+        GroupAction::PutUser { pubkey, roles } => {
+            transaction
+                .execute(&statements.put_group_member, &[&group_id, &pubkey, &roles])
+                .await?;
+        }
+        GroupAction::RemoveUser { pubkey } => {
+            transaction
+                .execute(&statements.remove_group_member, &[&group_id, &pubkey])
+                .await?;
+        }
+        GroupAction::EditMetadata(metadata) => {
+            let supported_kinds = metadata.supported_kinds.as_ref().map(|kinds| {
+                kinds
+                    .iter()
+                    .map(|kind| i32::from(*kind))
+                    .collect::<Vec<_>>()
+            });
+            transaction
+                .execute(
+                    &statements.update_group_metadata,
+                    &[
+                        &group_id,
+                        &metadata.name,
+                        &metadata.about,
+                        &metadata.picture,
+                        &metadata.closed,
+                        &supported_kinds,
+                    ],
+                )
+                .await?;
+        }
+        GroupAction::DeleteEvent { event_id } => {
+            transaction
+                .execute(&statements.delete_group_event, &[&event_id, &group_id])
+                .await?;
+        }
+        GroupAction::CreateGroup => {
+            let empty = String::new();
+            let closed = false;
+            let supported: Option<Vec<i32>> = None;
+            transaction
+                .execute(
+                    &statements.create_group,
+                    &[&group_id, &empty, &empty, &empty, &closed, &supported],
+                )
+                .await?;
+            let roles = vec!["admin".to_owned()];
+            transaction
+                .execute(&statements.put_group_member, &[&group_id, &author, &roles])
+                .await?;
+        }
+        GroupAction::DeleteGroup => {
+            transaction
+                .execute(&statements.delete_group, &[&group_id])
+                .await?;
+        }
+        GroupAction::CreateInvite { code } => {
+            transaction
+                .execute(&statements.create_group_invite, &[&group_id, &code])
+                .await?;
+        }
+        GroupAction::UpdatePins { tags } => {
+            let pins = serde_json::to_string(tags)
+                .map_err(|error| StoreError::Serialization(error.to_string()))?;
+            transaction
+                .execute(&statements.update_group_pins, &[&group_id, &pins])
+                .await?;
+        }
+        GroupAction::Join { .. } => {
+            let roles: Vec<String> = Vec::new();
+            transaction
+                .execute(&statements.put_group_member, &[&group_id, &author, &roles])
+                .await?;
+        }
+        GroupAction::Leave => {
+            transaction
+                .execute(&statements.remove_group_member, &[&group_id, &author])
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn generate_group_metadata(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    signer: &RelaySigner,
+    group_id: &str,
+    now: u64,
+) -> Result<(), StoreError> {
+    let group = load_group(transaction, statements, group_id)
+        .await?
+        .ok_or_else(|| StoreError::CorruptRow("group disappeared during metadata update".into()))?;
+    let members = transaction
+        .query(&statements.group_members, &[&group_id])
+        .await?
+        .into_iter()
+        .map(|row| (row.get::<_, String>(0), row.get::<_, Vec<String>>(1)))
+        .collect::<Vec<_>>();
+
+    let mut metadata = vec![Tag::new(vec!["d".into(), group_id.into()])];
+    for (name, value) in [
+        ("name", group.name.as_str()),
+        ("about", group.about.as_str()),
+        ("picture", group.picture.as_str()),
+    ] {
+        if !value.is_empty() {
+            metadata.push(Tag::new(vec![name.into(), value.into()]));
+        }
+    }
+    metadata.push(Tag::new(vec!["restricted".into()]));
+    if group.closed {
+        metadata.push(Tag::new(vec!["closed".into()]));
+    }
+    if let Some(kinds) = &group.supported_kinds {
+        let mut tag = vec!["supported_kinds".into()];
+        tag.extend(kinds.iter().map(u16::to_string));
+        metadata.push(Tag::new(tag));
+    }
+
+    let mut admins = vec![Tag::new(vec!["d".into(), group_id.into()])];
+    for (pubkey, roles) in &members {
+        if !roles.is_empty() {
+            let mut tag = vec!["p".into(), pubkey.clone()];
+            tag.extend(roles.iter().cloned());
+            admins.push(Tag::new(tag));
+        }
+    }
+    let mut member_tags = vec![Tag::new(vec!["d".into(), group_id.into()])];
+    member_tags.extend(
+        members
+            .iter()
+            .map(|(pubkey, _)| Tag::new(vec!["p".into(), pubkey.clone()])),
+    );
+    let roles = vec![
+        Tag::new(vec!["d".into(), group_id.into()]),
+        Tag::new(vec![
+            "role".into(),
+            "admin".into(),
+            "full group moderation".into(),
+        ]),
+    ];
+    let participants = vec![Tag::new(vec!["d".into(), group_id.into()])];
+    let mut pins = vec![Tag::new(vec!["d".into(), group_id.into()])];
+    pins.extend(group.pins);
+
+    for (kind, tags, content) in [
+        (39_000, metadata, String::new()),
+        (39_001, admins, "group administrators".into()),
+        (39_002, member_tags, "group members".into()),
+        (39_003, roles, "relay-supported group roles".into()),
+        (39_004, participants, String::new()),
+        (39_005, pins, String::new()),
+    ] {
+        insert_group_metadata_event(
+            transaction,
+            statements,
+            signer,
+            group_id,
+            now,
+            kind,
+            tags,
+            content,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_group_metadata_event(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    signer: &RelaySigner,
+    group_id: &str,
+    now: u64,
+    kind: u16,
+    tags: Vec<Tag>,
+    content: String,
+) -> Result<(), StoreError> {
+    let kind_i32 = i32::from(kind);
+    let head_params: &[&(dyn ToSql + Sync)] = &[&kind_i32, &signer.pubkey(), &group_id];
+    let current = transaction.query_opt(&statements.head, head_params).await?;
+    let created_at = current
+        .as_ref()
+        .map(|row| row.get::<_, i64>(1))
+        .map(|timestamp| {
+            u64::try_from(timestamp)
+                .map_err(|_| StoreError::CorruptRow("negative metadata timestamp".into()))
+        })
+        .transpose()?
+        .map_or(now, |timestamp| now.max(timestamp.saturating_add(1)));
+    let event = signer.sign(created_at, kind, tags, content);
+    let created_at_i64 = pg_i64(created_at, "group metadata timestamp")?;
+    let tags_json = serde_json::to_string(&event.tags)
+        .map_err(|error| StoreError::Serialization(error.to_string()))?;
+    let identifier = Some(group_id);
+    let expires_at: Option<i64> = None;
+    let insert_params: &[&(dyn ToSql + Sync)] = &[
+        &event.id,
+        &event.pubkey,
+        &created_at_i64,
+        &kind_i32,
+        &tags_json,
+        &event.content,
+        &event.sig,
+        &identifier,
+        &expires_at,
+    ];
+    let Some(row) = transaction
+        .query_opt(&statements.insert_event, insert_params)
+        .await?
+    else {
+        return Ok(());
+    };
+    let ingest_seq = row.get::<_, i64>(0);
+    for (tag_name, tag_value) in event.indexed_tags() {
+        let tag_name = tag_name.to_string();
+        transaction
+            .execute(
+                &statements.insert_tag,
+                &[&event.id, &tag_name, &tag_value, &created_at_i64],
+            )
+            .await?;
+    }
+    transaction
+        .execute(
+            &statements.upsert_head,
+            &[
+                &kind_i32,
+                &event.pubkey,
+                &group_id,
+                &event.id,
+                &created_at_i64,
+            ],
+        )
+        .await?;
+    if let Some(row) = current {
+        let old_id = row.get::<_, String>(0);
+        transaction
+            .execute(&statements.delete_event, &[&old_id])
+            .await?;
+    }
+    transaction
+        .query_one(&statements.notify, &[&ingest_seq.to_string()])
+        .await?;
+    Ok(())
+}
+
+async fn insert_internal_regular_event(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    event: &Event,
+) -> Result<(), StoreError> {
+    let created_at = pg_i64(event.created_at, "internal event timestamp")?;
+    let kind = i32::from(event.kind);
+    let tags_json = serde_json::to_string(&event.tags)
+        .map_err(|error| StoreError::Serialization(error.to_string()))?;
+    let identifier: Option<&str> = None;
+    let expires_at: Option<i64> = None;
+    let insert_params: &[&(dyn ToSql + Sync)] = &[
+        &event.id,
+        &event.pubkey,
+        &created_at,
+        &kind,
+        &tags_json,
+        &event.content,
+        &event.sig,
+        &identifier,
+        &expires_at,
+    ];
+    let Some(row) = transaction
+        .query_opt(&statements.insert_event, insert_params)
+        .await?
+    else {
+        return Ok(());
+    };
+    let ingest_seq = row.get::<_, i64>(0);
+    for (tag_name, tag_value) in event.indexed_tags() {
+        let tag_name = tag_name.to_string();
+        transaction
+            .execute(
+                &statements.insert_tag,
+                &[&event.id, &tag_name, &tag_value, &created_at],
+            )
+            .await?;
+    }
+    transaction
+        .query_one(&statements.notify, &[&ingest_seq.to_string()])
+        .await?;
+    Ok(())
 }
 
 async fn notify_ephemeral(

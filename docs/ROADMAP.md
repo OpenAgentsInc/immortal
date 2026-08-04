@@ -80,28 +80,28 @@ The WebSocket protocol server.
 - [x] Runbooks final (`docs/deployment/`): Debian VPS, DigitalOcean,
       Google Cloud
 
-## M6 — NIP expansion
+## M6 — NIP expansion (done)
 
 In order, each with fixtures before the next starts. The order puts the
 items a production deployment depends on first, so M9 becomes reachable
 as early as possible.
 
-- [ ] NIP-40 expiration sweep (scheduled delete + query-time exclusion)
-- [ ] NIP-70 protected events (with NIP-42 state)
-- [ ] NIP-17 private-message delivery gating: store gift wraps
+- [x] NIP-40 expiration sweep (scheduled delete + query-time exclusion)
+- [x] NIP-70 protected events (with NIP-42 state)
+- [x] NIP-17 private-message delivery gating: store gift wraps
       (kind 1059) but serve each only to its `p`-tagged recipient;
       honor kind 10050 relay lists
-- [ ] NIP-29 relay-managed groups: `h`-tag scoping, membership
+- [x] NIP-29 relay-managed groups: `h`-tag scoping, membership
       enforced before store, moderation kinds 9000–9010, join 9021 and
       leave 9022, relay-signed group metadata 39000–39005
-- [ ] NIP-86 relay management API (HTTP, NIP-98-authenticated) for
+- [x] NIP-86 relay management API (HTTP, NIP-98-authenticated) for
       policy and group administration without direct SQL
-- [ ] NIP-45 COUNT (bounded)
-- [ ] NIP-50 search (the FTS column from M2)
-- [ ] NIP-65 relay-list handling notes
-- [ ] Watch: NIP-77 (negentropy sync), NIP-91 (AND filters — implement
+- [x] NIP-45 COUNT (bounded)
+- [x] NIP-50 search (the FTS column from M2)
+- [x] NIP-65 relay-list handling notes
+- [x] Watch: NIP-77 (negentropy sync), NIP-91 (AND filters — implement
       when stable upstream)
-- [ ] `nips/block/` and `nips/openagents/` lanes: per-NIP owner decision,
+- [x] `nips/block/` and `nips/openagents/` lanes: per-NIP owner decision,
       official lane wins on identifier conflict
 
 ## M7 — Media
