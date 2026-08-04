@@ -2,10 +2,11 @@
 
 Two paths:
 
-- **Path A — Cloud Run + Cloud SQL.** The relay process is stateless (all
-  state in Postgres; `LISTEN/NOTIFY` + `ingest_seq` make multiple relay
+- **Path A — Cloud Run + Cloud SQL.** With M7 media disabled, the relay
+  process is stateless (`LISTEN/NOTIFY` + `ingest_seq` make multiple relay
   processes safe), so it fits Cloud Run. Read the WebSocket notes; they
-  matter.
+  matter. Do not set `IMMORTAL_MEDIA_ROOT` on Cloud Run's ephemeral ordinary
+  filesystem.
 - **Path B — GCE VM.** A Debian VM that mirrors the Debian runbook.
   Simplest mental model, fewest platform behaviors to learn.
 
@@ -31,6 +32,11 @@ target, avoids an unproved musl variant, and carries the CA store needed by a
 future owner-approved Postgres-TLS build without changing the image shape.
 No database client, shell command, migration tool, or sidecar starts with the
 container.
+
+This path deliberately leaves M7 disabled. The container image can serve
+media only when an operator supplies a persistent writable mount satisfying
+`docs/protocol/media.md`; the ordinary Cloud Run filesystem does not. Path B
+uses the canonical filesystem deployment.
 
 ### A.2 Artifact Registry
 

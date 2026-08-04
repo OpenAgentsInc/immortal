@@ -5,12 +5,13 @@ mod config;
 mod db;
 mod error;
 mod management;
+mod media;
 mod rate;
 mod server;
 mod socket;
 mod subscription;
 mod wire;
 
-pub use config::{GatewayConfig, GatewayLimits, RelayIdentity};
+pub use config::{GatewayConfig, GatewayLimits, MediaConfig, RelayIdentity};
 pub use error::GatewayError;
 pub use server::{Gateway, ShutdownHandle};

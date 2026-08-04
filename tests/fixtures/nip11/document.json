@@ -4,7 +4,7 @@
   "description": "fixture description",
   "contact": "mailto:operator@example.com",
   "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "supported_nips": [1, 9, 11, 40, 45, 50, 65, 17, 42, 70],
+  "supported_nips": [1, 9, 11, 40, 45, 50, 65, 94, 17, 42, 70],
   "max_message_length": 4096,
   "max_subscriptions": 4,
   "max_limit": 20,

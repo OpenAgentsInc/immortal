@@ -1,5 +1,5 @@
 [Unit]
-Description=Nightly Immortal PostgreSQL logical backup
+Description=Nightly Immortal PostgreSQL and media backup
 
 [Timer]
 OnCalendar=*-*-* 03:30:00 UTC

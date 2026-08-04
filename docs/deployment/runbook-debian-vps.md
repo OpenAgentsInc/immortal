@@ -3,7 +3,9 @@
 This is the canonical Immortal deployment: Debian 13 (`trixie`), Postgres 17
 from apt, one `immortal` binary under systemd, and Caddy or nginx terminating
 public TLS. It applies to a physical server or any VPS provider. All durable
-state stays in the one Postgres database.
+event/control state stays in the one Postgres database; M7's content-addressed
+media bytes stay under `/var/lib/immortal/media` and their visibility remains
+Postgres-owned.
 
 The committed files under `deploy/` are the source of truth for service,
 proxy, environment, and backup configuration. Do not maintain private copies
@@ -127,10 +129,11 @@ sudo systemd-analyze security --no-pager immortal.service
 journalctl -u immortal.service -n 20 --no-pager
 ```
 
-The canonical unit permits only localhost networking and port 8080, denies
-filesystem writes, removes capabilities, restricts namespaces and system
-calls, and stops within 15 seconds. Change the socket restrictions only if
-you also change the documented single-box topology.
+The canonical unit permits only localhost networking and port 8080, permits
+writes only to its private `/var/lib/immortal` state directory, removes
+capabilities, restricts namespaces and system calls, and stops within 15
+seconds. Change the socket or filesystem restrictions only if you also change
+the documented single-box topology.
 
 ## 6. Put a TLS reverse proxy in front
 
@@ -179,9 +182,9 @@ and query it back.
 
 ## 7. Install and prove nightly backups
 
-The backup service creates a private, atomic custom-format `pg_dump` every
-night, retains 14 days locally, and catches up after downtime. Install the
-committed artifacts:
+The backup service creates a private, atomic custom-format `pg_dump` plus a
+media tar archive when M7 is enabled, retains 14 days locally, and catches up
+after downtime. Install the committed artifacts:
 
 ```sh
 sudo install -d -o postgres -g postgres -m 0700 /var/backups/immortal
@@ -204,6 +207,13 @@ sudo ls -l /var/backups/immortal/
 Copy backups off the server on an operator-controlled schedule. A dump on the
 same disk is a restore point, not a disaster-recovery backup.
 
+The timer runs online, so its database dump and media tar are individually
+atomic but not one cross-store snapshot. Content addressing makes extra files
+harmless, but a delete racing the pair could remove a file named by the dump.
+For a guaranteed paired restore point, stop `immortal.service`, start the
+backup service, copy both files with the same timestamp off-host, then restart
+the relay. Upgrades use this cold sequence below.
+
 Test the newest dump immediately:
 
 ```sh
@@ -215,6 +225,10 @@ sudo -u postgres psql --dbname=immortal_restore_test \
   --command='SELECT count(*) FROM nostr_event;'
 sudo -u postgres psql --dbname=immortal_restore_test \
   --command='SELECT version, name, sha256 FROM schema_migrations ORDER BY version;'
+sudo -u postgres psql --dbname=immortal_restore_test \
+  --command='SELECT count(*) FROM media_blob WHERE ready;'
+sudo tar --list --file=/var/backups/immortal/immortal-media-<TIMESTAMP>.tar \
+  >/dev/null
 sudo -u postgres dropdb immortal_restore_test
 ```
 
@@ -231,6 +245,12 @@ sudo -u postgres psql --dbname=postgres \
 sudo -u postgres createdb --owner=immortal immortal
 sudo -u postgres pg_restore --role=immortal --dbname=immortal \
   /var/backups/immortal/immortal-<TIMESTAMP>.dump
+sudo install -d -o immortal -g immortal -m 0750 /var/lib/immortal/media
+sudo tar --extract \
+  --file=/var/backups/immortal/immortal-media-<TIMESTAMP>.tar \
+  --directory=/var/lib/immortal/media
+sudo chown -R immortal:immortal /var/lib/immortal/media
+sudo chmod -R u=rwX,g=rX,o= /var/lib/immortal/media
 sudo systemctl start immortal.service
 curl -fsS http://127.0.0.1:8080/health
 journalctl -u immortal.service -n 30 --no-pager
@@ -247,9 +267,10 @@ one Postgres; it does not add a product service.
 
 ## 8. Upgrade
 
-Take and verify a fresh backup before changing the binary:
+Take and verify a cold paired backup before changing the binary:
 
 ```sh
+sudo systemctl stop immortal.service
 sudo systemctl start immortal-backup.service
 sudo systemctl status immortal-backup.service --no-pager
 sudo -u postgres psql --dbname=immortal \

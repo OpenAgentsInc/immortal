@@ -34,6 +34,7 @@ use super::{
     auth::{AuthState, make_challenge, read_process_secret},
     db::DbPool,
     management::{is_management_request, serve_management},
+    media::{MediaStorage, is_media_request, serve_media},
     rate::{ConnectionPermit, RateLimiter},
     socket::{
         ServerWebSocket, effective_ip, is_websocket_upgrade, read_http_head, serve_http,
@@ -76,6 +77,7 @@ struct ServerState {
     nip11: Arc<str>,
     current: Arc<AtomicBool>,
     shutdown: watch::Sender<bool>,
+    media: Option<MediaStorage>,
 }
 
 struct ConnectionContext {
@@ -94,6 +96,10 @@ impl Gateway {
     /// workers and notification state, and only then bind the network socket.
     pub async fn start(config: GatewayConfig) -> Result<Self, GatewayError> {
         config.validate()?;
+        let media = match &config.media {
+            Some(media) => Some(MediaStorage::prepare(media).await?),
+            None => None,
+        };
         let challenge_secret = read_process_secret()?;
         let (migration_store, _) = Store::connect_with_report(&config.database_url).await?;
         let policy = migration_store.relay_policy().await?;
@@ -268,6 +274,7 @@ impl Gateway {
             nip11,
             current,
             shutdown: shutdown.clone(),
+            media,
         });
         Ok(Self {
             listener,
@@ -364,7 +371,26 @@ async fn handle_socket(
     state: Arc<ServerState>,
 ) -> Result<(), GatewayError> {
     let (request_bytes, head) = read_http_head(&mut stream).await?;
+    let ip = effective_ip(&head, peer.ip(), state.config.trust_proxy);
+    let Some(connection_permit) = state.rate.connect(ip) else {
+        return Ok(());
+    };
     if !is_websocket_upgrade(&head) {
+        let _connection_permit = connection_permit;
+        if is_media_request(&head) {
+            if let Some(media) = &state.media {
+                return serve_media(
+                    stream,
+                    &head,
+                    &state.config,
+                    media,
+                    &state.db,
+                    &state.rate,
+                    ip,
+                )
+                .await;
+            }
+        }
         if is_management_request(&head) {
             return serve_management(stream, &head, &state.config, &state.db).await;
         }
@@ -376,10 +402,6 @@ async fn handle_socket(
         )
         .await;
     }
-    let ip = effective_ip(&head, peer.ip(), state.config.trust_proxy);
-    let Some(connection_permit) = state.rate.connect(ip) else {
-        return Ok(());
-    };
     let websocket =
         websocket_handshake(stream, request_bytes, state.config.limits.max_frame_bytes).await?;
     handle_websocket(websocket, ip, connection_permit, state).await

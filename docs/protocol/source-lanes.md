@@ -14,3 +14,12 @@ The source files remain pinned protocol inputs, not claims of runtime support.
 A future adoption decision must name the exact lane and identifier, add a
 fixture, and update NIP-11 only after the implementation passes the local
 conformance gate.
+
+## M7 decision
+
+The official lane's pinned NIP-B7, NIP-94, and NIP-98 drive M7. NIP-B7 points
+outside the NIP repository for the Blossom HTTP contract, so the reviewed
+external input is recorded separately in `media.md` at an exact commit. The
+roadmap's NIP-98 choice wins over current Blossom BUD-11 kind-24242
+authorization. Block and OpenAgents specifications remain parked; M7 creates
+no identifier-precedence exception.

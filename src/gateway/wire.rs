@@ -217,7 +217,7 @@ pub struct Nip11Limitation {
 }
 
 pub fn nip11_json(config: &GatewayConfig, policy: &RelayPolicy) -> String {
-    let mut supported_nips = vec![1, 9, 11, 40, 45, 50, 65];
+    let mut supported_nips = vec![1, 9, 11, 40, 45, 50, 65, 94];
     if config.relay_url.is_some() {
         supported_nips.extend([17, 42, 70]);
     }
@@ -225,7 +225,10 @@ pub fn nip11_json(config: &GatewayConfig, policy: &RelayPolicy) -> String {
         supported_nips.push(29);
     }
     if config.management_pubkey.is_some() {
-        supported_nips.extend([86, 98]);
+        supported_nips.push(86);
+    }
+    if config.management_pubkey.is_some() || config.media.is_some() {
+        supported_nips.push(98);
     }
     let document = Nip11Document {
         name: &config.identity.name,

@@ -22,6 +22,8 @@ struct State {
     event_ip: HashMap<IpAddr, Counter>,
     event_pubkey: HashMap<String, Counter>,
     req_ip: HashMap<IpAddr, Counter>,
+    media_ip: HashMap<IpAddr, Counter>,
+    media_pubkey: HashMap<String, Counter>,
     last_cleanup: Instant,
 }
 
@@ -43,6 +45,8 @@ impl RateLimiter {
                 event_ip: HashMap::new(),
                 event_pubkey: HashMap::new(),
                 req_ip: HashMap::new(),
+                media_ip: HashMap::new(),
+                media_pubkey: HashMap::new(),
                 last_cleanup: Instant::now(),
             })),
             limits,
@@ -89,6 +93,26 @@ impl RateLimiter {
         state.cleanup();
         allow_ip(&mut state.req_ip, ip, self.limits.req_per_minute_ip)
     }
+
+    pub fn media_from_ip(&self, ip: IpAddr) -> bool {
+        let Ok(mut state) = self.inner.lock() else {
+            return false;
+        };
+        state.cleanup();
+        allow_ip(&mut state.media_ip, ip, self.limits.media_per_minute_ip)
+    }
+
+    pub fn media_from_pubkey(&self, pubkey: &str) -> bool {
+        let Ok(mut state) = self.inner.lock() else {
+            return false;
+        };
+        state.cleanup();
+        allow_string(
+            &mut state.media_pubkey,
+            pubkey,
+            self.limits.media_per_minute_pubkey,
+        )
+    }
 }
 
 impl Drop for ConnectionPermit {
@@ -131,6 +155,10 @@ impl State {
             .retain(|_, counter| now.duration_since(counter.started) < WINDOW);
         self.req_ip
             .retain(|_, counter| now.duration_since(counter.started) < WINDOW);
+        self.media_ip
+            .retain(|_, counter| now.duration_since(counter.started) < WINDOW);
+        self.media_pubkey
+            .retain(|_, counter| now.duration_since(counter.started) < WINDOW);
         self.last_cleanup = now;
     }
 }
@@ -168,6 +196,8 @@ mod tests {
             events_per_minute_ip: 1,
             events_per_minute_pubkey: 1,
             req_per_minute_ip: 1,
+            media_per_minute_ip: 1,
+            media_per_minute_pubkey: 1,
             ..GatewayLimits::default()
         };
         let limiter = RateLimiter::new(limits);
@@ -182,5 +212,9 @@ mod tests {
         assert!(!limiter.event_from_pubkey("a"));
         assert!(limiter.req_from_ip(ip));
         assert!(!limiter.req_from_ip(ip));
+        assert!(limiter.media_from_ip(ip));
+        assert!(!limiter.media_from_ip(ip));
+        assert!(limiter.media_from_pubkey("a"));
+        assert!(!limiter.media_from_pubkey("a"));
     }
 }

@@ -35,6 +35,7 @@ runuser -u postgres -- createdb --owner=immortal immortal
 cargo build --locked --release
 
 useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin immortal
+usermod --append --groups immortal postgres
 install -d -o root -g root -m 0755 /opt/immortal/releases/acceptance
 install -o root -g root -m 0755 target/release/immortal \
     /opt/immortal/releases/acceptance/immortal
@@ -43,6 +44,7 @@ install -d -o root -g immortal -m 0750 /etc/immortal
 install -o root -g immortal -m 0640 deploy/immortal.env.example \
     /etc/immortal/immortal.env
 install -d -o postgres -g postgres -m 0700 /var/backups/immortal
+install -d -o immortal -g immortal -m 0750 /var/lib/immortal/media
 install -o root -g root -m 0755 deploy/backup/immortal-backup \
     /usr/local/sbin/immortal-backup
 install -o root -g root -m 0644 deploy/systemd/immortal.service \
@@ -70,6 +72,7 @@ trap cleanup EXIT HUP INT TERM
 DATABASE_URL='postgres://immortal:immortal_acceptance_only@127.0.0.1:5432/immortal' \
 IMMORTAL_PORT=18080 \
 IMMORTAL_RELAY_URL=ws://127.0.0.1:18080 \
+IMMORTAL_MEDIA_ROOT=/var/lib/immortal/media \
     ./target/release/immortal >"${relay_log}" 2>&1 &
 relay_pid=$!
 
@@ -92,7 +95,10 @@ relay_pid=
 
 runuser -u postgres -- /usr/local/sbin/immortal-backup
 backup="$(find /var/backups/immortal -type f -name 'immortal-*.dump' -print -quit)"
+media_backup="$(find /var/backups/immortal -type f -name 'immortal-media-*.tar' -print -quit)"
 test -n "${backup}"
+test -n "${media_backup}"
+tar --list --file="${media_backup}" >/dev/null
 runuser -u postgres -- createdb immortal_restore_test
 runuser -u postgres -- pg_restore --dbname=immortal_restore_test "${backup}"
 test "$(runuser -u postgres -- psql --tuples-only --no-align \

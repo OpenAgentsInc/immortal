@@ -69,6 +69,22 @@ Platform + Managed Postgres unsupported for the current binary.
 | `IMMORTAL_RELAY_SECRET_KEY` | for NIP-29 | — | Relay's 32-byte secret as 64 lowercase hexadecimal characters. Enables relay-managed groups and signed group history/metadata. The derived public key becomes the NIP-11 relay pubkey; if `IMMORTAL_RELAY_PUBKEY` is also set, it must match. This is a secret and belongs only in the protected runtime environment. |
 | `IMMORTAL_MANAGEMENT_PUBKEY` | for NIP-86 | — | Exact 32-byte owner public key as 64 lowercase hexadecimal characters. Enables the NIP-98-authenticated management endpoint. `IMMORTAL_RELAY_URL` is required so HTTP authorization can bind the public URL. |
 
+### Media
+
+| Variable | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `IMMORTAL_MEDIA_ROOT` | to enable M7 | — | Writable persistent directory for content-addressed Blossom bytes. Enabling it requires `IMMORTAL_RELAY_URL`. The committed Debian environment uses `/var/lib/immortal/media`. |
+| `IMMORTAL_MEDIA_CLOUD_BASE_URL` | no | — | Enables the mounted-cloud adapter. Bytes are still atomically written through `IMMORTAL_MEDIA_ROOT`; reads redirect beneath this base using the immutable storage key and SHA-256. The mount and public URL must obey `docs/protocol/media.md`. |
+| `IMMORTAL_MEDIA_MAX_BLOB_BYTES` | no | `10485760` | Maximum upload body, 1,024–1,073,741,824 bytes. Enforced from `Content-Length` before streaming. |
+| `IMMORTAL_MEDIA_MAX_BYTES_PER_PUBKEY` | no | `1073741824` | Maximum owned bytes per authenticated pubkey, at least the blob limit and at most 1 TiB. Shared blobs count toward each owner. |
+
+Media is disabled when `IMMORTAL_MEDIA_ROOT` is absent. The filesystem is the
+default backend. Container deployments must bind-mount it persistently; do not
+enable it on an ephemeral container filesystem. Upload and delete use one-use
+NIP-98 events, while content-addressed GET and HEAD are public. The exact M7
+surface and the deliberate Blossom BUD-11 authentication difference are in
+`docs/protocol/media.md`.
+
 NIP-17/NIP-70 delivery and publication checks are enabled when
 `IMMORTAL_RELAY_URL` creates per-connection NIP-42 state. NIP-45 COUNT,
 NIP-50 search, and NIP-65 relay-list storage need no extra variable. The full
@@ -90,6 +106,8 @@ has no certificate configuration.
 | `IMMORTAL_RATE_EVENTS_PER_MIN_IP` | no | `120` | `EVENT` messages accepted per minute per client IP. |
 | `IMMORTAL_RATE_EVENTS_PER_MIN_PUBKEY` | no | `60` | `EVENT` messages accepted per minute per author pubkey. |
 | `IMMORTAL_RATE_REQ_PER_MIN_IP` | no | `120` | `REQ` messages per minute per client IP. |
+| `IMMORTAL_RATE_MEDIA_PER_MIN_IP` | no | `30` | Combined media uploads and deletes per minute per client IP. |
+| `IMMORTAL_RATE_MEDIA_PER_MIN_PUBKEY` | no | `15` | Combined media uploads and deletes per minute per authenticated pubkey. |
 | `IMMORTAL_MAX_CONNECTIONS_PER_IP` | no | `20` | Concurrent WebSocket connections per client IP (1–4,096). |
 | `IMMORTAL_SEND_QUEUE_CAPACITY` | no | `256` | Maximum queued outbound messages per connection (8–65,536). Historical result batches and per-subscription EOSE buffers are each capped below half this value so their handoff remains bounded. A slow connection that fills the queue is closed. |
 
@@ -138,6 +156,9 @@ IMMORTAL_PORT=8080
 IMMORTAL_RELAY_URL=wss://relay.example.com
 IMMORTAL_TRUST_PROXY=true
 IMMORTAL_EXPIRATION_SWEEP_SECONDS=60
+IMMORTAL_MEDIA_ROOT=/var/lib/immortal/media
+IMMORTAL_MEDIA_MAX_BLOB_BYTES=10485760
+IMMORTAL_MEDIA_MAX_BYTES_PER_PUBKEY=1073741824
 IMMORTAL_LOG_LEVEL=info
 ```
 
@@ -152,5 +173,5 @@ IMMORTAL_MANAGEMENT_PUBKEY=<64-lowercase-hex-public-key>
 
 ## Status note
 
-The M1–M6 executable relay implements this contract. If implementation must
+The M1–M7 executable relay implements this contract. If implementation must
 diverge, change this file in the same commit.

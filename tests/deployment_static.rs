@@ -24,6 +24,8 @@ fn systemd_unit_is_fail_closed_and_sandboxed() {
         "IPAddressDeny=any",
         "IPAddressAllow=localhost",
         "SocketBindAllow=tcp:8080",
+        "StateDirectory=immortal",
+        "ReadWritePaths=/var/lib/immortal",
         "NoNewPrivileges=true",
         "ProtectSystem=strict",
         "ProtectHome=true",
@@ -49,6 +51,8 @@ fn proxy_templates_preserve_websocket_and_client_ip_contracts() {
         "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for",
         "proxy_set_header X-Real-IP $remote_addr",
         "proxy_buffering off",
+        "client_max_body_size 10m",
+        "proxy_request_buffering off",
     ] {
         assert!(NGINX.contains(required), "missing {required}");
     }
@@ -61,12 +65,16 @@ fn backup_is_private_atomic_retained_and_scheduled() {
         "pg_dump --dbname=immortal --format=custom",
         "--file=\"${temporary}\"",
         "mv -- \"${temporary}\" \"${destination}\"",
+        "tar --create --file=\"${media_temporary}\"",
+        "mv -- \"${media_temporary}\" \"${media_destination}\"",
         "-mtime \"+${retention_days}\" -delete",
     ] {
         assert!(BACKUP_SCRIPT.contains(required), "missing {required}");
     }
     assert!(BACKUP_UNIT.contains("User=postgres"));
+    assert!(BACKUP_UNIT.contains("SupplementaryGroups=immortal"));
     assert!(BACKUP_UNIT.contains("ReadWritePaths=/var/backups/immortal"));
+    assert!(BACKUP_UNIT.contains("ReadOnlyPaths=/var/lib/immortal/media"));
     assert!(BACKUP_TIMER.contains("Persistent=true"));
     assert!(BACKUP_TIMER.contains("OnCalendar=*-*-* 03:30:00 UTC"));
 }

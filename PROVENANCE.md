@@ -339,6 +339,80 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   and restored a real backup. The final `immortal:m6` production image also
   rebuilt successfully.
 
+### 2026-08-03 — Codex 5.6 Sol (Extra High), M7 Media
+
+- Began M7 from commit `36cc758` on a clean `main`, current with
+  `origin/main`, under the owner-directed Codex 5.6 Sol (Extra High)
+  handoff. Read the repository doctrine plus pinned NIP-B7, NIP-94, and
+  NIP-98 texts. Because NIP-B7 delegates the server HTTP contract, also
+  reviewed Blossom BUD-01/02/03/08/11 at upstream commit
+  `b5bd2801d1763aa635fc8fea7a76597e0eb18990` and recorded the source and
+  compatibility decision in `docs/protocol/media.md`.
+- Dependency and architecture decision: no new crate, service, SDK, cache,
+  broker, credential protocol, sync engine, database, or GitHub automation.
+  The existing allowlisted `tokio` dependency enables its filesystem module.
+  The default backend is a private POSIX filesystem; the one optional cloud
+  adapter is an operator-mounted object store with public redirect delivery
+  and the same atomic-rename contract.
+- Implemented streaming `PUT /upload`, public content-addressed GET/HEAD and
+  single-range reads, owner-scoped DELETE, CORS and immutable response
+  metadata on the existing listener. Upload/delete require exact one-use
+  NIP-98 events, use independent IP/pubkey rates, and enforce pre-allocation
+  blob bounds plus a transactional per-pubkey byte quota. Responses include
+  a NIP-94 tag array; kind-1063 metadata and kind-10063 server lists gained
+  owned validation and fixtures.
+- Added migration 3 and prepared statements for media metadata, shared
+  ownership, quotas, and authorization replay protection. The implementation
+  audit replaced an initial file-first publication with pending/ready state:
+  registration commits before atomic file install, public reads select only
+  ready rows, and quota or replay failures remove only their private temporary
+  file. A process interruption cannot expose a partial upload; a new
+  authorization can retry or delete pending ownership.
+- The first complete local fixture run passed. The first fresh-Postgres run
+  found that PostgreSQL returns `SUM(bigint)` as `numeric`; the quota statement
+  now performs an explicit checked bigint cast and the rerun passed store,
+  two-gateway media, two-process gap/chaos, release load, and binary smoke
+  contracts. The live media proof covers exact upload hash/auth, replay
+  refusal, NIP-94 descriptor shape, HEAD, ranged GET, shared ownership through
+  first-owner deletion, last-owner deletion, and subsequent absence.
+- The pre-close concurrency audit added immutable per-generation storage keys.
+  Last-owner deletion now removes the exact retired file, so a concurrent
+  re-upload of the same content hash cannot lose its newly ready bytes. A
+  delete racing pending finalization removes that exact generation, while an
+  ambiguous database failure leaves it for safe retry. Media mutations now
+  also lock the owner pubkey inside the transaction, preventing simultaneous
+  different-hash uploads from racing the byte quota; the live store test
+  exercises that race. Scheme-only media and server URLs are rejected by new
+  fixture cases. Uploads also gained a five-minute total timeout and one-hour
+  stale-temporary cleanup; per-IP concurrent connection limits now cover HTTP
+  as well as WebSockets.
+- Fresh Debian 13 acceptance passed with apt Rust 1.85 and PostgreSQL 17: the
+  release binary enabled its filesystem media root, served the existing
+  signed-event smoke test, stopped cleanly, created both the Postgres dump and
+  private media tar, restored the dump, and verified the committed hardened
+  systemd assets.
+- The first complete manual-gate invocation stopped immediately on a formatting
+  diff from the final audit. After formatting, the clean rerun passed all
+  locked all-target tests, warnings-denied Clippy and rustdoc, shell/static
+  checks, fresh-Postgres store and two-gateway media contracts, two-process
+  gap/chaos, release load, and fresh-Debian acceptance. Its load sample was
+  745.12 committed events/sec median, 0.32 ms connect-p99 median, and 4.11 ms
+  REQ-to-EOSE-p99 median; an immediate independent rerun measured 911.52,
+  0.29 ms, and 3.87 ms. Those throughput samples are retained here but not
+  treated as a new baseline: the host load average was 51 and multiple
+  unrelated optimized LTO Rust builds were each consuming a core. An earlier
+  unobstructed same-tree run measured 6,233.29 committed events/sec, 0.40 ms
+  connect-p99, and 2.57 ms REQ-to-EOSE-p99. The owner-lock regression's first
+  full-gate compile then found borrowed temporary strings in the test harness;
+  explicit bindings fixed it. The final clean rerun passed the entire gate,
+  including the quota race, two-owner media path, and a new Debian acceptance,
+  at 4,075.45 committed events/sec, 0.31 ms connect-p99, and 2.74 ms
+  REQ-to-EOSE-p99. After the final URL-authority fixtures, the exact final tree
+  passed the entire gate again, including another fresh-Debian proof. Its
+  1,026.09 events/sec sample ran at host load average 35 alongside unrelated
+  Rust and Node test builds, so it is retained as pass evidence rather than a
+  replacement baseline.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

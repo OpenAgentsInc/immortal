@@ -4,16 +4,17 @@
 use std::{
     io::{ErrorKind, Read, Write},
     net::{SocketAddr, TcpStream as StdTcpStream},
+    path::PathBuf,
     time::Duration,
 };
 
 use immortal::{
     domain::{Event, RelaySigner, Tag},
-    gateway::{Gateway, GatewayConfig},
+    gateway::{Gateway, GatewayConfig, MediaConfig},
 };
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 use serde_json::{Value, json};
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -33,7 +34,9 @@ async fn m3_gateway_contract_against_postgres() {
         return;
     }
 
-    let gateway_one = Gateway::start(test_config(database_url.clone()))
+    let media_root = temporary_media_root();
+    std::fs::create_dir_all(&media_root).unwrap();
+    let gateway_one = Gateway::start(test_config(database_url.clone(), media_root.clone()))
         .await
         .unwrap();
     let address_one = gateway_one.local_addr();
@@ -41,7 +44,9 @@ async fn m3_gateway_contract_against_postgres() {
     let server_one = tokio::spawn(gateway_one.run());
 
     let verification_database_url = database_url.clone();
-    let gateway_two = Gateway::start(test_config(database_url)).await.unwrap();
+    let gateway_two = Gateway::start(test_config(database_url, media_root.clone()))
+        .await
+        .unwrap();
     let address_two = gateway_two.local_addr();
     let stop_two = gateway_two.shutdown_handle();
     let server_two = tokio::spawn(gateway_two.run());
@@ -50,6 +55,7 @@ async fn m3_gateway_contract_against_postgres() {
     let expired_id = tokio::task::spawn_blocking(move || {
         websocket_contract(address_one, address_two);
         management_contract(address_one);
+        media_contract(address_one);
         expanded_protocol_contract(address_one, address_two)
     })
     .await
@@ -68,9 +74,10 @@ async fn m3_gateway_contract_against_postgres() {
         .unwrap()
         .unwrap()
         .unwrap();
+    std::fs::remove_dir_all(media_root).unwrap();
 }
 
-fn test_config(database_url: String) -> GatewayConfig {
+fn test_config(database_url: String, media_root: PathBuf) -> GatewayConfig {
     let mut config = GatewayConfig::new(database_url, "127.0.0.1:0".parse().unwrap());
     config.relay_url = Some("ws://relay.test".to_owned());
     config.auth_required = true;
@@ -83,6 +90,12 @@ fn test_config(database_url: String) -> GatewayConfig {
         .as_ref()
         .map(|signer| signer.pubkey().to_owned());
     config.management_pubkey = Some(pubkey(91));
+    config.media = Some(MediaConfig {
+        root: media_root,
+        cloud_base_url: None,
+        max_blob_bytes: 1_024,
+        max_bytes_per_pubkey: 1_024,
+    });
     config.limits.max_frame_bytes = 131_072;
     config.limits.max_subscriptions = 8;
     config.limits.max_filters = 4;
@@ -91,6 +104,8 @@ fn test_config(database_url: String) -> GatewayConfig {
     config.limits.events_per_minute_ip = 100;
     config.limits.events_per_minute_pubkey = 100;
     config.limits.req_per_minute_ip = 100;
+    config.limits.media_per_minute_ip = 100;
+    config.limits.media_per_minute_pubkey = 100;
     config.limits.max_connections_per_ip = 10;
     config.limits.send_queue_capacity = 64;
     config
@@ -119,7 +134,7 @@ async fn assert_nip11_http(address: SocketAddr) {
             .unwrap()
             .contains(&json!(42))
     );
-    for nip in [17, 29, 45, 50, 65, 70, 86, 98] {
+    for nip in [17, 29, 45, 50, 65, 70, 86, 94, 98] {
         assert!(
             document["supported_nips"]
                 .as_array()
@@ -128,6 +143,271 @@ async fn assert_nip11_http(address: SocketAddr) {
             "missing NIP-{nip}"
         );
     }
+}
+
+fn media_contract(address: SocketAddr) {
+    let payload = b"fixture blossom payload";
+    let sha256 = hex(&Sha256::digest(payload));
+    let upload_auth = signed_event(
+        75,
+        now(),
+        27_235,
+        vec![
+            Tag::new(vec!["u".into(), "http://relay.test/upload".into()]),
+            Tag::new(vec!["method".into(), "PUT".into()]),
+            Tag::new(vec!["payload".into(), sha256.clone()]),
+        ],
+        "",
+    );
+    let upload_authorization = base64(&serde_json::to_vec(&upload_auth).unwrap());
+    let upload = raw_http(
+        address,
+        &format!(
+            "PUT /upload HTTP/1.1\r\nHost: relay.test\r\nContent-Type: text/plain\r\nX-SHA-256: {sha256}\r\nAuthorization: Nostr {upload_authorization}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            payload.len()
+        ),
+        payload,
+    );
+    assert!(upload.starts_with(b"HTTP/1.1 201 Created\r\n"));
+    let descriptor: Value = serde_json::from_slice(http_body(&upload)).unwrap();
+    assert_eq!(descriptor["sha256"], sha256);
+    assert_eq!(descriptor["size"], payload.len());
+    assert_eq!(descriptor["type"], "text/plain");
+    assert_eq!(descriptor["nip94"][2], json!(["x", sha256]));
+
+    let replay = raw_http(
+        address,
+        &format!(
+            "PUT /upload HTTP/1.1\r\nHost: relay.test\r\nContent-Type: text/plain\r\nAuthorization: Nostr {upload_authorization}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            payload.len()
+        ),
+        payload,
+    );
+    assert!(replay.starts_with(b"HTTP/1.1 409 Conflict\r\n"));
+
+    let shared_auth = signed_event(
+        76,
+        now(),
+        27_235,
+        vec![
+            Tag::new(vec!["u".into(), "http://relay.test/upload".into()]),
+            Tag::new(vec!["method".into(), "PUT".into()]),
+            Tag::new(vec!["payload".into(), sha256.clone()]),
+        ],
+        "shared owner",
+    );
+    let shared_authorization = base64(&serde_json::to_vec(&shared_auth).unwrap());
+    let shared = raw_http(
+        address,
+        &format!(
+            "PUT /upload HTTP/1.1\r\nHost: relay.test\r\nContent-Type: text/plain\r\nAuthorization: Nostr {shared_authorization}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            payload.len()
+        ),
+        payload,
+    );
+    assert!(shared.starts_with(b"HTTP/1.1 200 OK\r\n"));
+
+    let over_quota_payload = vec![b'q'; 1_010];
+    let over_quota_hash = hex(&Sha256::digest(&over_quota_payload));
+    let over_quota_auth = signed_event(
+        75,
+        now(),
+        27_235,
+        vec![
+            Tag::new(vec!["u".into(), "http://relay.test/upload".into()]),
+            Tag::new(vec!["method".into(), "PUT".into()]),
+            Tag::new(vec!["payload".into(), over_quota_hash.clone()]),
+        ],
+        "",
+    );
+    let over_quota_authorization = base64(&serde_json::to_vec(&over_quota_auth).unwrap());
+    let over_quota = raw_http(
+        address,
+        &format!(
+            "PUT /upload HTTP/1.1\r\nHost: relay.test\r\nContent-Type: application/octet-stream\r\nAuthorization: Nostr {over_quota_authorization}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            over_quota_payload.len()
+        ),
+        &over_quota_payload,
+    );
+    assert!(over_quota.starts_with(b"HTTP/1.1 413 Payload Too Large\r\n"));
+    let quota_missing = raw_http(
+        address,
+        &format!(
+            "GET /{over_quota_hash} HTTP/1.1\r\nHost: relay.test\r\nConnection: close\r\n\r\n"
+        ),
+        &[],
+    );
+    assert!(quota_missing.starts_with(b"HTTP/1.1 404 Not Found\r\n"));
+
+    let head = raw_http(
+        address,
+        &format!("HEAD /{sha256}.txt HTTP/1.1\r\nHost: relay.test\r\nConnection: close\r\n\r\n"),
+        &[],
+    );
+    assert!(head.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert!(
+        head.windows(22)
+            .any(|line| line == b"Accept-Ranges: bytes\r\n")
+    );
+    assert!(http_body(&head).is_empty());
+
+    let ranged = raw_http(
+        address,
+        &format!(
+            "GET /{sha256} HTTP/1.1\r\nHost: relay.test\r\nRange: bytes=2-6\r\nConnection: close\r\n\r\n"
+        ),
+        &[],
+    );
+    assert!(ranged.starts_with(b"HTTP/1.1 206 Partial Content\r\n"));
+    assert_eq!(http_body(&ranged), &payload[2..=6]);
+
+    let delete_path = format!("/{sha256}.txt");
+    let delete_auth = signed_event(
+        75,
+        now(),
+        27_235,
+        vec![
+            Tag::new(vec!["u".into(), format!("http://relay.test{delete_path}")]),
+            Tag::new(vec!["method".into(), "DELETE".into()]),
+        ],
+        "",
+    );
+    let delete_authorization = base64(&serde_json::to_vec(&delete_auth).unwrap());
+    let delete = raw_http(
+        address,
+        &format!(
+            "DELETE {delete_path} HTTP/1.1\r\nHost: relay.test\r\nAuthorization: Nostr {delete_authorization}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ),
+        &[],
+    );
+    assert!(delete.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert_eq!(
+        serde_json::from_slice::<Value>(http_body(&delete)).unwrap()["message"],
+        "ownership removed"
+    );
+    let shared_still_present = raw_http(
+        address,
+        &format!("GET /{sha256} HTTP/1.1\r\nHost: relay.test\r\nConnection: close\r\n\r\n"),
+        &[],
+    );
+    assert!(shared_still_present.starts_with(b"HTTP/1.1 200 OK\r\n"));
+
+    let shared_delete_auth = signed_event(
+        76,
+        now(),
+        27_235,
+        vec![
+            Tag::new(vec!["u".into(), format!("http://relay.test{delete_path}")]),
+            Tag::new(vec!["method".into(), "DELETE".into()]),
+        ],
+        "shared owner",
+    );
+    let shared_delete_authorization = base64(&serde_json::to_vec(&shared_delete_auth).unwrap());
+    let shared_delete = raw_http(
+        address,
+        &format!(
+            "DELETE {delete_path} HTTP/1.1\r\nHost: relay.test\r\nAuthorization: Nostr {shared_delete_authorization}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ),
+        &[],
+    );
+    assert!(shared_delete.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert_eq!(
+        serde_json::from_slice::<Value>(http_body(&shared_delete)).unwrap()["message"],
+        "blob deleted"
+    );
+    let missing = raw_http(
+        address,
+        &format!("GET /{sha256} HTTP/1.1\r\nHost: relay.test\r\nConnection: close\r\n\r\n"),
+        &[],
+    );
+    assert!(missing.starts_with(b"HTTP/1.1 404 Not Found\r\n"));
+    let missing_head = raw_http(
+        address,
+        &format!("HEAD /{sha256} HTTP/1.1\r\nHost: relay.test\r\nConnection: close\r\n\r\n"),
+        &[],
+    );
+    assert!(missing_head.starts_with(b"HTTP/1.1 404 Not Found\r\n"));
+    assert!(http_body(&missing_head).is_empty());
+
+    let reupload_auth = signed_event(
+        75,
+        now(),
+        27_235,
+        vec![
+            Tag::new(vec!["u".into(), "http://relay.test/upload".into()]),
+            Tag::new(vec!["method".into(), "PUT".into()]),
+            Tag::new(vec!["payload".into(), sha256.clone()]),
+        ],
+        "generation two",
+    );
+    let reupload_authorization = base64(&serde_json::to_vec(&reupload_auth).unwrap());
+    let reupload = raw_http(
+        address,
+        &format!(
+            "PUT /upload HTTP/1.1\r\nHost: relay.test\r\nContent-Type: text/plain\r\nAuthorization: Nostr {reupload_authorization}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            payload.len()
+        ),
+        payload,
+    );
+    assert!(reupload.starts_with(b"HTTP/1.1 201 Created\r\n"));
+    let reloaded = raw_http(
+        address,
+        &format!("GET /{sha256} HTTP/1.1\r\nHost: relay.test\r\nConnection: close\r\n\r\n"),
+        &[],
+    );
+    assert!(reloaded.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert_eq!(http_body(&reloaded), payload);
+
+    let final_delete_auth = signed_event(
+        75,
+        now(),
+        27_235,
+        vec![
+            Tag::new(vec!["u".into(), format!("http://relay.test{delete_path}")]),
+            Tag::new(vec!["method".into(), "DELETE".into()]),
+        ],
+        "generation two",
+    );
+    let final_delete_authorization = base64(&serde_json::to_vec(&final_delete_auth).unwrap());
+    let final_delete = raw_http(
+        address,
+        &format!(
+            "DELETE {delete_path} HTTP/1.1\r\nHost: relay.test\r\nAuthorization: Nostr {final_delete_authorization}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ),
+        &[],
+    );
+    assert!(final_delete.starts_with(b"HTTP/1.1 200 OK\r\n"));
+}
+
+fn raw_http(address: SocketAddr, head: &str, body: &[u8]) -> Vec<u8> {
+    let mut stream = StdTcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(body).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    response
+}
+
+fn http_body(response: &[u8]) -> &[u8] {
+    let boundary = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap();
+    &response[boundary + 4..]
+}
+
+fn temporary_media_root() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "immortal-m7-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
 }
 
 fn websocket_contract(address_one: SocketAddr, address_two: SocketAddr) {

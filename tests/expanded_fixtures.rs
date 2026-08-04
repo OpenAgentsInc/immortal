@@ -1,6 +1,8 @@
 //! Fixture-backed domain coverage for the protocol expansion milestone.
 
-use immortal::domain::{Event, Filter, GroupAction, Tag, parse_http_authorization};
+use immortal::domain::{
+    Event, Filter, GroupAction, Tag, parse_http_authorization, parse_http_authorization_hash,
+};
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 use serde::Deserialize;
 use serde_json::Value;
@@ -45,6 +47,36 @@ fn nip17_gift_wrap_and_inbox_list_fixture_corpus() {
 fn nip65_relay_list_fixture_corpus() {
     let fixture: RoutingFixture =
         serde_json::from_str(include_str!("fixtures/nip65/relay-list.json")).unwrap();
+    for case in fixture.cases {
+        let event = example_event(case.kind, case.tags, "");
+        assert_eq!(
+            event.validate_structure().is_ok(),
+            case.valid,
+            "case: {}",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn nip94_file_metadata_fixture_corpus() {
+    let fixture: RoutingFixture =
+        serde_json::from_str(include_str!("fixtures/nip94/metadata.json")).unwrap();
+    for case in fixture.cases {
+        let event = example_event(case.kind, case.tags, "");
+        assert_eq!(
+            event.validate_structure().is_ok(),
+            case.valid,
+            "case: {}",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn nipb7_server_list_fixture_corpus() {
+    let fixture: RoutingFixture =
+        serde_json::from_str(include_str!("fixtures/nipb7/servers.json")).unwrap();
     for case in fixture.cases {
         let event = example_event(case.kind, case.tags, "");
         assert_eq!(
@@ -182,6 +214,30 @@ fn nip98_http_auth_fixture_contract() {
         parse_http_authorization(&header, "GET", "https://relay.example/manage", payload, now,)
             .is_err()
     );
+
+    let delete = signed_event(
+        42,
+        now,
+        27_235,
+        vec![
+            Tag::new(vec![
+                "u".into(),
+                "https://relay.example/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .into(),
+            ]),
+            Tag::new(vec!["method".into(), "DELETE".into()]),
+        ],
+        "",
+    );
+    let delete_header = format!("Nostr {}", base64(&serde_json::to_vec(&delete).unwrap()));
+    parse_http_authorization_hash(
+        &delete_header,
+        "DELETE",
+        "https://relay.example/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        None,
+        now,
+    )
+    .unwrap();
 }
 
 fn example_event(kind: u16, tags: Vec<Tag>, content: &str) -> Event {

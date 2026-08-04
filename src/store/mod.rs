@@ -155,6 +155,28 @@ pub struct StoredEvent {
     pub ingest_seq: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaRecord {
+    pub sha256: String,
+    pub storage_key: String,
+    pub size: u64,
+    pub media_type: String,
+    pub uploaded_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaUploadOutcome {
+    pub record: MediaRecord,
+    pub created: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaDeleteOutcome {
+    NotOwned,
+    OwnerRemoved,
+    BlobRemoved(MediaRecord),
+}
+
 /// One database connection and its complete prepared-statement set.
 ///
 /// The M3 gateway can create a small fixed set of these workers; M2 does not
@@ -925,6 +947,167 @@ impl Store {
             .await?)
     }
 
+    pub async fn media_blob(&self, sha256: &str) -> Result<Option<MediaRecord>, StoreError> {
+        self.ensure_current()?;
+        self.client
+            .query_opt(&self.statements.media_blob, &[&sha256])
+            .await?
+            .map(decode_media_row)
+            .transpose()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_media(
+        &mut self,
+        authorization_id: &str,
+        authorization_pubkey: &str,
+        sha256: &str,
+        size: u64,
+        media_type: &str,
+        uploaded_at: u64,
+        max_bytes_per_pubkey: u64,
+    ) -> Result<MediaUploadOutcome, StoreError> {
+        self.ensure_current()?;
+        let size = pg_i64(size, "media size")?;
+        let uploaded_at = pg_i64(uploaded_at, "media upload")?;
+        let max_bytes = pg_i64(max_bytes_per_pubkey, "media quota")?;
+        let statements = self.statements.clone();
+        let transaction = self.client.transaction().await?;
+        transaction
+            .query_one(&statements.advisory_lock, &[&format!("media:{sha256}")])
+            .await?;
+        transaction
+            .query_one(
+                &statements.advisory_lock,
+                &[&format!("media-owner:{authorization_pubkey}")],
+            )
+            .await?;
+        if transaction
+            .query_opt(
+                &statements.accept_media_auth,
+                &[&authorization_id, &authorization_pubkey, &"upload"],
+            )
+            .await?
+            .is_none()
+        {
+            transaction.commit().await?;
+            return Err(StoreError::Media(
+                "authorization event was already used".into(),
+            ));
+        }
+        let already_owned = transaction
+            .query_opt(&statements.media_owner, &[&sha256, &authorization_pubkey])
+            .await?
+            .is_some();
+        if !already_owned {
+            let owned_bytes = transaction
+                .query_one(&statements.media_owner_bytes, &[&authorization_pubkey])
+                .await?
+                .get::<_, i64>(0);
+            if owned_bytes.saturating_add(size) > max_bytes {
+                return Err(StoreError::Media("pubkey media quota exceeded".into()));
+            }
+        }
+        let created = transaction
+            .query_opt(
+                &statements.insert_media_blob,
+                &[&sha256, &authorization_id, &size, &media_type, &uploaded_at],
+            )
+            .await?
+            .is_some();
+        transaction
+            .execute(
+                &statements.insert_media_owner,
+                &[&sha256, &authorization_pubkey],
+            )
+            .await?;
+        let record = decode_media_row(
+            transaction
+                .query_one(&statements.media_blob_any, &[&sha256])
+                .await?,
+        )?;
+        transaction.commit().await?;
+        Ok(MediaUploadOutcome { record, created })
+    }
+
+    pub async fn finalize_media(&self, sha256: &str) -> Result<(), StoreError> {
+        self.ensure_current()?;
+        if self
+            .client
+            .query_opt(&self.statements.finalize_media_blob, &[&sha256])
+            .await?
+            .is_none()
+        {
+            return Err(StoreError::Media(
+                "media registration disappeared before finalization".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub async fn delete_media(
+        &mut self,
+        authorization_id: &str,
+        authorization_pubkey: &str,
+        sha256: &str,
+    ) -> Result<MediaDeleteOutcome, StoreError> {
+        self.ensure_current()?;
+        let statements = self.statements.clone();
+        let transaction = self.client.transaction().await?;
+        transaction
+            .query_one(&statements.advisory_lock, &[&format!("media:{sha256}")])
+            .await?;
+        transaction
+            .query_one(
+                &statements.advisory_lock,
+                &[&format!("media-owner:{authorization_pubkey}")],
+            )
+            .await?;
+        if transaction
+            .query_opt(
+                &statements.accept_media_auth,
+                &[&authorization_id, &authorization_pubkey, &"delete"],
+            )
+            .await?
+            .is_none()
+        {
+            transaction.commit().await?;
+            return Err(StoreError::Media(
+                "authorization event was already used".into(),
+            ));
+        }
+        if transaction
+            .query_opt(
+                &statements.delete_media_owner,
+                &[&sha256, &authorization_pubkey],
+            )
+            .await?
+            .is_none()
+        {
+            transaction.commit().await?;
+            return Ok(MediaDeleteOutcome::NotOwned);
+        }
+        let has_owner = transaction
+            .query_one(&statements.media_has_owner, &[&sha256])
+            .await?
+            .get::<_, bool>(0);
+        let record = decode_media_row(
+            transaction
+                .query_one(&statements.media_blob_any, &[&sha256])
+                .await?,
+        )?;
+        let outcome = if has_owner {
+            MediaDeleteOutcome::OwnerRemoved
+        } else {
+            transaction
+                .query_opt(&statements.delete_media_blob, &[&sha256])
+                .await?;
+            MediaDeleteOutcome::BlobRemoved(record)
+        };
+        transaction.commit().await?;
+        Ok(outcome)
+    }
+
     pub async fn manage(
         &mut self,
         authorization_id: &str,
@@ -1113,6 +1296,20 @@ impl Store {
         transaction.commit().await?;
         Ok(result)
     }
+}
+
+fn decode_media_row(row: Row) -> Result<MediaRecord, StoreError> {
+    let size = row.get::<_, i64>(1);
+    let uploaded_at = row.get::<_, i64>(3);
+    Ok(MediaRecord {
+        sha256: row.get(0),
+        size: u64::try_from(size)
+            .map_err(|_| StoreError::CorruptRow("negative media size".into()))?,
+        media_type: row.get(2),
+        uploaded_at: u64::try_from(uploaded_at)
+            .map_err(|_| StoreError::CorruptRow("negative media upload timestamp".into()))?,
+        storage_key: row.get(4),
+    })
 }
 
 impl Drop for Store {

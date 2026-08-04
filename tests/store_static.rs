@@ -31,3 +31,17 @@ fn m6_migration_contains_group_and_management_state() {
         assert!(sql.contains(required), "migration is missing {required:?}");
     }
 }
+
+#[test]
+fn m7_migration_contains_media_ownership_and_replay_state() {
+    let sql = include_str!("../migrations/0003_media.sql");
+    for required in [
+        "CREATE TABLE media_blob",
+        "CREATE TABLE media_owner",
+        "CREATE TABLE media_auth_request",
+        "storage_key text COLLATE \"C\" NOT NULL",
+        "REFERENCES media_blob(sha256) ON DELETE CASCADE",
+    ] {
+        assert!(sql.contains(required), "migration is missing {required:?}");
+    }
+}

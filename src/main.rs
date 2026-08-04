@@ -1,13 +1,14 @@
 //! Immortal — a hardened Nostr relay. One Rust binary, one Postgres.
 //!
-//! The M1–M6 relay is implemented:
+//! The M1–M7 relay is implemented:
 //!   domain/  — NIP-01 primitives: event, tags, filters, canonical ID,
 //!              replacement addresses, deletion semantics (owned, no
 //!              third-party Nostr crate)
 //!   store/   — Postgres: admission transaction, ingest_seq, indexes,
 //!              LISTEN/NOTIFY fanout
 //!   gateway/ — HTTP/WebSocket protocol server: authentication, management,
-//!              COUNT/search, subscription index, EOSE handoff, ephemeral lane
+//!              COUNT/search, Blossom media, subscription index, EOSE handoff,
+//!              ephemeral lane
 
 use immortal::gateway::{Gateway, GatewayConfig, GatewayError};
 

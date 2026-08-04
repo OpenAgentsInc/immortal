@@ -24,15 +24,17 @@ by `AGENTS.md`.
 | NIP-65 relay-list shape, normal replaceable storage, and indexed `r` tags | `nip65/relay-list.json`, expanded fixtures, and the store/gateway contracts |
 | NIP-70 same-connection protected publication and embedded-repost refusal | `nip70/protected.json`, expanded fixtures, and the live gateway contract |
 | NIP-86/NIP-98 method shapes, exact URL/method/payload authentication, owner authorization, replay prevention, policy methods, and group extensions | `nip86/management.json`, `nip98/http-auth.json`, unit/expanded fixtures, and the live HTTP/Postgres contract |
+| NIP-B7/NIP-94 media server lists and metadata; streaming upload, exact hash/auth, replay refusal, public HEAD/GET/range, ownership deletion, and filesystem publication | `nipb7/servers.json`, `nip94/metadata.json`, media unit tests, and the live HTTP/Postgres contract |
 | M2 migrations, hash drift, prepared admission/query paths, least privilege, policy branches, FTS, transactional NOTIFY, replacement/deletion concurrency, and ephemeral non-storage | `tests/store_static.rs` and `tests/store_postgres.rs` |
 | M3 indexed fanout by ID/author/kind/tag, broad lane, race-free EOSE, deduplication, queue overflow, query cancellation, limits, rates, frame bounds, and graceful shutdown | gateway unit tests and `tests/gateway_postgres.rs` |
 | M4 two binaries/one Postgres, cross-delivery, bounded sequence-gap recovery, kill-one survival, and fail-closed unbounded gap | `tests/multiprocess_postgres.rs` |
 | M4 events/sec, WebSocket connect p99, and REQ-to-EOSE p99 | `tests/load_postgres.rs` and [`load-report.md`](load-report.md) |
 | M6 migration, physical expiration sweep, group state, and management replay state | `tests/store_static.rs`, `tests/store_postgres.rs`, and `tests/gateway_postgres.rs` |
+| M7 migration, pending/ready publication, media ownership, quota, and authorization replay state | `tests/store_static.rs` and `tests/gateway_postgres.rs` |
 
 ## Running locally
 
-The complete M1–M6 manual gate is:
+The complete M1–M7 manual gate is:
 
 ```sh
 ./scripts/test-conformance.sh

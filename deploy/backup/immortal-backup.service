@@ -1,14 +1,16 @@
 [Unit]
-Description=Create an Immortal PostgreSQL logical backup
+Description=Create an Immortal PostgreSQL and media backup pair
 Documentation=https://github.com/OpenAgentsInc/immortal/tree/main/docs/deployment
 After=postgresql.service
 Requires=postgresql.service
 RequiresMountsFor=/var/backups/immortal
+RequiresMountsFor=/var/lib/immortal/media
 
 [Service]
 Type=oneshot
 User=postgres
 Group=postgres
+SupplementaryGroups=immortal
 ExecStart=/usr/local/sbin/immortal-backup
 Nice=10
 IOSchedulingClass=best-effort
@@ -37,4 +39,5 @@ SystemCallErrorNumber=EPERM
 CapabilityBoundingSet=
 AmbientCapabilities=
 ReadWritePaths=/var/backups/immortal
+ReadOnlyPaths=/var/lib/immortal/media
 UMask=0077

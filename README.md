@@ -16,15 +16,15 @@ against one database. The design is the same in both cases.
 ## Architecture
 
 ```text
-Nostr clients  <=>  immortal (one binary: WebSocket + NIP-11 HTTP)
-                        |
-                    Postgres
+Nostr clients  <=>  immortal (one binary: WebSocket + HTTP + media)
+                     |                                  |
+                  Postgres                     media filesystem
                     events, tag indexes, replaceable heads,
                     deletion tombstones, policy, groups, full-text search,
                     LISTEN/NOTIFY, ingest sequence
 ```
 
-Postgres does all the storage work:
+Postgres does all protocol-state and indexing work:
 
 - It stores events.
 - It indexes tags for queries.
@@ -33,6 +33,8 @@ Postgres does all the storage work:
 - It does full-text search with a generated column and a GIN index.
 - It tells all relay processes about new events with `LISTEN/NOTIFY`.
 - It gives each event a sequence number (`ingest_seq`).
+- It owns media visibility, ownership, quota, and authorization state; the
+  content-addressed bytes stay in the configured filesystem directory.
 
 Event admission is one database transaction. The relay sends `OK` to the
 client only after the commit.
@@ -61,12 +63,13 @@ TLS is the job of the reverse proxy (nginx or Caddy).
 
 ## Status
 
-M1 through M6 are complete: the protocol domain, Postgres store,
+M1 through M7 are complete: the protocol domain, Postgres store,
 HTTP/WebSocket gateway, pinned per-NIP fixtures, locally executable
 conformance, actual-process chaos and load proofs, and the production
 deployment kit. The relay also provides expiration cleanup, protected and
 recipient-gated events, relay-managed groups, authenticated management,
-bounded COUNT, and full-text search. M7 media is next. See
+bounded COUNT, full-text search, and bounded Blossom media. M8 hardening and
+formal work is next. See
 `docs/ROADMAP.md`, `docs/conformance/`, and `docs/deployment/`.
 
 ## Quick start
@@ -103,6 +106,10 @@ committed files under `deploy/`; follow
 `docs/deployment/runbook-debian-vps.md` for systemd, TLS proxy, backups,
 restore, upgrade, and rollback.
 
+The production environment template also enables the filesystem Blossom
+endpoint at `/var/lib/immortal/media`. Upload and delete use NIP-98; reads are
+public and content-addressed. See [`docs/protocol/media.md`](docs/protocol/media.md).
+
 Reproduce the full fresh-Debian proof manually with a running Apple Container,
 Podman, or Docker runtime:
 
@@ -110,7 +117,7 @@ Podman, or Docker runtime:
 ./scripts/run-debian-acceptance.sh
 ```
 
-Run the complete manual M1–M6 conformance gate with
+Run the complete manual M1–M7 conformance gate with
 `./scripts/test-conformance.sh`. No GitHub workflow or billed GitHub runner is
 used.
 

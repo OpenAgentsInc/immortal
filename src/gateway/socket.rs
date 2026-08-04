@@ -230,11 +230,54 @@ pub async fn write_http(
     content_type: &str,
     body: &str,
 ) -> Result<(), GatewayError> {
-    let response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nConnection: close\r\n\r\n{body}",
-        body.len()
+    write_http_bytes(stream, status, reason, content_type, body.as_bytes(), &[]).await
+}
+
+pub async fn write_http_bytes(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    content_type: &str,
+    body: &[u8],
+    extra_headers: &[(&str, String)],
+) -> Result<(), GatewayError> {
+    write_http_head(
+        stream,
+        status,
+        reason,
+        content_type,
+        body.len() as u64,
+        extra_headers,
+    )
+    .await?;
+    stream.write_all(body).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+pub async fn write_http_head(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    content_type: &str,
+    content_length: u64,
+    extra_headers: &[(&str, String)],
+) -> Result<(), GatewayError> {
+    let mut response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_length}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: Accept, Authorization, Content-Type, Range, X-SHA-256\r\nAccess-Control-Expose-Headers: Content-Length, Content-Range, Location, X-SHA-256\r\nAccess-Control-Allow-Methods: GET, HEAD, PUT, POST, DELETE, OPTIONS\r\nConnection: close\r\n"
     );
+    for (name, value) in extra_headers {
+        response.push_str(name);
+        response.push_str(": ");
+        response.push_str(value);
+        response.push_str("\r\n");
+    }
+    response.push_str("\r\n");
     stream.write_all(response.as_bytes()).await?;
+    Ok(())
+}
+
+pub async fn shutdown_http(stream: &mut TcpStream) -> Result<(), GatewayError> {
     stream.shutdown().await?;
     Ok(())
 }

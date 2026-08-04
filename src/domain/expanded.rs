@@ -62,6 +62,17 @@ pub fn parse_http_authorization(
     payload: &[u8],
     now: u64,
 ) -> Result<HttpAuth, DomainError> {
+    let payload_hash = encode_lower_hex(&Sha256::digest(payload));
+    parse_http_authorization_hash(header, method, absolute_url, Some(&payload_hash), now)
+}
+
+pub fn parse_http_authorization_hash(
+    header: &str,
+    method: &str,
+    absolute_url: &str,
+    payload_hash: Option<&str>,
+    now: u64,
+) -> Result<HttpAuth, DomainError> {
     let encoded = header.strip_prefix("Nostr ").ok_or_else(|| {
         DomainError::InvalidEvent("HTTP authorization scheme must be Nostr".into())
     })?;
@@ -82,8 +93,13 @@ pub fn parse_http_authorization(
     }
     require_single_tag(&event, "u", absolute_url)?;
     require_single_tag(&event, "method", method)?;
-    let payload_hash = encode_lower_hex(&Sha256::digest(payload));
-    require_single_tag(&event, "payload", &payload_hash)?;
+    if let Some(payload_hash) = payload_hash {
+        require_single_tag(&event, "payload", payload_hash)?;
+    } else if event.tag_values("payload").next().is_some() {
+        return Err(DomainError::InvalidEvent(
+            "HTTP authorization payload tag is not allowed without a payload".into(),
+        ));
+    }
     Ok(HttpAuth {
         event_id: event.id,
         pubkey: event.pubkey,
@@ -316,7 +332,68 @@ pub(crate) fn validate_expanded_event(event: &Event) -> Result<(), DomainError> 
             ));
         }
     }
+    if event.kind == 10_063 {
+        let servers = event.tag_values("server").collect::<Vec<_>>();
+        if servers.is_empty() || servers.iter().any(|server| !valid_http_url(server)) {
+            return Err(DomainError::InvalidEvent(
+                "kind 10063 requires valid http:// or https:// server tags".into(),
+            ));
+        }
+    }
+    if event.kind == 1_063 {
+        let url = exactly_one(event, "url")?.value().unwrap_or_default();
+        if !valid_http_url(url) {
+            return Err(DomainError::InvalidEvent(
+                "kind 1063 requires one valid HTTP url tag".into(),
+            ));
+        }
+        let media_type = exactly_one(event, "m")?.value().unwrap_or_default();
+        if !valid_media_type(media_type) {
+            return Err(DomainError::InvalidEvent(
+                "kind 1063 requires one lowercase MIME type tag".into(),
+            ));
+        }
+        let sha256 = exactly_one(event, "x")?.value().unwrap_or_default();
+        decode_lower_hex::<32>(sha256, "file metadata hash")?;
+        let sizes = event.tag_values("size").collect::<Vec<_>>();
+        if sizes.len() > 1
+            || sizes
+                .first()
+                .is_some_and(|size| size.parse::<u64>().is_err())
+        {
+            return Err(DomainError::InvalidEvent(
+                "kind 1063 size tag must be one unsigned integer".into(),
+            ));
+        }
+    }
     Ok(())
+}
+
+fn valid_media_type(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 127
+        && value == value.to_ascii_lowercase()
+        && value.split_once('/').is_some_and(|(top, subtype)| {
+            !top.is_empty()
+                && !subtype.is_empty()
+                && top.bytes().all(media_type_byte)
+                && subtype.bytes().all(media_type_byte)
+        })
+}
+
+fn valid_http_url(value: &str) -> bool {
+    let Some(rest) = value
+        .strip_prefix("http://")
+        .or_else(|| value.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    !authority.is_empty() && value.len() <= 2_048 && !value.chars().any(char::is_whitespace)
+}
+
+fn media_type_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$&^_.+-".contains(&byte)
 }
 
 fn exactly_one<'a>(event: &'a Event, name: &str) -> Result<&'a Tag, DomainError> {
@@ -329,7 +406,7 @@ fn exactly_one<'a>(event: &'a Event, name: &str) -> Result<&'a Tag, DomainError>
         Ok(tags[0])
     } else {
         Err(DomainError::InvalidEvent(format!(
-            "NIP-29 action requires exactly one {name} tag"
+            "event requires exactly one {name} tag"
         )))
     }
 }

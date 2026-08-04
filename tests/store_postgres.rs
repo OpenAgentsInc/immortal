@@ -27,7 +27,7 @@ async fn m2_store_contract_against_postgres() {
     }
 
     let (mut store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![1, 2]);
+    assert_eq!(report.applied_versions, vec![1, 2, 3]);
     assert!(store.is_current());
 
     let (_second_store, report) = Store::connect_with_report(&database_url).await.unwrap();
@@ -177,6 +177,7 @@ async fn m2_store_contract_against_postgres() {
     replacement_race(&database_url, &mut store).await;
     deletion_before_event(&database_url, &mut store).await;
     concurrent_deletion_race(&database_url, &mut store).await;
+    concurrent_media_quota(&database_url, &mut store).await;
     policy_and_fts(&database_url, &mut store).await;
 
     let high_water = store.latest_ingest_seq().await.unwrap();
@@ -292,6 +293,44 @@ async fn concurrent_deletion_race(database_url: &str, store: &mut Store) {
         AdmissionOutcome::Stored { .. }
     ));
     assert!(store.event_by_id(&target.id, NOW).await.unwrap().is_none());
+}
+
+async fn concurrent_media_quota(database_url: &str, store: &mut Store) {
+    let mut other = Store::connect(database_url).await.unwrap();
+    let pubkey = "f".repeat(64);
+    let first_authorization = "a".repeat(64);
+    let first_hash = "b".repeat(64);
+    let second_authorization = "c".repeat(64);
+    let second_hash = "d".repeat(64);
+    let first = store.register_media(
+        &first_authorization,
+        &pubkey,
+        &first_hash,
+        600,
+        "application/octet-stream",
+        NOW,
+        1_000,
+    );
+    let second = other.register_media(
+        &second_authorization,
+        &pubkey,
+        &second_hash,
+        600,
+        "application/octet-stream",
+        NOW,
+        1_000,
+    );
+    let (first, second) = tokio::join!(first, second);
+    let outcomes = [first, second];
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|result| matches!(result, Err(StoreError::Media(reason)) if reason.contains("quota")))
+            .count(),
+        1,
+        "different hashes for one owner must serialize quota accounting"
+    );
 }
 
 async fn policy_and_fts(database_url: &str, store: &mut Store) {

@@ -41,6 +41,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "nip_expansion",
         sql: include_str!("../../migrations/0002_nip_expansion.sql"),
     },
+    Migration {
+        version: 3,
+        name: "media",
+        sql: include_str!("../../migrations/0003_media.sql"),
+    },
 ];
 
 type AppliedMigrations = BTreeMap<i64, (String, String)>;

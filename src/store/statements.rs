@@ -298,6 +298,41 @@ INSERT INTO relay_allowed_kind (kind) VALUES ($1) ON CONFLICT DO NOTHING
 const DISALLOW_KIND_SQL: &str = "DELETE FROM relay_allowed_kind WHERE kind = $1";
 const LIST_ALLOWED_KINDS_SQL: &str =
     "SELECT kind FROM relay_allowed_kind ORDER BY kind LIMIT 65536";
+const ACCEPT_MEDIA_AUTH_SQL: &str = r#"
+INSERT INTO media_auth_request (event_id, pubkey, action) VALUES ($1, $2, $3)
+ON CONFLICT DO NOTHING RETURNING event_id
+"#;
+const MEDIA_BLOB_SQL: &str = r#"
+SELECT sha256, size, media_type, uploaded_at, storage_key
+FROM media_blob WHERE sha256 = $1 AND ready = TRUE
+"#;
+const MEDIA_BLOB_ANY_SQL: &str = r#"
+SELECT sha256, size, media_type, uploaded_at, storage_key
+FROM media_blob WHERE sha256 = $1
+"#;
+const MEDIA_OWNER_SQL: &str = "SELECT 1 FROM media_owner WHERE sha256 = $1 AND pubkey = $2";
+const MEDIA_OWNER_BYTES_SQL: &str = r#"
+SELECT COALESCE(SUM(blob.size), 0)::bigint
+FROM media_owner owner_row
+JOIN media_blob blob ON blob.sha256 = owner_row.sha256
+WHERE owner_row.pubkey = $1
+"#;
+const INSERT_MEDIA_BLOB_SQL: &str = r#"
+INSERT INTO media_blob (sha256, storage_key, size, media_type, uploaded_at)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT DO NOTHING RETURNING sha256
+"#;
+const INSERT_MEDIA_OWNER_SQL: &str = r#"
+INSERT INTO media_owner (sha256, pubkey) VALUES ($1, $2)
+ON CONFLICT DO NOTHING
+"#;
+const FINALIZE_MEDIA_BLOB_SQL: &str =
+    "UPDATE media_blob SET ready = TRUE WHERE sha256 = $1 RETURNING sha256";
+const DELETE_MEDIA_OWNER_SQL: &str = r#"
+DELETE FROM media_owner WHERE sha256 = $1 AND pubkey = $2 RETURNING sha256
+"#;
+const MEDIA_HAS_OWNER_SQL: &str = "SELECT EXISTS (SELECT 1 FROM media_owner WHERE sha256 = $1)";
+const DELETE_MEDIA_BLOB_SQL: &str = "DELETE FROM media_blob WHERE sha256 = $1 RETURNING sha256";
 
 #[derive(Clone)]
 pub(crate) struct Statements {
@@ -353,6 +388,17 @@ pub(crate) struct Statements {
     pub allow_kind_mutation: Statement,
     pub disallow_kind: Statement,
     pub list_allowed_kinds: Statement,
+    pub accept_media_auth: Statement,
+    pub media_blob: Statement,
+    pub media_blob_any: Statement,
+    pub media_owner: Statement,
+    pub media_owner_bytes: Statement,
+    pub insert_media_blob: Statement,
+    pub insert_media_owner: Statement,
+    pub finalize_media_blob: Statement,
+    pub delete_media_owner: Statement,
+    pub media_has_owner: Statement,
+    pub delete_media_blob: Statement,
 }
 
 impl Statements {
@@ -410,6 +456,17 @@ impl Statements {
             allow_kind_mutation: client.prepare(ALLOW_KIND_MUTATION_SQL).await?,
             disallow_kind: client.prepare(DISALLOW_KIND_SQL).await?,
             list_allowed_kinds: client.prepare(LIST_ALLOWED_KINDS_SQL).await?,
+            accept_media_auth: client.prepare(ACCEPT_MEDIA_AUTH_SQL).await?,
+            media_blob: client.prepare(MEDIA_BLOB_SQL).await?,
+            media_blob_any: client.prepare(MEDIA_BLOB_ANY_SQL).await?,
+            media_owner: client.prepare(MEDIA_OWNER_SQL).await?,
+            media_owner_bytes: client.prepare(MEDIA_OWNER_BYTES_SQL).await?,
+            insert_media_blob: client.prepare(INSERT_MEDIA_BLOB_SQL).await?,
+            insert_media_owner: client.prepare(INSERT_MEDIA_OWNER_SQL).await?,
+            finalize_media_blob: client.prepare(FINALIZE_MEDIA_BLOB_SQL).await?,
+            delete_media_owner: client.prepare(DELETE_MEDIA_OWNER_SQL).await?,
+            media_has_owner: client.prepare(MEDIA_HAS_OWNER_SQL).await?,
+            delete_media_blob: client.prepare(DELETE_MEDIA_BLOB_SQL).await?,
         })
     }
 }

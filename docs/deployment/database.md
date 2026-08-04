@@ -1,6 +1,6 @@
 # Postgres Store and Roles
 
-Immortal uses one Postgres database. The M2–M6 store owns migrations, event
+Immortal uses one Postgres database. The M2–M7 store owns migrations, event
 admission, policy checks, indexed reads, process notification, and gap
 recovery. No cache, broker, or second database participates.
 
@@ -24,6 +24,20 @@ recovery. No cache, broker, or second database participates.
   NIP-29 group state used before admission; and
 - `management_request`: consumed NIP-98 authorization event IDs for replay
   protection.
+
+`migrations/0003_media.sql` adds:
+
+- `media_blob`: content hash, size, normalized MIME type, upload timestamp,
+  and pending/ready visibility state;
+- `media_owner`: shared-blob ownership and per-pubkey quota accounting; and
+- `media_auth_request`: consumed upload/delete NIP-98 event IDs.
+
+Blob bytes use the configured filesystem backend rather than a second
+database. Postgres remains authoritative for visibility: public lookups select
+only ready rows. Upload registration, quota, ownership, and replay consumption
+commit together before atomic file installation; a final prepared update
+publishes the blob. Delete removes one owner and drops metadata only after the
+last owner.
 
 It also allows a durable deletion tombstone to retain its signed source ID
 after NIP-40 expires and physically removes the source event. The tombstone's

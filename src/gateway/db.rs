@@ -13,7 +13,10 @@ use tokio::{
 
 use crate::{
     domain::{Event, Filter, RelaySigner},
-    store::{AdmissionOutcome, ManagementRequest, Store, StoreError, StoredEvent},
+    store::{
+        AdmissionOutcome, ManagementRequest, MediaDeleteOutcome, MediaRecord, MediaUploadOutcome,
+        Store, StoreError, StoredEvent,
+    },
 };
 
 use super::GatewayError;
@@ -55,6 +58,30 @@ enum DbRequest {
         request: ManagementRequest,
         now: u64,
         response: oneshot::Sender<Result<serde_json::Value, StoreError>>,
+    },
+    MediaLookup {
+        sha256: String,
+        response: oneshot::Sender<Result<Option<MediaRecord>, StoreError>>,
+    },
+    MediaUpload {
+        authorization_id: String,
+        authorization_pubkey: String,
+        sha256: String,
+        size: u64,
+        media_type: String,
+        uploaded_at: u64,
+        max_bytes_per_pubkey: u64,
+        response: oneshot::Sender<Result<MediaUploadOutcome, StoreError>>,
+    },
+    MediaDelete {
+        authorization_id: String,
+        authorization_pubkey: String,
+        sha256: String,
+        response: oneshot::Sender<Result<MediaDeleteOutcome, StoreError>>,
+    },
+    MediaFinalize {
+        sha256: String,
+        response: oneshot::Sender<Result<(), StoreError>>,
     },
     CatchUp {
         after: i64,
@@ -199,6 +226,59 @@ impl DbPool {
         result.await.map_err(|_| StoreError::ConnectionClosed)?
     }
 
+    pub async fn media_blob(&self, sha256: String) -> Result<Option<MediaRecord>, StoreError> {
+        let (response, result) = oneshot::channel();
+        self.send(DbRequest::MediaLookup { sha256, response })?;
+        result.await.map_err(|_| StoreError::ConnectionClosed)?
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn register_media(
+        &self,
+        authorization_id: String,
+        authorization_pubkey: String,
+        sha256: String,
+        size: u64,
+        media_type: String,
+        uploaded_at: u64,
+        max_bytes_per_pubkey: u64,
+    ) -> Result<MediaUploadOutcome, StoreError> {
+        let (response, result) = oneshot::channel();
+        self.send(DbRequest::MediaUpload {
+            authorization_id,
+            authorization_pubkey,
+            sha256,
+            size,
+            media_type,
+            uploaded_at,
+            max_bytes_per_pubkey,
+            response,
+        })?;
+        result.await.map_err(|_| StoreError::ConnectionClosed)?
+    }
+
+    pub async fn delete_media(
+        &self,
+        authorization_id: String,
+        authorization_pubkey: String,
+        sha256: String,
+    ) -> Result<MediaDeleteOutcome, StoreError> {
+        let (response, result) = oneshot::channel();
+        self.send(DbRequest::MediaDelete {
+            authorization_id,
+            authorization_pubkey,
+            sha256,
+            response,
+        })?;
+        result.await.map_err(|_| StoreError::ConnectionClosed)?
+    }
+
+    pub async fn finalize_media(&self, sha256: String) -> Result<(), StoreError> {
+        let (response, result) = oneshot::channel();
+        self.send(DbRequest::MediaFinalize { sha256, response })?;
+        result.await.map_err(|_| StoreError::ConnectionClosed)?
+    }
+
     pub async fn catch_up(
         &self,
         after: i64,
@@ -298,6 +378,56 @@ async fn handle_request(
             let _ = response.send(result);
             fatal
         }
+        DbRequest::MediaLookup { sha256, response } => {
+            let result = store.media_blob(&sha256).await;
+            let fatal = result.as_ref().is_err_and(is_fatal);
+            let _ = response.send(result);
+            fatal
+        }
+        DbRequest::MediaUpload {
+            authorization_id,
+            authorization_pubkey,
+            sha256,
+            size,
+            media_type,
+            uploaded_at,
+            max_bytes_per_pubkey,
+            response,
+        } => {
+            let result = store
+                .register_media(
+                    &authorization_id,
+                    &authorization_pubkey,
+                    &sha256,
+                    size,
+                    &media_type,
+                    uploaded_at,
+                    max_bytes_per_pubkey,
+                )
+                .await;
+            let fatal = result.as_ref().is_err_and(is_fatal);
+            let _ = response.send(result);
+            fatal
+        }
+        DbRequest::MediaDelete {
+            authorization_id,
+            authorization_pubkey,
+            sha256,
+            response,
+        } => {
+            let result = store
+                .delete_media(&authorization_id, &authorization_pubkey, &sha256)
+                .await;
+            let fatal = result.as_ref().is_err_and(is_fatal);
+            let _ = response.send(result);
+            fatal
+        }
+        DbRequest::MediaFinalize { sha256, response } => {
+            let result = store.finalize_media(&sha256).await;
+            let fatal = result.as_ref().is_err_and(is_fatal);
+            let _ = response.send(result);
+            fatal
+        }
         DbRequest::CatchUp {
             after,
             through,
@@ -392,5 +522,6 @@ fn is_fatal(error: &StoreError) -> bool {
             | StoreError::Serialization(_)
             | StoreError::EphemeralTooLarge(_)
             | StoreError::Management(_)
+            | StoreError::Media(_)
     )
 }

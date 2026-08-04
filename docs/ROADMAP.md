@@ -106,7 +106,7 @@ as early as possible.
 
 ## M7 — Media
 
-- [ ] Blossom endpoint (NIP-B7, NIP-98 auth, NIP-94 metadata): filesystem
+- [x] Blossom endpoint (NIP-B7, NIP-98 auth, NIP-94 metadata): filesystem
       storage default, one optional cloud-storage adapter
 
 ## M8 — Hardening and formal work

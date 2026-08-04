@@ -15,7 +15,8 @@ land together.
 
 1. Create an amd64 or arm64 Droplet with the Debian 13 image.
 2. Start with at least 1 GiB RAM and choose storage for the expected Postgres
-   data volume. Resize from measured use rather than guessing future scale.
+   data plus the configured M7 media quota. Resize from measured use rather
+   than guessing future scale.
 3. Add an SSH key. Keep password login disabled.
 4. Reserve an IP if the relay hostname must survive Droplet replacement.
 5. Point `relay.example.com` at the Droplet IP.
@@ -50,15 +51,16 @@ provider-specific variants.
 
 ## 4. DigitalOcean backup choices
 
-The required backup remains the runbook's logical `pg_dump`, copied off the
-Droplet and restore-tested. DigitalOcean Droplet backups or snapshots are a
-second layer, not a replacement: a VM image of running Postgres is only
-crash-consistent, while the custom-format dump is portable and testable.
+The required backup remains the runbook's logical `pg_dump` and paired M7
+media tar, copied off the Droplet and restore-tested. DigitalOcean Droplet
+backups or snapshots are a second layer, not a replacement: a VM image of
+running Postgres is only crash-consistent, while the committed backup formats
+are portable and testable.
 
 Before an upgrade:
 
-1. start `immortal-backup.service` and verify success;
-2. copy the new dump off the Droplet;
+1. stop the relay, start `immortal-backup.service`, and verify success;
+2. copy the new dump and same-timestamp media tar off the Droplet;
 3. optionally take a Droplet snapshot;
 4. follow the canonical symlink upgrade and schema-aware rollback procedure.
 

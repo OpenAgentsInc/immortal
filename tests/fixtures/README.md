@@ -23,17 +23,18 @@ names the NIP that owns the behavior.
   live contract separately checks NIP-11 CORS behavior.
 - `nip17/routing.json`, `nip29/groups.json`, `nip45/count.json`,
   `nip50/search.json`, `nip65/relay-list.json`, `nip70/protected.json`,
-  `nip86/management.json`, and `nip98/http-auth.json`
+  `nip86/management.json`, `nip94/metadata.json`, `nip98/http-auth.json`,
+  and `nipb7/servers.json`
   were written for Immortal from the corresponding pinned official texts.
   They pin M6 validation, routing, group action, COUNT, search, protected
   publishing, and HTTP-authentication boundaries. The live Postgres gateway
   contract checks the associated storage, access-control, signing, sweep,
-  management, and wire behavior.
+  management, media metadata/server-list, and wire behavior.
 
 Fixture data is committed rather than generated so a specification or
 implementation change produces a reviewable diff.
 
 Run the complete fixture layer manually with
 `cargo test --locked --all-targets`. `docs/conformance/README.md` maps every
-M1–M6 contract to its fixture, unit, live-Postgres, or process-level proof.
+M1–M7 contract to its fixture, unit, live-Postgres, or process-level proof.
 GitHub workflows and GitHub-billed automation are prohibited.

@@ -31,7 +31,11 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SocketBindDeny=any
 SocketBindAllow=tcp:8080
 
-# The relay writes no local state. Postgres owns all durable state.
+# Blossom bytes use this private state directory; Postgres owns their
+# visibility, ownership, quotas, and authorization state.
+StateDirectory=immortal
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/immortal
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
@@ -58,7 +62,7 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 KeyringMode=private
 RemoveIPC=true
-UMask=0077
+UMask=0027
 
 [Install]
 WantedBy=multi-user.target

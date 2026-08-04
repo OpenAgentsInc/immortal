@@ -16,7 +16,10 @@ mod timestamp;
 pub use deletion::{DeletionRequest, DeletionTombstone};
 pub use error::DomainError;
 pub use event::{Event, Tag};
-pub use expanded::{GroupAction, GroupMetadata, HttpAuth, RelaySigner, parse_http_authorization};
+pub use expanded::{
+    GroupAction, GroupMetadata, HttpAuth, RelaySigner, parse_http_authorization,
+    parse_http_authorization_hash,
+};
 pub use filter::{Filter, matches_any, search_terms};
 pub use replacement::{
     EventClass, ReplacementAddress, ReplacementDecision, compare_replacement,

@@ -1,6 +1,6 @@
 # Gateway Runtime
 
-M3–M6 turn the domain and store libraries into the single Immortal relay binary.
+M3–M7 turn the domain and store libraries into the single Immortal relay binary.
 The binary validates every environment value, migrates and verifies Postgres,
 opens a fixed set of database workers plus notification and expiration-sweep
 connections, and
@@ -15,6 +15,8 @@ One listener serves all paths consistently:
 - a GET with `Accept: application/nostr+json` returns NIP-11 with CORS headers;
 - a valid WebSocket upgrade enters the NIP-01 connection state machine;
 - an authenticated NIP-86 JSON-RPC POST uses that listener when enabled; and
+- bounded Blossom upload, retrieval, range, HEAD, and deletion use that
+  listener when media is enabled; and
 - other GET requests receive `426 Upgrade Required`.
 
 Public TLS stays at Caddy, nginx, or the cloud edge. The binary speaks plain
@@ -49,6 +51,14 @@ NIP-98 URL/method/payload signature by the configured management pubkey.
 Policy and group changes use the fixed database worker pool and prepared
 statements. See `docs/protocol/nip-expansion.md` for method signatures and the
 supported NIP-29 subset.
+
+M7 streams media bodies without placing the configured maximum in memory.
+NIP-98 binds mutations to the exact public URL, method, signature, timestamp,
+and upload hash. Postgres serializes quota, ownership, replay, and pending-to-
+ready publication state; the selected filesystem adapter holds only
+content-addressed bytes. A successful response follows database registration,
+atomic file installation, and the ready commit. See
+`docs/protocol/media.md`.
 
 ## Subscriptions and EOSE
 
@@ -91,6 +101,9 @@ the fixed `IMMORTAL_DB_CONNECTIONS` workers plus the notification and
 expiration connections; connection send queues, EOSE buffers,
 notification queues, command queues, handshake headers, WebSocket buffers,
 and recent ephemeral IDs are all bounded.
+Media adds independent per-IP and per-pubkey mutation rates, a pre-allocation
+blob bound, a transactional per-pubkey byte quota, a fixed streaming buffer,
+per-I/O and total-upload timeouts, and conservative stale-temporary cleanup.
 
 A client disconnect, CLOSE, or replacement REQ cancels its historical query.
 A full connection queue closes that connection. A failed database worker,

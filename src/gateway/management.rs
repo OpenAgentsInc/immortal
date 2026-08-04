@@ -72,7 +72,7 @@ pub async fn serve_management(
     let Some(authorization) = head.header("authorization") else {
         return unauthorized(&mut stream).await;
     };
-    let absolute_url = management_url(config, &head.path)?;
+    let absolute_url = config.absolute_http_url(&head.path)?;
     let auth =
         match parse_http_authorization(authorization, "POST", &absolute_url, &body, unix_now()) {
             Ok(auth) if &auth.pubkey == owner_pubkey => auth,
@@ -295,27 +295,6 @@ fn optional_string(params: &[Value], index: usize) -> Result<String, String> {
         Some(Value::String(value)) if value.len() <= 512 => Ok(value.clone()),
         _ => Err(format!("parameter {index} must be a string or null")),
     }
-}
-
-fn management_url(config: &GatewayConfig, path: &str) -> Result<String, GatewayError> {
-    let relay_url = config
-        .relay_url
-        .as_deref()
-        .ok_or_else(|| GatewayError::Config("management relay URL is missing".into()))?;
-    let http_url = relay_url
-        .strip_prefix("wss://")
-        .map(|rest| format!("https://{rest}"))
-        .or_else(|| {
-            relay_url
-                .strip_prefix("ws://")
-                .map(|rest| format!("http://{rest}"))
-        })
-        .ok_or_else(|| GatewayError::Config("invalid management relay URL".into()))?;
-    let authority_end = http_url[http_url.find("://").unwrap_or(0) + 3..]
-        .find('/')
-        .map(|offset| offset + http_url.find("://").unwrap_or(0) + 3)
-        .unwrap_or(http_url.len());
-    Ok(format!("{}{}", &http_url[..authority_end], path))
 }
 
 async fn unauthorized(stream: &mut TcpStream) -> Result<(), GatewayError> {

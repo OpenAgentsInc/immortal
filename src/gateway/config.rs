@@ -1,4 +1,4 @@
-use std::{env, net::SocketAddr, str::FromStr, time::Duration};
+use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
 
 use crate::domain::RelaySigner;
 
@@ -14,6 +14,8 @@ pub struct GatewayLimits {
     pub events_per_minute_ip: u32,
     pub events_per_minute_pubkey: u32,
     pub req_per_minute_ip: u32,
+    pub media_per_minute_ip: u32,
+    pub media_per_minute_pubkey: u32,
     pub max_connections_per_ip: usize,
     pub send_queue_capacity: usize,
 }
@@ -29,10 +31,20 @@ impl Default for GatewayLimits {
             events_per_minute_ip: 120,
             events_per_minute_pubkey: 60,
             req_per_minute_ip: 120,
+            media_per_minute_ip: 30,
+            media_per_minute_pubkey: 15,
             max_connections_per_ip: 20,
             send_queue_capacity: 256,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaConfig {
+    pub root: PathBuf,
+    pub cloud_base_url: Option<String>,
+    pub max_blob_bytes: usize,
+    pub max_bytes_per_pubkey: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +78,7 @@ pub struct GatewayConfig {
     pub db_connections: usize,
     pub shutdown_grace: Duration,
     pub expiration_sweep: Duration,
+    pub media: Option<MediaConfig>,
     pub limits: GatewayLimits,
     pub identity: RelayIdentity,
     pub log_level: String,
@@ -84,6 +97,7 @@ impl GatewayConfig {
             db_connections: 4,
             shutdown_grace: Duration::from_secs(10),
             expiration_sweep: Duration::from_secs(60),
+            media: None,
             limits: GatewayLimits::default(),
             identity: RelayIdentity::default(),
             log_level: "info".to_owned(),
@@ -114,6 +128,24 @@ impl GatewayConfig {
             Duration::from_secs(parse_or("IMMORTAL_SHUTDOWN_GRACE_SECONDS", "10")?);
         config.expiration_sweep =
             Duration::from_secs(parse_or("IMMORTAL_EXPIRATION_SWEEP_SECONDS", "60")?);
+        let media_root = optional_string("IMMORTAL_MEDIA_ROOT")?;
+        let cloud_base_url = optional_string("IMMORTAL_MEDIA_CLOUD_BASE_URL")?;
+        let max_blob_bytes = parse_or("IMMORTAL_MEDIA_MAX_BLOB_BYTES", "10485760")?;
+        let max_bytes_per_pubkey = parse_or("IMMORTAL_MEDIA_MAX_BYTES_PER_PUBKEY", "1073741824")?;
+        config.media = match media_root {
+            Some(root) => Some(MediaConfig {
+                root: PathBuf::from(root),
+                cloud_base_url,
+                max_blob_bytes,
+                max_bytes_per_pubkey,
+            }),
+            None if cloud_base_url.is_some() => {
+                return Err(GatewayError::Config(
+                    "IMMORTAL_MEDIA_ROOT is required with IMMORTAL_MEDIA_CLOUD_BASE_URL".to_owned(),
+                ));
+            }
+            None => None,
+        };
         config.limits = GatewayLimits {
             max_frame_bytes: parse_or("IMMORTAL_MAX_FRAME_BYTES", "131072")?,
             max_subscriptions: parse_or("IMMORTAL_MAX_SUBSCRIPTIONS", "32")?,
@@ -123,6 +155,8 @@ impl GatewayConfig {
             events_per_minute_ip: parse_or("IMMORTAL_RATE_EVENTS_PER_MIN_IP", "120")?,
             events_per_minute_pubkey: parse_or("IMMORTAL_RATE_EVENTS_PER_MIN_PUBKEY", "60")?,
             req_per_minute_ip: parse_or("IMMORTAL_RATE_REQ_PER_MIN_IP", "120")?,
+            media_per_minute_ip: parse_or("IMMORTAL_RATE_MEDIA_PER_MIN_IP", "30")?,
+            media_per_minute_pubkey: parse_or("IMMORTAL_RATE_MEDIA_PER_MIN_PUBKEY", "15")?,
             max_connections_per_ip: parse_or("IMMORTAL_MAX_CONNECTIONS_PER_IP", "20")?,
             send_queue_capacity: parse_or("IMMORTAL_SEND_QUEUE_CAPACITY", "256")?,
         };
@@ -214,6 +248,14 @@ impl GatewayConfig {
                 "IMMORTAL_RATE_REQ_PER_MIN_IP",
                 self.limits.req_per_minute_ip,
             ),
+            (
+                "IMMORTAL_RATE_MEDIA_PER_MIN_IP",
+                self.limits.media_per_minute_ip,
+            ),
+            (
+                "IMMORTAL_RATE_MEDIA_PER_MIN_PUBKEY",
+                self.limits.media_per_minute_pubkey,
+            ),
         ] {
             if value == 0 {
                 return Err(config(format!("{name} must be positive")));
@@ -271,12 +313,72 @@ impl GatewayConfig {
                 "IMMORTAL_RELAY_URL is required when IMMORTAL_AUTH_REQUIRED is true",
             ));
         }
+        if let Some(media) = &self.media {
+            if !media.root.is_absolute() {
+                return Err(config("IMMORTAL_MEDIA_ROOT must be an absolute path"));
+            }
+            if self.relay_url.is_none() {
+                return Err(config(
+                    "IMMORTAL_RELAY_URL is required when media storage is enabled",
+                ));
+            }
+            if !(1_024..=1_073_741_824).contains(&media.max_blob_bytes) {
+                return Err(config(
+                    "IMMORTAL_MEDIA_MAX_BLOB_BYTES must be between 1024 and 1073741824",
+                ));
+            }
+            if media.max_bytes_per_pubkey < media.max_blob_bytes as u64
+                || media.max_bytes_per_pubkey > 1_099_511_627_776
+            {
+                return Err(config(
+                    "IMMORTAL_MEDIA_MAX_BYTES_PER_PUBKEY must be at least the blob limit and at most 1099511627776",
+                ));
+            }
+            if let Some(base) = &media.cloud_base_url {
+                let authority = base
+                    .strip_prefix("http://")
+                    .or_else(|| base.strip_prefix("https://"))
+                    .and_then(|rest| rest.split('/').next());
+                if authority.is_none_or(str::is_empty)
+                    || base.len() > 2_048
+                    || base.chars().any(char::is_whitespace)
+                    || base.contains('?')
+                    || base.contains('#')
+                {
+                    return Err(config(
+                        "IMMORTAL_MEDIA_CLOUD_BASE_URL must be a valid http:// or https:// base URL",
+                    ));
+                }
+            }
+        }
         if !matches!(self.log_level.as_str(), "error" | "warn" | "info" | "debug") {
             return Err(config(
                 "IMMORTAL_LOG_LEVEL must be error, warn, info, or debug",
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn absolute_http_url(&self, path: &str) -> Result<String, GatewayError> {
+        let relay_url = self
+            .relay_url
+            .as_deref()
+            .ok_or_else(|| GatewayError::Config("public relay URL is missing".into()))?;
+        let http_url = relay_url
+            .strip_prefix("wss://")
+            .map(|rest| format!("https://{rest}"))
+            .or_else(|| {
+                relay_url
+                    .strip_prefix("ws://")
+                    .map(|rest| format!("http://{rest}"))
+            })
+            .ok_or_else(|| GatewayError::Config("invalid public relay URL".into()))?;
+        let scheme_end = http_url.find("://").unwrap_or(0) + 3;
+        let authority_end = http_url[scheme_end..]
+            .find('/')
+            .map(|offset| offset + scheme_end)
+            .unwrap_or(http_url.len());
+        Ok(format!("{}{}", &http_url[..authority_end], path))
     }
 }
 
