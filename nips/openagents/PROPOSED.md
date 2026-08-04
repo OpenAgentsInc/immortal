@@ -307,12 +307,14 @@ implementation already exists.
 
 ### Layer 3 — Automation and attention
 
-| NIP | Name | Tentative kinds |
-| --- | --- | --- |
-| NIP-GB | Guidance Bundles | 32330-32339 |
-| NIP-AL | Automation Loops | 32340-32349 |
-| NIP-TP | Triage Proposals | 32350-32359 |
-| NIP-AT | Attention and Notifications | 32360-32369 |
+Layer 3 is drafted. The four spec files live beside this index.
+
+| NIP | Name | Tentative kinds | Draft |
+| --- | --- | --- | --- |
+| NIP-GB | Guidance Bundles | 32330-32339 | [`GB.md`](GB.md) |
+| NIP-AL | Automation Loops | 32340-32349 | [`AL.md`](AL.md) |
+| NIP-TP | Triage Proposals | 32350-32359 | [`TP.md`](TP.md) |
+| NIP-AT | Attention and Notifications | 32360-32369 | [`AT.md`](AT.md) |
 
 **NIP-GB — Guidance Bundles.** Versioned organization, team, project,
 repository, and workflow guidance with an explicit precedence chain and
@@ -352,11 +354,14 @@ notification never triggers Work.
 
 ### Layer 4 — Hosts, outcomes, and public trust
 
-| NIP | Name | Tentative kinds |
-| --- | --- | --- |
-| NIP-HP | Hosts and Placement | 39560-39579 |
-| NIP-OC | Outcome Closeout | 39580-39589 |
-| NIP-PP | Product Promises | 32440-32449 |
+Layer 4 is drafted. With it, all 25 proposed NIPs have spec files beside
+this index.
+
+| NIP | Name | Tentative kinds | Draft |
+| --- | --- | --- | --- |
+| NIP-HP | Hosts and Placement | 39560-39579 | [`HP.md`](HP.md) |
+| NIP-OC | Outcome Closeout | 39580-39589 | [`OC.md`](OC.md) |
+| NIP-PP | Product Promises | 32440-32449 | [`PP.md`](PP.md) |
 
 **NIP-HP — Hosts and Placement.** Host records (identity, kind, owner,
 generation, health, capability refs, grant refs, last-observed time) for
