@@ -11,6 +11,7 @@ use tokio::{
     task::JoinHandle,
 };
 
+use crate::mkt_swp_coordination::parse_coordination_wrap;
 use crate::{
     domain::{Event, Filter, IdentityArchiveRequest, RelaySigner},
     store::{
@@ -29,6 +30,12 @@ pub struct DbPool {
 struct DbPoolInner {
     workers: Vec<mpsc::Sender<DbRequest>>,
     next: AtomicUsize,
+}
+
+#[derive(Clone)]
+pub(super) struct DbProtocolConfig {
+    pub relay_signer: Option<RelaySigner>,
+    pub mkt_swp_coordination: bool,
 }
 
 enum DbRequest {
@@ -150,7 +157,7 @@ impl DbPool {
         shutdown: watch::Sender<bool>,
         shutdown_receiver: watch::Receiver<bool>,
         current: Arc<AtomicBool>,
-        relay_signer: Option<RelaySigner>,
+        protocol: DbProtocolConfig,
     ) -> Result<(Self, Vec<JoinHandle<()>>), GatewayError> {
         let mut stores = Vec::with_capacity(workers);
         for _ in 0..workers {
@@ -165,7 +172,7 @@ impl DbPool {
             let mut worker_shutdown = shutdown_receiver.clone();
             let failure_shutdown = shutdown.clone();
             let worker_current = Arc::clone(&current);
-            let relay_signer = relay_signer.clone();
+            let protocol = protocol.clone();
             tasks.push(tokio::spawn(async move {
                 loop {
                     tokio::select! {
@@ -176,7 +183,12 @@ impl DbPool {
                         }
                         request = receiver.recv() => {
                             let Some(request) = request else { break };
-                            let fatal = handle_request(&mut store, request, relay_signer.as_ref()).await;
+                            let fatal = handle_request(
+                                &mut store,
+                                request,
+                                protocol.relay_signer.as_ref(),
+                                protocol.mkt_swp_coordination,
+                            ).await;
                             if fatal || !store.is_current() {
                                 worker_current.store(false, Ordering::Release);
                                 let _ = failure_shutdown.send(true);
@@ -450,6 +462,7 @@ async fn handle_request(
     store: &mut Store,
     request: DbRequest,
     relay_signer: Option<&RelaySigner>,
+    mkt_swp_coordination: bool,
 ) -> bool {
     match request {
         DbRequest::Admit {
@@ -458,9 +471,58 @@ async fn handle_request(
             virtual_owner,
             response,
         } => {
-            let result = store
+            let coordination_input = if mkt_swp_coordination
+                && event.kind == 1_059
+                && relay_signer
+                    .is_some_and(|signer| event.gift_wrap_recipient() == Some(signer.pubkey()))
+            {
+                match relay_signer {
+                    Some(signer) => match parse_coordination_wrap(&event, signer) {
+                        Ok(input) => input,
+                        Err(reason) => {
+                            let _ = response.send(Err(StoreError::Coordination(reason)));
+                            return false;
+                        }
+                    },
+                    None => {
+                        let _ = response.send(Err(StoreError::Coordination(
+                            "coordination handler signer is unavailable".to_owned(),
+                        )));
+                        return false;
+                    }
+                }
+            } else {
+                None
+            };
+            let mut result = store
                 .admit_with_identity(&event, now, relay_signer, virtual_owner.as_deref())
                 .await;
+            if let (Ok(admission), Some(input), Some(signer)) =
+                (&result, coordination_input.as_ref(), relay_signer)
+            {
+                if matches!(
+                    admission,
+                    AdmissionOutcome::Stored { .. } | AdmissionOutcome::Duplicate
+                ) {
+                    result = match store.apply_mkt_swp_coordination(input, now, signer).await {
+                        Ok(outcome) => {
+                            let (stored, ingest_seq) = match admission {
+                                AdmissionOutcome::Stored { ingest_seq } => {
+                                    (true, Some(*ingest_seq))
+                                }
+                                AdmissionOutcome::Duplicate => (false, None),
+                                _ => (false, None),
+                            };
+                            Ok(AdmissionOutcome::Coordinated {
+                                stored,
+                                ingest_seq,
+                                outcome,
+                            })
+                        }
+                        Err(error) => Err(error),
+                    };
+                }
+            }
             let fatal = result.as_ref().is_err_and(is_fatal);
             let _ = response.send(result);
             fatal
@@ -745,5 +807,6 @@ fn is_fatal(error: &StoreError) -> bool {
             | StoreError::EphemeralTooLarge(_)
             | StoreError::Management(_)
             | StoreError::Media(_)
+            | StoreError::Coordination(_)
     )
 }

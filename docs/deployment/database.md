@@ -64,6 +64,16 @@ any pre-adoption kind-39610 row, removes its generic replacement head, and
 rebuilds the generated search vector so the private profile kind remains
 hidden on every query surface.
 
+`migrations/0011_mkt_swp_coordination.sql` adds the optional handler's
+`mkt_swp_reservation_claim`, `mkt_swp_status_claim`, and
+`mkt_swp_evidence_observation` tables. They contain signed identifiers,
+bounded accounting metadata, and public-artifact hashes. They contain no
+decrypted record content, raw transaction, wallet credential, preimage,
+private participant key, or node credential. Reservation and Status writers
+use transaction-scoped advisory locks across relay processes. The expiration
+sweep updates at most 1,000 active reservation rows with `FOR UPDATE SKIP
+LOCKED`; it does not mutate or publish participant events.
+
 The database independently rejects malformed identity widths, negative or
 out-of-range protocol numbers, ephemeral kinds, inconsistent replacement
 identifiers, and malformed tombstone shapes. Indexed access paths cover IDs,
@@ -90,8 +100,9 @@ statement is prepared once through `tokio-postgres` and uses typed parameters.
 `Store::connect_verified` checks that all known migration names and hashes are
 current without executing DDL. Gateway startup first runs migrations with its
 single configured database credential, then creates its fixed set of verified
-workers and dedicated notification and expiration connections before the network listener
-binds. M5 therefore deploys one database-owner login; the binary does not yet
+workers and dedicated notification, expiration, and optional coordination-
+sweep connections before the network listener binds. M5 therefore deploys one
+database-owner login; the binary does not yet
 expose separate migrator/runtime credentials or a migration-only command.
 
 ## Admission transaction

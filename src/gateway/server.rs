@@ -40,7 +40,7 @@ use crate::{
 use super::{
     GatewayConfig, GatewayError,
     auth::{AuthState, make_challenge, read_process_secret},
-    db::DbPool,
+    db::{DbPool, DbProtocolConfig},
     management::{is_management_request, serve_management},
     media::{MediaStorage, is_media_request, serve_media},
     rate::{ConnectionPermit, RateLimiter},
@@ -151,7 +151,10 @@ impl Gateway {
             shutdown.clone(),
             shutdown_receiver.clone(),
             Arc::clone(&current),
-            config.relay_signer.clone(),
+            DbProtocolConfig {
+                relay_signer: config.relay_signer.clone(),
+                mkt_swp_coordination: config.mkt_swp_coordination.is_some(),
+            },
         )
         .await?;
 
@@ -181,6 +184,37 @@ impl Gateway {
                 }
             }
         }));
+        if let Some(coordination) = &config.mkt_swp_coordination {
+            let coordination_store = Store::connect_verified(&config.database_url).await?;
+            let coordination_shutdown = shutdown.clone();
+            let coordination_current = Arc::clone(&current);
+            let mut coordination_stop = shutdown_receiver.clone();
+            let coordination_interval = coordination.sweep;
+            background.push(tokio::spawn(async move {
+                let mut interval = tokio::time::interval(coordination_interval);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        changed = coordination_stop.changed() => {
+                            if changed.is_err() || *coordination_stop.borrow() {
+                                break;
+                            }
+                        }
+                        _ = interval.tick() => {
+                            if coordination_store
+                                .release_expired_mkt_swp_reservations(unix_now())
+                                .await
+                                .is_err()
+                                || !coordination_store.is_current()
+                            {
+                                fail_process(&coordination_current, &coordination_shutdown);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }));
+        }
         if config.import_nostr_effect {
             let mut import_store = Store::connect_verified(&config.database_url).await?;
             let import_signer = config.relay_signer.clone();
@@ -1780,6 +1814,13 @@ fn admission_response(outcome: AdmissionOutcome) -> (bool, String) {
     match outcome {
         AdmissionOutcome::Stored { .. } | AdmissionOutcome::Ephemeral => (true, String::new()),
         AdmissionOutcome::Duplicate => (true, "duplicate: already have this event".to_owned()),
+        AdmissionOutcome::Coordinated { outcome, .. } => {
+            if outcome.accepted {
+                (true, format!("mkt-swp-coordination: {}", outcome.code))
+            } else {
+                (false, format!("restricted: {}", outcome.code))
+            }
+        }
         AdmissionOutcome::Rejected(rejection) => match rejection {
             AdmissionRejection::BlockedPubkey(reason) | AdmissionRejection::BlockedKind(reason) => {
                 (false, format!("blocked: {}", bounded(&reason, 512)))
@@ -1851,6 +1892,9 @@ fn store_error_response(error: &StoreError) -> String {
         | StoreError::Serialization(_)
         | StoreError::EphemeralTooLarge(_) => {
             format!("invalid: {}", bounded(&error.to_string(), 512))
+        }
+        StoreError::Coordination(reason) => {
+            format!("invalid: {}", bounded(reason, 512))
         }
         StoreError::QueryCancelled => "error: admission was cancelled".to_owned(),
         _ => "error: storage unavailable".to_owned(),

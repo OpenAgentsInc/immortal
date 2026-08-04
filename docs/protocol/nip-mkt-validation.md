@@ -1,9 +1,11 @@
 # NIP-MKT Validation Boundary
 
-Immortal implements the profile-neutral NIP-MKT base grammar and the relay-
-observable subsets of MKT-SWP v1 and MKT-PFI v1. It does not implement an
+Immortal implements the profile-neutral NIP-MKT base grammar, the relay-
+observable subsets of MKT-SWP v1 and MKT-PFI v1, and an optional configured
+noncustodial coordination handler. The handler boundary is documented in
+[`mkt-swp-coordination.md`](mkt-swp-coordination.md). It does not implement an
 executable PFI profile: credential, rail, guarantee, reserve, escrow, dispute,
-and settlement authority remain external.
+wallet, and settlement authority remain external.
 
 ## Kind and publication contract
 
@@ -35,6 +37,7 @@ created by an older release or legacy import.
 | Raw client/handler record | `validate_mkt_private_raw` checks the exact received byte length, one complete duplicate-free event object with no unknown outer members, event structure and signature, base grammar, and an explicit caller-supplied profile registry. It returns the authoritative raw signed bytes with the decoded event and envelope. This is the exact 32 KiB client/future-handler path; reserializing an `Event` can only bound its compact in-memory form. |
 | Explicit profile consumer | `validate_mkt_private_with_profiles` additionally requires a caller-supplied `MktProfileSupport` with an exact ID/version and rejects profile-declared critical members that the consumer does not understand. Unknown noncritical members remain in the returned body. |
 | NIP-59 gift wrap at the transport relay | The inner signed record is encrypted and opaque. The relay can validate and recipient-gate the outer wrap, but cannot claim it checked inner MKT grammar, signer roles, terms, or profile semantics. |
+| Handler-addressed NIP-59 copy | Only when exact-digest coordination is configured, the relay signer decrypts its own additional wrap, applies the explicit MKT-SWP registry and custody tripwires in memory, then persists bounded identifiers, accounting fields, and hashes without decrypted content. |
 
 The no-server client library implements bounded NIP-44 v2 and NIP-59
 wrap/unwrap primitives. A private MKT record is validated and signed first;
@@ -86,7 +89,9 @@ Gift-wrap REQ and COUNT filter refusals retain the existing NIP-42 strings:
 `restricted: gift-wrap reads must be scoped to #p self`.
 
 The exported executable-profile set remains empty. Separate relay-profile
-entries identify the observable MKT-SWP v1 and MKT-PFI v1 schemas. Profile-aware base fixtures use the
+entries identify the observable MKT-SWP v1 and MKT-PFI v1 schemas. The optional
+handler has its own exact-digest `mkt-swp-coordination:1` advertisement and is
+not a client or wallet execution claim. Profile-aware base fixtures use the
 synthetic ID `conformance`; it exists only to test fail-closed API behavior.
 Consumers supply contracts pinned to profile authorities and revisions. No
 wire-level `critical` member was invented: which members are critical comes

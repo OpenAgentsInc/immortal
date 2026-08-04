@@ -58,6 +58,12 @@
     },
     {
       "lane": "official",
+      "identifier": "NIP-32",
+      "advertisement": "mkt_swp_coordination_exact_conformance",
+      "status": "implemented_for_handler_observations"
+    },
+    {
+      "lane": "official",
       "identifier": "NIP-40",
       "advertisement": "always",
       "status": "implemented"
@@ -223,6 +229,12 @@
       "identifier": "nip-mkt-pfi:1",
       "advertisement": "relay_url_and_local_conformance",
       "status": "relay_observable"
+    },
+    {
+      "lane": "openagents",
+      "identifier": "mkt-swp-coordination:1",
+      "advertisement": "exact_conformance_digest_and_relay_signer",
+      "status": "optional_noncustodial_handler"
     }
   ],
   "kinds": [
@@ -598,7 +610,57 @@
         "musig_secret_nonce",
         "signing_nonce"
       ],
-      "upstream_fixture_cases": 70
+      "upstream_fixture_cases": 70,
+      "coordination": {
+        "extension": "mkt-swp-coordination:1",
+        "enabled_by_default": false,
+        "activation_environment": "IMMORTAL_MKT_SWP_COORDINATION_CONFORMANCE_SHA256",
+        "conformance_sha256": "323183f8bf55fc5c7c535f6aff404d0acf4a7359a206ceb60396550bca6cf12a",
+        "sweep_environment": "IMMORTAL_MKT_SWP_COORDINATION_SWEEP_SECONDS",
+        "required_configuration": [
+          "relay_url",
+          "relay_signer",
+          "exact_conformance_digest"
+        ],
+        "private_capacity_extension_member": "reservation_terms.handler_committed_capacity",
+        "reservation_accounting": "provider_signed_none_soft_hard; provider_wide_reservation_ids; bucket_wide_sequence_and_row_bound; conflicting_or_overallocated_claims_retained_inactive",
+        "allocation_commitment": "strictly_increasing_sequence_and_new_active_set_commitment_per_provider_bucket",
+        "covenant_reserve_identity": "sha256(covenant.funding_ref); globally_locked_across_buckets",
+        "reservation_proof_strength": {
+          "covenant_reserve": 100,
+          "funded_htlc": 80,
+          "handler_accounted": 20,
+          "lightning_liquidity": 50,
+          "provider_signed": 10,
+          "third_party_guarantee": 40,
+          "utxo_control": 60
+        },
+        "active_reservations_per_bucket": 1024,
+        "deadline": "minimum_of_nip40_reservation_and_profile_timeout",
+        "timeout_mutation": "active_reservation_to_released_only",
+        "timeout_forbidden_effects": [
+          "sign",
+          "cancel",
+          "accept",
+          "settle",
+          "refund",
+          "close",
+          "publish_participant_status"
+        ],
+        "status_projection": "dense_per_session_order_author",
+        "status_sequence_maximum": 4095,
+        "forks_per_sequence": 8,
+        "status_query_rows": 32769,
+        "public_evidence_hook": "bitcoin_transaction_v1",
+        "public_evidence_per_record": 8,
+        "public_transaction_bytes": 16384,
+        "observation_kind": 1985,
+        "observation_namespace": "openagents.mkt-swp.observation",
+        "observation_authority": "observation_not_authority",
+        "durable_private_state": "signed_identifiers_bounded_accounting_and_hashes_only",
+        "multi_process_consistency": "postgres_advisory_locks_and_transactions",
+        "on_relay_output_orderbook": false
+      }
     },
     "mkt_pfi": {
       "id": "mkt-pfi",

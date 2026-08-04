@@ -14,6 +14,7 @@ cargo test --locked --test mkt_swp_profile
 cargo test --locked --test mkt_pfi_profile
 cargo test --locked --test tbdex_legacy_fixtures
 ./scripts/test-swp-verification.sh
+cargo test --locked --test mkt_swp_coordination
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets --features mkt-swp-verify -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps --features mkt-swp-verify

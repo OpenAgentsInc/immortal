@@ -51,6 +51,7 @@ for path in sorted(fixture_root.rglob("*.json"), key=lambda item: item.relative_
         relative.endswith("nipmkt/common-grammar.json")
         or relative.endswith("nipmkt/relay-closing.json")
         or relative.endswith("nipmkt/pfi-profile-v1.json")
+        or relative.endswith("nipmkt/swp-coordination-v1.json")
         or relative.endswith("nipmkt/swp-profile-v1.json")
         or relative.endswith("nipmkt/swp-verification.json")
     ):

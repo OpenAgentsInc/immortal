@@ -1,6 +1,10 @@
 use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
 
 use crate::domain::RelaySigner;
+use crate::mkt_swp_coordination::{
+    MKT_SWP_COORDINATION_CONFORMANCE_ENV, MKT_SWP_COORDINATION_DEFAULT_SWEEP_SECONDS,
+    MKT_SWP_COORDINATION_SWEEP_ENV, coordination_conformance_sha256,
+};
 
 use super::GatewayError;
 
@@ -61,6 +65,12 @@ pub struct RelayIdentity {
     pub pubkey: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MktSwpCoordinationConfig {
+    pub conformance_sha256: String,
+    pub sweep: Duration,
+}
+
 impl Default for RelayIdentity {
     fn default() -> Self {
         Self {
@@ -84,6 +94,7 @@ pub struct GatewayConfig {
     pub db_connections: usize,
     pub shutdown_grace: Duration,
     pub expiration_sweep: Duration,
+    pub mkt_swp_coordination: Option<MktSwpCoordinationConfig>,
     pub import_nostr_effect: bool,
     pub legacy_import_sweep: Duration,
     pub media: Option<MediaConfig>,
@@ -105,6 +116,7 @@ impl GatewayConfig {
             db_connections: 4,
             shutdown_grace: Duration::from_secs(10),
             expiration_sweep: Duration::from_secs(60),
+            mkt_swp_coordination: None,
             import_nostr_effect: false,
             legacy_import_sweep: Duration::from_secs(10),
             media: None,
@@ -138,6 +150,19 @@ impl GatewayConfig {
             Duration::from_secs(parse_or("IMMORTAL_SHUTDOWN_GRACE_SECONDS", "10")?);
         config.expiration_sweep =
             Duration::from_secs(parse_or("IMMORTAL_EXPIRATION_SWEEP_SECONDS", "60")?);
+        config.mkt_swp_coordination = optional_string(MKT_SWP_COORDINATION_CONFORMANCE_ENV)?
+            .map(
+                |conformance_sha256| -> Result<MktSwpCoordinationConfig, GatewayError> {
+                    Ok(MktSwpCoordinationConfig {
+                        conformance_sha256,
+                        sweep: Duration::from_secs(parse_or(
+                            MKT_SWP_COORDINATION_SWEEP_ENV,
+                            &MKT_SWP_COORDINATION_DEFAULT_SWEEP_SECONDS.to_string(),
+                        )?),
+                    })
+                },
+            )
+            .transpose()?;
         config.import_nostr_effect = parse_bool("IMMORTAL_IMPORT_NOSTR_EFFECT", false)?;
         config.legacy_import_sweep =
             Duration::from_secs(parse_or("IMMORTAL_LEGACY_IMPORT_SWEEP_SECONDS", "10")?);
@@ -220,6 +245,23 @@ impl GatewayConfig {
             return Err(config(
                 "IMMORTAL_EXPIRATION_SWEEP_SECONDS must be between 1 and 86400",
             ));
+        }
+        if let Some(coordination) = &self.mkt_swp_coordination {
+            if coordination.conformance_sha256 != coordination_conformance_sha256() {
+                return Err(config(format!(
+                    "{MKT_SWP_COORDINATION_CONFORMANCE_ENV} does not match the compiled fixture, schema, and configuration digest"
+                )));
+            }
+            if self.relay_url.is_none() || self.relay_signer.is_none() {
+                return Err(config(
+                    "MKT-SWP coordination requires IMMORTAL_RELAY_URL and IMMORTAL_RELAY_SECRET_KEY",
+                ));
+            }
+            if coordination.sweep.is_zero() || coordination.sweep > Duration::from_secs(3_600) {
+                return Err(config(format!(
+                    "{MKT_SWP_COORDINATION_SWEEP_ENV} must be between 1 and 3600"
+                )));
+            }
         }
         if self.legacy_import_sweep.is_zero()
             || self.legacy_import_sweep > Duration::from_secs(3_600)

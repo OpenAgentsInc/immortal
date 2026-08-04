@@ -33,6 +33,14 @@ impl MarketSigner {
         self.signer.pubkey()
     }
 
+    #[cfg(feature = "server")]
+    pub(crate) fn from_relay_signer(signer: RelaySigner) -> Self {
+        Self {
+            secret: signer.secret_key(),
+            signer,
+        }
+    }
+
     pub fn sign(&self, created_at: u64, kind: u16, tags: Vec<Tag>, content: String) -> Event {
         self.signer.sign(created_at, kind, tags, content)
     }
@@ -142,6 +150,26 @@ pub fn unwrap_mkt_record(
     recipient: &MarketSigner,
     supported_profiles: &[MktProfileSupport<'_>],
 ) -> Result<DeliveredMktRecord, String> {
+    let rumor = unwrap_rumor(wrap, recipient)?;
+    validate_rumor_record(wrap, rumor, supported_profiles)
+}
+
+/// Probe a handler-addressed NIP-59 delivery without claiming every delivery
+/// to the relay key as MKT-SWP. Non-MKT rumors remain opaque transport.
+#[cfg(feature = "server")]
+pub(crate) fn unwrap_mkt_record_for_handler(
+    wrap: &Event,
+    recipient: &MarketSigner,
+    supported_profiles: &[MktProfileSupport<'_>],
+) -> Result<Option<DeliveredMktRecord>, String> {
+    let rumor = unwrap_rumor(wrap, recipient)?;
+    if !is_mkt_private_kind(rumor.kind) {
+        return Ok(None);
+    }
+    validate_rumor_record(wrap, rumor, supported_profiles).map(Some)
+}
+
+fn unwrap_rumor(wrap: &Event, recipient: &MarketSigner) -> Result<Rumor, String> {
     wrap.validate_structure()
         .and_then(|()| wrap.validate_crypto())
         .map_err(|error| format!("gift wrap is invalid: {error}"))?;
@@ -170,6 +198,14 @@ pub fn unwrap_mkt_record(
         return Err("gift wrap rumor author does not match the seal signer".to_owned());
     }
     require_rumor_recipient(&rumor, recipient.pubkey())?;
+    Ok(rumor)
+}
+
+fn validate_rumor_record(
+    wrap: &Event,
+    rumor: Rumor,
+    supported_profiles: &[MktProfileSupport<'_>],
+) -> Result<DeliveredMktRecord, String> {
     let record = validate_mkt_private_raw(rumor.content.as_bytes(), supported_profiles)
         .map_err(|error| format!("wrapped private MKT record is invalid: {error}"))?;
     if record.event.pubkey != rumor.pubkey
@@ -180,7 +216,7 @@ pub fn unwrap_mkt_record(
     }
     Ok(DeliveredMktRecord {
         wrap_event_id: wrap.id.clone(),
-        sender: seal.pubkey,
+        sender: rumor.pubkey,
         record,
     })
 }
@@ -325,5 +361,51 @@ mod tests {
         );
         assert_eq!(delivered.sender, sender.pubkey());
         assert_eq!(delivered.record.raw_signed_event, raw);
+    }
+
+    #[test]
+    #[cfg(feature = "server")]
+    fn handler_probe_leaves_non_mkt_nip59_delivery_opaque() {
+        let sender = MarketSigner::from_secret_bytes([31; 32]).unwrap();
+        let recipient = MarketSigner::from_secret_bytes([32; 32]).unwrap();
+        let inner = sender.sign(
+            20,
+            14,
+            vec![Tag::new(vec!["p".into(), recipient.pubkey().into()])],
+            "ordinary direct message".into(),
+        );
+        let mut rumor = Rumor {
+            id: String::new(),
+            pubkey: sender.pubkey().into(),
+            created_at: inner.created_at,
+            kind: inner.kind,
+            tags: vec![Tag::new(vec!["p".into(), recipient.pubkey().into()])],
+            content: serde_json::to_string(&inner).unwrap(),
+        };
+        rumor.id = rumor_id(&rumor).unwrap();
+        let sender_key = sender.conversation_key(recipient.pubkey()).unwrap();
+        let sealed_content = nip44::encrypt(
+            &serde_json::to_string(&rumor).unwrap(),
+            &sender_key,
+            [33; 32],
+        )
+        .unwrap();
+        let seal = sender.sign(19, SEAL_KIND, Vec::new(), sealed_content);
+        let one_time = MarketSigner::from_secret_bytes([34; 32]).unwrap();
+        let wrap_key = one_time.conversation_key(recipient.pubkey()).unwrap();
+        let wrap_content =
+            nip44::encrypt(&serde_json::to_string(&seal).unwrap(), &wrap_key, [35; 32]).unwrap();
+        let wrap = one_time.sign(
+            20,
+            GIFT_WRAP_KIND,
+            vec![Tag::new(vec!["p".into(), recipient.pubkey().into()])],
+            wrap_content,
+        );
+
+        assert!(
+            unwrap_mkt_record_for_handler(&wrap, &recipient, &[])
+                .unwrap()
+                .is_none()
+        );
     }
 }

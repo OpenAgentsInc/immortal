@@ -251,3 +251,35 @@ cases as relay enforcement. Those authorities remain external. The contract
 lists `mkt-pfi:1` as `relay_observable_only`, keeps executable profiles empty,
 and advertises `nip-mkt-pfi:1` only under the authenticated relay URL gate
 after the complete local relay-observable conformance gate passes.
+
+## M12 coordination-handler decision (2026-08-04)
+
+Issue #13 adopts MKT-SWP v1 section 5 reservation accounting, section 9.5
+Status gap/fork surfacing, and section 11 evidence authority for an optional
+handler in the existing relay binary. The exact OpenAgents source remains
+`a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`. NIP-32 from the pinned official
+lane supplies the relay-signed public observation label. The Satora review
+adds covenant reserve as the strongest `hard` proof class and rejects an
+on-relay orderbook of price-welded outputs.
+
+The base commitment keeps total capacity private. The separately advertised
+handler extension therefore adopts one private nested member,
+`reservation_terms.handler_committed_capacity`, as a provider-signed canonical
+decimal used only for the section 5 inequality. This is an extension contract,
+not a change to the pinned MKT-SWP schema. Its exact bytes and behavior are
+pinned by the coordination fixture and activation digest.
+
+This adoption allocates no event kind in `39610-39699`, so it does not trigger
+a new kind allocation or collision exception. Private coordination arrives as
+an additional handler-addressed kind-1059 delivery; public observations use
+the already assigned official kind 1985. The active handler advertises
+`mkt-swp-coordination:1` and NIP-32 only after its compiled fixture/migration/
+configuration digest exactly matches operator configuration and the local
+two-process Postgres conformance gate passes.
+
+The handler owns accounting observations, not participant or rail authority.
+It stores bounded signed identifiers and hashes, releases only reservation
+state on timeout, and cannot sign participant transitions, hold custody
+material, operate a wallet or node, or assert payment/finality. Its complete
+boundary is [`mkt-swp-coordination.md`](mkt-swp-coordination.md). No source-
+lane precedence exception was created.

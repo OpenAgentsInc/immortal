@@ -14,7 +14,7 @@ required-features = ["server"]
 
 [features]
 default = ["server"]
-server = ["dep:tokio", "dep:tokio-postgres", "dep:tokio-tungstenite"]
+server = ["dep:tokio", "dep:tokio-postgres", "dep:tokio-tungstenite", "mkt-swp-verify"]
 mkt-swp-verify = []
 
 # Dependency policy: additions require owner sign-off recorded in AGENTS.md.

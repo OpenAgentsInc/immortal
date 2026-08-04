@@ -100,6 +100,12 @@ names the NIP that owns the behavior.
   loss-accounted, non-executable projection audits, DID/JOSE refusal, and the
   RFQ detached-private-data commitment pattern without copying source
   credentials or payment details into the binary or relay state.
+- `nipmkt/swp-coordination-v1.json` pins the optional noncustodial handler:
+  exact-digest activation, signed capacity bounds, covenant reserve as the
+  strongest hard proof class, attributable over-allocation/forks, dense
+  Status gaps/forks, reservation-only timeout release, public Bitcoin
+  observations labeled observation-not-authority, custody tripwires, and the
+  two-process/one-Postgres proof.
 - `nipae/`, `nipap/`, `niper/`, `nipmp/`, `nippl/`, `nipia/`, `nipdv/`,
   `nipwp/`, `nipcw/`, `niprs/`, and `nipgs/` each contain a committed server
   contract derived from the corresponding pinned Block text. They cover

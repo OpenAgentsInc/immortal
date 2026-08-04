@@ -455,6 +455,134 @@ VALUES ($1, $2)
 ON CONFLICT (event_id) DO UPDATE
 SET outcome = EXCLUDED.outcome, processed_at = clock_timestamp()
 "#;
+const MKT_SWP_RESERVATION_OUTCOME_SQL: &str = r#"
+SELECT decision, active, expires_at, released_at
+FROM mkt_swp_reservation_claim
+WHERE quote_event_id = $1
+"#;
+const MKT_SWP_RESERVATION_FORK_SQL: &str = r#"
+SELECT
+  EXISTS (
+    SELECT 1
+    FROM mkt_swp_reservation_claim
+    WHERE provider_pubkey = $1
+      AND quote_event_id <> $5
+      AND reservation_id = $4
+  ) AS idempotency_conflict,
+  EXISTS (
+    SELECT 1
+    FROM mkt_swp_reservation_claim
+    WHERE provider_pubkey = $1
+      AND quote_event_id <> $5
+      AND capacity_bucket_id = $2
+      AND (
+          allocation_sequence >= $3
+          OR capacity_commitment_sha256 = $6
+      )
+  ) AS allocation_fork
+"#;
+const MKT_SWP_RESERVATION_CAPACITY_SQL: &str = r#"
+SELECT (
+    SELECT COUNT(*)
+    FROM mkt_swp_reservation_claim bucket_claim
+    WHERE bucket_claim.provider_pubkey = $1
+      AND bucket_claim.capacity_bucket_id = $2
+      AND bucket_claim.active
+      AND bucket_claim.expires_at > $7::bigint
+) < $4::bigint
+   AND COALESCE(SUM(asset_claim.reserved_amount), 0) <= ($5::bigint - $6::bigint)
+FROM mkt_swp_reservation_claim asset_claim
+WHERE asset_claim.provider_pubkey = $1
+  AND asset_claim.capacity_bucket_id = $2
+  AND asset_claim.reserved_asset_id = $3
+  AND asset_claim.active
+  AND asset_claim.expires_at > $7::bigint
+"#;
+const MKT_SWP_COVENANT_REUSE_SQL: &str = r#"
+SELECT EXISTS (
+    SELECT 1
+    FROM mkt_swp_reservation_claim
+    WHERE proof_class = 'covenant_reserve'
+      AND reserve_unit_sha256 = $1
+      AND active
+      AND expires_at > $2
+)
+"#;
+const INSERT_MKT_SWP_RESERVATION_SQL: &str = r#"
+INSERT INTO mkt_swp_reservation_claim (
+    quote_event_id, wrap_event_id, provider_pubkey, session_id,
+    rfq_event_id, reservation_id, capacity_bucket_id, reserved_asset_id,
+    reservation_class, reserved_amount, handler_committed_capacity,
+    allocation_sequence, proof_class, proof_strength, proof_ref_sha256,
+    reserve_unit_sha256, capacity_commitment_sha256, expires_at, decision, active
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+    $12, $13, $14, $15, $16, $17, $18, $19, $20
+)
+ON CONFLICT (quote_event_id) DO NOTHING
+"#;
+const RELEASE_MKT_SWP_RESERVATION_SQL: &str = r#"
+UPDATE mkt_swp_reservation_claim
+SET active = FALSE,
+    released_at = $2,
+    release_reason = 'expired'
+WHERE quote_event_id = $1 AND active AND expires_at <= $2
+"#;
+const RELEASE_EXPIRED_MKT_SWP_RESERVATIONS_SQL: &str = r#"
+WITH due AS (
+    SELECT quote_event_id
+    FROM mkt_swp_reservation_claim
+    WHERE active AND expires_at <= $1
+    ORDER BY expires_at, quote_event_id
+    LIMIT 1000
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE mkt_swp_reservation_claim reservation
+SET active = FALSE,
+    released_at = $1,
+    release_reason = 'expired'
+FROM due
+WHERE reservation.quote_event_id = due.quote_event_id
+"#;
+const MKT_SWP_STATUS_EXISTS_SQL: &str =
+    "SELECT 1 FROM mkt_swp_status_claim WHERE status_event_id = $1";
+const MKT_SWP_STATUS_FORK_COUNT_SQL: &str = r#"
+SELECT COUNT(*)
+FROM mkt_swp_status_claim
+WHERE session_id = $1
+  AND order_event_id = $2
+  AND author_pubkey = $3
+  AND sequence = $4
+"#;
+const INSERT_MKT_SWP_STATUS_SQL: &str = r#"
+INSERT INTO mkt_swp_status_claim (
+    status_event_id, wrap_event_id, author_pubkey, author_role,
+    counterparty_pubkey, session_id, order_event_id, sequence,
+    previous_event_id, state, swp_state
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+ON CONFLICT (status_event_id) DO NOTHING
+"#;
+const MKT_SWP_STATUS_STREAM_SQL: &str = r#"
+SELECT sequence, status_event_id
+FROM mkt_swp_status_claim
+WHERE session_id = $1
+  AND order_event_id = $2
+  AND author_pubkey = $3
+ORDER BY sequence, status_event_id
+LIMIT $4
+"#;
+const MKT_SWP_OBSERVATION_SQL: &str = r#"
+SELECT observation_event_id
+FROM mkt_swp_evidence_observation
+WHERE source_event_id = $1 AND artifact_sha256 = $2
+"#;
+const INSERT_MKT_SWP_OBSERVATION_SQL: &str = r#"
+INSERT INTO mkt_swp_evidence_observation (
+    source_event_id, artifact_sha256, observation_event_id,
+    evidence_class, rail_reference, view_sha256
+) VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (source_event_id, artifact_sha256) DO NOTHING
+"#;
 
 #[derive(Clone)]
 pub(crate) struct Statements {
@@ -535,6 +663,19 @@ pub(crate) struct Statements {
     pub delete_dm_hidden: Statement,
     pub list_dm_hidden: Statement,
     pub record_nostr_effect_import: Statement,
+    pub mkt_swp_reservation_outcome: Statement,
+    pub mkt_swp_reservation_fork: Statement,
+    pub mkt_swp_reservation_capacity: Statement,
+    pub mkt_swp_covenant_reuse: Statement,
+    pub insert_mkt_swp_reservation: Statement,
+    pub release_mkt_swp_reservation: Statement,
+    pub release_expired_mkt_swp_reservations: Statement,
+    pub mkt_swp_status_exists: Statement,
+    pub mkt_swp_status_fork_count: Statement,
+    pub insert_mkt_swp_status: Statement,
+    pub mkt_swp_status_stream: Statement,
+    pub mkt_swp_observation: Statement,
+    pub insert_mkt_swp_observation: Statement,
 }
 
 impl Statements {
@@ -619,6 +760,21 @@ impl Statements {
             delete_dm_hidden: client.prepare(DELETE_DM_HIDDEN_SQL).await?,
             list_dm_hidden: client.prepare(LIST_DM_HIDDEN_SQL).await?,
             record_nostr_effect_import: client.prepare(RECORD_NOSTR_EFFECT_IMPORT_SQL).await?,
+            mkt_swp_reservation_outcome: client.prepare(MKT_SWP_RESERVATION_OUTCOME_SQL).await?,
+            mkt_swp_reservation_fork: client.prepare(MKT_SWP_RESERVATION_FORK_SQL).await?,
+            mkt_swp_reservation_capacity: client.prepare(MKT_SWP_RESERVATION_CAPACITY_SQL).await?,
+            mkt_swp_covenant_reuse: client.prepare(MKT_SWP_COVENANT_REUSE_SQL).await?,
+            insert_mkt_swp_reservation: client.prepare(INSERT_MKT_SWP_RESERVATION_SQL).await?,
+            release_mkt_swp_reservation: client.prepare(RELEASE_MKT_SWP_RESERVATION_SQL).await?,
+            release_expired_mkt_swp_reservations: client
+                .prepare(RELEASE_EXPIRED_MKT_SWP_RESERVATIONS_SQL)
+                .await?,
+            mkt_swp_status_exists: client.prepare(MKT_SWP_STATUS_EXISTS_SQL).await?,
+            mkt_swp_status_fork_count: client.prepare(MKT_SWP_STATUS_FORK_COUNT_SQL).await?,
+            insert_mkt_swp_status: client.prepare(INSERT_MKT_SWP_STATUS_SQL).await?,
+            mkt_swp_status_stream: client.prepare(MKT_SWP_STATUS_STREAM_SQL).await?,
+            mkt_swp_observation: client.prepare(MKT_SWP_OBSERVATION_SQL).await?,
+            insert_mkt_swp_observation: client.prepare(INSERT_MKT_SWP_OBSERVATION_SQL).await?,
         })
     }
 }

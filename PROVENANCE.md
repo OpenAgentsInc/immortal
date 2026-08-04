@@ -28,6 +28,24 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-04 — Codex 5.6 Sol, M12 coordination handler / issue #13
+
+- Implemented the optional, exact-conformance MKT-SWP handler in the existing
+  relay binary and Postgres: provider-signed none/soft/hard reservation
+  accounting, capacity and commitment-fork refusal, covenant reserve as the
+  strongest hard proof class, dense Status gap/fork views, and bounded
+  reservation-only timeout release.
+- Added the measured Bitcoin-transaction verification hook and relay-signed
+  NIP-32 observations labeled `observation_not_authority`. Decrypted records
+  and raw transactions remain in memory only; the schema stores bounded
+  identifiers, accounting fields, and hashes, with custody-member tripwires.
+- Added migration 0011, fixture and deterministic contract sections,
+  off-by-default NIP-11 gating, source/deployment/protocol documentation, and
+  a two-relay-process/one-Postgres proof of allocation, fork projection,
+  replay, and idempotent expiry consistency. No kind allocation, dependency,
+  service, database, wallet, node credential, participant key, or settlement
+  authority was added.
+
 ### 2026-08-04 — Codex 5.6 Sol, M12 MKT-SWP relay adoption / issue #11
 
 - Synced the released MKT-SWP and MKT-PFI drafts from OpenAgents commit

@@ -341,6 +341,9 @@ pub fn nip11_json_with_icon(
     if config.management_pubkey.is_some() || config.media.is_some() {
         supported_nips.push(98);
     }
+    if config.mkt_swp_coordination.is_some() {
+        supported_nips.push(32);
+    }
     let mut supported_extensions = vec!["nip-mp", "nip-oa", "nip-rs"];
     if config.relay_url.is_some() {
         supported_extensions.extend([
@@ -354,6 +357,9 @@ pub fn nip11_json_with_icon(
             "nip-er",
             "nip-mkt",
         ]);
+    }
+    if config.mkt_swp_coordination.is_some() {
+        supported_extensions.push("mkt-swp-coordination:1");
     }
     if config.relay_url.is_some() && config.relay_signer.is_some() {
         supported_extensions.extend(["nip-dv", "nip-ia"]);
@@ -420,15 +426,19 @@ fn wire(reason: impl Into<String>) -> WireError {
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
+    use std::{net::SocketAddr, time::Duration};
 
     use serde::Deserialize;
     use serde_json::{Value, json};
 
-    use crate::{domain::MKT_MAX_PRIVATE_EVENT_BYTES, store::RelayPolicy};
+    use crate::{
+        domain::{MKT_MAX_PRIVATE_EVENT_BYTES, RelaySigner},
+        mkt_swp_coordination::{MKT_SWP_COORDINATION_EXTENSION, coordination_conformance_sha256},
+        store::RelayPolicy,
+    };
 
     use super::{ClientMessage, nip11_json, parse_client_message};
-    use crate::gateway::{GatewayConfig, RelayIdentity};
+    use crate::gateway::{GatewayConfig, MktSwpCoordinationConfig, RelayIdentity};
 
     #[derive(Deserialize)]
     struct MessageFixture {
@@ -583,6 +593,34 @@ mod tests {
                     .contains(&json!(disabled))
             );
         }
+        config.relay_signer = Some(RelaySigner::from_secret_hex(&"09".repeat(32)).unwrap());
+        config.mkt_swp_coordination = Some(MktSwpCoordinationConfig {
+            conformance_sha256: coordination_conformance_sha256(),
+            sweep: Duration::from_secs(30),
+        });
+        config.validate().unwrap();
+        let coordinated = serde_json::from_str::<Value>(&nip11_json(&config, &policy)).unwrap();
+        assert!(
+            coordinated["supported_nips"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(32))
+        );
+        assert!(
+            coordinated["supported_extensions"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(MKT_SWP_COORDINATION_EXTENSION))
+        );
+        config
+            .mkt_swp_coordination
+            .as_mut()
+            .unwrap()
+            .conformance_sha256 = "00".repeat(32);
+        assert!(config.validate().is_err());
+
+        config.mkt_swp_coordination = None;
+        config.relay_signer = None;
         config.relay_url = None;
         let disabled = serde_json::from_str::<Value>(&nip11_json(&config, &policy)).unwrap();
         assert_eq!(

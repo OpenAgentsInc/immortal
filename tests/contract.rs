@@ -42,6 +42,26 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     assert_eq!(descriptor.mkt.mkt_swp.upstream_fixture_cases, 70);
     assert_eq!(descriptor.mkt.mkt_pfi.qualification_policy_kind, 39_630);
     assert_eq!(descriptor.mkt.mkt_pfi.upstream_fixture_cases, 41);
+    assert!(!descriptor.mkt.mkt_swp.coordination.enabled_by_default);
+    assert_eq!(
+        descriptor
+            .mkt
+            .mkt_swp
+            .coordination
+            .reservation_proof_strength["covenant_reserve"],
+        100
+    );
+    assert_eq!(
+        descriptor.mkt.mkt_swp.coordination.observation_authority,
+        "observation_not_authority"
+    );
+    assert!(
+        !descriptor
+            .mkt
+            .mkt_swp
+            .coordination
+            .on_relay_output_orderbook
+    );
     assert!(
         descriptor
             .mkt
@@ -131,6 +151,7 @@ fn fixture_manifest_hashes_exact_sorted_committed_bytes() {
     assert!(paths.contains("tests/fixtures/nipmkt/client-only-cases.json"));
     assert!(paths.contains("tests/fixtures/nipmkt/relay-closing.json"));
     assert!(paths.contains("tests/fixtures/nipmkt/swp-profile-v1.json"));
+    assert!(paths.contains("tests/fixtures/nipmkt/swp-coordination-v1.json"));
 }
 
 fn lower_hex(bytes: &[u8]) -> String {

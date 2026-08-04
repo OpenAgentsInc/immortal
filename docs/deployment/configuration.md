@@ -66,8 +66,10 @@ Platform + Managed Postgres unsupported for the current binary.
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
 | `IMMORTAL_EXPIRATION_SWEEP_SECONDS` | no | `60` | Interval for physical NIP-40 cleanup (1–86,400). Queries exclude expired events independently of the sweep. |
-| `IMMORTAL_RELAY_SECRET_KEY` | for NIP-29 | — | Relay's 32-byte secret as 64 lowercase hexadecimal characters. Enables relay-managed groups and signed group history/metadata. The derived public key becomes the NIP-11 relay pubkey; if `IMMORTAL_RELAY_PUBKEY` is also set, it must match. This is a secret and belongs only in the protected runtime environment. |
+| `IMMORTAL_RELAY_SECRET_KEY` | for NIP-29 or MKT-SWP coordination | — | Relay's 32-byte secret as 64 lowercase hexadecimal characters. Enables relay-managed groups and signed group history/metadata; with the exact coordination digest it is also the handler recipient and public-observation signer. The derived public key becomes the NIP-11 relay pubkey; if `IMMORTAL_RELAY_PUBKEY` is also set, it must match. This is a relay key, never a participant or wallet key, and belongs only in the protected runtime environment. |
 | `IMMORTAL_MANAGEMENT_PUBKEY` | for NIP-86 | — | Exact 32-byte owner public key as 64 lowercase hexadecimal characters. Enables the NIP-98-authenticated management endpoint. `IMMORTAL_RELAY_URL` is required so HTTP authorization can bind the public URL. |
+| `IMMORTAL_MKT_SWP_COORDINATION_CONFORMANCE_SHA256` | to enable MKT-SWP coordination | — | Exact compiled fixture/migration/configuration digest printed at `.mkt.mkt_swp.coordination.conformance_sha256` by `immortal contract`. A missing value keeps the handler disabled; a stale or different value fails startup. Requires relay URL and relay secret. |
+| `IMMORTAL_MKT_SWP_COORDINATION_SWEEP_SECONDS` | no | `30` | Reservation-release sweep interval when coordination is active (1–3,600). The sweep releases reservation accounting only. |
 
 ### Media
 
@@ -94,8 +96,11 @@ contract and deliberate NIP-29 subset are in
 The same authenticated-recipient configuration gates the nonnumeric
 `nip-mkt`, `mkt-swp:1`, and `nip-mkt-pfi:1` NIP-11 extensions. The profile
 extensions identify only their relay-observable grammar and storage contract;
-they do not configure a wallet, credential verifier, coordination handler,
-rail adapter, guarantee, dispute authority, or custody surface.
+they do not configure a wallet, credential verifier, rail adapter, guarantee,
+dispute authority, or custody surface. The separate
+`mkt-swp-coordination:1` extension appears only when the exact conformance
+digest, relay URL, and relay signer activate the noncustodial handler described
+in `docs/protocol/mkt-swp-coordination.md`.
 
 The Block extension handlers need no additional service or database. NIP-AO
 uses the dedicated observer rates below. NIP-IA and NIP-DV require

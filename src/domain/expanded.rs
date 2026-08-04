@@ -28,6 +28,11 @@ impl RelaySigner {
         &self.pubkey
     }
 
+    #[cfg(feature = "server")]
+    pub(crate) fn secret_key(&self) -> SecretKey {
+        self.keypair.secret_key()
+    }
+
     pub fn sign(&self, created_at: u64, kind: u16, tags: Vec<Tag>, content: String) -> Event {
         let mut event = Event {
             id: "0".repeat(64),

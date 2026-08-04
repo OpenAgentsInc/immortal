@@ -1,0 +1,146 @@
+{
+  "schema": "openagents.mkt-swp.coordination-fixtures.v1",
+  "scope": "optional_noncustodial_handler",
+  "activation": {
+    "extension": "mkt-swp-coordination:1",
+    "environment": "IMMORTAL_MKT_SWP_COORDINATION_CONFORMANCE_SHA256",
+    "digest_material": [
+      "fixture_bytes",
+      "migration_0011_bytes",
+      "configuration_schema_v1"
+    ],
+    "default": "disabled",
+    "requires": ["relay_url", "relay_signer", "exact_conformance_digest"],
+    "private_extension_members": {
+      "handler_committed_capacity": "canonical decimal capacity disclosed only to the configured handler",
+      "covenant.funding_ref": "canonical reserve-unit identity hashed before storage"
+    }
+  },
+  "bounds": {
+    "active_reservations_per_bucket": 1024,
+    "status_sequence_max": 4095,
+    "forks_per_sequence": 8,
+    "public_evidence_per_record": 8,
+    "public_transaction_hex_bytes": 16384,
+    "status_query_rows": 32769
+  },
+  "reservation_proof_strength": {
+    "provider_signed": 10,
+    "handler_accounted": 20,
+    "third_party_guarantee": 40,
+    "lightning_liquidity": 50,
+    "utxo_control": 60,
+    "funded_htlc": 80,
+    "covenant_reserve": 100
+  },
+  "reservation_cases": [
+    {
+      "name": "none-is-recorded-without-capacity",
+      "quote": "indicative",
+      "reservation": "none",
+      "expected": {"accepted": true, "active": false, "code": "mkt_swp_reservation_none"}
+    },
+    {
+      "name": "provider-signed-soft",
+      "reservation": "soft",
+      "proof_class": "provider_signed",
+      "reserved_amount": "20",
+      "handler_committed_capacity": "100",
+      "expected": {"accepted": true, "active": true, "code": "mkt_swp_reservation_active"}
+    },
+    {
+      "name": "handler-accounted-hard",
+      "reservation": "hard",
+      "proof_class": "handler_accounted",
+      "reserved_amount": "30",
+      "handler_committed_capacity": "100",
+      "expected": {"accepted": true, "active": true, "code": "mkt_swp_reservation_active"}
+    },
+    {
+      "name": "covenant-hard-strongest",
+      "reservation": "hard",
+      "proof_class": "covenant_reserve",
+      "reserved_amount": "50",
+      "handler_committed_capacity": "100",
+      "expected": {"accepted": true, "active": true, "proof_strength": 100}
+    },
+    {
+      "name": "over-allocation-refused-and-retained",
+      "reservation": "hard",
+      "proof_class": "covenant_reserve",
+      "reserved_amount": "51",
+      "handler_committed_capacity": "100",
+      "expected": {"accepted": false, "active": false, "code": "swp_reservation_overallocated", "retained": true}
+    },
+    {
+      "name": "allocation-sequence-fork-retained",
+      "expected": {"accepted": false, "active": false, "code": "swp_reservation_fork", "retain_all_claim_ids": true}
+    },
+    {
+      "name": "increasing-sequence-rebinds-active-set-commitment",
+      "expected": {"accepted": true, "new_commitment_required": true, "sequence_strictly_increases": true}
+    },
+    {
+      "name": "decreasing-unique-sequence-is-fork",
+      "expected": {"accepted": false, "active": false, "code": "swp_reservation_fork", "retained": true}
+    },
+    {
+      "name": "reservation-id-reuse-is-idempotency-conflict",
+      "expected": {"accepted": false, "active": false, "code": "swp_idempotency_conflict", "retained": true}
+    },
+    {
+      "name": "covenant-unit-double-count-refused",
+      "expected": {"accepted": false, "active": false, "code": "swp_covenant_reserve_invalid", "retain_all_claim_ids": true, "cross_bucket_race": true}
+    },
+    {
+      "name": "firm-none-is-rejected",
+      "expected": {"accepted": false, "stage": "handler_parse", "reason": "firm_requires_reservation"}
+    }
+  ],
+  "timer": {
+    "deadline": "minimum_of_nip40_reservation_and_profile_timeout",
+    "mutation": "active_reservation_to_released_only",
+    "forbidden_effects": ["sign", "cancel", "accept", "settle", "refund", "close", "publish_participant_status"]
+  },
+  "status": {
+    "projection": "dense_per_session_order_author",
+    "cases": [
+      {"name": "contiguous", "sequences": [0, 1, 2], "gaps": [], "forks": {}},
+      {"name": "gap", "sequences": [0, 2], "gaps": [1], "code": "swp_status_gap"},
+      {"name": "fork", "sequences": [0, 1, 1], "gaps": [], "fork_at": 1, "code": "swp_status_fork"}
+    ]
+  },
+  "public_evidence": {
+    "hook": "bitcoin_transaction_v1",
+    "input": "bounded_raw_transaction_hex",
+    "checks": ["transaction_parse", "txid_match", "artifact_sha256_match"],
+    "published_kind": 1985,
+    "namespace": "openagents.mkt-swp.observation",
+    "label": "measured",
+    "authority": "observation_not_authority",
+    "forbidden_public_links": ["session_id", "order_id", "counterparty", "amount", "private_source_event_id"]
+  },
+  "custody_tripwires": [
+    "seed",
+    "private_key",
+    "claim_private_key",
+    "refund_private_key",
+    "preimage",
+    "macaroon",
+    "nwc",
+    "nwc_string",
+    "musig_secret_nonce",
+    "signing_nonce"
+  ],
+  "multi_process": {
+    "topology": "two_relay_processes_one_postgres",
+    "proof": ["overallocation_refused", "bucket_wide_row_bound", "concurrent_same_sequence_serialized", "increasing_sequence_changes_commitment", "decreasing_sequence_retained_as_fork", "sequence_is_bucket_wide_across_assets", "cross_bucket_reservation_id_reuse_serialized", "cross_bucket_covenant_reuse_serialized", "conflicting_claim_retained_inactive", "identical_dense_status_projection", "idempotent_timeout_release", "expired_replay_is_not_active", "public_observation_privacy"]
+  },
+  "anti_patterns": {
+    "balances": false,
+    "wallet_or_node_credentials": false,
+    "settlement_authority": false,
+    "on_relay_output_orderbook": false,
+    "output_pricing_or_requote_chain_actions": false
+  }
+}

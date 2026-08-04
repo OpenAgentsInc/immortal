@@ -28,7 +28,10 @@ async fn m2_store_contract_against_postgres() {
     }
 
     let (initial_store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert_eq!(
+        report.applied_versions,
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    );
     drop(initial_store);
     seed_pre_gateway_and_swp_rows(&database_url).await;
 
@@ -1224,6 +1227,7 @@ async fn least_privilege_runtime(database_url: &str) {
         "GRANT SELECT, INSERT ON nostr_indexed_tag TO immortal_runtime_m2_test",
         "GRANT SELECT, INSERT, UPDATE ON replaceable_head TO immortal_runtime_m2_test",
         "GRANT SELECT, INSERT ON mkt_immutable_coordinate TO immortal_runtime_m2_test",
+        "GRANT SELECT, INSERT, UPDATE ON mkt_swp_reservation_claim, mkt_swp_status_claim, mkt_swp_evidence_observation TO immortal_runtime_m2_test",
         "GRANT SELECT, INSERT, UPDATE ON deletion_tombstone TO immortal_runtime_m2_test",
         "GRANT SELECT ON relay_policy, relay_allowed_pubkey, relay_allowed_kind, relay_member_pubkey, relay_blocked_pubkey, relay_blocked_kind TO immortal_runtime_m2_test",
         "GRANT USAGE, SELECT ON SEQUENCE nostr_event_ingest_seq_seq TO immortal_runtime_m2_test",

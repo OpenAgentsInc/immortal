@@ -18,6 +18,7 @@ use std::{
 };
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::{
     sync::{mpsc, watch},
     task::JoinHandle,
@@ -31,6 +32,12 @@ use crate::domain::{
     RelaySigner, ReplacementDecision, Tag, compare_replacement_order,
     decide_mkt_immutable_admission, is_mkt_private_kind, search_terms, validate_block_ingest,
     validate_mkt_private_base, validate_mkt_public_event,
+};
+use crate::mkt_swp_coordination::{
+    MKT_SWP_MAX_ACTIVE_RESERVATIONS_PER_BUCKET, MKT_SWP_MAX_FORKS_PER_SEQUENCE,
+    MKT_SWP_STATUS_QUERY_ROW_LIMIT, MktSwpCoordinationClaim, MktSwpCoordinationInput,
+    MktSwpCoordinationOutcome, MktSwpPublicEvidence, MktSwpReservationClaim, MktSwpStatusClaim,
+    MktSwpStatusView, status_view_from_rows,
 };
 
 pub use error::StoreError;
@@ -73,9 +80,16 @@ pub const MKT_IDEMPOTENCY_CONFLICT_REASON: &str = "invalid: idempotency-conflict
 /// A successfully committed admission or a protocol-level refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdmissionOutcome {
-    Stored { ingest_seq: i64 },
+    Stored {
+        ingest_seq: i64,
+    },
     Duplicate,
     Ephemeral,
+    Coordinated {
+        stored: bool,
+        ingest_seq: Option<i64>,
+        outcome: MktSwpCoordinationOutcome,
+    },
     Rejected(AdmissionRejection),
 }
 
@@ -994,6 +1008,11 @@ impl Store {
                         report.ephemeral += 1;
                         "ephemeral"
                     }
+                    Ok(AdmissionOutcome::Coordinated { .. }) => {
+                        return Err(StoreError::CorruptRow(
+                            "legacy import unexpectedly entered MKT-SWP coordination".to_owned(),
+                        ));
+                    }
                     Ok(AdmissionOutcome::Rejected(rejection)) => {
                         report.rejected += 1;
                         record_import_rejection(&mut report, admission_rejection_code(&rejection));
@@ -1593,6 +1612,114 @@ impl Store {
             .await?)
     }
 
+    /// Apply one already-unwrapped handler-addressed record. Decrypted bytes
+    /// are never passed to this storage boundary; only signed identifiers,
+    /// bounded accounting fields, and public-artifact digests are durable.
+    pub async fn apply_mkt_swp_coordination(
+        &mut self,
+        input: &MktSwpCoordinationInput,
+        now: u64,
+        relay_signer: &RelaySigner,
+    ) -> Result<MktSwpCoordinationOutcome, StoreError> {
+        self.ensure_current()?;
+        let statements = self.statements.clone();
+        let transaction = self.client.transaction().await?;
+        let source_lock = format!("mkt-swp-coordination:{}", input.source_event_id);
+        transaction
+            .query_one(&statements.advisory_lock, &[&source_lock])
+            .await?;
+
+        let mut outcome = match &input.claim {
+            MktSwpCoordinationClaim::Reservation(claim) => {
+                apply_mkt_swp_reservation(
+                    &transaction,
+                    &statements,
+                    &input.wrap_event_id,
+                    claim,
+                    now,
+                )
+                .await?
+            }
+            MktSwpCoordinationClaim::Status(claim) => {
+                apply_mkt_swp_status(&transaction, &statements, &input.wrap_event_id, claim).await?
+            }
+            MktSwpCoordinationClaim::Observed => MktSwpCoordinationOutcome {
+                accepted: true,
+                code: "mkt_swp_coordination_observed".to_owned(),
+                observation_event_ids: Vec::new(),
+            },
+        };
+
+        if !input.public_evidence.is_empty() {
+            transaction.query_one(&statements.ingest_lock, &[]).await?;
+            for evidence in &input.public_evidence {
+                let observation_event_id = apply_mkt_swp_public_observation(
+                    &transaction,
+                    &statements,
+                    &input.source_event_id,
+                    evidence,
+                    now,
+                    relay_signer,
+                )
+                .await?;
+                outcome.observation_event_ids.push(observation_event_id);
+            }
+            outcome.observation_event_ids.sort();
+            outcome.observation_event_ids.dedup();
+        }
+        transaction.commit().await?;
+        Ok(outcome)
+    }
+
+    /// Release at most 1,000 due reservations. This mutates no event,
+    /// participant state, signature, cancellation, payment, or settlement.
+    pub async fn release_expired_mkt_swp_reservations(&self, now: u64) -> Result<u64, StoreError> {
+        self.ensure_current()?;
+        let now = pg_i64(now, "MKT-SWP reservation sweep")?;
+        Ok(self
+            .client
+            .execute(
+                &self.statements.release_expired_mkt_swp_reservations,
+                &[&now],
+            )
+            .await?)
+    }
+
+    /// Return a bounded dense per-author Status projection. Every event at a
+    /// duplicated sequence remains in `forks`; absent sequences remain gaps.
+    pub async fn mkt_swp_status_view(
+        &self,
+        session_id: &str,
+        order_event_id: &str,
+        author_pubkey: &str,
+    ) -> Result<MktSwpStatusView, StoreError> {
+        self.ensure_current()?;
+        let limit = pg_limit(MKT_SWP_STATUS_QUERY_ROW_LIMIT)?;
+        let rows = self
+            .client
+            .query(
+                &self.statements.mkt_swp_status_stream,
+                &[&session_id, &order_event_id, &author_pubkey, &limit],
+            )
+            .await?;
+        if rows.len() >= MKT_SWP_STATUS_QUERY_ROW_LIMIT {
+            return Err(StoreError::Coordination(
+                "status stream exceeds the bounded query limit".to_owned(),
+            ));
+        }
+        let rows = rows
+            .into_iter()
+            .map(|row| {
+                let sequence = row.get::<_, i64>(0);
+                let sequence = u64::try_from(sequence).map_err(|_| {
+                    StoreError::CorruptRow("negative MKT-SWP status sequence".to_owned())
+                })?;
+                Ok((sequence, row.get::<_, String>(1)))
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        status_view_from_rows(rows).map_err(StoreError::Coordination)
+    }
+
     pub async fn media_blob(&self, sha256: &str) -> Result<Option<MediaRecord>, StoreError> {
         self.ensure_current()?;
         self.client
@@ -1942,6 +2069,387 @@ impl Store {
         transaction.commit().await?;
         Ok(result)
     }
+}
+
+async fn apply_mkt_swp_reservation(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    wrap_event_id: &str,
+    claim: &MktSwpReservationClaim,
+    now: u64,
+) -> Result<MktSwpCoordinationOutcome, StoreError> {
+    let now_i64 = pg_i64(now, "MKT-SWP coordination time")?;
+    if let Some(row) = transaction
+        .query_opt(
+            &statements.mkt_swp_reservation_outcome,
+            &[&claim.quote_event_id],
+        )
+        .await?
+    {
+        let code = row.get::<_, String>(0);
+        let active = row.get::<_, bool>(1);
+        let expires_at = row.get::<_, Option<i64>>(2);
+        let released_at = row.get::<_, Option<i64>>(3);
+        if code == "mkt_swp_reservation_active"
+            && (released_at.is_some() || expires_at.is_some_and(|expires_at| expires_at <= now_i64))
+        {
+            if active {
+                transaction
+                    .execute(
+                        &statements.release_mkt_swp_reservation,
+                        &[&claim.quote_event_id, &now_i64],
+                    )
+                    .await?;
+            }
+            return Ok(MktSwpCoordinationOutcome {
+                accepted: false,
+                code: "swp_reservation_expired".to_owned(),
+                observation_event_ids: Vec::new(),
+            });
+        }
+        return Ok(MktSwpCoordinationOutcome {
+            accepted: active || code == "mkt_swp_reservation_none",
+            code,
+            observation_event_ids: Vec::new(),
+        });
+    }
+
+    let reservation_lock = format!(
+        "mkt-swp-reservation-id:{}:{}",
+        claim.provider_pubkey, claim.reservation_id
+    );
+    transaction
+        .query_one(&statements.advisory_lock, &[&reservation_lock])
+        .await?;
+
+    let (decision, active) = if claim.reservation_class == "none" {
+        ("mkt_swp_reservation_none", false)
+    } else {
+        let capacity_bucket_id = claim.capacity_bucket_id.as_deref().ok_or_else(|| {
+            StoreError::Coordination("reserving claim is missing its capacity bucket".into())
+        })?;
+        let reserved_asset_id = claim.reserved_asset_id.as_deref().ok_or_else(|| {
+            StoreError::Coordination("reserving claim is missing its asset identifier".into())
+        })?;
+        let allocation_sequence = claim.allocation_sequence.ok_or_else(|| {
+            StoreError::Coordination("reserving claim is missing allocation sequence".into())
+        })?;
+        let bucket_lock = format!(
+            "mkt-swp-reservation:{}:{}",
+            claim.provider_pubkey, capacity_bucket_id
+        );
+        transaction
+            .query_one(&statements.advisory_lock, &[&bucket_lock])
+            .await?;
+        let expires_at = claim.expires_at.ok_or_else(|| {
+            StoreError::Coordination("reserving claim is missing expiration".into())
+        })?;
+        if expires_at <= now_i64 {
+            ("swp_reservation_expired", false)
+        } else {
+            let conflict = transaction
+                .query_one(
+                    &statements.mkt_swp_reservation_fork,
+                    &[
+                        &claim.provider_pubkey,
+                        &capacity_bucket_id,
+                        &allocation_sequence,
+                        &claim.reservation_id,
+                        &claim.quote_event_id,
+                        &claim.capacity_commitment_sha256,
+                    ],
+                )
+                .await?;
+            let idempotency_conflict = conflict.get::<_, bool>(0);
+            let reservation_fork = conflict.get::<_, bool>(1);
+            let covenant_reuse = match (
+                claim.proof_class.as_deref(),
+                claim.reserve_unit_sha256.as_deref(),
+            ) {
+                (Some("covenant_reserve"), Some(reserve_unit_sha256)) => {
+                    let reserve_lock = format!("mkt-swp-covenant-reserve:{reserve_unit_sha256}");
+                    transaction
+                        .query_one(&statements.advisory_lock, &[&reserve_lock])
+                        .await?;
+                    transaction
+                        .query_one(
+                            &statements.mkt_swp_covenant_reuse,
+                            &[&reserve_unit_sha256, &now_i64],
+                        )
+                        .await?
+                        .get::<_, bool>(0)
+                }
+                (Some("covenant_reserve"), None) => {
+                    return Err(StoreError::Coordination(
+                        "covenant reservation is missing its reserve-unit digest".into(),
+                    ));
+                }
+                (_, Some(_)) => {
+                    return Err(StoreError::Coordination(
+                        "only covenant_reserve may identify a reserve unit".into(),
+                    ));
+                }
+                _ => false,
+            };
+            let maximum_active = pg_limit(MKT_SWP_MAX_ACTIVE_RESERVATIONS_PER_BUCKET)?;
+            let capacity_available = transaction
+                .query_one(
+                    &statements.mkt_swp_reservation_capacity,
+                    &[
+                        &claim.provider_pubkey,
+                        &capacity_bucket_id,
+                        &reserved_asset_id,
+                        &maximum_active,
+                        &claim.handler_committed_capacity,
+                        &claim.reserved_amount,
+                        &now_i64,
+                    ],
+                )
+                .await?
+                .get::<_, bool>(0);
+            if idempotency_conflict {
+                ("swp_idempotency_conflict", false)
+            } else if reservation_fork {
+                ("swp_reservation_fork", false)
+            } else if covenant_reuse {
+                ("swp_covenant_reserve_invalid", false)
+            } else if !capacity_available {
+                ("swp_reservation_overallocated", false)
+            } else {
+                ("mkt_swp_reservation_active", true)
+            }
+        }
+    };
+
+    let capacity_bucket_id = claim.capacity_bucket_id.as_deref();
+    let reserved_asset_id = claim.reserved_asset_id.as_deref();
+    let proof_class = claim.proof_class.as_deref();
+    let proof_ref_sha256 = claim.proof_ref_sha256.as_deref();
+    let reserve_unit_sha256 = claim.reserve_unit_sha256.as_deref();
+    let capacity_commitment_sha256 = claim.capacity_commitment_sha256.as_deref();
+    let inserted = transaction
+        .execute(
+            &statements.insert_mkt_swp_reservation,
+            &[
+                &claim.quote_event_id,
+                &wrap_event_id,
+                &claim.provider_pubkey,
+                &claim.session_id,
+                &claim.rfq_event_id,
+                &claim.reservation_id,
+                &capacity_bucket_id,
+                &reserved_asset_id,
+                &claim.reservation_class,
+                &claim.reserved_amount,
+                &claim.handler_committed_capacity,
+                &claim.allocation_sequence,
+                &proof_class,
+                &claim.proof_strength,
+                &proof_ref_sha256,
+                &reserve_unit_sha256,
+                &capacity_commitment_sha256,
+                &claim.expires_at,
+                &decision,
+                &active,
+            ],
+        )
+        .await?;
+    if inserted != 1 {
+        return Err(StoreError::CorruptRow(
+            "MKT-SWP reservation outcome changed while its lock was held".to_owned(),
+        ));
+    }
+    Ok(MktSwpCoordinationOutcome {
+        accepted: active || decision == "mkt_swp_reservation_none",
+        code: decision.to_owned(),
+        observation_event_ids: Vec::new(),
+    })
+}
+
+async fn apply_mkt_swp_status(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    wrap_event_id: &str,
+    claim: &MktSwpStatusClaim,
+) -> Result<MktSwpCoordinationOutcome, StoreError> {
+    let stream_lock = format!(
+        "mkt-swp-status:{}:{}:{}",
+        claim.session_id, claim.order_event_id, claim.author_pubkey
+    );
+    transaction
+        .query_one(&statements.advisory_lock, &[&stream_lock])
+        .await?;
+    let exists = transaction
+        .query_opt(&statements.mkt_swp_status_exists, &[&claim.status_event_id])
+        .await?
+        .is_some();
+    if !exists {
+        let fork_count = transaction
+            .query_one(
+                &statements.mkt_swp_status_fork_count,
+                &[
+                    &claim.session_id,
+                    &claim.order_event_id,
+                    &claim.author_pubkey,
+                    &claim.sequence,
+                ],
+            )
+            .await?
+            .get::<_, i64>(0);
+        if fork_count
+            >= i64::try_from(MKT_SWP_MAX_FORKS_PER_SEQUENCE)
+                .map_err(|_| StoreError::InvalidLimit(MKT_SWP_MAX_FORKS_PER_SEQUENCE))?
+        {
+            return Err(StoreError::Coordination(
+                "status sequence exceeds the retained fork bound".to_owned(),
+            ));
+        }
+        transaction
+            .execute(
+                &statements.insert_mkt_swp_status,
+                &[
+                    &claim.status_event_id,
+                    &wrap_event_id,
+                    &claim.author_pubkey,
+                    &claim.author_role,
+                    &claim.counterparty_pubkey,
+                    &claim.session_id,
+                    &claim.order_event_id,
+                    &claim.sequence,
+                    &claim.previous_event_id,
+                    &claim.state,
+                    &claim.swp_state,
+                ],
+            )
+            .await?;
+    }
+    let view = mkt_swp_status_view_in_transaction(transaction, statements, claim).await?;
+    let code = if !view.forks.is_empty() {
+        "swp_status_fork"
+    } else if !view.gaps.is_empty() {
+        "swp_status_gap"
+    } else {
+        "mkt_swp_status_recorded"
+    };
+    Ok(MktSwpCoordinationOutcome {
+        accepted: true,
+        code: code.to_owned(),
+        observation_event_ids: Vec::new(),
+    })
+}
+
+async fn mkt_swp_status_view_in_transaction(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    claim: &MktSwpStatusClaim,
+) -> Result<MktSwpStatusView, StoreError> {
+    let limit = pg_limit(MKT_SWP_STATUS_QUERY_ROW_LIMIT)?;
+    let rows = transaction
+        .query(
+            &statements.mkt_swp_status_stream,
+            &[
+                &claim.session_id,
+                &claim.order_event_id,
+                &claim.author_pubkey,
+                &limit,
+            ],
+        )
+        .await?;
+    if rows.len() >= MKT_SWP_STATUS_QUERY_ROW_LIMIT {
+        return Err(StoreError::Coordination(
+            "status stream exceeds the bounded query limit".to_owned(),
+        ));
+    }
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            let sequence = u64::try_from(row.get::<_, i64>(0)).map_err(|_| {
+                StoreError::CorruptRow("negative MKT-SWP status sequence".to_owned())
+            })?;
+            Ok((sequence, row.get::<_, String>(1)))
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    status_view_from_rows(rows).map_err(StoreError::Coordination)
+}
+
+async fn apply_mkt_swp_public_observation(
+    transaction: &tokio_postgres::Transaction<'_>,
+    statements: &Statements,
+    source_event_id: &str,
+    evidence: &MktSwpPublicEvidence,
+    now: u64,
+    relay_signer: &RelaySigner,
+) -> Result<String, StoreError> {
+    if let Some(row) = transaction
+        .query_opt(
+            &statements.mkt_swp_observation,
+            &[&source_event_id, &evidence.artifact_sha256],
+        )
+        .await?
+    {
+        return Ok(row.get(0));
+    }
+    let mut identifier_material = Vec::with_capacity(64 + source_event_id.len() + 64);
+    identifier_material.extend_from_slice(b"openagents.mkt-swp.observation.v1\0");
+    identifier_material.extend_from_slice(source_event_id.as_bytes());
+    identifier_material.push(0);
+    identifier_material.extend_from_slice(evidence.artifact_sha256.as_bytes());
+    let identifier = encode_hex(&Sha256::digest(&identifier_material));
+    let content = json!({
+        "schema": "openagents.mkt-swp.observation.v1",
+        "authority": "observation_not_authority",
+        "class": evidence.evidence_class,
+        "rail": "bitcoin",
+        "reference": evidence.rail_reference,
+        "artifact_sha256": evidence.artifact_sha256,
+        "view_sha256": evidence.view_sha256,
+        "hook": "bitcoin_transaction_v1",
+        "rung": "measured",
+        "observed_at": now
+    })
+    .to_string();
+    let observation = relay_signer.sign(
+        now,
+        1_985,
+        vec![
+            Tag::new(vec!["d".into(), identifier]),
+            Tag::new(vec!["L".into(), "openagents.mkt-swp.observation".into()]),
+            Tag::new(vec![
+                "l".into(),
+                "measured".into(),
+                "openagents.mkt-swp.observation".into(),
+            ]),
+            Tag::new(vec![
+                "r".into(),
+                format!("bitcoin:{}", evidence.rail_reference),
+            ]),
+            Tag::new(vec!["x".into(), evidence.artifact_sha256.clone()]),
+            Tag::new(vec!["authority".into(), "observation_not_authority".into()]),
+            Tag::new(vec!["profile".into(), "mkt-swp".into(), "1".into()]),
+        ],
+        content,
+    );
+    insert_internal_regular_event(transaction, statements, &observation).await?;
+    let evidence_class = evidence.evidence_class.as_str();
+    let inserted = transaction
+        .execute(
+            &statements.insert_mkt_swp_observation,
+            &[
+                &source_event_id,
+                &evidence.artifact_sha256,
+                &observation.id,
+                &evidence_class,
+                &evidence.rail_reference,
+                &evidence.view_sha256,
+            ],
+        )
+        .await?;
+    if inserted != 1 {
+        return Err(StoreError::CorruptRow(
+            "MKT-SWP evidence observation changed while its source lock was held".to_owned(),
+        ));
+    }
+    Ok(observation.id)
 }
 
 fn record_import_rejection(report: &mut LegacyImportReport, reason: impl Into<String>) {

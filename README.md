@@ -64,7 +64,7 @@ TLS is the job of the reverse proxy (nginx or Caddy).
 
 ## Status
 
-M1 through M7, the M10 NIP-MKT relay base, and the first two M12 packets are complete: the protocol domain, Postgres store,
+M1 through M7, the M10 NIP-MKT relay base, and the adopted M12 relay packets are complete: the protocol domain, Postgres store,
 HTTP/WebSocket gateway, pinned per-NIP fixtures, locally executable
 conformance, actual-process chaos and load proofs, and the production
 deployment kit. The relay also provides expiration cleanup, protected and
@@ -80,9 +80,11 @@ source for downstream SDKs. M12 now includes the owned Bitcoin/Lightning
 verification primitives and the relay-observable MKT-SWP and MKT-PFI v1
 adoptions: public Offering grammar, immutable wrapped Swap Contracts on kind
 `39610`, public Qualification Policy heads on kind `39630`, bounded
-commitment/evidence shapes, exported fixtures, and gated profile discovery.
-The executable-profile set remains empty. See `docs/ROADMAP.md`,
-`docs/conformance/`, and `docs/deployment/`.
+commitment/evidence shapes, exported fixtures, and gated profile discovery. It
+also includes the off-by-default `mkt-swp-coordination:1` handler for signed
+capacity accounting, reservation timeouts, Status gaps/forks, and public
+observation-not-authority evidence. The executable-profile set remains empty.
+See `docs/ROADMAP.md`, `docs/conformance/`, and `docs/deployment/`.
 
 The current feature list is a deployment snapshot, not Immortal's scope
 ceiling. The immediate protocol-totality program targets **every specification
@@ -137,8 +139,10 @@ It covers public discovery, immutable internal records, wrapped transport,
 recipient-gated reads, rate limits, and the client-only boundary. NIP-11
 advertises `nip-mkt` only when `IMMORTAL_RELAY_URL` enables authenticated
 recipient transport. The same gate advertises `mkt-swp:1` and
-`nip-mkt-pfi:1` for their relay-observable v1 grammar; the executable-profile
-set remains empty.
+`nip-mkt-pfi:1` for their relay-observable v1 grammar. The separate
+[`coordination handler`](docs/protocol/mkt-swp-coordination.md) advertises
+`mkt-swp-coordination:1` only with its exact compiled conformance digest; the
+executable-profile set remains empty.
 
 The transport-neutral client core also exposes a fail-closed
 [`tbDEX legacy translation audit`](docs/protocol/tbdex-legacy-translation.md).

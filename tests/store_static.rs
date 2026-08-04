@@ -145,6 +145,46 @@ fn mkt_swp_migration_extends_immutability_and_search_privacy() {
 }
 
 #[test]
+fn mkt_swp_coordination_migration_is_bounded_and_noncustodial() {
+    let sql = include_str!("../migrations/0011_mkt_swp_coordination.sql");
+    for required in [
+        "CREATE TABLE mkt_swp_reservation_claim",
+        "CREATE TABLE mkt_swp_status_claim",
+        "CREATE TABLE mkt_swp_evidence_observation",
+        "reserved_amount bigint NOT NULL",
+        "handler_committed_capacity bigint NOT NULL",
+        "reserve_unit_sha256 text",
+        "sequence BETWEEN 0 AND 4095",
+        "covenant_reserve",
+    ] {
+        assert!(sql.contains(required), "migration is missing {required:?}");
+    }
+    for forbidden in [
+        "seed text",
+        "private_key text",
+        "preimage text",
+        "macaroon text",
+        "raw_transaction text",
+        "decrypted_content text",
+    ] {
+        assert!(
+            !sql.contains(forbidden),
+            "coordination schema contains custody or decrypted payload field {forbidden:?}"
+        );
+    }
+
+    let statements = include_str!("../src/store/statements.rs");
+    assert!(statements.contains("LIMIT 1000\n    FOR UPDATE SKIP LOCKED"));
+    assert!(statements.contains("LIMIT $4"));
+    assert!(statements.contains("allocation_sequence >= $3"));
+    assert!(statements.contains("capacity_commitment_sha256 = $6"));
+    assert!(statements.contains("reserve_unit_sha256 = $1"));
+    assert!(statements.contains("FROM mkt_swp_reservation_claim bucket_claim"));
+    assert!(include_str!("../src/store/mod.rs").contains("mkt-swp-reservation-id:{}:{}"));
+    assert!(include_str!("../src/store/mod.rs").contains("observation_not_authority"));
+}
+
+#[test]
 fn mkt_gateway_query_acl_hides_private_rows_and_requires_one_wrap_recipient() {
     let statements = include_str!("../src/store/statements.rs");
     assert_eq!(
