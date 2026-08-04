@@ -1,5 +1,6 @@
 use std::io::{Read, Write as _};
 
+use immortal::contract::contract_json;
 use immortal::domain::{
     Event, OPENAGENTS_ORGANIZATION_KIND, OPENAGENTS_PROJECT_KIND, OPENAGENTS_PROJECT_STATUS_KIND,
     OPENAGENTS_PROJECT_UPDATE_KIND, RelaySigner, Tag, validate_openagents_project_event,
@@ -9,6 +10,12 @@ use serde::Deserialize;
 
 const MAX_INPUT_BYTES: u64 = 64 * 1024;
 const MAX_EVENTS: usize = 32;
+
+pub fn print_contract() -> Result<(), GatewayError> {
+    let bytes = contract_json().map_err(GatewayError::Internal)?;
+    std::io::stdout().lock().write_all(&bytes)?;
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -853,6 +853,17 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 - Gated the nonnumeric `nip-mkt` NIP-11 extension on configured NIP-42
   recipient transport and added unit plus live advertisement proofs.
 
+### 2026-08-04 — Codex 5.6 Sol, deterministic contract export
+
+- Added the database-free `immortal contract` command with a versioned stable
+  descriptor for source identity, supported lanes, NIP-MKT kinds, grammar,
+  bounds, configuration defaults, and machine reasons.
+- Added a macOS/Linux export script and checked-in contract plus SHA-256
+  fixture manifest. Two consecutive exports must be byte-identical, and the
+  conformance gate verifies the checked-in artifacts without rewriting them.
+- Documented the OpenAgents TypeScript SDK/web and Omega Rust consumers while
+  preserving their transport and relay-enforcement boundaries.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

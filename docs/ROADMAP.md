@@ -270,25 +270,25 @@ machine-readable contract artifact; downstream repos generate their SDKs
 from it and replay our fixtures.** The relay stays one binary and one
 Postgres — the contract is something the binary prints, never a service.
 
-- [ ] `immortal contract` subcommand (serde/serde_json only — zero new
+- [x] `immortal contract` subcommand (serde/serde_json only — zero new
       dependencies): print a versioned, deterministic (stable key order)
       JSON descriptor of the implemented surface — supported NIPs by
       lane, the kind table with classifications and publication rules,
       configured limits and bounds, the NIP-MKT grammar (required tags;
       the status/quote/reservation/state/action/outcome enums; size
       caps), and the machine-readable `OK`/`CLOSED` reason strings
-- [ ] Contract identity: embed the crate version and the pinned
+- [x] Contract identity: embed the crate version and the pinned
       `nips/manifest.json` commits, so any generated SDK names the exact
       protocol revision it was generated from
-- [ ] `scripts/export-contract.sh`: build, run the subcommand, write
+- [x] `scripts/export-contract.sh`: build, run the subcommand, write
       `contract/immortal-contract.json` plus a fixture-corpus manifest
       (paths and digests). Run it after every sync or adoption commit;
       review the contract diff like a spec diff
-- [ ] Fixtures are part of the contract artifact: the exported manifest
+- [x] Fixtures are part of the contract artifact: the exported manifest
       covers the M10 corpus plus the client-only MKT cases, and a
       downstream SDK is conformant only when it replays them
       byte-for-byte
-- [ ] Document the downstream consumers and their boundaries (recorded
+- [x] Document the downstream consumers and their boundaries (recorded
       here, implemented in their own repos):
       - the `openagents` monorepo generates an Effect Schema TypeScript
         SDK from the contract JSON, layered on the workspace `nostr-effect`

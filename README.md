@@ -133,6 +133,12 @@ recipient-gated reads, rate limits, and the client-only boundary. NIP-11
 advertises `nip-mkt` only when `IMMORTAL_RELAY_URL` enables authenticated
 recipient transport; it does not advertise an executable market profile.
 
+`immortal contract` prints the deterministic machine contract used by SDK
+generators without connecting to Postgres or starting a service. The reviewed
+artifacts live under [`contract/`](contract/README.md); regenerate or verify
+them with `scripts/export-contract.sh` after every protocol sync or adoption
+change.
+
 ## Quick start
 
 On Debian 13, install the build toolchain and Postgres, then create a dedicated

@@ -18,6 +18,8 @@ sh -n deploy/backup/immortal-backup
 sh -n scripts/test-debian.sh
 sh -n scripts/run-debian-acceptance.sh
 python3 -c 'compile(open("scripts/debian-acceptance-client.py", encoding="utf-8").read(), "scripts/debian-acceptance-client.py", "exec")'
+sh -n scripts/export-contract.sh
+./scripts/export-contract.sh --check
 git diff --check
 
 ./scripts/test-postgres.sh

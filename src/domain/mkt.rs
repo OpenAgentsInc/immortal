@@ -39,6 +39,45 @@ pub const MKT_MAX_HINTS: usize = 8;
 pub const MKT_IDENTIFIER_MAX_BYTES: usize = 64;
 pub const MKT_IDENTIFIER_PATTERN: &str = "[a-z0-9][a-z0-9._-]*";
 pub const MKT_ENVELOPE_SCHEMA: &str = "openagents.mkt.v1";
+pub const MKT_PROVIDER_STATUSES: &[&str] = &["active", "paused", "retired"];
+pub const MKT_OFFERING_STATUSES: &[&str] = &["active", "paused", "exhausted", "retired"];
+pub const MKT_DESCRIPTOR_STATUSES: &[&str] = &["draft", "active", "deprecated", "withdrawn"];
+pub const MKT_QUOTE_CLASSES: &[&str] = &["indicative", "firm"];
+pub const MKT_RESERVATION_CLASSES: &[&str] = &["none", "soft", "hard"];
+pub const MKT_STATUS_STATES: &[&str] = &[
+    "accepted",
+    "rejected",
+    "awaiting_input",
+    "funding_required",
+    "funding_observed",
+    "executing",
+    "settlement_pending",
+    "completed",
+    "refund_pending",
+    "refunded",
+    "disputed",
+    "failed",
+];
+pub const MKT_CANCEL_ACTIONS: &[&str] = &["request", "accepted", "rejected", "effective"];
+pub const MKT_OUTCOMES: &[&str] = &[
+    "completed",
+    "rejected",
+    "cancelled",
+    "expired",
+    "failed",
+    "refunded",
+    "disputed",
+    "unresolved",
+];
+pub const MKT_PUBLIC_RECEIPT_OUTCOMES: &[&str] = &[
+    "completed",
+    "cancelled",
+    "expired",
+    "failed",
+    "refunded",
+    "disputed",
+    "unresolved",
+];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MktPrivateEnvelope {
@@ -363,7 +402,7 @@ fn validate_provider_profile(event: &Event) -> Result<(), String> {
     validate_identifier(single_value(event, "d", "provider profile")?, "provider id")?;
     require_enum(
         single_value(event, "status", "provider profile")?,
-        &["active", "paused", "retired"],
+        MKT_PROVIDER_STATUSES,
         "provider profile status",
     )?;
     canonical_decimal(
@@ -388,7 +427,7 @@ fn validate_offering(event: &Event) -> Result<(), String> {
     validate_identifier(single_value(event, "d", "offering")?, "offering id")?;
     require_enum(
         single_value(event, "status", "offering")?,
-        &["active", "paused", "exhausted", "retired"],
+        MKT_OFFERING_STATUSES,
         "offering status",
     )?;
     canonical_decimal(
@@ -420,7 +459,7 @@ fn validate_profile_descriptor(event: &Event) -> Result<(), String> {
     validate_retrieval_url(single_value(event, "r", "profile descriptor")?)?;
     require_enum(
         single_value(event, "status", "profile descriptor")?,
-        &["draft", "active", "deprecated", "withdrawn"],
+        MKT_DESCRIPTOR_STATUSES,
         "profile descriptor status",
     )
 }
@@ -440,15 +479,7 @@ fn validate_public_receipt(event: &Event) -> Result<(), String> {
     }
     require_enum(
         single_value(event, "outcome", "public market receipt")?,
-        &[
-            "completed",
-            "cancelled",
-            "expired",
-            "failed",
-            "refunded",
-            "disputed",
-            "unresolved",
-        ],
+        MKT_PUBLIC_RECEIPT_OUTCOMES,
         "public market receipt outcome",
     )?;
     let close_id = single_value(event, "x", "public market receipt")?;

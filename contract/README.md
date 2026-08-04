@@ -1,0 +1,36 @@
+# Immortal machine contract
+
+`immortal-contract.json` is the deterministic descriptor printed by
+`immortal contract`. `immortal-fixtures.json` hashes the exact committed
+fixture bytes consumed by downstream SDK conformance.
+
+Regenerate both artifacts after a protocol sync or adoption change:
+
+```sh
+./scripts/export-contract.sh
+git diff -- contract/
+```
+
+Verify an unchanged tree without rewriting the artifacts:
+
+```sh
+./scripts/export-contract.sh --check
+```
+
+The artifact identifies the Immortal crate version and all three pinned NIP
+source commits. It describes relay-observable behavior and marks encrypted
+NIP-MKT client checks separately; it is not an executable-profile claim.
+
+## Consumers
+
+- `OpenAgentsInc/openagents/packages/nip-mkt` generates Effect Schema codecs
+  from the pinned descriptor and replays the exact fixture bytes. Its Nostr
+  transport extends the workspace `nostr-effect` package.
+- `apps/openagents.com` consumes that package for the local market demo. Relay
+  `OK` remains transport acceptance, not execution or settlement proof.
+- Omega pins this crate without the `server` feature and reuses the
+  transport-neutral Rust domain validation. Its GPUI surface owns WebSocket
+  transport and does not embed the relay server.
+
+Consumers pin both JSON files together. A contract identity or fixture digest
+change requires regeneration and a reviewed diff.
