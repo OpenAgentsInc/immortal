@@ -32,6 +32,14 @@ fn nipmkt_common_grammar_fixture_corpus() {
         event.kind = kind;
         assert!(validate_mkt_private_base(&event).is_ok());
     }
+    let mut swap_contract_with_generic_profile = base.clone();
+    swap_contract_with_generic_profile.kind = 39_610;
+    assert_eq!(
+        validate_mkt_private_base(&swap_contract_with_generic_profile)
+            .unwrap_err()
+            .code,
+        MktValidationCode::UnsupportedProfile
+    );
 
     for case in fixture["invalid"].as_array().unwrap() {
         let mut event = base.clone();

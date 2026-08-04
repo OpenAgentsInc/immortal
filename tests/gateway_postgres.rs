@@ -281,8 +281,20 @@ async fn assert_nip11_http(address: SocketAddr) {
         );
     }
     for extension in [
-        "nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-dv", "nip-er", "nip-ia", "nip-mp",
-        "nip-mkt", "nip-oa", "nip-rs", "nip-wp",
+        "mkt-swp:1",
+        "nip-aa",
+        "nip-ae",
+        "nip-am",
+        "nip-ao",
+        "nip-ap",
+        "nip-dv",
+        "nip-er",
+        "nip-ia",
+        "nip-mp",
+        "nip-mkt",
+        "nip-oa",
+        "nip-rs",
+        "nip-wp",
     ] {
         assert!(
             document["supported_extensions"]
@@ -1079,7 +1091,7 @@ fn protected_and_private_contract(address_one: SocketAddr, address_two: SocketAd
     send_json(&mut publisher, json!(["EVENT", generic_repost]));
     assert_eq!(read_json(&mut publisher)[2], false);
 
-    for kind in 39_604..=39_609 {
+    for kind in 39_604..=39_610 {
         let bare_private = signed_event(21, now(), kind, Vec::new(), "bare private MKT record");
         send_json(&mut publisher, json!(["EVENT", bare_private]));
         let refusal = read_json(&mut publisher);
@@ -1322,7 +1334,7 @@ async fn assert_gift_wraps_are_not_search_indexed(database_url: &str) {
     assert_eq!(count, 0);
     let private_rows = client
         .query_one(
-            "SELECT (SELECT count(*) FROM nostr_event WHERE kind BETWEEN 39604 AND 39609), (SELECT count(*) FROM mkt_immutable_coordinate)",
+            "SELECT (SELECT count(*) FROM nostr_event WHERE kind BETWEEN 39604 AND 39610), (SELECT count(*) FROM mkt_immutable_coordinate)",
             &[],
         )
         .await

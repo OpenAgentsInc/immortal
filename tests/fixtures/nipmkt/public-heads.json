@@ -14,7 +14,7 @@
       "kind": 39601,
       "tags": [
         ["d", "offering-one"],
-        ["profile", "mkt-swp", "1"],
+        ["profile", "conformance", "1"],
         ["status", "exhausted"],
         ["provider", "39600:1111111111111111111111111111111111111111111111111111111111111111:provider-one"],
         ["published_at", "1722729600"]

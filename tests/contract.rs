@@ -23,7 +23,7 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     assert_eq!(descriptor.identity.contract_version, CONTRACT_VERSION);
     assert_eq!(descriptor.fixture_manifest, FIXTURE_MANIFEST_PATH);
     assert_eq!(descriptor.identity.nips.len(), 3);
-    assert_eq!(descriptor.kinds.len(), 10);
+    assert_eq!(descriptor.kinds.len(), 11);
     assert!(
         descriptor
             .kinds
@@ -35,6 +35,31 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     }
     assert!(MKT_EXECUTABLE_PROFILES.is_empty());
     assert!(descriptor.mkt.executable_profiles.is_empty());
+    assert_eq!(descriptor.mkt.relay_profiles.len(), 1);
+    assert_eq!(descriptor.mkt.relay_profiles[0].id, "mkt-swp");
+    assert_eq!(descriptor.mkt.mkt_swp.swap_contract_kind, 39_610);
+    assert_eq!(descriptor.mkt.mkt_swp.upstream_fixture_cases, 70);
+    assert!(
+        descriptor
+            .mkt
+            .mkt_swp
+            .public_offering_forbidden_members
+            .contains(&"live_inventory")
+    );
+    assert!(
+        descriptor
+            .mkt
+            .mkt_swp
+            .public_receipt_forbidden_members
+            .contains(&"session_id")
+    );
+    assert!(
+        descriptor
+            .mkt
+            .mkt_swp
+            .evidence_reference_validation
+            .contains("bitcoin_output_and_spend_txid_vout")
+    );
     assert_eq!(descriptor.mkt.enums["quote"], MKT_QUOTE_CLASSES);
     assert_eq!(descriptor.mkt.enums["reservation"], MKT_RESERVATION_CLASSES);
     assert_eq!(descriptor.mkt.enums["status_state"], MKT_STATUS_STATES);
@@ -102,6 +127,7 @@ fn fixture_manifest_hashes_exact_sorted_committed_bytes() {
     }
     assert!(paths.contains("tests/fixtures/nipmkt/client-only-cases.json"));
     assert!(paths.contains("tests/fixtures/nipmkt/relay-closing.json"));
+    assert!(paths.contains("tests/fixtures/nipmkt/swp-profile-v1.json"));
 }
 
 fn lower_hex(bytes: &[u8]) -> String {

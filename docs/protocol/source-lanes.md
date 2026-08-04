@@ -129,3 +129,42 @@ remain with external wallets and rail authorities. The feature does not change
 NIP-11 advertisement and does not make an MKT-SWP revision executable; that
 adoption waits for its upstream profile, collision review, fixtures, and local
 conformance gate.
+
+## M12 MKT-SWP adoption decision (2026-08-04)
+
+The issue #11 sync advances the pinned lanes to official
+`c53877571f96eb423661fc23c620d629d37b8f19`, Block
+`540b58920cef205b838da8be8442aae62bceaaa5`, and OpenAgents
+`a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`. The OpenAgents revision adds
+MKT-SWP v1 and MKT-PFI v1; this packet adopts only the relay-observable
+MKT-SWP surface. MKT-PFI remains pinned input for issue #17.
+
+Before allocating `kind:39610`, fresh clones of all three lanes and the Nostr
+kind registry were reviewed at these exact revisions:
+
+| Source | Reviewed revision | Result |
+| --- | --- | --- |
+| Official NIPs | `c53877571f96eb423661fc23c620d629d37b8f19` | No semantic assignment in `39610-39699`; search hits were unrelated hexadecimal fixture substrings. |
+| Block NIPs | `540b58920cef205b838da8be8442aae62bceaaa5` | No semantic assignment in `39610-39699`; search hits were unrelated hexadecimal fixture substrings. |
+| OpenAgents NIPs | `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682` | NIP-MKT assigns private immutable `39610` to the MKT-SWP Swap Contract and public `39630` to MKT-PFI; all other matches are the same reservation and profile text. |
+| [`nostr-protocol/registry-of-kinds`](https://github.com/nostr-protocol/registry-of-kinds) `schema.yaml` | `2483e752146d171524dcb10dffd06de2aa271bf3` | No entry in `39610-39699`. |
+
+The review found no collision and creates no lane-precedence exception.
+Immortal therefore allocates `39610` as an addressable,
+immutable-by-contract signed record that is accepted only inside recipient-
+gated NIP-59 transport. Kinds `39611-39629` and `39631-39699` remain
+unallocated here; `39630` is not adopted by this packet.
+
+The runtime validates MKT-SWP v1 Offering grammar, exact asset/network and
+decimal-string bounds, side-disable and fee laws, typed evidence references,
+public receipt outcomes, Swap Contract tags and digest agreement, and custody-
+material tripwires on records visible to an authorized profile consumer. The
+transport relay still cannot decrypt arbitrary gift wraps and does not claim
+to verify lifecycle execution, capacity, funding, exits, or settlement. The
+exported contract therefore lists `mkt-swp:1` as `relay_observable_only` and
+keeps the executable-profile set empty.
+
+After the active local Postgres and conformance gate passes, NIP-11 advertises
+`mkt-swp:1` only when `IMMORTAL_RELAY_URL` enables authenticated recipient
+transport. That extension identifies the relay-observable v1 wire surface; it
+is not a client-engine, coordination-handler, wallet, or settlement claim.

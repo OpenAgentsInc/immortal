@@ -2015,6 +2015,13 @@ mod tests {
             Err(EventPreflightRejection::IpRate)
         );
 
+        let swap_contract_rate = RateLimiter::new(limits.clone());
+        let bare_swap_contract = signer.sign(6, 39_610, Vec::new(), "private".to_owned());
+        assert_eq!(
+            event_preflight(&swap_contract_rate, ip, &bare_swap_contract),
+            Err(EventPreflightRejection::BareMktPrivate)
+        );
+
         let accepted_rate = RateLimiter::new(GatewayLimits {
             events_per_minute_ip: 1,
             ..limits

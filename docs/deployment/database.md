@@ -58,6 +58,12 @@ therefore not searchable even for an authenticated recipient;
 recipient-gated history and ID lookup remain available. Internal/private MKT
 rows remain in the durable store but are not gateway-readable.
 
+`migrations/0010_mkt_swp_profile.sql` extends the durable immutable coordinate
+and search exclusion through MKT-SWP Swap Contract kind 39610. It backfills
+any pre-adoption kind-39610 row, removes its generic replacement head, and
+rebuilds the generated search vector so the private profile kind remains
+hidden on every query surface.
+
 The database independently rejects malformed identity widths, negative or
 out-of-range protocol numbers, ephemeral kinds, inconsistent replacement
 identifiers, and malformed tombstone shapes. Indexed access paths cover IDs,
@@ -96,7 +102,7 @@ heads, inserts the event and indexed tags, applies deletion tombstones and
 deletes superseded rows, updates the head, allocates `ingest_seq`, and calls
 `pg_notify`. A stored result is returned only after commit.
 
-Kinds `39604-39609` use a distinct path inside that transaction. An existing
+Kinds `39604-39610` use a distinct path inside that transaction. An existing
 durable coordinate is checked before generic duplicate, expiration,
 tombstone, and policy decisions: an exact event-ID-and-signature replay
 returns the prior successful duplicate result, while any changed ID or

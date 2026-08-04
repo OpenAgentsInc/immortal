@@ -47,6 +47,7 @@
     {"name": "escaped equivalent duplicate member", "expected_code": "duplicate_json_member", "content": "{\"schema\":\"openagents.mkt.v1\",\"profile\":\"conformance\",\"profile_version\":1,\"session_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"nested\":{\"x\":1,\"\\u0078\":2}}"},
     {"name": "trailing JSON", "expected_code": "invalid_json", "content": "{\"schema\":\"openagents.mkt.v1\",\"profile\":\"conformance\",\"profile_version\":1,\"session_id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"} true"},
     {"name": "bad event reference marker", "expected_code": "invalid_reference", "add": ["e", "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "", "unknown"]},
+    {"name": "profile-scoped contract reference marker", "expected_code": "invalid_reference", "add": ["e", "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "", "contract"]},
     {"name": "bad event reference id", "expected_code": "invalid_reference", "add": ["e", "dd", "", "evidence"]},
     {"name": "bad offering address", "expected_code": "invalid_reference", "add": ["a", "39600:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:offer", "", "offering"]}
   ],

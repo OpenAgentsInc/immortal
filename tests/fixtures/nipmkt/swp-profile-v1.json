@@ -1,0 +1,252 @@
+{
+  "source": {
+    "lane": "openagents",
+    "commit": "a7f5522c0a7430f9f5b1cfa09477dae2d16d3682",
+    "specification": "nips/openagents/MKT-SWP.md",
+    "profile": "mkt-swp",
+    "version": 1,
+    "kind": 39610
+  },
+  "relay_observable": {
+    "offering": {
+      "kind": 39601,
+      "tags": [
+        ["d", "btc-lightning-regtest"],
+        ["profile", "mkt-swp", "1"],
+        ["status", "active"],
+        ["provider", "39600:1111111111111111111111111111111111111111111111111111111111111111:provider-one"],
+        ["published_at", "1785859200"]
+      ],
+      "content": {
+        "mkt_swp": {
+          "swap_types": ["submarine", "reverse", "chain"],
+          "sides": [
+            {
+              "input_asset_id": "swp:1:bip122:00000000000000000000000000000000:btc:chain",
+              "output_asset_id": "swp:1:bip122:00000000000000000000000000000000:btc:lightning",
+              "min": "10000",
+              "max": "1000000",
+              "fee_bps": "25"
+            }
+          ],
+          "networks": ["bip122:00000000000000000000000000000000"],
+          "script_modes": ["taproot-musig2-script-exit"],
+          "reservation_proof_classes": ["provider_signed", "covenant_reserve"],
+          "confirmation_policies": [
+            {
+              "policy_id": "btc-1conf-no-rbf",
+              "minimum_confirmations": "1",
+              "reorg_safety_blocks": "6",
+              "zero_confirmation": "forbidden",
+              "rbf": "reject",
+              "replacement": "reject"
+            }
+          ],
+          "availability": "available",
+          "evm_extension": "unsupported"
+        }
+      }
+    },
+    "offering_errors": [
+      ["ticker_asset", "swp_invalid_asset_id"],
+      ["json_number_amount", "swp_invalid_amount"],
+      ["leading_zero_amount", "swp_invalid_amount"],
+      ["disabled_side_min_nonzero", "swp_side_disabled"],
+      ["fee_over_10000", "swp_invalid_fee"],
+      ["duplicate_swap_type", "swp_terms_mismatch"],
+      ["unknown_script_mode", "swp_unsupported_version"],
+      ["nonnull_evm_extension", "swp_unsupported_extension"],
+      ["public_live_inventory", "swp_privacy_violation"],
+      ["public_preimage", "swp_secret_material_forbidden"],
+      ["sibling_live_inventory", "swp_privacy_violation"],
+      ["sibling_preimage", "swp_secret_material_forbidden"],
+      ["sibling_seed", "swp_secret_material_forbidden"],
+      ["sibling_macaroon", "swp_secret_material_forbidden"],
+      ["unadvertised_side_network", "swp_invalid_pair"],
+      ["cross_network_submarine", "swp_invalid_pair"],
+      ["side_swap_type_not_advertised", "swp_invalid_pair"]
+    ],
+    "swap_contract": {
+      "kind": 39610,
+      "tags": [
+        ["d", "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],
+        ["session", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        ["profile", "mkt-swp", "1"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "provider"],
+        ["alt", "MKT-SWP swap contract"],
+        ["e", "3333333333333333333333333333333333333333333333333333333333333333", "", "order"],
+        ["e", "4444444444444444444444444444444444444444444444444444444444444444", "", "quote"],
+        ["x", "5555555555555555555555555555555555555555555555555555555555555555"],
+        ["role", "requester"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-swp",
+        "profile_version": 1,
+        "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "mkt_swp": {
+          "contract": {},
+          "contract_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+          "signer_role": "requester"
+        }
+      }
+    },
+    "swap_contract_profile_errors": [
+      ["wrong_profile", "unsupported_profile"],
+      ["wrong_version", "unsupported_profile_version"]
+    ],
+    "swap_contract_errors": [
+      ["self_counterparty", "swp_contract_signer_invalid"],
+      ["same_role_counterparty", "swp_contract_signer_invalid"],
+      ["nonnull_contract_evm_leg", "swp_unsupported_extension"],
+      ["sibling_preimage", "swp_secret_material_forbidden"],
+      ["sibling_seed", "swp_secret_material_forbidden"],
+      ["sibling_macaroon", "swp_secret_material_forbidden"]
+    ],
+    "status_with_contract_and_evidence": {
+      "kind": 39607,
+      "tags": [
+        ["d", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"],
+        ["session", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        ["profile", "mkt-swp", "1"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "provider"],
+        ["alt", "MKT-SWP status evidence"],
+        ["e", "5555555555555555555555555555555555555555555555555555555555555555", "", "contract"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-swp",
+        "profile_version": 1,
+        "session_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "mkt_swp": {
+          "evidence_refs": [{
+            "class": "bitcoin_output",
+            "rung": "verified",
+            "rail": "bitcoin",
+            "reference": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+            "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "producer_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "verifier_pubkey": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "verifier_policy": "btc-regtest-v1",
+            "observed_at": 1785859200,
+            "view": "tip:100"
+          }]
+        }
+      }
+    },
+    "evidence": {
+      "valid": {
+        "class": "bitcoin_output",
+        "rung": "verified",
+        "rail": "bitcoin",
+        "reference": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+        "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "producer_pubkey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "verifier_pubkey": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "verifier_policy": "btc-regtest-v1",
+        "observed_at": 1785859200,
+        "view": "tip:100"
+      },
+      "invalid_classes": ["wallet_balance", "provider_database"],
+      "invalid_rungs": ["final", "trusted"],
+      "typed_errors": [
+        ["class_rail_mismatch", "fiat", "hello"],
+        ["malformed_bitcoin_output_reference", "bitcoin", "hello"]
+      ],
+      "allowed_classes": ["invoice", "lightning_htlc", "lightning_payment", "bitcoin_transaction", "bitcoin_output", "bitcoin_spend", "reservation", "covenant_reserve", "claim", "refund", "reorg", "replacement"],
+      "allowed_rungs": ["pledged", "reserved", "measured", "verified", "paid", "settled"]
+    },
+    "public_receipt_outcomes": ["completed", "cancelled", "expired", "failed", "refunded", "disputed", "unresolved"],
+    "public_receipt_errors": [
+      ["wrong_version", "swp_unsupported_version"],
+      ["sibling_live_inventory", "swp_privacy_violation"],
+      ["sibling_preimage", "swp_secret_material_forbidden"],
+      ["sibling_seed", "swp_secret_material_forbidden"],
+      ["sibling_macaroon", "swp_secret_material_forbidden"]
+    ],
+    "forbidden_custody_members": ["seed", "private_key", "claim_private_key", "refund_private_key", "preimage", "macaroon", "nwc", "nwc_string", "musig_secret_nonce", "signing_nonce"]
+  },
+  "client_only_requirements": {
+    "relay_enforced": false,
+    "funding_requires": ["matching_bilateral_contract", "verification_passed", "exit_package_persisted", "external_wallet_authority"],
+    "case_categories": {
+      "lifecycle_transitions": ["swp-v1-status-gap", "swp-v1-status-fork", "swp-v1-expired-quote", "swp-v1-expired-after-funding"],
+      "timeout_ladder": ["swp-v1-negative-timeout-ladder"],
+      "verify_before_fund_refusals": ["swp-v1-negative-missing-exit-package", "swp-v1-negative-provider-claims-requester-verification", "swp-v1-reorg-funding-before-finality"],
+      "equivocating_reservation": ["swp-v1-reservation-sequence-fork"]
+    },
+    "named_cases": ["swp-v1-negative-timeout-ladder", "swp-v1-negative-missing-exit-package", "swp-v1-negative-settlement-overclaim", "swp-v1-reservation-sequence-fork", "swp-v1-status-gap", "swp-v1-status-fork", "swp-v1-doomsday-keyless-esplora-broadcast"]
+  },
+  "upstream_fixture_manifest": [
+    "swp-v1-offering-btc-ln-enabled",
+    "swp-v1-contract-matching-bilateral",
+    "swp-v1-submarine-regtest-cooperative",
+    "swp-v1-submarine-regtest-script-refund",
+    "swp-v1-reverse-regtest-cooperative",
+    "swp-v1-reverse-regtest-provider-refund",
+    "swp-v1-chain-regtest-cooperative",
+    "swp-v1-chain-regtest-dual-refund",
+    "swp-v1-covenant-hard-reservation",
+    "swp-v1-price-feed-exact-pointer",
+    "swp-v1-public-receipt-redacted",
+    "swp-v1-negative-ticker-pair",
+    "swp-v1-negative-json-number-amount",
+    "swp-v1-negative-leading-zero-amount",
+    "swp-v1-negative-disabled-side",
+    "swp-v1-negative-fee-promise-change",
+    "swp-v1-negative-feed-redirect",
+    "swp-v1-negative-feed-substitute-host",
+    "swp-v1-negative-feed-pointer",
+    "swp-v1-negative-feed-stale",
+    "swp-v1-negative-invoice-network",
+    "swp-v1-negative-invoice-amountless",
+    "swp-v1-negative-payment-hash",
+    "swp-v1-negative-taproot-tree",
+    "swp-v1-negative-refund-key",
+    "swp-v1-negative-timeout-ladder",
+    "swp-v1-negative-rbf-forbidden",
+    "swp-v1-negative-insufficient-confirmations",
+    "swp-v1-negative-order-mutation",
+    "swp-v1-negative-bare-swap-contract",
+    "swp-v1-negative-contract-one-signer",
+    "swp-v1-negative-contract-role",
+    "swp-v1-negative-contract-digest-fork",
+    "swp-v1-negative-contract-order-mismatch",
+    "swp-v1-negative-nonnull-evm-leg",
+    "swp-v1-negative-missing-exit-package",
+    "swp-v1-negative-provider-claims-requester-verification",
+    "swp-v1-negative-settlement-overclaim",
+    "swp-v1-replay-identical-order",
+    "swp-v1-replay-rewrapped-quote",
+    "swp-v1-replay-rewrapped-swap-contract",
+    "swp-v1-conflict-swap-contract-d",
+    "swp-v1-replay-effect-after-crash",
+    "swp-v1-conflict-order-idempotency",
+    "swp-v1-conflict-effect-binding",
+    "swp-v1-reservation-overallocation",
+    "swp-v1-reservation-sequence-fork",
+    "swp-v1-covenant-double-count",
+    "swp-v1-status-gap",
+    "swp-v1-status-fork",
+    "swp-v1-expired-quote",
+    "swp-v1-expired-after-funding",
+    "swp-v1-privacy-public-offering",
+    "swp-v1-privacy-wrap-recipient",
+    "swp-v1-privacy-public-receipt-overreach",
+    "swp-v1-privacy-seed-tripwire",
+    "swp-v1-privacy-preimage-tripwire",
+    "swp-v1-privacy-macaroon-tripwire",
+    "swp-v1-privacy-claim-key-tripwire",
+    "swp-v1-privacy-musig-secret-nonce-tripwire",
+    "swp-v1-reorg-funding-before-finality",
+    "swp-v1-reorg-claim-before-finality",
+    "swp-v1-replacement-tracked",
+    "swp-v1-doomsday-submarine-provider-gone",
+    "swp-v1-doomsday-reverse-coordinator-gone",
+    "swp-v1-doomsday-chain-counterparty-gone",
+    "swp-v1-doomsday-keyless-esplora-broadcast",
+    "swp-v1-recovery-missing-signed-record",
+    "swp-v1-recovery-unusable-exit-package",
+    "swp-v1-recovery-mutual-close-disagreement"
+  ]
+}

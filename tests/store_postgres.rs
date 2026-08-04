@@ -27,13 +27,13 @@ async fn m2_store_contract_against_postgres() {
     }
 
     let (initial_store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert_eq!(report.applied_versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     drop(initial_store);
-    seed_pre_v9_search_rows(&database_url).await;
+    seed_pre_gateway_and_swp_rows(&database_url).await;
 
     let (mut store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![9]);
-    assert_pre_v9_search_rows_are_private_and_preserved(&database_url).await;
+    assert_eq!(report.applied_versions, vec![9, 10]);
+    assert_pre_adoption_rows_are_private_immutable_and_preserved(&database_url).await;
     assert!(store.is_current());
 
     let (_second_store, report) = Store::connect_with_report(&database_url).await.unwrap();
@@ -201,7 +201,7 @@ async fn m2_store_contract_against_postgres() {
     migration_hash_drift_fails_closed(&database_url).await;
 }
 
-async fn seed_pre_v9_search_rows(database_url: &str) {
+async fn seed_pre_gateway_and_swp_rows(database_url: &str) {
     let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let transaction = client.transaction().await.unwrap();
@@ -219,6 +219,14 @@ ALTER TABLE nostr_event ADD COLUMN search_vector tsvector GENERATED ALWAYS AS (
 ) STORED;
 CREATE INDEX nostr_event_search_idx ON nostr_event USING gin (search_vector);
 DELETE FROM schema_migrations WHERE version = 9;
+DELETE FROM mkt_immutable_coordinate WHERE kind = 39610;
+ALTER TABLE mkt_immutable_coordinate
+    DROP CONSTRAINT mkt_immutable_kind_range;
+ALTER TABLE mkt_immutable_coordinate
+    ADD CONSTRAINT mkt_immutable_kind_range CHECK (
+        kind BETWEEN 39604 AND 39609
+    );
+DELETE FROM schema_migrations WHERE version = 10;
 "#,
         )
         .await
@@ -246,6 +254,13 @@ INSERT INTO nostr_event (
         39_604,
         vec![Tag::new(vec!["d".into(), "d".repeat(64)])],
         "pre-v9 private MKT searchable marker",
+    );
+    let swap_contract = signed_event(
+        92,
+        10,
+        39_610,
+        vec![Tag::new(vec!["d".into(), "e".repeat(64)])],
+        "pre-v10 MKT-SWP searchable marker",
     );
     transaction
         .execute(
@@ -279,34 +294,84 @@ INSERT INTO nostr_event (
         )
         .await
         .unwrap();
+    transaction
+        .execute(
+            &insert,
+            &[
+                &swap_contract.id,
+                &swap_contract.pubkey,
+                &i64::try_from(swap_contract.created_at).unwrap(),
+                &39_610_i32,
+                &serde_json::to_string(&swap_contract.tags).unwrap(),
+                &swap_contract.content,
+                &swap_contract.sig,
+                &Some("e".repeat(64)),
+            ],
+        )
+        .await
+        .unwrap();
+    transaction
+        .execute(
+            r#"
+INSERT INTO replaceable_head (kind, pubkey, identifier, event_id, created_at)
+VALUES ($1, $2, $3, $4, $5)
+"#,
+            &[
+                &39_610_i32,
+                &swap_contract.pubkey,
+                &"e".repeat(64),
+                &swap_contract.id,
+                &i64::try_from(swap_contract.created_at).unwrap(),
+            ],
+        )
+        .await
+        .unwrap();
     let indexed = transaction
         .query_one(
-            "SELECT count(*) FROM nostr_event WHERE content LIKE '%pre-v9%' AND search_vector IS NOT NULL",
+            "SELECT count(*) FROM nostr_event WHERE content LIKE '%pre-v%' AND search_vector IS NOT NULL",
             &[],
         )
         .await
         .unwrap()
         .get::<_, i64>(0);
-    assert_eq!(indexed, 2);
+    assert_eq!(indexed, 3);
     transaction.commit().await.unwrap();
 }
 
-async fn assert_pre_v9_search_rows_are_private_and_preserved(database_url: &str) {
+async fn assert_pre_adoption_rows_are_private_immutable_and_preserved(database_url: &str) {
     let (client, connection) = tokio_postgres::connect(database_url, NoTls).await.unwrap();
     tokio::spawn(async move { connection.await.unwrap() });
     let row = client
         .query_one(
-            "SELECT count(*), count(*) FILTER (WHERE search_vector IS NULL) FROM nostr_event WHERE content LIKE '%pre-v9%'",
+            "SELECT count(*), count(*) FILTER (WHERE search_vector IS NULL) FROM nostr_event WHERE content LIKE '%pre-v%'",
             &[],
         )
         .await
         .unwrap();
-    assert_eq!(row.get::<_, i64>(0), 2, "migration preserves both rows");
+    assert_eq!(row.get::<_, i64>(0), 3, "migrations preserve all rows");
     assert_eq!(
         row.get::<_, i64>(1),
-        2,
-        "migration recalculates both search vectors to NULL"
+        3,
+        "migrations recalculate all private search vectors to NULL"
     );
+    let immutable = client
+        .query_one(
+            "SELECT count(*) FROM mkt_immutable_coordinate WHERE kind = 39610",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0);
+    assert_eq!(immutable, 1, "MKT-SWP coordinate is backfilled");
+    let generic_head = client
+        .query_one(
+            "SELECT count(*) FROM replaceable_head WHERE kind = 39610",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0);
+    assert_eq!(generic_head, 0, "MKT-SWP generic head is removed");
 }
 
 async fn nostr_effect_import_is_idempotent(database_url: &str, store: &mut Store) {
@@ -476,7 +541,7 @@ async fn replacement_race(database_url: &str, store: &mut Store) {
 }
 
 async fn mkt_immutable_admission(database_url: &str, store: &mut Store) {
-    for (offset, kind) in (39_604..=39_609).enumerate() {
+    for (offset, kind) in (39_604..=39_610).enumerate() {
         let identifier = format!("{:064x}", offset + 1);
         let first = signed_event(
             20,
@@ -597,7 +662,7 @@ async fn mkt_immutable_admission(database_url: &str, store: &mut Store) {
     let driver = tokio::spawn(connection);
     let private_heads = client
         .query_one(
-            "SELECT count(*) FROM replaceable_head WHERE kind BETWEEN 39604 AND 39609",
+            "SELECT count(*) FROM replaceable_head WHERE kind BETWEEN 39604 AND 39610",
             &[],
         )
         .await
@@ -1170,7 +1235,47 @@ fn signed_event(
     let secret = SecretKey::from_byte_array([secret_byte; 32]).unwrap();
     let keypair = Keypair::from_secret_key(&secp, &secret);
     let pubkey = keypair.x_only_public_key().0.to_string();
-    let content = if (39_604..=39_609).contains(&kind) {
+    let content = if kind == 39_610 {
+        let session = format!("{secret_byte:02x}").repeat(32);
+        let digest = "5".repeat(64);
+        tags.extend([
+            Tag::new(vec!["session".into(), session.clone()]),
+            Tag::new(vec!["profile".into(), "mkt-swp".into(), "1".into()]),
+            Tag::new(vec![
+                "p".into(),
+                "c".repeat(64),
+                String::new(),
+                "provider".into(),
+            ]),
+            Tag::new(vec!["alt".into(), "MKT-SWP store fixture".into()]),
+            Tag::new(vec![
+                "e".into(),
+                "3".repeat(64),
+                String::new(),
+                "order".into(),
+            ]),
+            Tag::new(vec![
+                "e".into(),
+                "4".repeat(64),
+                String::new(),
+                "quote".into(),
+            ]),
+            Tag::new(vec!["x".into(), digest.clone()]),
+            Tag::new(vec!["role".into(), "requester".into()]),
+        ]);
+        serde_json::json!({
+            "schema": "openagents.mkt.v1",
+            "profile": "mkt-swp",
+            "profile_version": 1,
+            "session_id": session,
+            "mkt_swp": {
+                "contract": { "fixture_note": content },
+                "contract_sha256": digest,
+                "signer_role": "requester",
+            },
+        })
+        .to_string()
+    } else if (39_604..=39_609).contains(&kind) {
         let session = tags
             .iter()
             .find(|tag| tag.name() == Some("session"))

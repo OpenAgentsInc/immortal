@@ -48,6 +48,7 @@ for path in sorted(fixture_root.rglob("*.json"), key=lambda item: item.relative_
     elif (
         relative.endswith("nipmkt/common-grammar.json")
         or relative.endswith("nipmkt/relay-closing.json")
+        or relative.endswith("nipmkt/swp-profile-v1.json")
         or relative.endswith("nipmkt/swp-verification.json")
     ):
         scope = "relay_and_client"

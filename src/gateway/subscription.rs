@@ -566,7 +566,7 @@ impl Hub {
 }
 
 fn event_visible_to_reader(event: &Event, readers: &HashSet<String>) -> bool {
-    if (39_604..=39_609).contains(&event.kind) {
+    if (39_604..=39_610).contains(&event.kind) {
         return false;
     }
     match event.kind {
@@ -668,6 +668,9 @@ mod tests {
         let readers = HashSet::from([recipient.clone()]);
         let private = event('a', 10, 39_604);
         assert!(!event_visible_to_reader(&private, &readers));
+        let mut swap_contract = event('e', 10, 39_610);
+        swap_contract.tags = vec![crate::domain::Tag::new(vec!["p".into(), recipient.clone()])];
+        assert!(!event_visible_to_reader(&swap_contract, &readers));
 
         let mut valid_wrap = event('b', 10, 1_059);
         valid_wrap.tags = vec![crate::domain::Tag::new(vec!["p".into(), recipient.clone()])];
@@ -676,6 +679,104 @@ mod tests {
             .tags
             .push(crate::domain::Tag::new(vec!["p".into(), "b".repeat(64)]));
         assert!(!event_visible_to_reader(&valid_wrap, &readers));
+    }
+
+    #[tokio::test]
+    async fn kind_39610_is_hidden_from_broad_kind_and_id_live_fanout() {
+        let (shutdown, receiver) = watch::channel(false);
+        let (hub, task) = HubHandle::start(32, 8, 128 * 1024, receiver);
+        let recipient = "a".repeat(64);
+        let readers = HashSet::from([recipient.clone()]);
+        let mut swap_contract = event('e', 10, 39_610);
+        swap_contract.tags = vec![crate::domain::Tag::new(vec!["p".into(), recipient.clone()])];
+
+        let filters = [
+            Filter::default(),
+            Filter {
+                kinds: Some(vec![39_610]),
+                ..Filter::default()
+            },
+            Filter {
+                ids: Some(vec![swap_contract.id.clone()]),
+                ..Filter::default()
+            },
+        ];
+        let mut channels = Vec::new();
+        for (offset, filter) in filters.into_iter().enumerate() {
+            let connection_id = u64::try_from(offset + 1).unwrap();
+            let subscription_id = format!("private-{offset}");
+            let mut connection = hub.add_connection(connection_id, 8).await.unwrap();
+            assert!(
+                hub.register_for(
+                    connection_id,
+                    subscription_id.clone(),
+                    1,
+                    vec![filter],
+                    readers.clone(),
+                )
+                .await
+                .unwrap()
+            );
+            hub.history_ready(connection_id, subscription_id.clone(), 1, 0, Vec::new())
+                .await;
+            assert_eq!(
+                receive_json(&mut connection.outbound).await,
+                serde_json::json!(["EOSE", subscription_id])
+            );
+            channels.push(connection);
+        }
+
+        hub.publish(
+            PublishedEvent {
+                event: Arc::new(swap_contract),
+                ingest_seq: Some(1),
+            },
+            100,
+        )
+        .await
+        .unwrap();
+        for connection in &mut channels {
+            assert!(
+                timeout(Duration::from_millis(20), connection.outbound.recv())
+                    .await
+                    .is_err(),
+                "authorized readers must not receive bare kind 39610"
+            );
+        }
+
+        let mut wrap_connection = hub.add_connection(4, 8).await.unwrap();
+        let wrap_filter = Filter {
+            kinds: Some(vec![1_059]),
+            tags: BTreeMap::from([('p', vec![recipient.clone()])]),
+            ..Filter::default()
+        };
+        assert!(
+            hub.register_for(4, "wrap".into(), 1, vec![wrap_filter], readers.clone(),)
+                .await
+                .unwrap()
+        );
+        hub.history_ready(4, "wrap".into(), 1, 0, Vec::new()).await;
+        assert_eq!(
+            receive_json(&mut wrap_connection.outbound).await,
+            serde_json::json!(["EOSE", "wrap"])
+        );
+        let mut wrap = event('f', 11, 1_059);
+        wrap.tags = vec![crate::domain::Tag::new(vec!["p".into(), recipient])];
+        hub.publish(
+            PublishedEvent {
+                event: Arc::new(wrap.clone()),
+                ingest_seq: Some(2),
+            },
+            100,
+        )
+        .await
+        .unwrap();
+        let message = receive_json(&mut wrap_connection.outbound).await;
+        assert_eq!(message[0], "EVENT");
+        assert_eq!(message[2]["id"], wrap.id);
+
+        shutdown.send(true).unwrap();
+        task.await.unwrap();
     }
 
     #[tokio::test]

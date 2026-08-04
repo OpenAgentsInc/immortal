@@ -11,8 +11,9 @@ use crate::{
         MKT_MAX_RECEIPT_CONTENT_BYTES, MKT_MAX_REFERENCES, MKT_MAX_TAGS, MKT_OFFERING_KIND,
         MKT_OFFERING_STATUSES, MKT_ORDER_KIND, MKT_OUTCOMES, MKT_PROFILE_DESCRIPTOR_KIND,
         MKT_PROVIDER_PROFILE_KIND, MKT_PROVIDER_STATUSES, MKT_PUBLIC_RECEIPT_KIND,
-        MKT_PUBLIC_RECEIPT_OUTCOMES, MKT_QUOTE_CLASSES, MKT_QUOTE_KIND, MKT_RESERVATION_CLASSES,
-        MKT_RFQ_KIND, MKT_STATUS_KIND, MKT_STATUS_STATES,
+        MKT_PUBLIC_RECEIPT_OUTCOMES, MKT_QUOTE_CLASSES, MKT_QUOTE_KIND, MKT_RELAY_PROFILES,
+        MKT_RESERVATION_CLASSES, MKT_RFQ_KIND, MKT_STATUS_KIND, MKT_STATUS_STATES,
+        MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND,
     },
     gateway::{
         GatewayLimits, MKT_GIFT_WRAP_RECIPIENT_RATE_EXCEEDED, MKT_PRIVATE_REQUIRES_GIFT_WRAP,
@@ -104,6 +105,8 @@ pub struct MktLimits {
 pub struct MktGrammar {
     pub schema: &'static str,
     pub executable_profiles: Vec<ExecutableProfile>,
+    pub relay_profiles: Vec<RelayProfile>,
+    pub mkt_swp: MktSwpGrammar,
     pub required_tags: BTreeMap<&'static str, Vec<&'static str>>,
     pub enums: BTreeMap<&'static str, Vec<&'static str>>,
     pub identifiers: BTreeMap<&'static str, IdentifierGrammar>,
@@ -115,6 +118,35 @@ pub struct MktGrammar {
 pub struct ExecutableProfile {
     pub id: &'static str,
     pub version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RelayProfile {
+    pub id: &'static str,
+    pub version: u64,
+    pub scope: &'static str,
+    pub advertisement: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MktSwpGrammar {
+    pub id: &'static str,
+    pub version: u64,
+    pub swap_contract_kind: u16,
+    pub swap_contract_publication: &'static str,
+    pub contract_digest_validation: &'static str,
+    pub network_id_pattern: &'static str,
+    pub asset_id_pattern: &'static str,
+    pub canonical_amount_pattern: &'static str,
+    pub offering_required_members: Vec<&'static str>,
+    pub public_offering_forbidden_members: Vec<&'static str>,
+    pub public_receipt_forbidden_members: Vec<&'static str>,
+    pub evidence_classes: Vec<&'static str>,
+    pub evidence_rungs: Vec<&'static str>,
+    pub evidence_reference_validation: &'static str,
+    pub public_receipt_outcomes: Vec<&'static str>,
+    pub forbidden_custody_members: Vec<&'static str>,
+    pub upstream_fixture_cases: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -286,6 +318,7 @@ fn supported_protocols() -> Vec<ProtocolDescriptor> {
         protocol("block", "nip-pl", "never", "executor_unconfigured"),
         protocol("openagents", "NIP-OT/PG", "never", "client_only"),
         protocol("openagents", "nip-mkt", "relay_url", "implemented_base"),
+        protocol("openagents", "mkt-swp:1", "relay_url", "relay_observable"),
     ]
 }
 
@@ -371,6 +404,13 @@ fn mkt_kinds() -> Vec<KindDescriptor> {
         (
             MKT_CLOSE_KIND,
             "close",
+            "private_wrapped",
+            "exact_signed_coordinate",
+            "client_and_internal_store",
+        ),
+        (
+            MKT_SWP_SWAP_CONTRACT_KIND,
+            "mkt_swp_swap_contract",
             "private_wrapped",
             "exact_signed_coordinate",
             "client_and_internal_store",
@@ -587,6 +627,12 @@ fn mkt_grammar() -> MktGrammar {
     );
     required_tags.insert("cancel", vec!["order e", "action", "reason"]);
     required_tags.insert("close", vec!["order e", "outcome", "terminal_at"]);
+    required_tags.insert(
+        "mkt_swp_swap_contract",
+        vec![
+            "d", "session", "profile", "p", "alt", "order e", "quote e", "x", "role",
+        ],
+    );
 
     let mut enums = BTreeMap::new();
     enums.insert("cancel_action", MKT_CANCEL_ACTIONS.to_vec());
@@ -627,6 +673,104 @@ fn mkt_grammar() -> MktGrammar {
                 version: *version,
             })
             .collect(),
+        relay_profiles: MKT_RELAY_PROFILES
+            .iter()
+            .map(|(id, version)| RelayProfile {
+                id,
+                version: *version,
+                scope: "relay_observable_only",
+                advertisement: "relay_url_and_local_conformance",
+            })
+            .collect(),
+        mkt_swp: MktSwpGrammar {
+            id: MKT_SWP_PROFILE_ID,
+            version: MKT_SWP_PROFILE_VERSION,
+            swap_contract_kind: MKT_SWP_SWAP_CONTRACT_KIND,
+            swap_contract_publication: "private_signed_record_nip59_only",
+            contract_digest_validation: "lower_hex_shape_and_x_body_equality; rfc8785_recomputation_is_client_or_handler_scope",
+            network_id_pattern: "^bip122:[0-9a-f]{32}$",
+            asset_id_pattern: "^swp:1:bip122:[0-9a-f]{32}:btc:(chain|lightning)$",
+            canonical_amount_pattern: "^(0|[1-9][0-9]*)$",
+            offering_required_members: vec![
+                "swap_types",
+                "sides",
+                "networks",
+                "script_modes",
+                "reservation_proof_classes",
+                "confirmation_policies",
+                "availability",
+                "evm_extension",
+            ],
+            public_offering_forbidden_members: vec![
+                "live_inventory",
+                "inventory",
+                "utxo",
+                "utxos",
+                "channel_balance",
+                "channel_balances",
+                "invoice",
+                "invoices",
+                "address",
+                "addresses",
+                "script",
+                "scripts",
+                "payment_hash",
+                "payment_hashes",
+                "reserve_witness",
+                "reserve_witnesses",
+            ],
+            public_receipt_forbidden_members: vec![
+                "session_id",
+                "counterparty",
+                "counterparties",
+                "amount",
+                "input_amount",
+                "output_amount",
+                "asset_pair",
+                "input_asset_id",
+                "output_asset_id",
+                "route",
+                "payment_hash",
+                "invoice",
+                "transaction_id",
+                "txid",
+                "timing_ladder",
+                "evidence",
+                "evidence_refs",
+            ],
+            evidence_classes: vec![
+                "invoice",
+                "lightning_htlc",
+                "lightning_payment",
+                "bitcoin_transaction",
+                "bitcoin_output",
+                "bitcoin_spend",
+                "reservation",
+                "covenant_reserve",
+                "claim",
+                "refund",
+                "reorg",
+                "replacement",
+            ],
+            evidence_rungs: vec![
+                "pledged", "reserved", "measured", "verified", "paid", "settled",
+            ],
+            evidence_reference_validation: "class_rail_compatibility; lower_hex_payment_or_transaction_ids; bitcoin_output_and_spend_txid_vout; reservation_reorg_replacement_refs_are_bounded_opaque",
+            public_receipt_outcomes: MKT_PUBLIC_RECEIPT_OUTCOMES.to_vec(),
+            forbidden_custody_members: vec![
+                "seed",
+                "private_key",
+                "claim_private_key",
+                "refund_private_key",
+                "preimage",
+                "macaroon",
+                "nwc",
+                "nwc_string",
+                "musig_secret_nonce",
+                "signing_nonce",
+            ],
+            upstream_fixture_cases: 70,
+        },
         required_tags,
         enums,
         identifiers,

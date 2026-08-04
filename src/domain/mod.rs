@@ -47,11 +47,12 @@ pub use mkt::{
     MKT_MAX_REFERENCES, MKT_MAX_TAGS, MKT_OFFERING_KIND, MKT_OFFERING_STATUSES, MKT_ORDER_KIND,
     MKT_OUTCOMES, MKT_PROFILE_DESCRIPTOR_KIND, MKT_PROVIDER_PROFILE_KIND, MKT_PROVIDER_STATUSES,
     MKT_PUBLIC_RECEIPT_KIND, MKT_PUBLIC_RECEIPT_OUTCOMES, MKT_QUOTE_CLASSES, MKT_QUOTE_KIND,
-    MKT_RESERVATION_CLASSES, MKT_RFQ_KIND, MKT_STATUS_KIND, MKT_STATUS_STATES,
-    MktImmutableDecision, MktPrivateEnvelope, MktProfileSupport, MktValidatedPrivateRecord,
-    MktValidationCode, MktValidationError, decide_mkt_immutable_admission, is_mkt_private_kind,
+    MKT_RELAY_PROFILES, MKT_RESERVATION_CLASSES, MKT_RFQ_KIND, MKT_STATUS_KIND, MKT_STATUS_STATES,
+    MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND, MktImmutableDecision,
+    MktPrivateEnvelope, MktProfileSupport, MktValidatedPrivateRecord, MktValidationCode,
+    MktValidationError, decide_mkt_immutable_admission, is_mkt_private_kind,
     validate_mkt_private_base, validate_mkt_private_raw, validate_mkt_private_with_profiles,
-    validate_mkt_public_event,
+    validate_mkt_public_event, validate_mkt_swp_evidence_reference,
 };
 pub use openagents::{
     NostrAddress, OPENAGENTS_ORGANIZATION_KIND, OPENAGENTS_PROJECT_KIND,

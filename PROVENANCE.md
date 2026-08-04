@@ -28,6 +28,24 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-04 — Codex 5.6 Sol, M12 MKT-SWP relay adoption / issue #11
+
+- Synced the released MKT-SWP and MKT-PFI drafts from OpenAgents commit
+  `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682` and repeated the required
+  official/Block/OpenAgents/registry collision review before allocating
+  private immutable Swap Contract kind `39610`.
+- Implemented the relay-observable MKT-SWP v1 contract: Offering asset,
+  network, amount, side, fee, proof, and confirmation grammar; exact
+  kind-to-profile binding; typed evidence references; receipt outcomes;
+  immutable NIP-59-only storage; and custody-material tripwires. RFC 8785
+  contract recomputation and bilateral/lifecycle execution remain client or
+  configured-handler work.
+- Added migration 0010, the complete 70-name upstream fixture manifest,
+  deterministic contract export, source/protocol/deployment documentation,
+  and the locally gated `mkt-swp:1` NIP-11 extension. No dependency, service,
+  database, wallet, key, preimage, node credential, or settlement authority
+  was added.
+
 ### 2026-08-04 — Codex 5.6 Sol, M11 local NIP-MKT development / issue #9
 
 - Added the transport-neutral NIP-44 v2 and NIP-59 client core with bounded

@@ -18,13 +18,13 @@
         "lane": "block",
         "repo": "https://github.com/block/buzz",
         "subdir": "docs/nips",
-        "commit": "d0af845a1d489ab3fce6a73adbb0e82ebb4b0fa1"
+        "commit": "540b58920cef205b838da8be8442aae62bceaaa5"
       },
       {
         "lane": "openagents",
         "repo": "https://github.com/OpenAgentsInc/openagents",
         "subdir": "docs/nips",
-        "commit": "f62eab5569d9e8a7b807a78094dd51bc36a4d31b"
+        "commit": "a7f5522c0a7430f9f5b1cfa09477dae2d16d3682"
       }
     ]
   },
@@ -61,8 +61,8 @@
     },
     {
       "path": "tests/fixtures/nip11/document.json",
-      "sha256": "9abd4dbfbc18a9a0217e51497e3e0dd7eb8cd3a4dea079732ac783d2c9adf393",
-      "bytes": 646,
+      "sha256": "019e6d964853d599c39429a5a2c6dbc2d0337087e019efd85c00919406cf106c",
+      "bytes": 659,
       "scope": "relay"
     },
     {
@@ -217,8 +217,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/common-grammar.json",
-      "sha256": "f81135bbf68d2d05f4c7f43d7c7901be1ddf622b241a50c818a9256e2e3b5e46",
-      "bytes": 6871,
+      "sha256": "0bab3c691a650b38a34eab09e816c4b7c4fb7019f608303a963bd9aa747d25dd",
+      "bytes": 7065,
       "scope": "relay_and_client"
     },
     {
@@ -229,20 +229,26 @@
     },
     {
       "path": "tests/fixtures/nipmkt/immutability.json",
-      "sha256": "b421306819d4eedda9ca1d47f36fbcc94d0740c18010c4fabe2fa9919ecd679e",
-      "bytes": 853,
+      "sha256": "aac6a6b6629283987dc9d0c0f3cc2f319306a3255f50e0f8e6147edd79971eac",
+      "bytes": 860,
       "scope": "relay"
     },
     {
       "path": "tests/fixtures/nipmkt/public-heads.json",
-      "sha256": "7a623599a00c3f1bb581b41d94f721e239e6659f83f476557c839226796f227c",
-      "bytes": 5877,
+      "sha256": "750601fb8ebbc126b496d18e899a3c7eb1690bf1ced4fce7abcdd0cd74aca79b",
+      "bytes": 5881,
       "scope": "relay"
     },
     {
       "path": "tests/fixtures/nipmkt/relay-closing.json",
-      "sha256": "7e8c1f8444bdaa433be90d8087218ffa910d1f4103bc75649d09ddf587c9339a",
-      "bytes": 5868,
+      "sha256": "ea9c581ae46ffd9a27123363cf743bb4137c1eddc951f1e5a8a33856a18368d7",
+      "bytes": 5975,
+      "scope": "relay_and_client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/swp-profile-v1.json",
+      "sha256": "9e50f308f9f5bfea49f50c265c89a4c0ed3a00988eb107943d463dbdc0daaf22",
+      "bytes": 11402,
       "scope": "relay_and_client"
     },
     {

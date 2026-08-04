@@ -7,12 +7,13 @@ use immortal::domain::{
 };
 use serde_json::Value;
 
-const OPENAGENTS_COMMIT: &str = "b839dd43bad7915a35639b562d4d7ebf7d51c3f6";
+const MKT_BASE_COMMIT: &str = "b839dd43bad7915a35639b562d4d7ebf7d51c3f6";
+const MKT_SWP_COMMIT: &str = "a7f5522c0a7430f9f5b1cfa09477dae2d16d3682";
 
 #[test]
 fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
     let fixture = relay_fixture();
-    assert_eq!(fixture["source"]["commit"], OPENAGENTS_COMMIT);
+    assert_eq!(fixture["source"]["commit"], MKT_SWP_COMMIT);
 
     let base = event_from_fixture(&fixture["private_base"]);
     assert!(validate_mkt_private_base(&base).is_ok());
@@ -75,7 +76,7 @@ fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
 
     assert_eq!(
         fixture["bare_private"]["kinds"],
-        serde_json::json!([39604, 39605, 39606, 39607, 39608, 39609])
+        serde_json::json!([39604, 39605, 39606, 39607, 39608, 39609, 39610])
     );
     assert_eq!(
         fixture["rewrapped_same_inner"]["expected"]["relay"],
@@ -98,11 +99,11 @@ fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
         let last = u16::try_from(range["last"].as_u64().unwrap()).unwrap();
         for kind in first..=last {
             assert_eq!(EventClass::from_kind(kind), EventClass::Addressable);
-            assert_eq!(is_mkt_private_kind(kind), (39_604..=39_609).contains(&kind));
+            assert_eq!(is_mkt_private_kind(kind), (39_604..=39_610).contains(&kind));
         }
     }
     assert_eq!(
-        fixture["classification"][2]["allocation"],
+        fixture["classification"][3]["allocation"],
         "reserved_unallocated"
     );
 }
@@ -110,7 +111,7 @@ fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
 #[test]
 fn nipmkt_client_only_manifest_is_structured_and_explicitly_not_relay_enforced() {
     let fixture = client_fixture();
-    assert_eq!(fixture["source"]["commit"], OPENAGENTS_COMMIT);
+    assert_eq!(fixture["source"]["commit"], MKT_BASE_COMMIT);
     assert_eq!(fixture["enforcement"], "client_only_not_relay_enforced");
 
     let required = BTreeSet::from([

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Complete manual M1-M7 and M10 gate. No GitHub workflow or billed runner is used.
+# Complete manual M1-M7, M10, and adopted M12 gate. No billed runner is used.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -10,6 +10,7 @@ cargo test --locked --test mkt_fixtures
 cargo test --locked --test mkt_immutability_model
 cargo test --locked --test mkt_common_fixtures
 cargo test --locked --test mkt_closing_fixtures
+cargo test --locked --test mkt_swp_profile
 ./scripts/test-swp-verification.sh
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets --features mkt-swp-verify -- -D warnings

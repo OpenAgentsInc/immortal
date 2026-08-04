@@ -19,7 +19,11 @@ pub const MKT_ORDER_KIND: u16 = 39_606;
 pub const MKT_STATUS_KIND: u16 = 39_607;
 pub const MKT_CANCEL_KIND: u16 = 39_608;
 pub const MKT_CLOSE_KIND: u16 = 39_609;
+pub const MKT_SWP_SWAP_CONTRACT_KIND: u16 = 39_610;
+pub const MKT_SWP_PROFILE_ID: &str = "mkt-swp";
+pub const MKT_SWP_PROFILE_VERSION: u64 = 1;
 pub const MKT_EXECUTABLE_PROFILES: &[(&str, u64)] = &[];
+pub const MKT_RELAY_PROFILES: &[(&str, u64)] = &[(MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MktImmutableDecision {
@@ -206,12 +210,26 @@ fn validate_mkt_private_syntax(event: &Event) -> Result<MktPrivateEnvelope, Stri
     let [(profile_id, profile_version)] = profiles.as_slice() else {
         return Err("private MKT event requires exactly one profile tag".to_owned());
     };
+    if event.kind == MKT_SWP_SWAP_CONTRACT_KIND {
+        if *profile_id != MKT_SWP_PROFILE_ID {
+            return Err(swp_error(
+                "swp_unsupported_profile",
+                "kind 39610 requires profile mkt-swp",
+            ));
+        }
+        if *profile_version != MKT_SWP_PROFILE_VERSION {
+            return Err(swp_error(
+                "swp_unsupported_version",
+                "kind 39610 requires MKT-SWP version 1",
+            ));
+        }
+    }
     let alt = single_value(event, "alt", "private MKT event")?;
     if alt.is_empty() || alt.len() > 128 || alt.chars().any(char::is_control) {
         return Err("private MKT alt must be a nonempty bounded description".to_owned());
     }
     validate_counterparties(event)?;
-    validate_references(event)?;
+    validate_references(event, profile_id, *profile_version)?;
 
     let value = parse_unique_json(&event.content, "private MKT content")?;
     let Value::Object(body) = value else {
@@ -261,6 +279,12 @@ pub fn validate_mkt_private_with_profiles(
                 format!("private MKT critical member {member:?} is unsupported"),
             ));
         }
+    }
+    if envelope.profile_id == MKT_SWP_PROFILE_ID
+        && envelope.profile_version == MKT_SWP_PROFILE_VERSION
+    {
+        validate_mkt_swp_visible_private(event, &envelope)
+            .map_err(|detail| validation_error(MktValidationCode::TagGrammar, detail))?;
     }
     Ok(envelope)
 }
@@ -341,7 +365,11 @@ fn validation_error(code: MktValidationCode, detail: impl Into<String>) -> MktVa
 }
 
 fn classify_syntax_error(detail: String) -> MktValidationError {
-    let code = if detail.contains("exceeds 32768") || detail.contains("serialization failed") {
+    let code = if detail.starts_with("swp_unsupported_profile") {
+        MktValidationCode::UnsupportedProfile
+    } else if detail.starts_with("swp_unsupported_version") {
+        MktValidationCode::UnsupportedProfileVersion
+    } else if detail.contains("exceeds 32768") || detail.contains("serialization failed") {
         MktValidationCode::EventTooLarge
     } else if detail.contains("duplicate JSON member") {
         MktValidationCode::DuplicateJsonMember
@@ -378,6 +406,7 @@ pub const fn is_mkt_private_kind(kind: u16) -> bool {
             | MKT_STATUS_KIND
             | MKT_CANCEL_KIND
             | MKT_CLOSE_KIND
+            | MKT_SWP_SWAP_CONTRACT_KIND
     )
 }
 
@@ -439,7 +468,17 @@ fn validate_offering(event: &Event) -> Result<(), String> {
     if profiles.len() != 1 {
         return Err("offering requires exactly one profile tag".to_owned());
     }
-    validate_provider_address(single_value(event, "provider", "offering")?, &event.pubkey)
+    validate_provider_address(single_value(event, "provider", "offering")?, &event.pubkey)?;
+    if profiles[0].0 == MKT_SWP_PROFILE_ID {
+        if profiles[0].1 != MKT_SWP_PROFILE_VERSION {
+            return Err(swp_error(
+                "swp_unsupported_version",
+                "only MKT-SWP profile version 1 is relay-observable",
+            ));
+        }
+        validate_mkt_swp_offering(event)?;
+    }
+    Ok(())
 }
 
 fn validate_profile_descriptor(event: &Event) -> Result<(), String> {
@@ -489,7 +528,751 @@ fn validate_public_receipt(event: &Event) -> Result<(), String> {
     validate_identifier(
         single_value(event, "role", "public market receipt")?,
         "public market receipt role",
-    )
+    )?;
+    if profiles[0].0 == MKT_SWP_PROFILE_ID {
+        if profiles[0].1 != MKT_SWP_PROFILE_VERSION {
+            return Err(swp_error(
+                "swp_unsupported_version",
+                "only MKT-SWP profile version 1 is relay-observable",
+            ));
+        }
+        let content = parse_unique_json(&event.content, "MKT-SWP public receipt content")?;
+        reject_swp_secret_material(&content)?;
+        reject_swp_public_offering_material(&content)?;
+        reject_swp_public_receipt_material(&content)?;
+    }
+    Ok(())
+}
+
+fn validate_mkt_swp_offering(event: &Event) -> Result<(), String> {
+    let content = parse_unique_json(&event.content, "MKT-SWP Offering content")?;
+    reject_swp_secret_material(&content)?;
+    reject_swp_public_offering_material(&content)?;
+    let body = content
+        .as_object()
+        .and_then(|body| body.get("mkt_swp"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| swp_error("swp_terms_mismatch", "Offering requires an mkt_swp object"))?;
+
+    let swap_types = swp_string_array(body, "swap_types", 1, 3)?;
+    for swap_type in &swap_types {
+        if !matches!(*swap_type, "submarine" | "reverse" | "chain") {
+            return Err(swp_error("swp_invalid_pair", "unknown swap type"));
+        }
+    }
+
+    let networks = swp_string_array(body, "networks", 1, 8)?;
+    for network in &networks {
+        validate_swp_network_id(network)?;
+    }
+
+    let script_modes = swp_string_array(body, "script_modes", 1, 8)?;
+    if script_modes
+        .iter()
+        .any(|mode| *mode != "taproot-musig2-script-exit")
+    {
+        return Err(swp_error(
+            "swp_unsupported_version",
+            "MKT-SWP v1 supports only taproot-musig2-script-exit",
+        ));
+    }
+
+    let reservation_classes = swp_string_array(body, "reservation_proof_classes", 1, 8)?;
+    for proof_class in reservation_classes {
+        if !matches!(
+            proof_class,
+            "provider_signed"
+                | "handler_accounted"
+                | "utxo_control"
+                | "lightning_liquidity"
+                | "funded_htlc"
+                | "covenant_reserve"
+                | "third_party_guarantee"
+        ) {
+            return Err(swp_error(
+                "swp_reservation_proof_invalid",
+                "unknown reservation proof class",
+            ));
+        }
+    }
+
+    let availability = body
+        .get("availability")
+        .and_then(Value::as_str)
+        .ok_or_else(|| swp_error("swp_terms_mismatch", "Offering requires availability"))?;
+    if !matches!(availability, "available" | "limited" | "unavailable") {
+        return Err(swp_error("swp_terms_mismatch", "unknown availability"));
+    }
+    match body.get("evm_extension") {
+        Some(Value::String(value)) if value == "unsupported" => {}
+        _ => {
+            return Err(swp_error(
+                "swp_unsupported_extension",
+                "MKT-SWP v1 requires evm_extension=unsupported",
+            ));
+        }
+    }
+
+    let sides = body
+        .get("sides")
+        .and_then(Value::as_array)
+        .filter(|sides| (1..=16).contains(&sides.len()))
+        .ok_or_else(|| swp_error("swp_invalid_pair", "Offering requires 1-16 sides"))?;
+    let mut pairs = BTreeSet::new();
+    for side in sides {
+        let side = side
+            .as_object()
+            .ok_or_else(|| swp_error("swp_invalid_pair", "Offering side must be an object"))?;
+        let input = swp_required_string(side, "input_asset_id", "swp_invalid_asset_id")?;
+        let output = swp_required_string(side, "output_asset_id", "swp_invalid_asset_id")?;
+        let (input_network, input_rail) = validate_swp_asset_id(input)?;
+        let (output_network, output_rail) = validate_swp_asset_id(output)?;
+        if !networks.contains(&input_network) || !networks.contains(&output_network) {
+            return Err(swp_error(
+                "swp_invalid_pair",
+                "Offering side uses an unadvertised network",
+            ));
+        }
+        let required_swap_type = match (input_rail, output_rail) {
+            ("chain", "lightning") if input_network == output_network => "submarine",
+            ("lightning", "chain") if input_network == output_network => "reverse",
+            ("chain", "chain") if input_network != output_network => "chain",
+            _ => {
+                return Err(swp_error(
+                    "swp_invalid_pair",
+                    "Offering side has an unsupported ordered rail pair",
+                ));
+            }
+        };
+        if !swap_types.contains(&required_swap_type) {
+            return Err(swp_error(
+                "swp_invalid_pair",
+                "Offering side swap type is not advertised",
+            ));
+        }
+        if !pairs.insert((input, output)) {
+            return Err(swp_error("swp_invalid_pair", "duplicate Offering side"));
+        }
+        let minimum = swp_decimal_member(side, "min", "swp_invalid_amount")?;
+        let maximum = swp_decimal_member(side, "max", "swp_invalid_amount")?;
+        if maximum == 0 {
+            if minimum != 0 {
+                return Err(swp_error(
+                    "swp_side_disabled",
+                    "a disabled side requires min=0 and max=0",
+                ));
+            }
+        } else if minimum == 0 || minimum > maximum {
+            return Err(swp_error(
+                "swp_invalid_amount",
+                "an enabled side requires 0 < min <= max",
+            ));
+        }
+        let fee = swp_decimal_member(side, "fee_bps", "swp_invalid_fee")?;
+        if fee > 10_000 {
+            return Err(swp_error("swp_invalid_fee", "fee_bps exceeds 10000"));
+        }
+    }
+
+    let policies = body
+        .get("confirmation_policies")
+        .and_then(Value::as_array)
+        .filter(|policies| (1..=8).contains(&policies.len()))
+        .ok_or_else(|| {
+            swp_error(
+                "swp_terms_mismatch",
+                "Offering requires 1-8 confirmation policies",
+            )
+        })?;
+    let mut policy_ids = BTreeSet::new();
+    for policy in policies {
+        let policy = policy.as_object().ok_or_else(|| {
+            swp_error(
+                "swp_terms_mismatch",
+                "confirmation policy must be an object",
+            )
+        })?;
+        let policy_id = swp_required_string(policy, "policy_id", "swp_terms_mismatch")?;
+        validate_identifier(policy_id, "MKT-SWP confirmation policy id")
+            .map_err(|detail| swp_error("swp_terms_mismatch", detail))?;
+        if !policy_ids.insert(policy_id) {
+            return Err(swp_error(
+                "swp_terms_mismatch",
+                "duplicate confirmation policy",
+            ));
+        }
+        swp_decimal_member(policy, "minimum_confirmations", "swp_terms_mismatch")?;
+        swp_decimal_member(policy, "reorg_safety_blocks", "swp_terms_mismatch")?;
+        swp_policy_enum(policy, "zero_confirmation", &["forbidden", "allowed"])?;
+        swp_policy_enum(policy, "rbf", &["reject", "track"])?;
+        swp_policy_enum(policy, "replacement", &["reject", "track"])?;
+    }
+    Ok(())
+}
+
+fn validate_mkt_swp_visible_private(
+    event: &Event,
+    envelope: &MktPrivateEnvelope,
+) -> Result<(), String> {
+    reject_swp_secret_material(&Value::Object(envelope.body.clone()))?;
+    let profile = envelope
+        .body
+        .get("mkt_swp")
+        .and_then(Value::as_object)
+        .ok_or_else(|| swp_error("swp_terms_mismatch", "record requires an mkt_swp object"))?;
+    validate_swp_evidence_members(&Value::Object(profile.clone()))?;
+    if event.kind != MKT_SWP_SWAP_CONTRACT_KIND {
+        return Ok(());
+    }
+
+    if event
+        .tags
+        .iter()
+        .any(|tag| tag.name() == Some("expiration"))
+    {
+        return Err(swp_error(
+            "swp_contract_terms_mismatch",
+            "Swap Contract must not expire",
+        ));
+    }
+    let counterparties = event
+        .tags
+        .iter()
+        .filter(|tag| tag.name() == Some("p"))
+        .count();
+    if counterparties != 1 {
+        return Err(swp_error(
+            "swp_contract_signer_invalid",
+            "Swap Contract requires exactly one counterparty",
+        ));
+    }
+    let role = single_value(event, "role", "MKT-SWP Swap Contract")?;
+    if !matches!(role, "requester" | "provider") {
+        return Err(swp_error(
+            "swp_contract_signer_invalid",
+            "Swap Contract role is invalid",
+        ));
+    }
+    let counterparty = event
+        .tags
+        .iter()
+        .find(|tag| tag.name() == Some("p"))
+        .map(Tag::as_slice)
+        .ok_or_else(|| {
+            swp_error(
+                "swp_contract_signer_invalid",
+                "Swap Contract counterparty is missing",
+            )
+        })?;
+    let counterparty_pubkey = counterparty.get(1).map(String::as_str).unwrap_or_default();
+    let counterparty_role = counterparty.get(3).map(String::as_str).unwrap_or_default();
+    let expected_counterparty_role = if role == "requester" {
+        "provider"
+    } else {
+        "requester"
+    };
+    if counterparty_pubkey == event.pubkey || counterparty_role != expected_counterparty_role {
+        return Err(swp_error(
+            "swp_contract_signer_invalid",
+            "Swap Contract requires a distinct counterparty with the complementary role",
+        ));
+    }
+    let signer_role = profile
+        .get("signer_role")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            swp_error(
+                "swp_contract_signer_invalid",
+                "Swap Contract requires signer_role",
+            )
+        })?;
+    if signer_role != role {
+        return Err(swp_error(
+            "swp_contract_signer_invalid",
+            "Swap Contract tag and content roles differ",
+        ));
+    }
+    let digest = single_value(event, "x", "MKT-SWP Swap Contract")?;
+    lower_hex_32(digest, "MKT-SWP contract digest")?;
+    let content_digest = profile
+        .get("contract_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            swp_error(
+                "swp_contract_digest_mismatch",
+                "Swap Contract requires contract_sha256",
+            )
+        })?;
+    if digest != content_digest
+        || decode_lower_hex::<32>(content_digest, "contract digest").is_err()
+    {
+        return Err(swp_error(
+            "swp_contract_digest_mismatch",
+            "Swap Contract x and content digest differ",
+        ));
+    }
+    let contract = profile
+        .get("contract")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            swp_error(
+                "swp_contract_terms_mismatch",
+                "Swap Contract requires a contract object",
+            )
+        })?;
+    if !matches!(contract.get("evm_leg"), None | Some(Value::Null)) {
+        return Err(swp_error(
+            "swp_unsupported_extension",
+            "MKT-SWP v1 contract evm_leg must be absent or null",
+        ));
+    }
+    let mut order = 0;
+    let mut quote = 0;
+    let mut status = 0;
+    for tag in event.tags.iter().filter(|tag| tag.name() == Some("e")) {
+        match tag.as_slice().get(3).map(String::as_str) {
+            Some("order") => order += 1,
+            Some("quote") => quote += 1,
+            Some("status") => status += 1,
+            _ => {
+                return Err(swp_error(
+                    "swp_contract_terms_mismatch",
+                    "Swap Contract has an unsupported event reference",
+                ));
+            }
+        }
+    }
+    if order != 1 || quote != 1 || status > 1 {
+        return Err(swp_error(
+            "swp_contract_terms_mismatch",
+            "Swap Contract requires one Order, one Quote, and at most one accepted Status",
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_mkt_swp_evidence_reference(value: &Value) -> Result<(), String> {
+    let evidence = value
+        .as_object()
+        .ok_or_else(|| swp_error("swp_evidence_mismatch", "evidence must be an object"))?;
+    let class = swp_required_string(evidence, "class", "swp_evidence_mismatch")?;
+    if !matches!(
+        class,
+        "invoice"
+            | "lightning_htlc"
+            | "lightning_payment"
+            | "bitcoin_transaction"
+            | "bitcoin_output"
+            | "bitcoin_spend"
+            | "reservation"
+            | "covenant_reserve"
+            | "claim"
+            | "refund"
+            | "reorg"
+            | "replacement"
+    ) {
+        return Err(swp_error("swp_evidence_mismatch", "unknown evidence class"));
+    }
+    let rung = swp_required_string(evidence, "rung", "swp_evidence_mismatch")?;
+    if !matches!(
+        rung,
+        "pledged" | "reserved" | "measured" | "verified" | "paid" | "settled"
+    ) {
+        return Err(swp_error(
+            "swp_settlement_overclaim",
+            "unknown evidence rung",
+        ));
+    }
+    let rail = swp_required_string(evidence, "rail", "swp_evidence_mismatch")?;
+    validate_identifier(rail, "MKT-SWP evidence rail")
+        .map_err(|detail| swp_error("swp_evidence_mismatch", detail))?;
+    let reference = swp_required_string(evidence, "reference", "swp_evidence_mismatch")?;
+    if reference.is_empty()
+        || reference.len() > 512
+        || reference.chars().any(char::is_control)
+        || reference.contains("://") && (reference.contains('@') || reference.contains('?'))
+    {
+        return Err(swp_error(
+            "swp_privacy_violation",
+            "evidence reference is empty, unbounded, or bearer-shaped",
+        ));
+    }
+    validate_swp_evidence_rail_reference(class, rail, reference)?;
+    for member in ["artifact_sha256", "producer_pubkey"] {
+        lower_hex_32(
+            swp_required_string(evidence, member, "swp_evidence_mismatch")?,
+            "MKT-SWP evidence digest or key",
+        )
+        .map_err(|detail| swp_error("swp_evidence_mismatch", detail))?;
+    }
+    match evidence.get("verifier_pubkey") {
+        Some(Value::Null) => {}
+        Some(Value::String(value)) => lower_hex_32(value, "MKT-SWP verifier pubkey")
+            .map_err(|detail| swp_error("swp_evidence_mismatch", detail))?,
+        _ => {
+            return Err(swp_error(
+                "swp_evidence_mismatch",
+                "verifier_pubkey must be a pubkey or null",
+            ));
+        }
+    }
+    match evidence.get("verifier_policy") {
+        Some(Value::Null) => {}
+        Some(Value::String(value)) => validate_identifier(value, "MKT-SWP verifier policy")
+            .map_err(|detail| swp_error("swp_evidence_mismatch", detail))?,
+        _ => {
+            return Err(swp_error(
+                "swp_evidence_mismatch",
+                "verifier_policy must be an identifier or null",
+            ));
+        }
+    }
+    if evidence
+        .get("observed_at")
+        .and_then(Value::as_u64)
+        .is_none()
+    {
+        return Err(swp_error(
+            "swp_evidence_mismatch",
+            "observed_at must be an unsigned integer",
+        ));
+    }
+    let view = swp_required_string(evidence, "view", "swp_evidence_mismatch")?;
+    if view.is_empty() || view.len() > 512 || view.chars().any(char::is_control) {
+        return Err(swp_error(
+            "swp_evidence_mismatch",
+            "evidence view is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_swp_evidence_rail_reference(
+    class: &str,
+    rail: &str,
+    reference: &str,
+) -> Result<(), String> {
+    let expected_rail = match class {
+        "invoice" | "lightning_htlc" | "lightning_payment" => Some("lightning"),
+        "bitcoin_transaction"
+        | "bitcoin_output"
+        | "bitcoin_spend"
+        | "covenant_reserve"
+        | "claim"
+        | "refund"
+        | "reorg"
+        | "replacement" => Some("bitcoin"),
+        "reservation" => None,
+        _ => None,
+    };
+    if expected_rail.is_some_and(|expected| rail != expected) {
+        return Err(swp_error(
+            "swp_evidence_mismatch",
+            "evidence class and rail are incompatible",
+        ));
+    }
+    match class {
+        "invoice"
+        | "lightning_htlc"
+        | "lightning_payment"
+        | "bitcoin_transaction"
+        | "claim"
+        | "refund" => lower_hex_32(reference, "MKT-SWP evidence reference")
+            .map_err(|detail| swp_error("swp_evidence_mismatch", detail)),
+        "bitcoin_output" | "bitcoin_spend" => {
+            let (transaction_id, output_index) = reference.split_once(':').ok_or_else(|| {
+                swp_error(
+                    "swp_evidence_mismatch",
+                    "Bitcoin output evidence requires txid:vout",
+                )
+            })?;
+            if output_index.contains(':') {
+                return Err(swp_error(
+                    "swp_evidence_mismatch",
+                    "Bitcoin output evidence requires one vout",
+                ));
+            }
+            lower_hex_32(transaction_id, "MKT-SWP evidence transaction id")
+                .map_err(|detail| swp_error("swp_evidence_mismatch", detail))?;
+            let output_index = canonical_decimal(output_index, false, "evidence vout")
+                .map_err(|detail| swp_error("swp_evidence_mismatch", detail))?;
+            if output_index > u64::from(u32::MAX) {
+                return Err(swp_error(
+                    "swp_evidence_mismatch",
+                    "Bitcoin evidence vout exceeds u32",
+                ));
+            }
+            Ok(())
+        }
+        "reservation" | "covenant_reserve" | "reorg" | "replacement" => Ok(()),
+        _ => Err(swp_error("swp_evidence_mismatch", "unknown evidence class")),
+    }
+}
+
+fn validate_swp_evidence_members(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                if name == "evidence_refs" {
+                    let references = child.as_array().ok_or_else(|| {
+                        swp_error("swp_evidence_mismatch", "evidence_refs must be an array")
+                    })?;
+                    if references.len() > MKT_MAX_REFERENCES {
+                        return Err(swp_error(
+                            "swp_evidence_mismatch",
+                            "too many evidence references",
+                        ));
+                    }
+                    for reference in references {
+                        validate_mkt_swp_evidence_reference(reference)?;
+                    }
+                } else {
+                    validate_swp_evidence_members(child)?;
+                }
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                validate_swp_evidence_members(child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn reject_swp_secret_material(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                let normalized = name.to_ascii_lowercase();
+                if matches!(
+                    normalized.as_str(),
+                    "seed"
+                        | "private_key"
+                        | "claim_private_key"
+                        | "refund_private_key"
+                        | "preimage"
+                        | "macaroon"
+                        | "nwc"
+                        | "nwc_string"
+                        | "musig_secret_nonce"
+                        | "signing_nonce"
+                ) {
+                    return Err(swp_error(
+                        "swp_secret_material_forbidden",
+                        format!("forbidden custody member {name:?}"),
+                    ));
+                }
+                reject_swp_secret_material(child)?;
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                reject_swp_secret_material(child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn reject_swp_public_offering_material(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                let normalized = name.to_ascii_lowercase();
+                if matches!(
+                    normalized.as_str(),
+                    "live_inventory"
+                        | "inventory"
+                        | "utxo"
+                        | "utxos"
+                        | "channel_balance"
+                        | "channel_balances"
+                        | "invoice"
+                        | "invoices"
+                        | "address"
+                        | "addresses"
+                        | "script"
+                        | "scripts"
+                        | "payment_hash"
+                        | "payment_hashes"
+                        | "reserve_witness"
+                        | "reserve_witnesses"
+                ) {
+                    return Err(swp_error(
+                        "swp_privacy_violation",
+                        format!("public Offering contains private member {name:?}"),
+                    ));
+                }
+                reject_swp_public_offering_material(child)?;
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                reject_swp_public_offering_material(child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn reject_swp_public_receipt_material(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                let normalized = name.to_ascii_lowercase();
+                if matches!(
+                    normalized.as_str(),
+                    "session_id"
+                        | "counterparty"
+                        | "counterparties"
+                        | "amount"
+                        | "input_amount"
+                        | "output_amount"
+                        | "asset_pair"
+                        | "input_asset_id"
+                        | "output_asset_id"
+                        | "route"
+                        | "transaction_id"
+                        | "txid"
+                        | "timing_ladder"
+                        | "evidence"
+                        | "evidence_refs"
+                ) {
+                    return Err(swp_error(
+                        "swp_privacy_violation",
+                        format!("public receipt contains private member {name:?}"),
+                    ));
+                }
+                reject_swp_public_receipt_material(child)?;
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                reject_swp_public_receipt_material(child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn swp_string_array<'a>(
+    body: &'a Map<String, Value>,
+    name: &str,
+    minimum: usize,
+    maximum: usize,
+) -> Result<Vec<&'a str>, String> {
+    let values = body
+        .get(name)
+        .and_then(Value::as_array)
+        .filter(|values| (minimum..=maximum).contains(&values.len()))
+        .ok_or_else(|| {
+            swp_error(
+                "swp_terms_mismatch",
+                format!("{name} must contain {minimum}-{maximum} values"),
+            )
+        })?;
+    let values = values
+        .iter()
+        .map(|value| {
+            value.as_str().ok_or_else(|| {
+                swp_error(
+                    "swp_terms_mismatch",
+                    format!("{name} values must be strings"),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let unique = values.iter().copied().collect::<BTreeSet<_>>();
+    if unique.len() != values.len() {
+        return Err(swp_error(
+            "swp_terms_mismatch",
+            format!("{name} must be duplicate-free"),
+        ));
+    }
+    Ok(values)
+}
+
+fn swp_required_string<'a>(
+    body: &'a Map<String, Value>,
+    name: &str,
+    code: &str,
+) -> Result<&'a str, String> {
+    body.get(name)
+        .and_then(Value::as_str)
+        .ok_or_else(|| swp_error(code, format!("{name} must be a string")))
+}
+
+fn swp_decimal_member(body: &Map<String, Value>, name: &str, code: &str) -> Result<u64, String> {
+    let value = swp_required_string(body, name, code)?;
+    canonical_decimal(value, false, name).map_err(|detail| swp_error(code, detail))
+}
+
+fn swp_policy_enum(
+    policy: &Map<String, Value>,
+    name: &str,
+    allowed: &[&str],
+) -> Result<(), String> {
+    let value = swp_required_string(policy, name, "swp_terms_mismatch")?;
+    if allowed.contains(&value) {
+        Ok(())
+    } else {
+        Err(swp_error(
+            "swp_terms_mismatch",
+            format!("unknown confirmation policy {name}"),
+        ))
+    }
+}
+
+fn validate_swp_network_id(value: &str) -> Result<(), String> {
+    let Some(reference) = value.strip_prefix("bip122:") else {
+        return Err(swp_error(
+            "swp_invalid_asset_id",
+            "network ID must use bip122",
+        ));
+    };
+    if reference.len() != 32
+        || !reference
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(swp_error(
+            "swp_invalid_asset_id",
+            "network ID has an invalid BIP-122 reference",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_swp_asset_id(value: &str) -> Result<(&str, &str), String> {
+    let Some(value) = value.strip_prefix("swp:1:") else {
+        return Err(swp_error(
+            "swp_invalid_asset_id",
+            "asset ID has the wrong profile",
+        ));
+    };
+    let Some((network, rail)) = value.rsplit_once(":btc:") else {
+        return Err(swp_error(
+            "swp_invalid_asset_id",
+            "asset ID has the wrong shape",
+        ));
+    };
+    validate_swp_network_id(network)?;
+    if !matches!(rail, "chain" | "lightning") {
+        return Err(swp_error(
+            "swp_invalid_asset_id",
+            "asset ID has an unknown rail",
+        ));
+    }
+    Ok((network, rail))
+}
+
+fn swp_error(code: &str, detail: impl fmt::Display) -> String {
+    format!("{code}: {detail}")
 }
 
 fn validate_content_bound(event: &Event, maximum: usize, subject: &str) -> Result<(), String> {
@@ -574,23 +1357,30 @@ fn validate_counterparties(event: &Event) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_references(event: &Event) -> Result<(), String> {
+fn validate_references(
+    event: &Event,
+    profile_id: &str,
+    profile_version: u64,
+) -> Result<(), String> {
     for tag in event.tags.iter().filter(|tag| tag.name() == Some("e")) {
         let values = tag.as_slice();
-        if values.len() < 4
-            || !matches!(
-                values[3].as_str(),
-                "rfq"
-                    | "quote"
-                    | "order"
-                    | "previous"
-                    | "status"
-                    | "cancel"
-                    | "close"
-                    | "evidence"
-                    | "settlement"
-            )
-        {
+        let marker = values.get(3).map(String::as_str).unwrap_or_default();
+        let common_marker = matches!(
+            marker,
+            "rfq"
+                | "quote"
+                | "order"
+                | "previous"
+                | "status"
+                | "cancel"
+                | "close"
+                | "evidence"
+                | "settlement"
+        );
+        let swp_contract_marker = marker == "contract"
+            && profile_id == MKT_SWP_PROFILE_ID
+            && profile_version == MKT_SWP_PROFILE_VERSION;
+        if values.len() < 4 || !(common_marker || swp_contract_marker) {
             return Err("private MKT e tag has an unknown or missing marker".to_owned());
         }
         lower_hex_32(&values[1], "private MKT event reference")?;

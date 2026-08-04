@@ -15,13 +15,13 @@
         "lane": "block",
         "repo": "https://github.com/block/buzz",
         "subdir": "docs/nips",
-        "commit": "d0af845a1d489ab3fce6a73adbb0e82ebb4b0fa1"
+        "commit": "540b58920cef205b838da8be8442aae62bceaaa5"
       },
       {
         "lane": "openagents",
         "repo": "https://github.com/OpenAgentsInc/openagents",
         "subdir": "docs/nips",
-        "commit": "f62eab5569d9e8a7b807a78094dd51bc36a4d31b"
+        "commit": "a7f5522c0a7430f9f5b1cfa09477dae2d16d3682"
       }
     ]
   },
@@ -211,6 +211,12 @@
       "identifier": "nip-mkt",
       "advertisement": "relay_url",
       "status": "implemented_base"
+    },
+    {
+      "lane": "openagents",
+      "identifier": "mkt-swp:1",
+      "advertisement": "relay_url",
+      "status": "relay_observable"
     }
   ],
   "kinds": [
@@ -309,6 +315,16 @@
       "lane": "openagents",
       "identifier": "NIP-MKT",
       "name": "close",
+      "classification": "addressable",
+      "publication": "private_wrapped",
+      "immutability": "exact_signed_coordinate",
+      "enforcement_scope": "client_and_internal_store"
+    },
+    {
+      "kind": 39610,
+      "lane": "openagents",
+      "identifier": "NIP-MKT",
+      "name": "mkt_swp_swap_contract",
       "classification": "addressable",
       "publication": "private_wrapped",
       "immutability": "exact_signed_coordinate",
@@ -452,6 +468,116 @@
   "mkt": {
     "schema": "openagents.mkt.v1",
     "executable_profiles": [],
+    "relay_profiles": [
+      {
+        "id": "mkt-swp",
+        "version": 1,
+        "scope": "relay_observable_only",
+        "advertisement": "relay_url_and_local_conformance"
+      }
+    ],
+    "mkt_swp": {
+      "id": "mkt-swp",
+      "version": 1,
+      "swap_contract_kind": 39610,
+      "swap_contract_publication": "private_signed_record_nip59_only",
+      "contract_digest_validation": "lower_hex_shape_and_x_body_equality; rfc8785_recomputation_is_client_or_handler_scope",
+      "network_id_pattern": "^bip122:[0-9a-f]{32}$",
+      "asset_id_pattern": "^swp:1:bip122:[0-9a-f]{32}:btc:(chain|lightning)$",
+      "canonical_amount_pattern": "^(0|[1-9][0-9]*)$",
+      "offering_required_members": [
+        "swap_types",
+        "sides",
+        "networks",
+        "script_modes",
+        "reservation_proof_classes",
+        "confirmation_policies",
+        "availability",
+        "evm_extension"
+      ],
+      "public_offering_forbidden_members": [
+        "live_inventory",
+        "inventory",
+        "utxo",
+        "utxos",
+        "channel_balance",
+        "channel_balances",
+        "invoice",
+        "invoices",
+        "address",
+        "addresses",
+        "script",
+        "scripts",
+        "payment_hash",
+        "payment_hashes",
+        "reserve_witness",
+        "reserve_witnesses"
+      ],
+      "public_receipt_forbidden_members": [
+        "session_id",
+        "counterparty",
+        "counterparties",
+        "amount",
+        "input_amount",
+        "output_amount",
+        "asset_pair",
+        "input_asset_id",
+        "output_asset_id",
+        "route",
+        "payment_hash",
+        "invoice",
+        "transaction_id",
+        "txid",
+        "timing_ladder",
+        "evidence",
+        "evidence_refs"
+      ],
+      "evidence_classes": [
+        "invoice",
+        "lightning_htlc",
+        "lightning_payment",
+        "bitcoin_transaction",
+        "bitcoin_output",
+        "bitcoin_spend",
+        "reservation",
+        "covenant_reserve",
+        "claim",
+        "refund",
+        "reorg",
+        "replacement"
+      ],
+      "evidence_rungs": [
+        "pledged",
+        "reserved",
+        "measured",
+        "verified",
+        "paid",
+        "settled"
+      ],
+      "evidence_reference_validation": "class_rail_compatibility; lower_hex_payment_or_transaction_ids; bitcoin_output_and_spend_txid_vout; reservation_reorg_replacement_refs_are_bounded_opaque",
+      "public_receipt_outcomes": [
+        "completed",
+        "cancelled",
+        "expired",
+        "failed",
+        "refunded",
+        "disputed",
+        "unresolved"
+      ],
+      "forbidden_custody_members": [
+        "seed",
+        "private_key",
+        "claim_private_key",
+        "refund_private_key",
+        "preimage",
+        "macaroon",
+        "nwc",
+        "nwc_string",
+        "musig_secret_nonce",
+        "signing_nonce"
+      ],
+      "upstream_fixture_cases": 70
+    },
     "required_tags": {
       "cancel": [
         "order e",
@@ -462,6 +588,17 @@
         "order e",
         "outcome",
         "terminal_at"
+      ],
+      "mkt_swp_swap_contract": [
+        "d",
+        "session",
+        "profile",
+        "p",
+        "alt",
+        "order e",
+        "quote e",
+        "x",
+        "role"
       ],
       "offering": [
         "d",

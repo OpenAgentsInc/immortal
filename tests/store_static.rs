@@ -132,11 +132,24 @@ fn mkt_gateway_privacy_migration_excludes_gift_wraps_from_search() {
 }
 
 #[test]
+fn mkt_swp_migration_extends_immutability_and_search_privacy() {
+    let sql = include_str!("../migrations/0010_mkt_swp_profile.sql");
+    for required in [
+        "kind BETWEEN 39604 AND 39610",
+        "WHERE kind = 39610",
+        "DELETE FROM replaceable_head",
+        "ALTER TABLE nostr_event DROP COLUMN search_vector",
+    ] {
+        assert!(sql.contains(required), "migration is missing {required:?}");
+    }
+}
+
+#[test]
 fn mkt_gateway_query_acl_hides_private_rows_and_requires_one_wrap_recipient() {
     let statements = include_str!("../src/store/statements.rs");
     assert_eq!(
         statements
-            .matches("e.kind NOT BETWEEN 39604 AND 39609")
+            .matches("e.kind NOT BETWEEN 39604 AND 39610")
             .count(),
         2
     );

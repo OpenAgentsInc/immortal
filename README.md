@@ -64,7 +64,7 @@ TLS is the job of the reverse proxy (nginx or Caddy).
 
 ## Status
 
-M1 through M7 and the M10 NIP-MKT relay base are complete: the protocol domain, Postgres store,
+M1 through M7, the M10 NIP-MKT relay base, and the first two M12 packets are complete: the protocol domain, Postgres store,
 HTTP/WebSocket gateway, pinned per-NIP fixtures, locally executable
 conformance, actual-process chaos and load proofs, and the production
 deployment kit. The relay also provides expiration cleanup, protected and
@@ -76,13 +76,13 @@ identity/DM/workspace commands, and relay state. NIP-MKT now provides public
 discovery, immutable internal validation, private wrapped transport, and a
 complete relay/client conformance boundary, and M11's deterministic contract
 export (`immortal contract`, `scripts/export-contract.sh`) is the generation
-source for downstream SDKs. The next work is M12, the issue-backed
-Boltz/tbDEX port program in `docs/ROADMAP.md` — swap profiles, verification
-primitives, coordination handlers, provider library, compatibility facade,
-and the adversarial regtest lab — whose completion makes Immortal-based
-services able to replace Boltz-class dependencies. M8 hardening and formal
-work follow. See `docs/ROADMAP.md`, `docs/conformance/`, and
-`docs/deployment/`.
+source for downstream SDKs. M12 now includes the owned Bitcoin/Lightning
+verification primitives and the relay-observable MKT-SWP v1 adoption: public
+Offering grammar, immutable wrapped Swap Contracts on kind `39610`, typed
+evidence references, exported fixtures, and gated `mkt-swp:1` discovery. The
+next packet is the client swap engine (#12), followed by coordination,
+provider, compatibility, and adversarial-lab work. M8 hardening and formal
+work follow. See `docs/ROADMAP.md`, `docs/conformance/`, and `docs/deployment/`.
 
 The current feature list is a deployment snapshot, not Immortal's scope
 ceiling. The immediate protocol-totality program targets **every specification
@@ -136,7 +136,9 @@ The adopted NIP-MKT relay contract is documented in
 It covers public discovery, immutable internal records, wrapped transport,
 recipient-gated reads, rate limits, and the client-only boundary. NIP-11
 advertises `nip-mkt` only when `IMMORTAL_RELAY_URL` enables authenticated
-recipient transport; it does not advertise an executable market profile.
+recipient transport. The same gate advertises `mkt-swp:1` for its relay-
+observable v1 grammar; the executable-profile set remains empty until the
+client and coordination packets land.
 
 `immortal contract` prints the deterministic machine contract used by SDK
 generators without connecting to Postgres or starting a service. The reviewed

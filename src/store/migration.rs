@@ -76,6 +76,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "mkt_gateway_privacy",
         sql: include_str!("../../migrations/0009_mkt_gateway_privacy.sql"),
     },
+    Migration {
+        version: 10,
+        name: "mkt_swp_profile",
+        sql: include_str!("../../migrations/0010_mkt_swp_profile.sql"),
+    },
 ];
 
 type AppliedMigrations = BTreeMap<i64, (String, String)>;

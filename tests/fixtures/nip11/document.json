@@ -5,7 +5,7 @@
   "contact": "mailto:operator@example.com",
   "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "supported_nips": [1, 9, 11, 40, 45, 50, 65, 94, 17, 42, 70],
-  "supported_extensions": ["nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-er", "nip-mkt", "nip-mp", "nip-oa", "nip-rs"],
+  "supported_extensions": ["mkt-swp:1", "nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-er", "nip-mkt", "nip-mp", "nip-oa", "nip-rs"],
   "max_message_length": 4096,
   "max_subscriptions": 4,
   "max_limit": 20,

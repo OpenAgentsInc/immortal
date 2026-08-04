@@ -74,6 +74,14 @@ names the NIP that owns the behavior.
   transaction, preimage, and timelock cases. The module verifies public
   artifacts only and never accepts wallet keys, preimages for storage, node
   credentials, or broadcast authority.
+- `nipmkt/swp-profile-v1.json` pins the relay-observable MKT-SWP v1 adoption
+  at OpenAgents commit `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`:
+  Offering grammar, kind-39610 profile binding and immutable wrapped
+  publication, typed evidence references, receipt outcomes, custody-material
+  tripwires, and the exact 70-case upstream client/handler manifest. Digest
+  enforcement here is lower-hex shape plus tag/body equality; RFC 8785
+  recomputation, bilateral agreement, lifecycle, funding, exit, and doomsday
+  execution remain client/handler cases.
 - `nipae/`, `nipap/`, `niper/`, `nipmp/`, `nippl/`, `nipia/`, `nipdv/`,
   `nipwp/`, `nipcw/`, `niprs/`, and `nipgs/` each contain a committed server
   contract derived from the corresponding pinned Block text. They cover

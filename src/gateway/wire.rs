@@ -344,7 +344,14 @@ pub fn nip11_json_with_icon(
     let mut supported_extensions = vec!["nip-mp", "nip-oa", "nip-rs"];
     if config.relay_url.is_some() {
         supported_extensions.extend([
-            "nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-er", "nip-mkt",
+            "mkt-swp:1",
+            "nip-aa",
+            "nip-ae",
+            "nip-am",
+            "nip-ao",
+            "nip-ap",
+            "nip-er",
+            "nip-mkt",
         ]);
     }
     if config.relay_url.is_some() && config.relay_signer.is_some() {
@@ -547,8 +554,17 @@ mod tests {
             expected["supported_extensions"]
         );
         for extension in [
-            "nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-er", "nip-mkt", "nip-mp",
-            "nip-oa", "nip-rs",
+            "mkt-swp:1",
+            "nip-aa",
+            "nip-ae",
+            "nip-am",
+            "nip-ao",
+            "nip-ap",
+            "nip-er",
+            "nip-mkt",
+            "nip-mp",
+            "nip-oa",
+            "nip-rs",
         ] {
             assert!(
                 actual["supported_extensions"]

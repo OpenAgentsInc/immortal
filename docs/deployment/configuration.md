@@ -91,6 +91,12 @@ NIP-50 search, and NIP-65 relay-list storage need no extra variable. The full
 contract and deliberate NIP-29 subset are in
 `docs/protocol/nip-expansion.md`.
 
+The same authenticated-recipient configuration gates the nonnumeric
+`nip-mkt` and `mkt-swp:1` NIP-11 extensions. `mkt-swp:1` identifies only the
+relay-observable profile grammar and wrapped kind-39610 storage contract; it
+does not configure a wallet, coordination handler, rail adapter, or custody
+surface.
+
 The Block extension handlers need no additional service or database. NIP-AO
 uses the dedicated observer rates below. NIP-IA and NIP-DV require
 `IMMORTAL_RELAY_SECRET_KEY` because their derived state is relay-signed;

@@ -19,7 +19,9 @@ Verify an unchanged tree without rewriting the artifacts:
 
 The artifact identifies the Immortal crate version and all three pinned NIP
 source commits. It describes relay-observable behavior and marks encrypted
-NIP-MKT client checks separately; it is not an executable-profile claim.
+NIP-MKT client checks separately. The MKT-SWP section records its v1 Offering,
+evidence, kind-39610, privacy, and complete fixture-manifest contract while
+keeping `executable_profiles` empty.
 
 ## Consumers
 
