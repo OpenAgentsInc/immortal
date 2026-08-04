@@ -89,3 +89,10 @@ fn legacy_import_migration_contains_a_bounded_idempotency_ledger() {
         );
     }
 }
+
+#[test]
+fn legacy_expiration_migration_adds_a_terminal_outcome() {
+    let sql = include_str!("../migrations/0007_legacy_expiration.sql");
+    assert!(sql.contains("'expired'"));
+    assert!(sql.contains("DROP CONSTRAINT nostr_effect_import_outcome"));
+}

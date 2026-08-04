@@ -230,9 +230,14 @@ Immortal-owned import ledger; it does not alter or delete that source table.
 Set `IMMORTAL_IMPORT_NOSTR_EFFECT=true` only for this migration. On startup,
 Immortal drains the legacy table in bounded batches before it binds the
 listener. It then checks for newly arrived legacy rows every ten seconds by
-default. Every source event keeps its ID and signature and passes through the
-normal admission transaction. A nonzero `rejected` count in the structured
-`nostr-effect import sweep` log is a cutover blocker.
+default. Every active source event keeps its ID and signature and passes
+cryptographic, replacement, deletion, size, tag, timestamp, and relay-policy
+checks. Historical rows bypass only extension validation and group-derived
+writes that nostr-effect did not enforce when it accepted them; new WebSocket
+admissions always use Immortal's strict path. Already-expired source rows get
+a terminal `expired` ledger outcome and are not copied into active storage,
+matching nostr-effect's query behavior. A nonzero `rejected` count in the
+structured `nostr-effect import sweep` log is a cutover blocker.
 
 1. Create an on-demand Cloud SQL backup and record the current service,
    revision, image digest, domain mapping, and traffic allocation.
@@ -249,7 +254,8 @@ normal admission transaction. A nonzero `rejected` count in the structured
 
 3. Test the tag URL: `/health`, NIP-11, WebSocket upgrade, authenticated
    publish/read, broad historical COUNT, and the remote load gate. Confirm the
-   startup import reached an empty sweep with zero rejected events.
+   startup import reached an empty sweep with zero rejected events. `expired`
+   is an expected terminal count, not a rejection.
 4. Route 100% to the Immortal revision in one traffic update. Do not edit DNS.
    Wait at least two import-sweep intervals, then compare the legacy source
    count, import-ledger count, and rejection count. Verify the custom hostname

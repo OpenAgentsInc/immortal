@@ -215,6 +215,7 @@ pub struct LegacyImportReport {
     pub stored: usize,
     pub duplicate: usize,
     pub ephemeral: usize,
+    pub expired: usize,
     pub rejected: usize,
     pub rejection_reasons: BTreeMap<String, usize>,
 }
@@ -229,6 +230,7 @@ impl LegacyImportReport {
         self.stored += other.stored;
         self.duplicate += other.duplicate;
         self.ephemeral += other.ephemeral;
+        self.expired += other.expired;
         self.rejected += other.rejected;
         for (reason, count) in &other.rejection_reasons {
             *self.rejection_reasons.entry(reason.clone()).or_default() += count;
@@ -245,6 +247,12 @@ pub struct Store {
     statements: Statements,
     connection_current: Arc<AtomicBool>,
     connection_task: JoinHandle<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdmissionMode {
+    Public,
+    Legacy,
 }
 
 impl Store {
@@ -321,10 +329,46 @@ impl Store {
         relay_signer: Option<&RelaySigner>,
         virtual_owner: Option<&str>,
     ) -> Result<AdmissionOutcome, StoreError> {
+        self.admit_inner(
+            event,
+            now,
+            relay_signer,
+            virtual_owner,
+            AdmissionMode::Public,
+        )
+        .await
+    }
+
+    async fn admit_legacy(
+        &mut self,
+        event: &Event,
+        now: u64,
+        relay_signer: Option<&RelaySigner>,
+    ) -> Result<AdmissionOutcome, StoreError> {
+        self.admit_inner(event, now, relay_signer, None, AdmissionMode::Legacy)
+            .await
+    }
+
+    async fn admit_inner(
+        &mut self,
+        event: &Event,
+        now: u64,
+        relay_signer: Option<&RelaySigner>,
+        virtual_owner: Option<&str>,
+        mode: AdmissionMode,
+    ) -> Result<AdmissionOutcome, StoreError> {
         self.ensure_current()?;
-        event.validate_structure()?;
-        event.validate_crypto()?;
-        validate_block_ingest(event, now).map_err(crate::domain::DomainError::InvalidEvent)?;
+        if mode == AdmissionMode::Public {
+            event.validate_structure()?;
+            event.validate_crypto()?;
+            validate_block_ingest(event, now).map_err(crate::domain::DomainError::InvalidEvent)?;
+        } else {
+            // Compatibility imports retain the exact signed preimage, but do
+            // not retroactively impose server-side extensions adopted after
+            // the source relay accepted the event. New network admissions
+            // always use the strict public path above.
+            event.validate_crypto()?;
+        }
         if event.kind == 22_242 {
             return Ok(AdmissionOutcome::Rejected(AdmissionRejection::AuthEvent));
         }
@@ -346,7 +390,11 @@ impl Store {
         } else {
             None
         };
-        let group_action = GroupAction::from_event(event)?;
+        let group_action = if mode == AdmissionMode::Public {
+            GroupAction::from_event(event)?
+        } else {
+            None
+        };
         let lock_keys = admission_lock_keys(event, replacement.as_ref(), deletion.as_ref());
         let statements = self.statements.clone();
         let transaction = self.client.transaction().await?;
@@ -473,8 +521,11 @@ impl Store {
                 .await?;
         }
 
-        let group_id = group_scope(event);
-        if (39_000..=39_005).contains(&event.kind)
+        let group_id = (mode == AdmissionMode::Public)
+            .then(|| group_scope(event))
+            .flatten();
+        if mode == AdmissionMode::Public
+            && (39_000..=39_005).contains(&event.kind)
             && relay_signer.is_none_or(|signer| signer.pubkey() != event.pubkey)
         {
             transaction.commit().await?;
@@ -756,9 +807,11 @@ impl Store {
     }
 
     /// Import at most 1,000 unprocessed rows from nostr-effect's legacy
-    /// `public.events` table. Every decodable event uses the ordinary signed
-    /// admission transaction; the source table is never modified. A durable
-    /// per-ID ledger makes repeated and overlapping sweeps idempotent.
+    /// `public.events` table. Every decodable event retains cryptographic,
+    /// replacement, deletion, and policy checks. Historical events bypass
+    /// only newer extension validation and group-derived writes that the
+    /// source relay never enforced. The source table is never modified. A
+    /// durable per-ID ledger makes repeated and overlapping sweeps idempotent.
     pub async fn import_nostr_effect_events(
         &mut self,
         now: u64,
@@ -810,7 +863,11 @@ impl Store {
             report.scanned += 1;
             let source_id = row.get::<_, String>(0);
             let ledger_outcome = match decode_nostr_effect_event(&row) {
-                Ok(event) => match self.admit_with_signer(&event, now, relay_signer).await {
+                Ok(event) if event.is_expired(now) => {
+                    report.expired += 1;
+                    "expired"
+                }
+                Ok(event) => match self.admit_legacy(&event, now, relay_signer).await {
                     Ok(AdmissionOutcome::Stored { .. }) => {
                         report.stored += 1;
                         "stored"

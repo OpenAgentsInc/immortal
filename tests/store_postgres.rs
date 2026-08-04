@@ -27,7 +27,7 @@ async fn m2_store_contract_against_postgres() {
     }
 
     let (mut store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![1, 2, 3, 4, 5, 6]);
+    assert_eq!(report.applied_versions, vec![1, 2, 3, 4, 5, 6, 7]);
     assert!(store.is_current());
 
     let (_second_store, report) = Store::connect_with_report(&database_url).await.unwrap();
@@ -215,7 +215,20 @@ CREATE TABLE events (
         .await
         .unwrap();
     let event = signed_event(99, 99, 1, vec![], "legacy event");
-    let tags = serde_json::to_string(&event.tags).unwrap();
+    let group_event = signed_event(
+        98,
+        98,
+        9,
+        vec![Tag::new(vec!["h".into(), "legacy-group".into()])],
+        "legacy group event",
+    );
+    let expired = signed_event(
+        97,
+        50,
+        1,
+        vec![Tag::new(vec!["expiration".into(), "60".into()])],
+        "expired legacy event",
+    );
     let insert = client
         .prepare(
             r#"
@@ -225,25 +238,32 @@ VALUES ($1, $2, $3, $4, $5::text::jsonb, $6, $7, NULL)
         )
         .await
         .unwrap();
-    client
-        .execute(
-            &insert,
-            &[
-                &event.id,
-                &event.pubkey,
-                &(event.created_at as i64),
-                &i32::from(event.kind),
-                &tags,
-                &event.content,
-                &event.sig,
-            ],
-        )
-        .await
-        .unwrap();
+    for source in [&event, &group_event, &expired] {
+        let tags = serde_json::to_string(&source.tags).unwrap();
+        let created_at = source.created_at as i64;
+        let kind = i32::from(source.kind);
+        client
+            .execute(
+                &insert,
+                &[
+                    &source.id,
+                    &source.pubkey,
+                    &created_at,
+                    &kind,
+                    &tags,
+                    &source.content,
+                    &source.sig,
+                ],
+            )
+            .await
+            .unwrap();
+    }
 
     let report = store.import_nostr_effect_events(NOW, None).await.unwrap();
-    assert_eq!(report.scanned, 1);
-    assert_eq!(report.stored, 1);
+    assert_eq!(report.scanned, 3);
+    assert_eq!(report.stored, 2);
+    assert_eq!(report.expired, 1);
+    assert_eq!(report.rejected, 0);
     assert_eq!(
         store
             .event_by_id(&event.id, NOW)
@@ -253,6 +273,17 @@ VALUES ($1, $2, $3, $4, $5::text::jsonb, $6, $7, NULL)
             .event,
         event
     );
+    assert_eq!(
+        store
+            .event_by_id(&group_event.id, NOW)
+            .await
+            .unwrap()
+            .unwrap()
+            .event,
+        group_event,
+        "legacy group history bypasses only newer group-derived admission"
+    );
+    assert!(store.event_by_id(&expired.id, NOW).await.unwrap().is_none());
     assert!(
         store
             .import_nostr_effect_events(NOW, None)

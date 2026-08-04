@@ -536,6 +536,22 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   classified. The follow-up candidate adds bounded retry and safe aggregate
   reason codes so state-order rejections can be separated from invalid source
   data without logging event content, IDs, or secrets.
+- Diagnostic revision `00015-loh` on pushed commit `b52855b` classified the
+  950 rows exactly: 90 were expired, 820 referenced groups nostr-effect never
+  materialized, 12 had NIP-29 `previous` references outside Immortal's recent
+  group state, 27 were group actions or metadata not authored by Immortal's
+  relay key, and one historical file-metadata event predates the strict `x`
+  tag rule. All are cryptographically signed; there were no invalid IDs,
+  signatures, hex fields, size/policy violations, or decode failures.
+- The follow-up compatibility contract therefore preserves active historical
+  rows after cryptographic, replacement, deletion, and relay-policy checks but
+  bypasses newer extension validation and group-derived writes only inside the
+  explicit legacy importer. Public WebSocket admission remains unchanged and
+  strict. Migration 7 gives already-expired source rows a terminal ledger
+  state, matching nostr-effect's own query suppression instead of retrying or
+  serving them. The disposable-Postgres fixture now proves a valid legacy
+  group event is retained, an expired event is terminally skipped, and neither
+  weakens subsequent ordinary admission.
 
 ## Rules
 

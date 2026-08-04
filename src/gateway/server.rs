@@ -434,6 +434,7 @@ fn print_legacy_import_report(phase: &str, report: &crate::store::LegacyImportRe
             "stored": report.stored,
             "duplicate": report.duplicate,
             "ephemeral": report.ephemeral,
+            "expired": report.expired,
             "rejected": report.rejected,
             "rejection_reasons": report.rejection_reasons,
         })

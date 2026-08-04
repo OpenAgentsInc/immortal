@@ -61,6 +61,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "nostr_effect_import",
         sql: include_str!("../../migrations/0006_nostr_effect_import.sql"),
     },
+    Migration {
+        version: 7,
+        name: "legacy_expiration",
+        sql: include_str!("../../migrations/0007_legacy_expiration.sql"),
+    },
 ];
 
 type AppliedMigrations = BTreeMap<i64, (String, String)>;
