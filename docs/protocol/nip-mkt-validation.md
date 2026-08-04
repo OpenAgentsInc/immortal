@@ -4,6 +4,22 @@ Immortal implements the profile-neutral NIP-MKT base grammar. It does not
 currently implement or advertise an executable market profile. In particular,
 the `mkt-swp` example in the pinned NIP is not a runtime capability claim.
 
+## Kind and publication contract
+
+| Kinds | Meaning | NIP-01 class | Public gateway rule |
+| --- | --- | --- | --- |
+| `39600-39603` | Provider Profile, Offering, Profile Descriptor, Public Market Receipt | addressable | public head, admitted only after the kind-specific grammar |
+| `39604-39609` | RFQ, Quote, Order, Status, Cancel, Close | addressable with an immutable-coordinate override | bare publication refused; signed records travel inside kind-1059 gift wraps |
+| `39610-39699` | reserved profile allocation block | addressable | unallocated; no NIP-MKT handler or capability claim |
+
+The public heads use ordinary NIP-01 replacement ordering. The six private
+kinds bind `(pubkey, kind, d)` to one exact event ID and signature in the
+internal store: exact replay is idempotent, while changed bytes fail with
+`invalid: idempotency-conflict`. Deletion and expiration never release that
+binding. This internal path supports trusted import and future in-binary
+handlers; generic gateway reads hide every bare private row, including rows
+created by an older release or legacy import.
+
 ## Observable validation surfaces
 
 | Surface | What Immortal can validate |
@@ -15,8 +31,8 @@ the `mkt-swp` example in the pinned NIP is not a runtime capability claim.
 | NIP-59 gift wrap at the transport relay | The inner signed record is encrypted and opaque. The relay can validate and recipient-gate the outer wrap, but cannot claim it checked inner MKT grammar, signer roles, terms, or profile semantics. |
 
 The public gateway refuses bare `39604-39609` publication with the stable
-reason `restricted: mkt-private-requires-gift-wrap` before database, rate, or
-store work, after consuming only the generic IP attempt budget. The internal
+reason `restricted: mkt-private-requires-gift-wrap` before database, keyed-rate,
+or store work, after consuming only the generic IP attempt budget. The internal
 store path remains available for trusted import and future in-binary handlers,
 but existing/internal `39604-39609` rows are unconditionally hidden by SQL,
 search indexing, and live fanout. Explicit kind-1059 REQ and COUNT filters require an
@@ -33,6 +49,25 @@ victim's keyed quota. Recipient exhaustion returns the stable reason
 `rate-limited: gift-wrap recipient rate exceeded`. The outer wrapper pubkey is
 randomized transport metadata and is never described as the logical sender of
 the encrypted MKT record; that inner sender is opaque to the relay.
+
+Expiration is inclusive. A public MKT event or outer gift wrap with
+`expiration <= now` is refused. Inner expiration is client-only because the
+transport relay cannot decrypt it. Two independently signed outer wraps may
+carry the same inner record; the relay stores both deliveries and cannot
+deduplicate the logical record. Clients deduplicate by the verified inner
+event ID while retaining delivery provenance.
+
+The stable MKT gateway reasons are:
+
+- `restricted: mkt-private-requires-gift-wrap` for bare private publication;
+- `invalid: idempotency-conflict` for changed bytes at an immutable internal
+  coordinate; and
+- `rate-limited: gift-wrap recipient rate exceeded` for recipient quota
+  exhaustion.
+
+Gift-wrap REQ and COUNT filter refusals retain the existing NIP-42 strings:
+`auth-required: gift-wrap reads require recipient authentication` and
+`restricted: gift-wrap reads must be scoped to #p self`.
 
 The exported executable-profile set is empty. Profile-aware fixtures use the
 synthetic ID `conformance`; it exists only to test fail-closed API behavior.
@@ -69,3 +104,19 @@ causal availability, quote supersession, reservation conflicts, Status
 sequence gaps/forks, settlement evidence, or disclosure consent. These remain
 client/profile-handler checks and enter the M11 exported corpus. Relay
 acceptance remains transport evidence only.
+
+The committed client-only manifest additionally pins quote supersession,
+double reservation, per-signer Status gaps and forks, wrapper/inner signer,
+kind and recipient mismatch, evidence mismatch, recovery loss, expired Order,
+unauthorized Status/Cancel/Close, rewrapped replay, and settlement overclaim.
+Those cases are inputs for SDK conformance; none is advertised as relay
+enforcement.
+
+## NIP-11 advertisement
+
+NIP-MKT has no numeric NIP-11 identifier. Immortal adds only `nip-mkt` to
+`supported_extensions`, and only when `IMMORTAL_RELAY_URL` is configured so
+NIP-42 recipient authentication is available for wrapped reads. The extension
+means the base public discovery and recipient-gated transport contract on this
+page. It does not advertise `mkt-swp`, another executable profile, decrypted
+inner validation, reservation accounting, execution, or settlement proof.

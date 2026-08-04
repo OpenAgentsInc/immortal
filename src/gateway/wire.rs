@@ -344,7 +344,9 @@ pub fn nip11_json_with_icon(
     }
     let mut supported_extensions = vec!["nip-mp", "nip-oa", "nip-rs"];
     if config.relay_url.is_some() {
-        supported_extensions.extend(["nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-er"]);
+        supported_extensions.extend([
+            "nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-er", "nip-mkt",
+        ]);
     }
     if config.relay_url.is_some() && config.relay_signer.is_some() {
         supported_extensions.extend(["nip-dv", "nip-ia"]);
@@ -541,9 +543,13 @@ mod tests {
         assert_eq!(actual["contact"], expected["contact"]);
         assert_eq!(actual["pubkey"], expected["pubkey"]);
         assert_eq!(actual["supported_nips"], expected["supported_nips"]);
+        assert_eq!(
+            actual["supported_extensions"],
+            expected["supported_extensions"]
+        );
         for extension in [
-            "nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-er", "nip-mp", "nip-oa",
-            "nip-rs",
+            "nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-er", "nip-mkt", "nip-mp",
+            "nip-oa", "nip-rs",
         ] {
             assert!(
                 actual["supported_extensions"]
@@ -560,6 +566,12 @@ mod tests {
                     .contains(&json!(disabled))
             );
         }
+        config.relay_url = None;
+        let disabled = serde_json::from_str::<Value>(&nip11_json(&config, &policy)).unwrap();
+        assert_eq!(
+            disabled["supported_extensions"],
+            json!(["nip-mp", "nip-oa", "nip-rs"])
+        );
         for field in [
             "max_message_length",
             "max_subscriptions",

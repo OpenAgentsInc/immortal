@@ -62,6 +62,13 @@ names the NIP that owns the behavior.
   self-scoped gift-wrap reads, all five read surfaces, and rate dimensions.
   It names the signed kind-1059 pubkey as the outer wrapper pubkey because the
   logical inner sender is encrypted and relay-opaque.
+- `nipmkt/relay-closing.json` closes the relay-observable M10 corpus across
+  malformed grammar, duplicate JSON, profile scope, immutable changed bytes,
+  rewrapped transport, inclusive expiration, bare-private refusal, rate keys,
+  and the complete `39600-39699` classification. `nipmkt/client-only-cases.json`
+  is the structured M11 consumer manifest for supersession, reservation,
+  sequence, wrapper/inner, evidence, recovery, authorization, expiry, and
+  settlement cases that Immortal deliberately does not claim to enforce.
 - `nipae/`, `nipap/`, `niper/`, `nipmp/`, `nippl/`, `nipia/`, `nipdv/`,
   `nipwp/`, `nipcw/`, `niprs/`, and `nipgs/` each contain a committed server
   contract derived from the corresponding pinned Block text. They cover

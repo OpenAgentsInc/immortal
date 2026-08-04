@@ -1,5 +1,5 @@
 #!/bin/sh
-# Complete manual M1-M7 gate. No GitHub workflow or billed runner is used.
+# Complete manual M1-M7 and M10 gate. No GitHub workflow or billed runner is used.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -9,6 +9,7 @@ cargo check --locked --all-targets
 cargo test --locked --test mkt_fixtures
 cargo test --locked --test mkt_immutability_model
 cargo test --locked --test mkt_common_fixtures
+cargo test --locked --test mkt_closing_fixtures
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc --locked --no-deps

@@ -282,7 +282,7 @@ async fn assert_nip11_http(address: SocketAddr) {
     }
     for extension in [
         "nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-dv", "nip-er", "nip-ia", "nip-mp",
-        "nip-oa", "nip-rs", "nip-wp",
+        "nip-mkt", "nip-oa", "nip-rs", "nip-wp",
     ] {
         assert!(
             document["supported_extensions"]
@@ -292,6 +292,25 @@ async fn assert_nip11_http(address: SocketAddr) {
             "missing {extension}"
         );
     }
+    let extensions = document["supported_extensions"].as_array().unwrap();
+    assert!(
+        extensions
+            .windows(2)
+            .all(|pair| pair[0].as_str() < pair[1].as_str())
+    );
+    assert!(
+        !document["supported_nips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| matches!(value.as_u64(), Some(396 | 39_600..=39_699)))
+    );
+    assert!(!extensions.iter().any(|extension| {
+        matches!(
+            extension.as_str(),
+            Some("mkt-swp" | "mkt-p2p" | "mkt-pfi" | "mkt-mint" | "mkt-lsp")
+        )
+    }));
 }
 
 fn media_contract(address: SocketAddr) {
@@ -1071,6 +1090,39 @@ fn protected_and_private_contract(address_one: SocketAddr, address_two: SocketAd
         );
     }
 
+    let expired_public = signed_event(
+        21,
+        now(),
+        39_600,
+        vec![
+            Tag::new(vec!["d".into(), "expired-provider".into()]),
+            Tag::new(vec!["status".into(), "active".into()]),
+            Tag::new(vec!["profile".into(), "conformance".into(), "1".into()]),
+            Tag::new(vec!["published_at".into(), now().to_string()]),
+            Tag::new(vec!["expiration".into(), now().to_string()]),
+        ],
+        "{}",
+    );
+    send_json(&mut publisher, json!(["EVENT", expired_public]));
+    let refusal = read_json(&mut publisher);
+    assert_eq!(refusal[2], false);
+    assert!(refusal[3].as_str().unwrap().contains("expired"));
+
+    let expired_wrap = signed_event(
+        54,
+        now(),
+        1_059,
+        vec![
+            Tag::new(vec!["p".into(), pubkey(32)]),
+            Tag::new(vec!["expiration".into(), now().to_string()]),
+        ],
+        "expired encrypted gift wrap",
+    );
+    send_json(&mut publisher, json!(["EVENT", expired_wrap]));
+    let refusal = read_json(&mut publisher);
+    assert_eq!(refusal[2], false);
+    assert!(refusal[3].as_str().unwrap().contains("expired"));
+
     let mut recipient = connect_client(address_two);
     let challenge = expect_auth_challenge(&mut recipient);
     authenticate(&mut recipient, 30, &challenge);
@@ -1141,6 +1193,18 @@ fn protected_and_private_contract(address_one: SocketAddr, address_two: SocketAd
     assert_eq!(read_json(&mut publisher)[2], true);
     assert_eq!(read_json(&mut recipient)[2]["id"], wrap.id);
     assert_no_message(&mut outsider);
+
+    let recovery_wrap = signed_event(
+        58,
+        now(),
+        1_059,
+        vec![Tag::new(vec!["p".into(), pubkey(21)])],
+        "encrypted gift wrap",
+    );
+    assert_ne!(recovery_wrap.id, wrap.id);
+    assert_eq!(recovery_wrap.content, wrap.content);
+    send_json(&mut publisher, json!(["EVENT", recovery_wrap]));
+    assert_eq!(read_json(&mut publisher)[2], true);
 
     let mut history = connect_client(address_two);
     let challenge = expect_auth_challenge(&mut history);

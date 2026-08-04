@@ -85,3 +85,22 @@ The review found no collision. Immortal therefore admits NIP-MKT public kinds
 `39600-39603` under their pinned domain rules. It does not allocate any kind
 in `39610-39699`. The registry result is a review input, not a new pinned
 source lane; future profile allocations still require a fresh review.
+
+### M10 adoption completion
+
+M10 implements the NIP-MKT base at OpenAgents commit
+`b839dd43bad7915a35639b562d4d7ebf7d51c3f6`. Kinds `39600-39603` are public
+discovery heads; `39604-39609` are immutable signed records transported only
+inside recipient-gated NIP-59 kind-1059 wraps; `39610-39699` remain reserved
+and unallocated. The server contract is
+[`nip-mkt-validation.md`](nip-mkt-validation.md), and the relay plus
+client-only fixture manifests live under `tests/fixtures/nipmkt/`.
+
+Immortal validates only public data, visible internal records, and outer
+transport metadata. It cannot inspect encrypted inner terms or prove profile
+execution, reservation, evidence, recovery, or settlement. Its executable
+profile set is empty, and the NIP-90 freeze remains in force. No identifier
+precedence exception was created. After the full local M10 conformance gate
+passed, NIP-11 began advertising the nonnumeric `nip-mkt` extension only when
+`IMMORTAL_RELAY_URL` enables NIP-42 recipient authentication. That extension
+means base discovery and wrapped transport, not an executable profile.

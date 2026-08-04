@@ -246,7 +246,7 @@ after the base. NIP-90 job kinds are frozen per
 - [x] Limits: discovery-head rate limits per IP and pubkey; wrap-rate
       limits per IP, outer wrapper pubkey, and recipient reusing the
       existing 1059 machinery
-- [ ] Fixture corpus per the MKT conformance section (relay-observable
+- [x] Fixture corpus per the MKT conformance section (relay-observable
       subset): malformed events, duplicate JSON keys, unsupported
       profile/version, changed bytes under one `d`, rewrapped replay,
       bare-private publication, expired events, and never classifying
@@ -257,7 +257,7 @@ after the base. NIP-90 job kinds are frozen per
 - [x] Formal model where the state space is bounded: the
       replay/conflict/immutability admission machine for `39604-39609`;
       counterexamples become fixtures
-- [ ] NIP-11: advertise NIP-MKT only after the local conformance gate
+- [x] NIP-11: advertise NIP-MKT only after the local conformance gate
       passes, following the `supported_extensions` practice from the
       Block lane
 

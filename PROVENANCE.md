@@ -843,6 +843,16 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 - Added the MKT gateway-policy fixture, migration 0009, live PostgreSQL surface
   proofs, deployment configuration, and protocol/conformance documentation.
 
+### 2026-08-04 — Codex 5.6 Sol, NIP-MKT M10 closing packet
+
+- Completed the relay-observable corpus and a structured, explicitly
+  client-only manifest for downstream SDK conformance at the pinned
+  OpenAgents commit.
+- Documented the complete server/non-enforcement boundary and recorded M10
+  source-lane adoption completion without claiming an executable profile.
+- Gated the nonnumeric `nip-mkt` NIP-11 extension on configured NIP-42
+  recipient transport and added unit plus live advertisement proofs.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names
