@@ -153,11 +153,17 @@ WHERE ($1::text[] IS NULL OR e.id = ANY($1))
   AND ($5::bigint IS NULL OR e.created_at <= $5)
   AND (e.expires_at IS NULL OR e.expires_at > $7)
   AND e.ingest_seq <= $9
+  AND e.kind NOT BETWEEN 39604 AND 39609
   AND (
       e.kind NOT IN (1059, 24200, 30174, 30175, 30178, 30300, 30350, 30622, 44200)
       OR (
           e.kind IN (1059, 24200, 30622, 44200)
           AND $10::text[] IS NOT NULL
+          AND (
+              SELECT count(*) FROM nostr_indexed_tag recipient_count
+              WHERE recipient_count.event_id = e.id
+                AND recipient_count.tag_name = 'p'
+          ) = 1
           AND EXISTS (
               SELECT 1 FROM nostr_indexed_tag recipient
               WHERE recipient.event_id = e.id
@@ -238,11 +244,17 @@ WHERE ($1::text[] IS NULL OR e.id = ANY($1))
             )
       )
   )
+  AND e.kind NOT BETWEEN 39604 AND 39609
   AND (
       e.kind NOT IN (1059, 24200, 30174, 30175, 30178, 30300, 30350, 30622, 44200)
       OR (
           e.kind IN (1059, 24200, 30622, 44200)
           AND $8::text[] IS NOT NULL
+          AND (
+              SELECT count(*) FROM nostr_indexed_tag recipient_count
+              WHERE recipient_count.event_id = e.id
+                AND recipient_count.tag_name = 'p'
+          ) = 1
           AND EXISTS (
               SELECT 1 FROM nostr_indexed_tag recipient
               WHERE recipient.event_id = e.id

@@ -51,6 +51,13 @@ event, but they cannot permit changed signed bytes to reuse its idempotency
 key. The migration backfills any existing private MKT records and removes
 their generic `replaceable_head` rows.
 
+`migrations/0009_mkt_gateway_privacy.sql` rebuilds the generated search vector
+and GIN index with kind 1059 and private MKT kinds 39604–39609 excluded. The
+migration recalculates existing rows in place. Gift-wrap ciphertext is
+therefore not searchable even for an authenticated recipient;
+recipient-gated history and ID lookup remain available. Internal/private MKT
+rows remain in the durable store but are not gateway-readable.
+
 The database independently rejects malformed identity widths, negative or
 out-of-range protocol numbers, ephemeral kinds, inconsistent replacement
 identifiers, and malformed tombstone shapes. Indexed access paths cover IDs,

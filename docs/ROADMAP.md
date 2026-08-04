@@ -238,14 +238,14 @@ after the base. NIP-90 job kinds are frozen per
       profiles, 8 hints)
 - [x] Store: MKT admission inside the existing single transaction with a
       distinct machine-readable `OK` reason for idempotency conflicts
-- [ ] Gateway: reject bare publication of `39604-39609` (private records
+- [x] Gateway: reject bare publication of `39604-39609` (private records
       travel only inside NIP-59 gift wraps); confirm wrapped negotiation
       rides the existing NIP-17 `1059` recipient gating on every read
       surface — REQ, id lookup, COUNT, search exclusion, live fanout —
       with MKT fixtures proving each surface
-- [ ] Limits: discovery-head rate limits per IP and pubkey; wrap-rate
-      limits per IP, sender, and recipient reusing the existing 1059
-      machinery
+- [x] Limits: discovery-head rate limits per IP and pubkey; wrap-rate
+      limits per IP, outer wrapper pubkey, and recipient reusing the
+      existing 1059 machinery
 - [ ] Fixture corpus per the MKT conformance section (relay-observable
       subset): malformed events, duplicate JSON keys, unsupported
       profile/version, changed bytes under one `d`, rewrapped replay,

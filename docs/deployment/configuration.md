@@ -114,6 +114,7 @@ has no certificate configuration.
 | `IMMORTAL_MAX_QUERY_COST` | no | `100000` | Upper bound on estimated rows scanned per `REQ` (1–1,000,000,000); costlier queries are refused with `CLOSED`. |
 | `IMMORTAL_RATE_EVENTS_PER_MIN_IP` | no | `120` | `EVENT` messages accepted per minute per client IP. |
 | `IMMORTAL_RATE_EVENTS_PER_MIN_PUBKEY` | no | `60` | `EVENT` messages accepted per minute per author pubkey. |
+| `IMMORTAL_RATE_GIFT_WRAPS_PER_MIN_RECIPIENT` | no | `60` | Kind-1059 gift wraps accepted per minute for each outer `p` recipient. This complements the generic IP and outer wrapper-pubkey limits; the relay cannot observe the encrypted logical sender. |
 | `IMMORTAL_RATE_OBSERVER_PER_SEC_IP` | no | `200` | NIP-AO observer frames accepted per second per client IP. |
 | `IMMORTAL_RATE_OBSERVER_PER_SEC_AGENT` | no | `100` | NIP-AO observer frames accepted per second for each agent, including owner-to-agent control traffic. |
 | `IMMORTAL_RATE_REQ_PER_MIN_IP` | no | `120` | `REQ` messages per minute per client IP. |

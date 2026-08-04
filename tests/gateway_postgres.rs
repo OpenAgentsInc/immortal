@@ -11,6 +11,7 @@ use std::{
 use immortal::{
     domain::{Event, RelaySigner, Tag},
     gateway::{Gateway, GatewayConfig, MediaConfig},
+    store::{AdmissionOutcome, Store},
 };
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 use serde_json::{Value, json};
@@ -61,8 +62,12 @@ async fn m3_gateway_contract_against_postgres() {
     .await
     .unwrap();
     assert_physically_expired(&verification_database_url, &expired_id).await;
+    assert_gift_wraps_are_not_search_indexed(&verification_database_url).await;
     configure_closed_membership(&verification_database_url).await;
     tokio::task::spawn_blocking(move || closed_agent_auth_contract(address_one))
+        .await
+        .unwrap();
+    tokio::task::spawn_blocking(move || malformed_legacy_wrap_contract(address_two))
         .await
         .unwrap();
 
@@ -232,8 +237,9 @@ fn test_config(database_url: String, media_root: PathBuf) -> GatewayConfig {
     config.limits.max_filters = 4;
     config.limits.max_limit = 10;
     config.limits.max_query_cost = 10_000;
-    config.limits.events_per_minute_ip = 100;
-    config.limits.events_per_minute_pubkey = 100;
+    config.limits.events_per_minute_ip = 1_000;
+    config.limits.events_per_minute_pubkey = 1_000;
+    config.limits.gift_wraps_per_minute_recipient = 1;
     config.limits.req_per_minute_ip = 100;
     config.limits.media_per_minute_ip = 100;
     config.limits.media_per_minute_pubkey = 100;
@@ -1019,6 +1025,8 @@ fn assert_nip11_icon(address: SocketAddr, expected: &str) {
 }
 
 fn protected_and_private_contract(address_one: SocketAddr, address_two: SocketAddr) {
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/nipmkt/gateway-policy.json")).unwrap();
     let mut publisher = connect_client(address_one);
     let publisher_challenge = expect_auth_challenge(&mut publisher);
     authenticate(&mut publisher, 21, &publisher_challenge);
@@ -1052,20 +1060,69 @@ fn protected_and_private_contract(address_one: SocketAddr, address_two: SocketAd
     send_json(&mut publisher, json!(["EVENT", generic_repost]));
     assert_eq!(read_json(&mut publisher)[2], false);
 
+    for kind in 39_604..=39_609 {
+        let bare_private = signed_event(21, now(), kind, Vec::new(), "bare private MKT record");
+        send_json(&mut publisher, json!(["EVENT", bare_private]));
+        let refusal = read_json(&mut publisher);
+        assert_eq!(refusal[2], false, "bare kind {kind}");
+        assert_eq!(
+            refusal[3], fixture["bare_private_refusal"],
+            "bare kind {kind}"
+        );
+    }
+
     let mut recipient = connect_client(address_two);
     let challenge = expect_auth_challenge(&mut recipient);
     authenticate(&mut recipient, 30, &challenge);
-    send_json(&mut recipient, json!(["REQ", "dm", {"kinds": [1059]}]));
+    send_json(
+        &mut recipient,
+        json!(["REQ", "dm", {"kinds": [1059], "#p": [pubkey(30)]}]),
+    );
     assert_eq!(read_json(&mut recipient), json!(["EOSE", "dm"]));
+
+    let mut unauthenticated = connect_client(address_two);
+    let _challenge = expect_auth_challenge(&mut unauthenticated);
+    send_json(
+        &mut unauthenticated,
+        json!(["REQ", "unauth-mkt", {"kinds": [1059], "#p": [pubkey(30)]}]),
+    );
+    assert_eq!(
+        read_json(&mut unauthenticated),
+        json!([
+            "CLOSED",
+            "unauth-mkt",
+            fixture["gift_wrap_read_refusals"]["unauthenticated_connection"]
+        ])
+    );
+    unauthenticated.close(None).unwrap();
 
     let mut outsider = connect_client(address_two);
     let challenge = expect_auth_challenge(&mut outsider);
     authenticate(&mut outsider, 31, &challenge);
     send_json(
         &mut outsider,
-        json!(["REQ", "not-my-dm", {"kinds": [1059]}]),
+        json!(["REQ", "not-my-dm", {"kinds": [1059], "#p": [pubkey(30)]}]),
     );
-    assert_eq!(read_json(&mut outsider), json!(["EOSE", "not-my-dm"]));
+    assert_eq!(
+        read_json(&mut outsider),
+        json!([
+            "CLOSED",
+            "not-my-dm",
+            fixture["gift_wrap_read_refusals"]["not_self_scoped"]
+        ])
+    );
+    send_json(&mut outsider, json!(["REQ", "broad-outsider", {}]));
+    loop {
+        let message = read_json(&mut outsider);
+        if message == json!(["EOSE", "broad-outsider"]) {
+            break;
+        }
+        assert_ne!(message[2]["kind"], 1_059);
+    }
+
+    let internal_private = signed_private_mkt(57, 39_604, "internal private MKT marker");
+    admit_internal_private(&internal_private);
+    assert_no_message(&mut outsider);
 
     let wrap = signed_event(
         55,
@@ -1074,14 +1131,251 @@ fn protected_and_private_contract(address_one: SocketAddr, address_two: SocketAd
         vec![Tag::new(vec!["p".into(), pubkey(30)])],
         "encrypted gift wrap",
     );
+    let mut forged_wrap = wrap.clone();
+    forged_wrap.content.push('!');
+    send_json(&mut publisher, json!(["EVENT", forged_wrap]));
+    let refusal = read_json(&mut publisher);
+    assert_eq!(refusal[2], false);
+    assert!(refusal[3].as_str().unwrap().starts_with("invalid:"));
     send_json(&mut publisher, json!(["EVENT", wrap]));
     assert_eq!(read_json(&mut publisher)[2], true);
     assert_eq!(read_json(&mut recipient)[2]["id"], wrap.id);
     assert_no_message(&mut outsider);
 
+    let mut history = connect_client(address_two);
+    let challenge = expect_auth_challenge(&mut history);
+    authenticate(&mut history, 30, &challenge);
+    send_json(
+        &mut history,
+        json!(["REQ", "mkt-history", {"kinds": [1059], "#p": [pubkey(30)]}]),
+    );
+    assert_eq!(read_json(&mut history)[2]["id"], wrap.id);
+    assert_eq!(read_json(&mut history), json!(["EOSE", "mkt-history"]));
+
+    send_json(&mut history, json!(["REQ", "mkt-id", {"ids": [wrap.id]}]));
+    assert_eq!(read_json(&mut history)[2]["id"], wrap.id);
+    assert_eq!(read_json(&mut history), json!(["EOSE", "mkt-id"]));
+
+    send_json(
+        &mut history,
+        json!(["REQ", "private-history", {"kinds": [39604]}]),
+    );
+    assert_eq!(read_json(&mut history), json!(["EOSE", "private-history"]));
+    send_json(
+        &mut history,
+        json!(["REQ", "private-id", {"ids": [internal_private.id]}]),
+    );
+    assert_eq!(read_json(&mut history), json!(["EOSE", "private-id"]));
+    send_json(
+        &mut history,
+        json!(["COUNT", "private-count", {"kinds": [39604]}]),
+    );
+    assert_eq!(
+        read_json(&mut history),
+        json!(["COUNT", "private-count", {"count": 0}])
+    );
+    send_json(
+        &mut history,
+        json!(["REQ", "private-search", {"search": "internal private MKT marker"}]),
+    );
+    assert_eq!(read_json(&mut history), json!(["EOSE", "private-search"]));
+    send_json(
+        &mut history,
+        json!(["COUNT", "private-search-count", {"search": "internal private MKT marker"}]),
+    );
+    assert_eq!(
+        read_json(&mut history),
+        json!(["COUNT", "private-search-count", {"count": 0}])
+    );
+
+    send_json(
+        &mut history,
+        json!(["COUNT", "mkt-count", {"kinds": [1059], "#p": [pubkey(30)]}]),
+    );
+    assert_eq!(
+        read_json(&mut history),
+        json!(["COUNT", "mkt-count", {"count": 1}])
+    );
+
+    send_json(
+        &mut history,
+        json!(["REQ", "mkt-search", {"search": "encrypted gift wrap"}]),
+    );
+    assert_eq!(read_json(&mut history), json!(["EOSE", "mkt-search"]));
+    send_json(
+        &mut history,
+        json!(["COUNT", "mkt-search-count", {"search": "encrypted gift wrap"}]),
+    );
+    assert_eq!(
+        read_json(&mut history),
+        json!(["COUNT", "mkt-search-count", {"count": 0}])
+    );
+
+    send_json(
+        &mut outsider,
+        json!(["REQ", "mkt-id-outsider", {"ids": [wrap.id]}]),
+    );
+    assert_eq!(read_json(&mut outsider), json!(["EOSE", "mkt-id-outsider"]));
+    send_json(
+        &mut outsider,
+        json!(["COUNT", "mkt-id-count-outsider", {"ids": [wrap.id]}]),
+    );
+    assert_eq!(
+        read_json(&mut outsider),
+        json!(["COUNT", "mkt-id-count-outsider", {"count": 0}])
+    );
+
+    let second_wrap = signed_event(
+        56,
+        now(),
+        1_059,
+        vec![Tag::new(vec!["p".into(), pubkey(30)])],
+        "second encrypted gift wrap",
+    );
+    send_json(&mut publisher, json!(["EVENT", second_wrap]));
+    let refusal = read_json(&mut publisher);
+    assert_eq!(refusal[2], false);
+    assert_eq!(refusal[3], fixture["gift_wrap_recipient_rate_refusal"]);
+
+    history.close(None).unwrap();
+
     recipient.close(None).unwrap();
     outsider.close(None).unwrap();
     publisher.close(None).unwrap();
+}
+
+async fn assert_gift_wraps_are_not_search_indexed(database_url: &str) {
+    let (client, connection) = tokio_postgres::connect(database_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let count = client
+        .query_one(
+            "SELECT count(*) FROM nostr_event WHERE kind = 1059 AND search_vector IS NOT NULL",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0);
+    assert_eq!(count, 0);
+    let private_rows = client
+        .query_one(
+            "SELECT (SELECT count(*) FROM nostr_event WHERE kind BETWEEN 39604 AND 39609), (SELECT count(*) FROM mkt_immutable_coordinate)",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(private_rows.get::<_, i64>(0), 1);
+    assert_eq!(private_rows.get::<_, i64>(1), 1);
+}
+
+fn signed_private_mkt(secret_byte: u8, kind: u16, marker: &str) -> Event {
+    let distinct = format!("{secret_byte:02x}").repeat(32);
+    let session = format!("{:02x}", secret_byte.wrapping_add(1)).repeat(32);
+    let content = serde_json::json!({
+        "schema": "openagents.mkt.v1",
+        "profile": "conformance",
+        "profile_version": 1,
+        "session_id": session,
+        "marker": marker,
+    })
+    .to_string();
+    signed_event(
+        secret_byte,
+        now(),
+        kind,
+        vec![
+            Tag::new(vec!["d".into(), distinct]),
+            Tag::new(vec!["session".into(), session]),
+            Tag::new(vec!["profile".into(), "conformance".into(), "1".into()]),
+            Tag::new(vec![
+                "p".into(),
+                pubkey(30),
+                String::new(),
+                "provider".into(),
+            ]),
+            Tag::new(vec!["alt".into(), "Internal MKT fixture".into()]),
+        ],
+        &content,
+    )
+}
+
+fn admit_internal_private(event: &Event) {
+    let database_url = std::env::var("IMMORTAL_TEST_DATABASE_URL").unwrap();
+    let event = event.clone();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async move {
+            let mut store = Store::connect(&database_url).await.unwrap();
+            assert!(matches!(
+                store.admit(&event, now()).await.unwrap(),
+                AdmissionOutcome::Stored { .. }
+            ));
+        });
+}
+
+fn insert_legacy_wrap(event: &Event) {
+    let database_url = std::env::var("IMMORTAL_TEST_DATABASE_URL").unwrap();
+    let event = event.clone();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async move {
+            let (mut client, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
+            tokio::spawn(async move { connection.await.unwrap() });
+            let transaction = client.transaction().await.unwrap();
+            let tags = serde_json::to_string(&event.tags).unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO nostr_event (id, pubkey, created_at, kind, tags, content, sig, replacement_identifier) VALUES ($1, $2, $3, $4, $5::text::jsonb, $6, $7, NULL)",
+                    &[&event.id, &event.pubkey, &i64::try_from(event.created_at).unwrap(), &i32::from(event.kind), &tags, &event.content, &event.sig],
+                )
+                .await
+                .unwrap();
+            for recipient in event.tag_values("p") {
+                transaction
+                    .execute(
+                        "INSERT INTO nostr_indexed_tag (event_id, tag_name, tag_value, created_at) VALUES ($1, 'p', $2, $3)",
+                        &[&event.id, &recipient, &i64::try_from(event.created_at).unwrap()],
+                    )
+                    .await
+                    .unwrap();
+            }
+            transaction.commit().await.unwrap();
+        });
+}
+
+fn malformed_legacy_wrap_contract(address: SocketAddr) {
+    let malformed_wrap = signed_event(
+        58,
+        now(),
+        1_059,
+        vec![
+            Tag::new(vec!["p".into(), pubkey(21)]),
+            Tag::new(vec!["p".into(), pubkey(31)]),
+        ],
+        "legacy malformed multi recipient wrap",
+    );
+    insert_legacy_wrap(&malformed_wrap);
+
+    let mut reader = connect_client(address);
+    let challenge = expect_auth_challenge(&mut reader);
+    authenticate(&mut reader, 21, &challenge);
+    send_json(
+        &mut reader,
+        json!(["REQ", "malformed-wrap-id", {"ids": [malformed_wrap.id]}]),
+    );
+    assert_eq!(read_json(&mut reader), json!(["EOSE", "malformed-wrap-id"]));
+    send_json(
+        &mut reader,
+        json!(["COUNT", "malformed-wrap-count", {"ids": [malformed_wrap.id]}]),
+    );
+    assert_eq!(
+        read_json(&mut reader),
+        json!(["COUNT", "malformed-wrap-count", {"count": 0}])
+    );
+    reader.close(None).unwrap();
 }
 
 fn search_and_count_contract(address_one: SocketAddr, address_two: SocketAddr) {
@@ -1092,7 +1386,8 @@ fn search_and_count_contract(address_one: SocketAddr, address_two: SocketAddr) {
     let unrelated = signed_event(21, now(), 1, Vec::new(), "ordinary unrelated text");
     for event in [&searchable, &unrelated] {
         send_json(&mut publisher, json!(["EVENT", event]));
-        assert_eq!(read_json(&mut publisher)[2], true);
+        let response = read_json(&mut publisher);
+        assert_eq!(response[2], true, "{response}");
     }
 
     let mut reader = connect_client(address_two);
@@ -1426,6 +1721,7 @@ fn send_json(websocket: &mut WebSocket<StdTcpStream>, value: Value) {
     websocket.send(Message::text(value.to_string())).unwrap();
 }
 
+#[track_caller]
 fn read_json(websocket: &mut WebSocket<StdTcpStream>) -> Value {
     loop {
         match websocket.read().unwrap() {

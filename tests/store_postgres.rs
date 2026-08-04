@@ -26,8 +26,14 @@ async fn m2_store_contract_against_postgres() {
         return;
     }
 
+    let (initial_store, report) = Store::connect_with_report(&database_url).await.unwrap();
+    assert_eq!(report.applied_versions, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    drop(initial_store);
+    seed_pre_v9_search_rows(&database_url).await;
+
     let (mut store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(report.applied_versions, vec![9]);
+    assert_pre_v9_search_rows_are_private_and_preserved(&database_url).await;
     assert!(store.is_current());
 
     let (_second_store, report) = Store::connect_with_report(&database_url).await.unwrap();
@@ -193,6 +199,114 @@ async fn m2_store_contract_against_postgres() {
     );
     assert!(listener.is_current());
     migration_hash_drift_fails_closed(&database_url).await;
+}
+
+async fn seed_pre_v9_search_rows(database_url: &str) {
+    let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let transaction = client.transaction().await.unwrap();
+    transaction
+        .batch_execute(
+            r#"
+DROP INDEX nostr_event_search_idx;
+ALTER TABLE nostr_event DROP COLUMN search_vector;
+ALTER TABLE nostr_event ADD COLUMN search_vector tsvector GENERATED ALWAYS AS (
+    CASE
+        WHEN kind IN (30078, 30174, 30175, 30178, 30300, 30350, 30622, 44200)
+        THEN NULL::tsvector
+        ELSE to_tsvector('simple'::regconfig, content)
+    END
+) STORED;
+CREATE INDEX nostr_event_search_idx ON nostr_event USING gin (search_vector);
+DELETE FROM schema_migrations WHERE version = 9;
+"#,
+        )
+        .await
+        .unwrap();
+    let insert = transaction
+        .prepare(
+            r#"
+INSERT INTO nostr_event (
+    id, pubkey, created_at, kind, tags, content, sig, replacement_identifier
+) VALUES ($1, $2, $3, $4, $5::text::jsonb, $6, $7, $8)
+"#,
+        )
+        .await
+        .unwrap();
+    let wrap = signed_event(
+        90,
+        8,
+        1_059,
+        vec![Tag::new(vec!["p".into(), "c".repeat(64)])],
+        "pre-v9 gift wrap searchable marker",
+    );
+    let private = signed_event(
+        91,
+        9,
+        39_604,
+        vec![Tag::new(vec!["d".into(), "d".repeat(64)])],
+        "pre-v9 private MKT searchable marker",
+    );
+    transaction
+        .execute(
+            &insert,
+            &[
+                &wrap.id,
+                &wrap.pubkey,
+                &i64::try_from(wrap.created_at).unwrap(),
+                &1_059_i32,
+                &serde_json::to_string(&wrap.tags).unwrap(),
+                &wrap.content,
+                &wrap.sig,
+                &None::<String>,
+            ],
+        )
+        .await
+        .unwrap();
+    transaction
+        .execute(
+            &insert,
+            &[
+                &private.id,
+                &private.pubkey,
+                &i64::try_from(private.created_at).unwrap(),
+                &39_604_i32,
+                &serde_json::to_string(&private.tags).unwrap(),
+                &private.content,
+                &private.sig,
+                &Some("d".repeat(64)),
+            ],
+        )
+        .await
+        .unwrap();
+    let indexed = transaction
+        .query_one(
+            "SELECT count(*) FROM nostr_event WHERE content LIKE '%pre-v9%' AND search_vector IS NOT NULL",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0);
+    assert_eq!(indexed, 2);
+    transaction.commit().await.unwrap();
+}
+
+async fn assert_pre_v9_search_rows_are_private_and_preserved(database_url: &str) {
+    let (client, connection) = tokio_postgres::connect(database_url, NoTls).await.unwrap();
+    tokio::spawn(async move { connection.await.unwrap() });
+    let row = client
+        .query_one(
+            "SELECT count(*), count(*) FILTER (WHERE search_vector IS NULL) FROM nostr_event WHERE content LIKE '%pre-v9%'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(row.get::<_, i64>(0), 2, "migration preserves both rows");
+    assert_eq!(
+        row.get::<_, i64>(1),
+        2,
+        "migration recalculates both search vectors to NULL"
+    );
 }
 
 async fn nostr_effect_import_is_idempotent(database_url: &str, store: &mut Store) {

@@ -22,6 +22,7 @@ struct State {
     connections: HashMap<IpAddr, usize>,
     event_ip: HashMap<IpAddr, Counter>,
     event_pubkey: HashMap<String, Counter>,
+    gift_wrap_recipient: HashMap<String, Counter>,
     observer_ip: HashMap<IpAddr, Counter>,
     observer_agent: HashMap<String, Counter>,
     req_ip: HashMap<IpAddr, Counter>,
@@ -47,6 +48,7 @@ impl RateLimiter {
                 connections: HashMap::new(),
                 event_ip: HashMap::new(),
                 event_pubkey: HashMap::new(),
+                gift_wrap_recipient: HashMap::new(),
                 observer_ip: HashMap::new(),
                 observer_agent: HashMap::new(),
                 req_ip: HashMap::new(),
@@ -88,6 +90,18 @@ impl RateLimiter {
             &mut state.event_pubkey,
             pubkey,
             self.limits.events_per_minute_pubkey,
+        )
+    }
+
+    pub fn gift_wrap_for_recipient(&self, recipient: &str) -> bool {
+        let Ok(mut state) = self.inner.lock() else {
+            return false;
+        };
+        state.cleanup();
+        allow_string(
+            &mut state.gift_wrap_recipient,
+            recipient,
+            self.limits.gift_wraps_per_minute_recipient,
         )
     }
 
@@ -206,6 +220,8 @@ impl State {
             .retain(|_, counter| now.duration_since(counter.started) < WINDOW);
         self.event_pubkey
             .retain(|_, counter| now.duration_since(counter.started) < WINDOW);
+        self.gift_wrap_recipient
+            .retain(|_, counter| now.duration_since(counter.started) < WINDOW);
         self.observer_ip
             .retain(|_, counter| now.duration_since(counter.started) < OBSERVER_WINDOW);
         self.observer_agent
@@ -252,6 +268,7 @@ mod tests {
             max_connections_per_ip: 1,
             events_per_minute_ip: 1,
             events_per_minute_pubkey: 1,
+            gift_wraps_per_minute_recipient: 1,
             observer_events_per_second_ip: 1,
             observer_events_per_second_agent: 1,
             req_per_minute_ip: 1,
@@ -269,6 +286,8 @@ mod tests {
         assert!(!limiter.event_from_ip(ip));
         assert!(limiter.event_from_pubkey("a"));
         assert!(!limiter.event_from_pubkey("a"));
+        assert!(limiter.gift_wrap_for_recipient("recipient"));
+        assert!(!limiter.gift_wrap_for_recipient("recipient"));
         assert!(limiter.observer_from_ip(ip));
         assert!(!limiter.observer_from_ip(ip));
         assert!(limiter.observer_from_agent("agent"));
@@ -279,5 +298,40 @@ mod tests {
         assert!(!limiter.media_from_ip(ip));
         assert!(limiter.media_from_pubkey("a"));
         assert!(!limiter.media_from_pubkey("a"));
+    }
+
+    #[test]
+    fn mkt_rate_dimensions_are_bounded_without_inferring_an_inner_sender() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/nipmkt/gateway-policy.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fixture["rate_dimensions"]["discovery"],
+            serde_json::json!(["client_ip", "event_author_pubkey"])
+        );
+        assert_eq!(
+            fixture["rate_dimensions"]["gift_wrap"],
+            serde_json::json!(["client_ip", "outer_wrapper_pubkey", "recipient_pubkey"])
+        );
+
+        let limits = GatewayLimits {
+            events_per_minute_ip: 1,
+            events_per_minute_pubkey: 1,
+            gift_wraps_per_minute_recipient: 1,
+            ..GatewayLimits::default()
+        };
+        let discovery = RateLimiter::new(limits.clone());
+        let ip = "127.0.0.2".parse::<IpAddr>().unwrap();
+        assert!(discovery.event_from_ip(ip));
+        assert!(!discovery.event_from_ip(ip));
+        assert!(discovery.event_from_pubkey("discovery-author"));
+        assert!(!discovery.event_from_pubkey("discovery-author"));
+
+        let gift_wrap = RateLimiter::new(limits);
+        assert!(gift_wrap.event_from_ip(ip));
+        assert!(gift_wrap.event_from_pubkey("outer-wrapper"));
+        assert!(gift_wrap.gift_wrap_for_recipient("recipient"));
+        assert!(!gift_wrap.gift_wrap_for_recipient("recipient"));
     }
 }

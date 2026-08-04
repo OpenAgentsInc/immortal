@@ -832,6 +832,17 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   pass copies no external code, adds no dependency, runtime, service,
   database, secret, GitHub workflow, or GitHub-billed automation.
 
+### 2026-08-04 — Codex 5.6 Sol, NIP-MKT gateway policy
+
+- Implemented issue #6's relay-observable privacy boundary: stable rejection
+  of bare private MKT records, authenticated recipient-scoped gift-wrap
+  filters, SQL and live-fanout recipient gates, and search-index exclusion.
+- Added bounded rate accounting for the client IP, signed outer wrapper
+  pubkey, and recipient. The encrypted logical sender remains opaque and is
+  not inferred from the randomized wrapper key.
+- Added the MKT gateway-policy fixture, migration 0009, live PostgreSQL surface
+  proofs, deployment configuration, and protocol/conformance documentation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

@@ -58,6 +58,10 @@ names the NIP that owns the behavior.
   `tests/mkt_common_fixtures.rs` labels relay-visible, raw client/handler, and
   profile-aware assertions rather than claiming the relay can inspect an
   encrypted NIP-59 payload.
+- `nipmkt/gateway-policy.json` pins the bare-private refusal, authenticated
+  self-scoped gift-wrap reads, all five read surfaces, and rate dimensions.
+  It names the signed kind-1059 pubkey as the outer wrapper pubkey because the
+  logical inner sender is encrypted and relay-opaque.
 - `nipae/`, `nipap/`, `niper/`, `nipmp/`, `nippl/`, `nipia/`, `nipdv/`,
   `nipwp/`, `nipcw/`, `niprs/`, and `nipgs/` each contain a committed server
   contract derived from the corresponding pinned Block text. They cover

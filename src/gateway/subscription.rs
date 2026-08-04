@@ -566,8 +566,15 @@ impl Hub {
 }
 
 fn event_visible_to_reader(event: &Event, readers: &HashSet<String>) -> bool {
+    if (39_604..=39_609).contains(&event.kind) {
+        return false;
+    }
     match event.kind {
-        1_059 | 24_200 | 30_622 | 44_200 => event
+        1_059 => {
+            let recipients = event.tag_values("p").collect::<Vec<_>>();
+            recipients.len() == 1 && readers.contains(recipients[0])
+        }
+        24_200 | 30_622 | 44_200 => event
             .tag_values("p")
             .next()
             .is_some_and(|recipient| readers.contains(recipient)),
@@ -636,7 +643,11 @@ fn event_index_keys(event: &Event) -> HashSet<IndexKey> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, sync::Arc, time::Duration};
+    use std::{
+        collections::{BTreeMap, HashSet},
+        sync::Arc,
+        time::Duration,
+    };
 
     use serde_json::Value;
     use tokio::{sync::watch, time::timeout};
@@ -646,7 +657,26 @@ mod tests {
         store::StoredEvent,
     };
 
-    use super::{HubHandle, IndexKey, PublishedEvent, event_index_keys, subscription_index_keys};
+    use super::{
+        HubHandle, IndexKey, PublishedEvent, event_index_keys, event_visible_to_reader,
+        subscription_index_keys,
+    };
+
+    #[test]
+    fn private_mkt_and_malformed_wraps_are_never_live_visible() {
+        let recipient = "a".repeat(64);
+        let readers = HashSet::from([recipient.clone()]);
+        let private = event('a', 10, 39_604);
+        assert!(!event_visible_to_reader(&private, &readers));
+
+        let mut valid_wrap = event('b', 10, 1_059);
+        valid_wrap.tags = vec![crate::domain::Tag::new(vec!["p".into(), recipient.clone()])];
+        assert!(event_visible_to_reader(&valid_wrap, &readers));
+        valid_wrap
+            .tags
+            .push(crate::domain::Tag::new(vec!["p".into(), "b".repeat(64)]));
+        assert!(!event_visible_to_reader(&valid_wrap, &readers));
+    }
 
     #[tokio::test]
     async fn indexed_fanout_buffers_and_deduplicates_the_eose_handoff() {

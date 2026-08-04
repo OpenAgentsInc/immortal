@@ -14,6 +14,26 @@ the `mkt-swp` example in the pinned NIP is not a runtime capability claim.
 | Explicit profile consumer | `validate_mkt_private_with_profiles` additionally requires a caller-supplied `MktProfileSupport` with an exact ID/version and rejects profile-declared critical members that the consumer does not understand. Unknown noncritical members remain in the returned body. |
 | NIP-59 gift wrap at the transport relay | The inner signed record is encrypted and opaque. The relay can validate and recipient-gate the outer wrap, but cannot claim it checked inner MKT grammar, signer roles, terms, or profile semantics. |
 
+The public gateway refuses bare `39604-39609` publication with the stable
+reason `restricted: mkt-private-requires-gift-wrap` before database, rate, or
+store work, after consuming only the generic IP attempt budget. The internal
+store path remains available for trusted import and future in-binary handlers,
+but existing/internal `39604-39609` rows are unconditionally hidden by SQL,
+search indexing, and live fanout. Explicit kind-1059 REQ and COUNT filters require an
+authenticated recipient and nonempty `#p` selectors containing only that
+recipient's authenticated identities. SQL result gating still protects broad,
+ID-only, and search filters, while the live fanout gate independently checks
+the wrap recipient. Migration 0009 makes kind 1059 search vectors NULL.
+
+Every structurally valid EVENT attempt consumes the generic IP limit once.
+Only after signature verification can a discovery publication consume its
+signed event-author limit, or a gift wrap consume its outer wrapper event
+pubkey and recipient limits. A forged wrapper therefore cannot exhaust a
+victim's keyed quota. Recipient exhaustion returns the stable reason
+`rate-limited: gift-wrap recipient rate exceeded`. The outer wrapper pubkey is
+randomized transport metadata and is never described as the logical sender of
+the encrypted MKT record; that inner sender is opaque to the relay.
+
 The exported executable-profile set is empty. Profile-aware fixtures use the
 synthetic ID `conformance`; it exists only to test fail-closed API behavior.
 Consumers supply contracts pinned to profile authorities and revisions. No

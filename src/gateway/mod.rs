@@ -14,4 +14,6 @@ mod wire;
 
 pub use config::{GatewayConfig, GatewayLimits, MediaConfig, RelayIdentity};
 pub use error::GatewayError;
-pub use server::{Gateway, ShutdownHandle};
+pub use server::{
+    Gateway, MKT_GIFT_WRAP_RECIPIENT_RATE_EXCEEDED, MKT_PRIVATE_REQUIRES_GIFT_WRAP, ShutdownHandle,
+};

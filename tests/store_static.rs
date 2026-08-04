@@ -116,3 +116,32 @@ fn mkt_immutable_migration_keeps_coordinates_after_event_removal() {
         "coordinate binding must survive NIP-09 deletion and NIP-40 cleanup"
     );
 }
+
+#[test]
+fn mkt_gateway_privacy_migration_excludes_gift_wraps_from_search() {
+    let sql = include_str!("../migrations/0009_mkt_gateway_privacy.sql");
+    for required in [
+        "DROP INDEX nostr_event_search_idx",
+        "ALTER TABLE nostr_event DROP COLUMN search_vector",
+        "kind = 1059",
+        "kind BETWEEN 39604 AND 39609",
+        "USING gin (search_vector)",
+    ] {
+        assert!(sql.contains(required), "migration is missing {required:?}");
+    }
+}
+
+#[test]
+fn mkt_gateway_query_acl_hides_private_rows_and_requires_one_wrap_recipient() {
+    let statements = include_str!("../src/store/statements.rs");
+    assert_eq!(
+        statements
+            .matches("e.kind NOT BETWEEN 39604 AND 39609")
+            .count(),
+        2
+    );
+    assert_eq!(
+        statements.matches("recipient_count.tag_name = 'p'").count(),
+        2
+    );
+}

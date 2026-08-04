@@ -27,8 +27,9 @@ use crate::{
         DM_HIDE_KIND, DM_OPEN_KIND, DM_VISIBILITY_KIND, EVENT_REMINDER_KIND, Event, EventClass,
         Filter, IDENTITY_ARCHIVE_REQUEST_KIND, IDENTITY_UNARCHIVE_REQUEST_KIND, PUSH_LEASE_KIND,
         RELAY_ONLY_BLOCK_KINDS, WORKSPACE_PROFILE_KIND, agent_observer_route,
-        agent_turn_metric_owner, dm_visibility_channel, parse_identity_archive_request,
-        validate_block_ingest, verify_agent_auth_attestation, verify_owner_binding, workspace_icon,
+        agent_turn_metric_owner, dm_visibility_channel, is_mkt_private_kind,
+        parse_identity_archive_request, validate_block_ingest, verify_agent_auth_attestation,
+        verify_owner_binding, workspace_icon,
     },
     store::{
         AdmissionOutcome, AdmissionRejection, MKT_IDEMPOTENCY_CONFLICT_REASON,
@@ -59,6 +60,10 @@ const NOTIFICATION_QUEUE_CAPACITY: usize = 2_048;
 const HUB_COMMAND_CAPACITY: usize = 2_048;
 const MAX_DB_QUEUED_JOBS: usize = 256;
 const MAX_NOTIFICATION_GAP: usize = 4_096;
+
+pub const MKT_PRIVATE_REQUIRES_GIFT_WRAP: &str = "restricted: mkt-private-requires-gift-wrap";
+pub const MKT_GIFT_WRAP_RECIPIENT_RATE_EXCEEDED: &str =
+    "rate-limited: gift-wrap recipient rate exceeded";
 
 pub struct Gateway {
     listener: TcpListener,
@@ -789,6 +794,15 @@ async fn handle_event(
         ));
         return Ok(());
     }
+    if let Err(rejection) = event_preflight(&context.state.rate, context.ip, &event) {
+        let reason = match rejection {
+            EventPreflightRejection::IpRate => "rate-limited: event rate exceeded".to_owned(),
+            EventPreflightRejection::BareMktPrivate => MKT_PRIVATE_REQUIRES_GIFT_WRAP.to_owned(),
+            EventPreflightRejection::InvalidCrypto(error) => format!("invalid: {error}"),
+        };
+        pending.push_back(ok_message(&event.id, false, &reason));
+        return Ok(());
+    }
     if context.state.config.auth_required
         && !context
             .auth
@@ -946,12 +960,12 @@ async fn handle_event(
         return Ok(());
     }
 
-    if !event_rate_allowed(context, &event) {
-        pending.push_back(ok_message(
-            &event.id,
-            false,
-            "rate-limited: event rate exceeded",
-        ));
+    if let Some(rejection) = event_key_rate_rejection(context, &event) {
+        let reason = match rejection {
+            EventKeyRateRejection::Event => "rate-limited: event rate exceeded",
+            EventKeyRateRejection::GiftWrapRecipient => MKT_GIFT_WRAP_RECIPIENT_RATE_EXCEEDED,
+        };
+        pending.push_back(ok_message(&event.id, false, reason));
         return Ok(());
     }
     admit_event(context, event, pending, virtual_owner).await
@@ -1001,7 +1015,7 @@ async fn handle_workspace_profile(
             return Ok(());
         }
     };
-    if !event_rate_allowed(context, &event) {
+    if event_key_rate_rejection(context, &event).is_some() {
         pending.push_back(ok_message(
             &event.id,
             false,
@@ -1068,7 +1082,7 @@ async fn handle_identity_archive(
             return Ok(());
         }
     };
-    if !event_rate_allowed(context, &event) {
+    if event_key_rate_rejection(context, &event).is_some() {
         pending.push_back(ok_message(
             &event.id,
             false,
@@ -1175,7 +1189,7 @@ async fn handle_dm_visibility(
             return Ok(());
         }
     };
-    if !event_rate_allowed(context, &event) {
+    if event_key_rate_rejection(context, &event).is_some() {
         pending.push_back(ok_message(
             &event.id,
             false,
@@ -1574,7 +1588,8 @@ fn owner_scoped_filter_denial(filters: &[Filter], read_pubkeys: &[String]) -> Op
             kinds.iter().any(|kind| {
                 matches!(
                     *kind,
-                    AGENT_OBSERVER_KIND
+                    1_059
+                        | AGENT_OBSERVER_KIND
                         | AGENT_TURN_METRIC_KIND
                         | AGENT_ENGRAM_KIND
                         | EVENT_REMINDER_KIND
@@ -1587,6 +1602,13 @@ fn owner_scoped_filter_denial(filters: &[Filter], read_pubkeys: &[String]) -> Op
             continue;
         }
         if read_pubkeys.is_empty() {
+            if filter
+                .kinds
+                .as_ref()
+                .is_some_and(|kinds| kinds.contains(&1_059))
+            {
+                return Some("auth-required: gift-wrap reads require recipient authentication");
+            }
             return Some("auth-required: private Block NIP reads require authentication");
         }
         let kinds = filter.kinds.as_deref().unwrap_or_default();
@@ -1602,6 +1624,9 @@ fn owner_scoped_filter_denial(filters: &[Filter], read_pubkeys: &[String]) -> Op
                     .iter()
                     .all(|value| read_pubkeys.iter().any(|pubkey| pubkey == value))
         });
+        if kinds.contains(&1_059) && !p_scoped {
+            return Some("restricted: gift-wrap reads must be scoped to #p self");
+        }
         if kinds.iter().any(|kind| {
             matches!(
                 *kind,
@@ -1625,14 +1650,64 @@ fn owner_scoped_filter_denial(filters: &[Filter], read_pubkeys: &[String]) -> Op
     None
 }
 
-fn event_rate_allowed(context: &ConnectionContext, event: &Event) -> bool {
-    context.state.rate.event_from_ip(context.ip)
-        && context.state.rate.event_from_pubkey(&event.pubkey)
-        && context
-            .auth
-            .as_ref()
-            .and_then(|auth| auth.virtual_owner_for(&event.pubkey))
-            .is_none_or(|owner| context.state.rate.event_from_pubkey(owner))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventKeyRateRejection {
+    Event,
+    GiftWrapRecipient,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EventPreflightRejection {
+    IpRate,
+    BareMktPrivate,
+    InvalidCrypto(crate::domain::DomainError),
+}
+
+fn event_preflight(
+    rate: &RateLimiter,
+    ip: std::net::IpAddr,
+    event: &Event,
+) -> Result<(), EventPreflightRejection> {
+    if !rate.event_from_ip(ip) {
+        return Err(EventPreflightRejection::IpRate);
+    }
+    if is_mkt_private_kind(event.kind) {
+        return Err(EventPreflightRejection::BareMktPrivate);
+    }
+    event
+        .validate_crypto()
+        .map_err(EventPreflightRejection::InvalidCrypto)
+}
+
+fn event_key_rate_rejection(
+    context: &ConnectionContext,
+    event: &Event,
+) -> Option<EventKeyRateRejection> {
+    let virtual_owner = context
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.virtual_owner_for(&event.pubkey));
+    event_key_rate_rejection_for(&context.state.rate, event, virtual_owner)
+}
+
+fn event_key_rate_rejection_for(
+    rate: &RateLimiter,
+    event: &Event,
+    virtual_owner: Option<&str>,
+) -> Option<EventKeyRateRejection> {
+    if !rate.event_from_pubkey(&event.pubkey)
+        || virtual_owner.is_some_and(|owner| !rate.event_from_pubkey(owner))
+    {
+        return Some(EventKeyRateRejection::Event);
+    }
+    if event.kind == 1_059
+        && !event
+            .gift_wrap_recipient()
+            .is_some_and(|recipient| rate.gift_wrap_for_recipient(recipient))
+    {
+        return Some(EventKeyRateRejection::GiftWrapRecipient);
+    }
+    None
 }
 
 fn validate_and_clamp_filters(
@@ -1811,13 +1886,150 @@ pub fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeMap, net::IpAddr};
+
     use crate::{
-        domain::Filter,
-        gateway::GatewayConfig,
+        domain::{Filter, RelaySigner, Tag},
+        gateway::{GatewayConfig, GatewayLimits},
         store::{AdmissionOutcome, AdmissionRejection},
     };
 
-    use super::{admission_response, validate_and_clamp_filters};
+    use super::{
+        EventKeyRateRejection, EventPreflightRejection, MKT_GIFT_WRAP_RECIPIENT_RATE_EXCEEDED,
+        MKT_PRIVATE_REQUIRES_GIFT_WRAP, RateLimiter, admission_response,
+        event_key_rate_rejection_for, event_preflight, owner_scoped_filter_denial,
+        validate_and_clamp_filters,
+    };
+
+    #[test]
+    fn mkt_gateway_policy_fixture_has_stable_refusals() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/nipmkt/gateway-policy.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fixture["bare_private_refusal"],
+            MKT_PRIVATE_REQUIRES_GIFT_WRAP
+        );
+        assert_eq!(
+            fixture["gift_wrap_recipient_rate_refusal"],
+            MKT_GIFT_WRAP_RECIPIENT_RATE_EXCEEDED
+        );
+        assert_eq!(fixture["read_surfaces"].as_array().unwrap().len(), 5);
+
+        let recipient = "a".repeat(64);
+        let unscoped = Filter {
+            kinds: Some(vec![1_059]),
+            ..Filter::default()
+        };
+        assert_eq!(
+            owner_scoped_filter_denial(std::slice::from_ref(&unscoped), &[]),
+            fixture["gift_wrap_read_refusals"]["unauthenticated_filter"].as_str()
+        );
+        assert_eq!(
+            owner_scoped_filter_denial(
+                std::slice::from_ref(&unscoped),
+                std::slice::from_ref(&recipient)
+            ),
+            fixture["gift_wrap_read_refusals"]["not_self_scoped"].as_str()
+        );
+        let scoped = Filter {
+            tags: BTreeMap::from([('p', vec![recipient.clone()])]),
+            ..unscoped
+        };
+        assert_eq!(owner_scoped_filter_denial(&[scoped], &[recipient]), None);
+    }
+
+    #[test]
+    fn mkt_gateway_rates_charge_ip_then_only_valid_outer_keys() {
+        let limits = GatewayLimits {
+            events_per_minute_ip: 10,
+            events_per_minute_pubkey: 1,
+            gift_wraps_per_minute_recipient: 1,
+            ..GatewayLimits::default()
+        };
+        let ip = "127.0.0.8".parse::<IpAddr>().unwrap();
+        let signer = RelaySigner::from_secret_hex(&"1".repeat(64)).unwrap();
+        let discovery_one = signer.sign(1, 39_600, Vec::new(), "one".to_owned());
+        let discovery_two = signer.sign(2, 39_600, Vec::new(), "two".to_owned());
+        let discovery_rate = RateLimiter::new(limits.clone());
+        assert_eq!(event_preflight(&discovery_rate, ip, &discovery_one), Ok(()));
+        assert_eq!(
+            event_key_rate_rejection_for(&discovery_rate, &discovery_one, None),
+            None
+        );
+        assert_eq!(event_preflight(&discovery_rate, ip, &discovery_two), Ok(()));
+        assert_eq!(
+            event_key_rate_rejection_for(&discovery_rate, &discovery_two, None),
+            Some(EventKeyRateRejection::Event)
+        );
+
+        let recipient = "a".repeat(64);
+        let wrap_signer = RelaySigner::from_secret_hex(&"2".repeat(64)).unwrap();
+        let valid_wrap = wrap_signer.sign(
+            3,
+            1_059,
+            vec![Tag::new(vec!["p".into(), recipient.clone()])],
+            "ciphertext".to_owned(),
+        );
+        let mut forged_wrap = valid_wrap.clone();
+        forged_wrap.content.push('!');
+        let wrap_rate = RateLimiter::new(limits.clone());
+        assert!(matches!(
+            event_preflight(&wrap_rate, ip, &forged_wrap),
+            Err(EventPreflightRejection::InvalidCrypto(_))
+        ));
+        assert_eq!(event_preflight(&wrap_rate, ip, &valid_wrap), Ok(()));
+        assert_eq!(
+            event_key_rate_rejection_for(&wrap_rate, &valid_wrap, None),
+            None,
+            "the forged wrapper consumed neither outer-pubkey nor recipient quota"
+        );
+        let other_wrapper = RelaySigner::from_secret_hex(&"3".repeat(64)).unwrap().sign(
+            4,
+            1_059,
+            vec![Tag::new(vec!["p".into(), recipient])],
+            "other ciphertext".to_owned(),
+        );
+        assert_eq!(event_preflight(&wrap_rate, ip, &other_wrapper), Ok(()));
+        assert_eq!(
+            event_key_rate_rejection_for(&wrap_rate, &other_wrapper, None),
+            Some(EventKeyRateRejection::GiftWrapRecipient)
+        );
+
+        let bare_rate = RateLimiter::new(GatewayLimits {
+            events_per_minute_ip: 2,
+            ..limits.clone()
+        });
+        let bare = signer.sign(5, 39_604, Vec::new(), "private".to_owned());
+        assert_eq!(
+            event_preflight(&bare_rate, ip, &bare),
+            Err(EventPreflightRejection::BareMktPrivate)
+        );
+        assert_eq!(
+            event_preflight(&bare_rate, ip, &bare),
+            Err(EventPreflightRejection::BareMktPrivate)
+        );
+        assert_eq!(
+            event_preflight(&bare_rate, ip, &bare),
+            Err(EventPreflightRejection::IpRate)
+        );
+
+        let accepted_rate = RateLimiter::new(GatewayLimits {
+            events_per_minute_ip: 1,
+            ..limits
+        });
+        assert_eq!(event_preflight(&accepted_rate, ip, &discovery_one), Ok(()));
+        assert_eq!(
+            event_key_rate_rejection_for(&accepted_rate, &discovery_one, None),
+            None
+        );
+        assert_eq!(
+            event_preflight(&accepted_rate, ip, &discovery_two),
+            Err(EventPreflightRejection::IpRate),
+            "accepted events consume their IP attempt exactly once"
+        );
+    }
 
     #[test]
     fn mkt_idempotency_conflict_has_a_stable_ok_reason() {
