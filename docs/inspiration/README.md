@@ -37,3 +37,14 @@ Each review has these sections, in this order:
 | --- | --- | --- |
 | nostr-rs-relay | [`nostr-rs-relay.md`](nostr-rs-relay.md) | `b5c1f642e4` |
 | Block Buzz | [`buzz.md`](buzz.md) | `027a74a61c` |
+| Boltz ecosystem | [`boltz.md`](boltz.md) | primary pins recorded per repository |
+| tbDEX | [`tbdex.md`](tbdex.md) | `62c466774f` |
+
+## Liquidity Market reading order
+
+Read [`tbdex.md`](tbdex.md) for the provider-neutral negotiation grammar, then
+[`boltz.md`](boltz.md) for the strongest atomic Bitcoin settlement profile.
+Together they define the intended split: Immortal owns noncustodial discovery,
+private negotiation, reservation, coordination, evidence, recovery, and
+compatibility surfaces; independent clients, providers, and underlying rails
+retain funds, spend authority, secrets, and final settlement truth.

@@ -753,6 +753,26 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   dependency, service, database, secret, GitHub workflow, or GitHub-billed
   automation.
 
+### 2026-08-04 — Codex 5.6 Sol (Extra High), Boltz and tbDEX inspiration records
+
+- Converted the prior OpenAgents Boltz/tbDEX research into two Immortal-owned
+  inspiration reviews, following this repository's source/Borrow/Reject/
+  Follow-ups contract. The Boltz record pins the primary backend, core,
+  client, web, hold, and documentation revisions; the tbDEX record pins the
+  local v0.2 whitepaper at `62c466774f36671ce89649b9507f6802a3b60475`.
+- Recorded the product and architecture split: OpenAgents Liquidity Market,
+  NIP-MKT negotiated-market fabric, and a first multi-provider noncustodial
+  Bitcoin liquidity network. Boltz contributes atomic swap and recovery laws;
+  tbDEX contributes heterogeneous-provider negotiation and explicit trust,
+  custody, credential, reversibility, and recourse terms.
+- Preserved Immortal's boundary: absorb discovery, private negotiation,
+  provider-signed reservation, coordination, evidence verification, timers,
+  recovery, and compatibility APIs while funds, spend authority, secrets, and
+  settlement truth remain with clients, providers, and underlying rails.
+- Updated both the inspiration index and top-level README. This documentation
+  pass copies no external code, adds no dependency, runtime, service,
+  database, secret, GitHub workflow, or GitHub-billed automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

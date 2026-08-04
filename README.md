@@ -101,6 +101,15 @@ protocol family beneath it, and the first concrete system is a multi-provider
 noncustodial Bitcoin liquidity network. It is broader than an exchange and is
 not a pooled-custody product.
 
+The external architecture donors are documented in
+[`docs/inspiration/`](docs/inspiration/README.md). The
+[`tbDEX` review](docs/inspiration/tbdex.md) supplies the provider-neutral
+Offering/RFQ/Quote/Order/Status/Close grammar and heterogeneous trust model.
+The [`Boltz` review](docs/inspiration/boltz.md) supplies atomic-swap lifecycle,
+client verification, claim/refund, and recovery laws. Immortal implements the
+combined noncustodial coordination surface from its pinned NIPs and owned
+fixtures; neither external runtime becomes a dependency or authority.
+
 Operation Diamond Hands Phase 0 adds a bounded, transport-neutral Nostr
 project reader for native and browser/WASM applications. It verifies event IDs
 and signatures locally, understands the adopted NIP-OT Organization and NIP-PG
