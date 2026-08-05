@@ -11,15 +11,15 @@ use immortal_client::{
     mkt_swp_client::{
         AwaitingVerification, BitcoinObservationRequest, Cancellation, ChainRecoveryState,
         CloseOutcome, CooperativePrevout, CooperativeSigningContext, CooperativeSigningMessage,
-        CooperativeTweak, ExitPackage, ExitSigningOutcome, ExternalEffectRequest,
-        ExternalEffectResult, FundingAction, FundingAuthorized, FundingVerificationInput,
-        InvoiceVerificationInput, KeylessEsploraExecutor, LightningDispositionState,
-        LightningProgressRequest, LightningProgressState, LightningReadinessRequest,
-        LightningReadinessState, LightningRecoveryState, LocalBitcoinObservation,
-        LocalLightningDisposition, LocalLightningProgress, LocalLightningReadiness,
-        LocalRailEvidence, LocalRecoveryObservation, MktSigningRequest, ParticipantRole,
-        QuotePolicy, RecoveryAction, RequesterContractLocalInputs, RequesterContractSigningInput,
-        RequesterOrderInput, RequesterPriceFeedView, RequesterSessionView, RequesterTerminalState,
+        CooperativeTweak, ExitPackage, ExitSigningOutcome, ExternalEffectRequest, FundingAction,
+        FundingAuthorized, FundingVerificationInput, InvoiceVerificationInput,
+        KeylessEsploraExecutor, LightningDispositionState, LightningProgressRequest,
+        LightningProgressState, LightningReadinessRequest, LightningReadinessState,
+        LightningRecoveryState, LocalBitcoinObservation, LocalLightningDisposition,
+        LocalLightningProgress, LocalLightningReadiness, LocalRailEvidence,
+        LocalRecoveryObservation, MktSigningRequest, ParticipantRole, QuotePolicy, RecoveryAction,
+        RequesterContractLocalInputs, RequesterContractSigningInput, RequesterOrderInput,
+        RequesterPriceFeedView, RequesterSessionView, RequesterTerminalState,
         RequesterVerificationState, SignedRecordDelivery, StatusState, SwapClientConfig,
         SwapContractReferences, SwapRecordFactory, SwapSession, SwapType, TimeoutLadder,
         VerifyBeforeFundInput, provider_support, validate_cooperative_signing_exchange,
@@ -88,6 +88,38 @@ fn fixture_manifest_is_complete_and_unique() {
         .map(|case| case["member"].as_str().unwrap())
         .collect::<BTreeSet<_>>();
     assert_eq!(members.len(), tripwires.len());
+}
+
+#[cfg(feature = "mkt-swp-fixture-probe")]
+#[test]
+fn requester_api_v2_schema_fails_closed() {
+    let bytes = include_bytes!("../../../tests/fixtures/nipmkt/swp-requester-api-v2.json");
+    let mut unsupported: Value = serde_json::from_slice(bytes).unwrap();
+    unsupported["$defs"]["hex32"]["patternProperties"] = json!({});
+    assert!(
+        immortal_client::mkt_swp_client::fixture_replay::replay_requester_api_fixture_bytes(
+            &serde_json::to_vec(&unsupported).unwrap(),
+        )
+        .is_err()
+    );
+
+    let mut ambiguous: Value = serde_json::from_slice(bytes).unwrap();
+    ambiguous["$defs"]["nullable_decimal"]["oneOf"][0] = json!({"type":"null"});
+    assert!(
+        immortal_client::mkt_swp_client::fixture_replay::replay_requester_api_fixture_bytes(
+            &serde_json::to_vec(&ambiguous).unwrap(),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn published_requester_api_v1_bytes_are_frozen() {
+    let bytes = include_bytes!("../../../tests/fixtures/nipmkt/swp-requester-api-v1.json");
+    assert_eq!(
+        lower_hex(&Sha256::digest(bytes)),
+        "7ccd8c25db2ac505d805e22da2ee5d8535092e7eb2141b845749d99fe3173b17"
+    );
 }
 
 #[test]
@@ -404,7 +436,7 @@ fn requester_price_feed_is_inspectable_but_execution_fails_closed() {
     let mut profile =
         serde_json::from_str::<Value>(&quote_event.content).unwrap()["mkt_swp"].clone();
     profile["terms"]["price_feed"] = feed_value;
-    let factory = SwapRecordFactory::new(setup.config).unwrap();
+    let factory = SwapRecordFactory::new(setup.config.clone()).unwrap();
     let feed_quote = signed(
         factory
             .soft_quote(
@@ -429,6 +461,74 @@ fn requester_price_feed_is_inspectable_but_execution_fails_closed() {
             })
             .unwrap_err()
             .code,
+        "swp_price_feed_unsupported"
+    );
+
+    let feed_order = signed(
+        factory
+            .order(
+                102,
+                &"7c".repeat(32),
+                &feed_quote.id,
+                json!({"accepted_quote_id":feed_quote.id}),
+            )
+            .unwrap(),
+        &setup.requester,
+    );
+    let requester_contract = session
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == 39_610 && event.pubkey == setup.requester.pubkey())
+        .unwrap();
+    let contract =
+        serde_json::from_str::<Value>(&requester_contract.content).unwrap()["mkt_swp"]["contract"]
+            .clone();
+    let local_inputs: RequesterContractLocalInputs = serde_json::from_value(json!({
+        "effect_bindings": contract["effect_bindings"],
+        "exit_package_commitments": contract["exit_package_commitments"]
+    }))
+    .unwrap();
+    assert_eq!(
+        factory
+            .requester_contract_draft(rfq_event, &feed_quote, &feed_order, 102, local_inputs,)
+            .unwrap_err()
+            .code,
+        "swp_price_feed_unsupported"
+    );
+    assert_eq!(
+        factory
+            .requester_contract(RequesterContractSigningInput {
+                rfq: rfq_event,
+                quote: &feed_quote,
+                order: &feed_order,
+                order_observed_at: 102,
+                created_at: 103,
+                distinct: &"7d".repeat(32),
+                contract,
+            })
+            .unwrap_err()
+            .code,
+        "swp_price_feed_unsupported"
+    );
+    let feed_records = vec![rfq_event.clone(), feed_quote, feed_order];
+    assert_eq!(
+        RequesterSessionView::from_signed_records(
+            &setup.config,
+            &feed_records,
+            delivery_receipts(&feed_records, 102),
+        )
+        .unwrap_err()
+        .code,
+        "swp_price_feed_unsupported"
+    );
+    assert_eq!(
+        SwapSession::<AwaitingVerification>::from_signed_records(
+            setup.config,
+            feed_records,
+            Vec::new(),
+        )
+        .unwrap_err()
+        .code,
         "swp_price_feed_unsupported"
     );
 }
@@ -758,11 +858,10 @@ fn requester_close_projection_distinguishes_terminal_loss_and_conflicts() {
         completed_view.verification.state,
         RequesterVerificationState::ContractTermsVerified
     );
-    let completed_verified = RequesterSessionView::from_signed_records_with_effects(
-        &setup.config,
-        completed.signed_records(),
+    let completed_snapshot = completed.persist().unwrap();
+    let completed_verified = RequesterSessionView::from_restored_snapshot(
+        &completed_snapshot,
         delivery_receipts(completed.signed_records(), 100),
-        completed.external_effect_results(),
     )
     .unwrap();
     assert_eq!(
@@ -775,14 +874,65 @@ fn requester_close_projection_distinguishes_terminal_loss_and_conflicts() {
         completed_verified.verification.state,
         RequesterVerificationState::TerminalVerified
     );
+    let mut forged_request: Value = serde_json::from_slice(&completed_snapshot).unwrap();
+    forged_request["external_effects"][0]["request_sha256"] = json!("ff".repeat(32));
+    assert_eq!(
+        RequesterSessionView::from_restored_snapshot(
+            &serde_json::to_vec(&forged_request).unwrap(),
+            delivery_receipts(completed.signed_records(), 100),
+        )
+        .unwrap_err()
+        .code,
+        "swp_external_effect_conflict"
+    );
+    let mut forged_result: Value = serde_json::from_slice(&completed_snapshot).unwrap();
+    let rail_effect_id = forged_result["external_effect_requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|request| request["request_type"] == "rail_evidence")
+        .and_then(|request| request.get("effect_id"))
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_owned();
+    let rail_effect = forged_result["external_effects"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|effect| effect["effect_id"] == rail_effect_id)
+        .unwrap();
+    rail_effect["result_sha256"] = json!("ff".repeat(32));
+    assert_eq!(
+        RequesterSessionView::from_restored_snapshot(
+            &serde_json::to_vec(&forged_result).unwrap(),
+            delivery_receipts(completed.signed_records(), 100),
+        )
+        .unwrap_err()
+        .code,
+        "swp_external_effect_conflict"
+    );
+    let mut orphaned_snapshot: Value = serde_json::from_slice(&completed_snapshot).unwrap();
+    orphaned_snapshot["external_effect_requests"] = json!([]);
+    assert_eq!(
+        RequesterSessionView::from_restored_snapshot(
+            &serde_json::to_vec(&orphaned_snapshot).unwrap(),
+            delivery_receipts(completed.signed_records(), 100),
+        )
+        .unwrap_err()
+        .code,
+        "swp_external_effect_conflict"
+    );
 
-    let mut permuted_records = completed.signed_records().to_vec();
-    permuted_records.reverse();
-    let permuted_view = RequesterSessionView::from_signed_records_with_effects(
-        &setup.config,
-        &permuted_records,
+    let mut permuted_snapshot: Value = serde_json::from_slice(&completed_snapshot).unwrap();
+    permuted_snapshot["signed_records"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    let permuted_records: Vec<immortal_client::domain::Event> =
+        serde_json::from_value(permuted_snapshot["signed_records"].clone()).unwrap();
+    let permuted_view = RequesterSessionView::from_restored_snapshot(
+        &serde_json::to_vec(&permuted_snapshot).unwrap(),
         delivery_receipts(&permuted_records, 100),
-        completed.external_effect_results(),
     )
     .unwrap();
     assert_eq!(permuted_view.terminal, completed_verified.terminal);
@@ -838,21 +988,17 @@ fn requester_close_projection_distinguishes_terminal_loss_and_conflicts() {
     assert!(!failed_view.terminal.watch_terminal);
     let mut failed_records = base.signed_records().to_vec();
     failed_records.push(failed.clone());
-    let failed_with_unrelated_effects = RequesterSessionView::from_signed_records_with_effects(
-        &setup.config,
-        &failed_records,
+    let mut failed_session = base.clone();
+    failed_session.ingest_signed_record(failed.clone()).unwrap();
+    let failed_from_snapshot = RequesterSessionView::from_restored_snapshot(
+        &failed_session.persist().unwrap(),
         delivery_receipts(&failed_records, 100),
-        completed.external_effect_results(),
     )
     .unwrap();
-    assert!(!failed_with_unrelated_effects.terminal.watch_terminal);
-    assert!(
-        !failed_with_unrelated_effects
-            .terminal
-            .local_effects_verified
-    );
+    assert!(!failed_from_snapshot.terminal.watch_terminal);
+    assert!(!failed_from_snapshot.terminal.local_effects_verified);
     assert_ne!(
-        failed_with_unrelated_effects.verification.state,
+        failed_from_snapshot.verification.state,
         RequesterVerificationState::TerminalVerified
     );
 
@@ -2170,20 +2316,14 @@ fn verification_refusals_cover_contract_rail_timeout_and_secret_boundaries() {
 
     let mut no_rfq = session.signed_records().to_vec();
     no_rfq.retain(|event| event.kind != 39_604);
-    let no_rfq = SwapSession::from_signed_records(
-        session.config().clone(),
-        no_rfq,
-        session.exit_packages().to_vec(),
-    )
-    .unwrap();
     assert_eq!(
-        no_rfq
-            .verify_before_fund(
-                verification_input(&fixture, SwapType::Submarine),
-                |_| Ok(())
-            )
-            .unwrap_err()
-            .code,
+        SwapSession::from_signed_records(
+            session.config().clone(),
+            no_rfq,
+            session.exit_packages().to_vec(),
+        )
+        .unwrap_err()
+        .code,
         "swp_unresolved_loss"
     );
 
@@ -3083,35 +3223,19 @@ fn wallet_callback_effect_replay_and_custody_tripwires_are_bounded() {
 
     let effect_request =
         ExternalEffectRequest::Funding(authorized.funding_request().unwrap().clone());
-    let effect = ExternalEffectResult {
-        order_id: authorized.funding_request().unwrap().order_id.clone(),
-        effect_id: authorized
-            .funding_request()
-            .unwrap()
-            .action
-            .effect_id()
-            .to_owned(),
-        request_sha256: effect_request.sha256().unwrap(),
-        external_identifier: "regtest:funding:0".into(),
-        result_sha256: "88".repeat(32),
-    };
+    let effect = authorized
+        .record_external_effect(&effect_request, "regtest:funding:0", "88".repeat(32))
+        .unwrap()
+        .clone();
     assert_eq!(
         authorized
-            .record_external_effect(&effect_request, effect.clone())
+            .record_external_effect(&effect_request, "regtest:funding:0", "88".repeat(32))
             .unwrap(),
         &effect
     );
     assert_eq!(
         authorized
-            .record_external_effect(&effect_request, effect.clone())
-            .unwrap(),
-        &effect
-    );
-    let mut conflict = effect;
-    conflict.result_sha256 = "99".repeat(32);
-    assert_eq!(
-        authorized
-            .record_external_effect(&effect_request, conflict)
+            .record_external_effect(&effect_request, "regtest:funding:0", "99".repeat(32))
             .unwrap_err()
             .code,
         "swp_external_effect_conflict"
@@ -3159,16 +3283,12 @@ fn persisted_effect_digests_suppress_funding_and_wallet_callbacks_after_restart(
         .unwrap();
     let funding_request =
         ExternalEffectRequest::Funding(authorized.funding_request().unwrap().clone());
-    let funding_effect = ExternalEffectResult {
-        order_id: authorized.funding_request().unwrap().order_id.clone(),
-        effect_id: funding_request.effect_id().to_owned(),
-        request_sha256: funding_request.sha256().unwrap(),
-        external_identifier: "lightning:test-payment:1".into(),
-        result_sha256: "81".repeat(32),
-    };
-    let order_id = authorized.funding_request().unwrap().order_id.clone();
     authorized
-        .record_external_effect(&funding_request, funding_effect)
+        .record_external_effect(
+            &funding_request,
+            "lightning:test-payment:1",
+            "81".repeat(32),
+        )
         .unwrap();
     let mut authorized = authorized
         .observe_reverse_payment_with(lightning_pending)
@@ -3190,13 +3310,8 @@ fn persisted_effect_digests_suppress_funding_and_wallet_callbacks_after_restart(
     authorized
         .record_external_effect(
             &wallet_effect_request,
-            ExternalEffectResult {
-                order_id,
-                effect_id: wallet_request.effect_id.clone(),
-                request_sha256: wallet_effect_request.sha256().unwrap(),
-                external_identifier: "wallet:test-signature:1".into(),
-                result_sha256: "82".repeat(32),
-            },
+            "wallet:test-signature:1",
+            "82".repeat(32),
         )
         .unwrap();
 
@@ -3368,15 +3483,8 @@ fn reverse_funding_requires_typed_readiness_and_post_effect_progress() {
     );
     let funding_request =
         ExternalEffectRequest::Funding(authorized.funding_request().unwrap().clone());
-    let funding_effect = ExternalEffectResult {
-        order_id: authorized.funding_request().unwrap().order_id.clone(),
-        effect_id: funding_request.effect_id().to_owned(),
-        request_sha256: funding_request.sha256().unwrap(),
-        external_identifier: "lightning:pending".into(),
-        result_sha256: "84".repeat(32),
-    };
     authorized
-        .record_external_effect(&funding_request, funding_effect)
+        .record_external_effect(&funding_request, "lightning:pending", "84".repeat(32))
         .unwrap();
     assert_eq!(
         authorized
@@ -3438,6 +3546,25 @@ fn terminal_close_requires_exact_persisted_rail_evidence_and_last_status() {
         let mut session = terminal_close_session(&fixture, outcome);
         let snapshot = session.persist().unwrap();
         SwapSession::<AwaitingVerification>::restore(&snapshot).unwrap();
+        let snapshot_value: Value = serde_json::from_slice(&snapshot).unwrap();
+        let rail_request: ExternalEffectRequest = serde_json::from_value(
+            snapshot_value["external_effect_requests"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|request| request["request_type"] == "rail_evidence")
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        let mut generic_restore = SwapSession::<AwaitingVerification>::restore(&snapshot).unwrap();
+        assert_eq!(
+            generic_restore
+                .record_external_effect(&rail_request, "unverified:rail", "f9".repeat(32))
+                .unwrap_err()
+                .code,
+            "swp_external_effect_conflict"
+        );
 
         let setup = Setup::new(&fixture);
         let factory = SwapRecordFactory::new(setup.config.clone()).unwrap();
@@ -3696,16 +3823,7 @@ fn reverse_no_fund_evidence_allows_mutual_cancel_and_rejects_forgery() {
     let funding_request =
         ExternalEffectRequest::Funding(session.funding_request().unwrap().clone());
     session
-        .record_external_effect(
-            &funding_request,
-            ExternalEffectResult {
-                order_id: order_id.clone(),
-                effect_id: funding_request.effect_id().to_owned(),
-                request_sha256: funding_request.sha256().unwrap(),
-                external_identifier: "lightning:initiation".into(),
-                result_sha256: "85".repeat(32),
-            },
-        )
+        .record_external_effect(&funding_request, "lightning:initiation", "85".repeat(32))
         .unwrap();
     let disposition = session
         .verify_reverse_no_fund_with(|request| {
@@ -3720,14 +3838,27 @@ fn reverse_no_fund_evidence_allows_mutual_cancel_and_rejects_forgery() {
             })
         })
         .unwrap();
-    let disposition_value = match &disposition.request {
-        ExternalEffectRequest::LightningDisposition(request) => {
-            serde_json::to_value(request).unwrap()
-        }
-        _ => panic!("unexpected disposition request type"),
-    };
+    let disposition_value = disposition.request_document().unwrap();
+    let mut disposition_request_value = disposition_value.clone();
+    disposition_request_value.as_object_mut().unwrap().insert(
+        "request_type".into(),
+        Value::String("lightning_disposition".into()),
+    );
+    let disposition_request: ExternalEffectRequest =
+        serde_json::from_value(disposition_request_value).unwrap();
+    assert_eq!(
+        session
+            .record_external_effect(
+                &disposition_request,
+                "unverified:lightning",
+                "f8".repeat(32),
+            )
+            .unwrap_err()
+            .code,
+        "swp_external_effect_conflict"
+    );
     session
-        .record_external_effect(&disposition.request, disposition.result)
+        .record_verified_lightning_disposition(disposition)
         .unwrap();
     session = SwapSession::<AwaitingVerification>::restore(&session.persist().unwrap())
         .unwrap()
@@ -4155,10 +4286,8 @@ fn terminal_close_session(fixture: &Value, outcome: &str) -> SwapSession<Awaitin
                 })
             })
             .unwrap();
-        session
-            .record_external_effect(&verified.request, verified.result)
-            .unwrap();
-        evidence_refs.push(verified.evidence_reference);
+        evidence_refs.push(verified.evidence_reference().clone());
+        session.record_verified_rail_evidence(verified).unwrap();
     }
     session = SwapSession::<AwaitingVerification>::restore(&session.persist().unwrap())
         .unwrap()
@@ -4220,14 +4349,9 @@ fn funded_submarine_session(fixture: &Value) -> SwapSession<FundingAuthorized> {
         .verify_before_fund(verification_input(fixture, SwapType::Submarine), |_| Ok(()))
         .unwrap();
     let request = ExternalEffectRequest::Funding(session.funding_request().unwrap().clone());
-    let effect = ExternalEffectResult {
-        order_id: session.funding_request().unwrap().order_id.clone(),
-        effect_id: request.effect_id().to_owned(),
-        request_sha256: request.sha256().unwrap(),
-        external_identifier: "bitcoin:broadcast".into(),
-        result_sha256: "91".repeat(32),
-    };
-    session.record_external_effect(&request, effect).unwrap();
+    session
+        .record_external_effect(&request, "bitcoin:broadcast", "91".repeat(32))
+        .unwrap();
     session
 }
 

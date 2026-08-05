@@ -1370,13 +1370,7 @@ impl SwapRecordFactory {
         validate_firm_quote(input.quote)?;
         let quote_profile = validate_requester_quote(&self.config, input.rfq, input.quote)?;
         validate_quote_observation(&quote_profile, input.quote, input.observed_at)?;
-        let quote_view = requester_quote_view(input.rfq, input.quote, &quote_profile)?;
-        if quote_view.price_feed.is_some() {
-            return Err(SwapClientError::new(
-                "swp_price_feed_unsupported",
-                "pinned-feed Quote execution is unavailable until its deterministic amount formula is specified",
-            ));
-        }
+        reject_unsupported_executable_quote(&quote_profile)?;
         let mut order_profile = Map::from_iter([(
             "accepted_quote_id".to_owned(),
             Value::String(input.quote.id.clone()),
@@ -1763,24 +1757,11 @@ impl RequesterSessionView {
         Self::from_signed_records_internal(config, records, deliveries, None)
     }
 
-    pub fn from_signed_records_with_effects(
-        config: &SwapClientConfig,
-        records: &[Event],
+    pub fn from_restored_snapshot(
+        snapshot: &[u8],
         deliveries: Vec<SignedRecordDelivery>,
-        external_effects: Vec<ExternalEffectResult>,
     ) -> Result<Self, SwapClientError> {
-        let mut effects = BTreeMap::new();
-        for effect in external_effects {
-            validate_effect(&effect)?;
-            let effect_id = effect.effect_id.clone();
-            if effects.insert(effect_id, effect).is_some() {
-                return Err(SwapClientError::new(
-                    "swp_external_effect_conflict",
-                    "requester terminal view has duplicate external effect IDs",
-                ));
-            }
-        }
-        Self::from_signed_records_internal(config, records, deliveries, Some(&effects))
+        SwapSession::<AwaitingVerification>::restore(snapshot)?.requester_session_view(deliveries)
     }
 
     fn from_signed_records_internal(
@@ -3460,9 +3441,30 @@ pub struct LightningDispositionRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedLightningDisposition {
-    pub request: ExternalEffectRequest,
-    pub result: ExternalEffectResult,
-    pub evidence_reference: Value,
+    request: ExternalEffectRequest,
+    result: ExternalEffectResult,
+    evidence_reference: Value,
+}
+
+impl VerifiedLightningDisposition {
+    pub fn evidence_reference(&self) -> &Value {
+        &self.evidence_reference
+    }
+
+    pub fn request_document(&self) -> Result<Value, SwapClientError> {
+        let ExternalEffectRequest::LightningDisposition(request) = &self.request else {
+            return Err(SwapClientError::new(
+                "swp_external_effect_conflict",
+                "verified Lightning disposition contains another request type",
+            ));
+        };
+        serde_json::to_value(request).map_err(|error| {
+            SwapClientError::new(
+                "swp_external_effect_conflict",
+                format!("could not serialize verified Lightning disposition: {error}"),
+            )
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3789,19 +3791,80 @@ pub struct LocalRailEvidence {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedRailEvidence {
-    pub request: ExternalEffectRequest,
-    pub result: ExternalEffectResult,
-    pub evidence_reference: Value,
+    request: ExternalEffectRequest,
+    result: ExternalEffectResult,
+    evidence_reference: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+impl VerifiedRailEvidence {
+    pub fn evidence_reference(&self) -> &Value {
+        &self.evidence_reference
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExternalEffectResult {
-    pub order_id: String,
-    pub effect_id: String,
-    pub request_sha256: String,
-    pub external_identifier: String,
-    pub result_sha256: String,
+    order_id: String,
+    effect_id: String,
+    request_sha256: String,
+    external_identifier: String,
+    result_sha256: String,
+}
+
+impl ExternalEffectResult {
+    pub fn order_id(&self) -> &str {
+        &self.order_id
+    }
+
+    pub fn effect_id(&self) -> &str {
+        &self.effect_id
+    }
+
+    pub fn request_sha256(&self) -> &str {
+        &self.request_sha256
+    }
+
+    pub fn external_identifier(&self) -> &str {
+        &self.external_identifier
+    }
+
+    pub fn result_sha256(&self) -> &str {
+        &self.result_sha256
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedExternalEffectResult {
+    order_id: String,
+    effect_id: String,
+    request_sha256: String,
+    external_identifier: String,
+    result_sha256: String,
+}
+
+impl From<&ExternalEffectResult> for PersistedExternalEffectResult {
+    fn from(result: &ExternalEffectResult) -> Self {
+        Self {
+            order_id: result.order_id.clone(),
+            effect_id: result.effect_id.clone(),
+            request_sha256: result.request_sha256.clone(),
+            external_identifier: result.external_identifier.clone(),
+            result_sha256: result.result_sha256.clone(),
+        }
+    }
+}
+
+impl From<PersistedExternalEffectResult> for ExternalEffectResult {
+    fn from(result: PersistedExternalEffectResult) -> Self {
+        Self {
+            order_id: result.order_id,
+            effect_id: result.effect_id,
+            request_sha256: result.request_sha256,
+            external_identifier: result.external_identifier,
+            result_sha256: result.result_sha256,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3822,7 +3885,7 @@ struct PersistedSwapSession {
     config: SwapClientConfig,
     signed_records: Vec<Event>,
     exit_packages: Vec<ExitPackage>,
-    external_effects: Vec<ExternalEffectResult>,
+    external_effects: Vec<PersistedExternalEffectResult>,
     #[serde(default)]
     external_effect_requests: Vec<ExternalEffectRequest>,
     #[serde(default)]
@@ -3904,6 +3967,7 @@ impl SwapSession<AwaitingVerification> {
         }
         let mut external_effects = BTreeMap::new();
         for effect in persisted.external_effects {
+            let effect = ExternalEffectResult::from(effect);
             validate_effect(&effect)?;
             validate_effect_row_binding(
                 &persisted.config,
@@ -4430,12 +4494,29 @@ impl<State> SwapSession<State> {
         &self.exit_packages
     }
 
-    pub fn external_effect_results(&self) -> Vec<ExternalEffectResult> {
-        self.external_effects.values().cloned().collect()
-    }
-
     pub fn status_projection(&self) -> Result<StatusProjection, SwapClientError> {
         StatusProjection::from_records(&self.config, &self.signed_records)
+    }
+
+    fn requester_session_view(
+        &self,
+        deliveries: Vec<SignedRecordDelivery>,
+    ) -> Result<RequesterSessionView, SwapClientError> {
+        validate_session_material(&self.config, &self.signed_records, &self.exit_packages)?;
+        validate_effect_ledger(
+            &self.config,
+            &self.signed_records,
+            &self.exit_packages,
+            self.funding_request.as_ref(),
+            &self.external_effect_requests,
+            &self.external_effects,
+        )?;
+        RequesterSessionView::from_signed_records_internal(
+            &self.config,
+            &self.signed_records,
+            deliveries,
+            Some(&self.external_effects),
+        )
     }
 
     pub fn ingest_signed_record(&mut self, event: Event) -> Result<bool, SwapClientError> {
@@ -4472,6 +4553,49 @@ impl<State> SwapSession<State> {
     }
 
     pub fn record_external_effect(
+        &mut self,
+        request: &ExternalEffectRequest,
+        external_identifier: impl Into<String>,
+        result_sha256: impl Into<String>,
+    ) -> Result<&ExternalEffectResult, SwapClientError> {
+        if matches!(
+            request,
+            ExternalEffectRequest::RailEvidence(_) | ExternalEffectRequest::LightningDisposition(_)
+        ) {
+            return Err(SwapClientError::new(
+                "swp_external_effect_conflict",
+                "terminal evidence must be recorded through its typed verified recorder",
+            ));
+        }
+        let order_id = BoundSession::from_records(&self.config, &self.signed_records)?
+            .order
+            .id
+            .clone();
+        let effect = ExternalEffectResult {
+            order_id,
+            effect_id: request.effect_id().to_owned(),
+            request_sha256: request.sha256()?,
+            external_identifier: external_identifier.into(),
+            result_sha256: result_sha256.into(),
+        };
+        self.record_external_effect_result(request, effect)
+    }
+
+    pub fn record_verified_rail_evidence(
+        &mut self,
+        verified: VerifiedRailEvidence,
+    ) -> Result<&ExternalEffectResult, SwapClientError> {
+        self.record_external_effect_result(&verified.request, verified.result)
+    }
+
+    pub fn record_verified_lightning_disposition(
+        &mut self,
+        verified: VerifiedLightningDisposition,
+    ) -> Result<&ExternalEffectResult, SwapClientError> {
+        self.record_external_effect_result(&verified.request, verified.result)
+    }
+
+    fn record_external_effect_result(
         &mut self,
         request: &ExternalEffectRequest,
         effect: ExternalEffectResult,
@@ -4780,7 +4904,11 @@ impl<State> SwapSession<State> {
             config: self.config.clone(),
             signed_records: self.signed_records.clone(),
             exit_packages: self.exit_packages.clone(),
-            external_effects: self.external_effects.values().cloned().collect(),
+            external_effects: self
+                .external_effects
+                .values()
+                .map(PersistedExternalEffectResult::from)
+                .collect(),
             external_effect_requests: self.external_effect_requests.values().cloned().collect(),
             funding_request: self.funding_request.clone(),
         };
@@ -5409,6 +5537,8 @@ impl<'a> BoundSession<'a> {
         }
         require_marked_reference(quote, "rfq", &rfq.id)?;
         require_marked_reference(order, "quote", &quote.id)?;
+        let quote_profile = validate_requester_quote(config, rfq, quote)?;
+        reject_unsupported_executable_quote(&quote_profile)?;
         let contracts = records
             .iter()
             .filter(|event| event.kind == MKT_SWP_SWAP_CONTRACT_KIND)
@@ -6581,6 +6711,7 @@ fn validate_composed_order(
     order_observed_at: u64,
     quote_profile: &Map<String, Value>,
 ) -> Result<(), SwapClientError> {
+    reject_unsupported_executable_quote(quote_profile)?;
     validate_composer_record(config, order)?;
     if order.kind != MKT_ORDER_KIND || order.pubkey != config.requester_pubkey {
         return Err(SwapClientError::new(
@@ -6602,6 +6733,22 @@ fn validate_composed_order(
     }
     validate_order_selection(quote_profile, profile)?;
     validate_quote_observation(quote_profile, quote, order_observed_at)
+}
+
+fn reject_unsupported_executable_quote(
+    quote_profile: &Map<String, Value>,
+) -> Result<(), SwapClientError> {
+    let terms = object(
+        quote_profile.get("terms").unwrap_or(&Value::Null),
+        "MKT-SWP Quote terms",
+    )?;
+    if !terms.get("price_feed").is_none_or(Value::is_null) {
+        return Err(SwapClientError::new(
+            "swp_price_feed_unsupported",
+            "pinned-feed Quote execution is unavailable until its deterministic amount formula is specified",
+        ));
+    }
+    Ok(())
 }
 
 fn compose_requester_contract(
@@ -8818,6 +8965,10 @@ fn validate_session_material(
         ));
     }
     let order = exactly_one(records, MKT_ORDER_KIND, "swp_contract_terms_mismatch")?;
+    let rfq = exactly_one(records, MKT_RFQ_KIND, "swp_unresolved_loss")?;
+    let quote = exactly_one(records, MKT_QUOTE_KIND, "swp_contract_terms_mismatch")?;
+    let quote_profile = validate_requester_quote(config, rfq, quote)?;
+    reject_unsupported_executable_quote(&quote_profile)?;
     for event in records.iter().filter(|event| {
         matches!(
             event.kind,
@@ -12465,6 +12616,44 @@ fn validate_post_funding_effects(
     Ok(())
 }
 
+fn validate_effect_ledger(
+    config: &SwapClientConfig,
+    records: &[Event],
+    packages: &[ExitPackage],
+    funding_request: Option<&FundingAuthorizationRequest>,
+    requests: &BTreeMap<String, ExternalEffectRequest>,
+    effects: &BTreeMap<String, ExternalEffectResult>,
+) -> Result<(), SwapClientError> {
+    if requests.len() != effects.len() || effects.len() > MAX_EXTERNAL_EFFECTS {
+        return Err(SwapClientError::new(
+            "swp_external_effect_conflict",
+            "external effect ledger lacks exact request/result cardinality",
+        ));
+    }
+    if let Some(request) = funding_request {
+        validate_persisted_funding_request(config, records, packages, request)?;
+    }
+    for (effect_id, effect) in effects {
+        validate_effect(effect)?;
+        validate_effect_row_binding(config, records, packages, effect)?;
+        let request = requests.get(effect_id).ok_or_else(|| {
+            SwapClientError::new(
+                "swp_external_effect_conflict",
+                "external effect has no exact typed request",
+            )
+        })?;
+        if request.effect_id() != effect_id || effect.effect_id != *effect_id {
+            return Err(SwapClientError::new(
+                "swp_external_effect_conflict",
+                "external effect map key differs from its typed request or result",
+            ));
+        }
+        validate_effect_request_binding(config, records, packages, request, effect)?;
+    }
+    validate_lifecycle(config, records, effects)?;
+    validate_post_funding_effects(funding_request, requests, effects)
+}
+
 fn exactly_one<'a>(
     records: &'a [Event],
     kind: u16,
@@ -13450,7 +13639,7 @@ fn canonical_amount(value: &str) -> Result<u64, SwapClientError> {
 #[cfg(feature = "mkt-swp-fixture-probe")]
 #[doc(hidden)]
 pub mod fixture_replay {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
@@ -13462,7 +13651,9 @@ pub mod fixture_replay {
     const FULL_SESSION_FIXTURES: &str =
         include_str!("../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json");
     const REQUESTER_API_FIXTURE: &str =
-        include_str!("../../../tests/fixtures/nipmkt/swp-requester-api-v1.json");
+        include_str!("../../../tests/fixtures/nipmkt/swp-requester-api-v2.json");
+    const REQUESTER_API_SOURCE: &str =
+        include_str!("../../../tests/fixtures/nipmkt/swp-requester-api-source-v2.json");
     const SECTIONS: [&str; 8] = [
         "record_construction",
         "flows",
@@ -13514,10 +13705,15 @@ pub mod fixture_replay {
     }
 
     pub fn replay_requester_api_fixture() -> Result<(), ReplayFailure> {
-        let fixture: Value = serde_json::from_str(REQUESTER_API_FIXTURE)
+        replay_requester_api_fixture_bytes(REQUESTER_API_FIXTURE.as_bytes())
+    }
+
+    #[doc(hidden)]
+    pub fn replay_requester_api_fixture_bytes(bytes: &[u8]) -> Result<(), ReplayFailure> {
+        let fixture: Value = serde_json::from_slice(bytes)
             .map_err(|error| ReplayFailure::new(70, format!("requester API JSON: {error}")))?;
         if fixture.get("schema").and_then(Value::as_str)
-            != Some("openagents.mkt-swp.requester-api-fixture.v1")
+            != Some("openagents.mkt-swp.requester-api-fixture.v2")
         {
             return Err(ReplayFailure::new(
                 71,
@@ -13538,7 +13734,7 @@ pub mod fixture_replay {
                 "requester_contract_draft",
                 "requester_order",
                 "requester_session_view",
-                "requester_session_view_with_effects",
+                "requester_session_view_from_snapshot",
             ])
         {
             return Err(ReplayFailure::new(
@@ -13550,14 +13746,26 @@ pub mod fixture_replay {
             .get("$defs")
             .and_then(Value::as_object)
             .ok_or_else(|| ReplayFailure::new(74, "requester API definitions are missing"))?;
-        validate_requester_api_schema_shapes(
-            fixture.get("$defs").unwrap_or(&Value::Null),
-            definitions,
-        )?;
-        validate_requester_api_schema_shapes(
-            fixture.get("operations").unwrap_or(&Value::Null),
-            definitions,
-        )?;
+        for schema in definitions.values() {
+            validate_requester_api_schema_shapes(schema, definitions)?;
+        }
+        for operation in operations {
+            for member in ["input_schema", "output_schema", "error_schema"] {
+                validate_requester_api_schema_shapes(
+                    operation.get(member).unwrap_or(&Value::Null),
+                    definitions,
+                )?;
+            }
+        }
+        let operation_schemas = operations
+            .iter()
+            .filter_map(|operation| {
+                operation
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(|name| (name, operation))
+            })
+            .collect::<BTreeMap<_, _>>();
         let source = fixture
             .get("source_fixture")
             .and_then(Value::as_object)
@@ -13572,6 +13780,31 @@ pub mod fixture_replay {
                 "requester API source fixture digest differs from the embedded bytes",
             ));
         }
+        let source_fixture: Value = serde_json::from_str(FULL_SESSION_FIXTURES)
+            .map_err(|error| ReplayFailure::new(76, format!("source fixture JSON: {error}")))?;
+        let api_source = fixture
+            .get("requester_api_source")
+            .and_then(Value::as_object)
+            .ok_or_else(|| ReplayFailure::new(76, "requester API v2 source is missing"))?;
+        if api_source.get("path").and_then(Value::as_str)
+            != Some("tests/fixtures/nipmkt/swp-requester-api-source-v2.json")
+            || api_source.get("sha256").and_then(Value::as_str)
+                != Some(lower_hex(&Sha256::digest(REQUESTER_API_SOURCE.as_bytes())).as_str())
+        {
+            return Err(ReplayFailure::new(
+                76,
+                "requester API v2 source digest differs from the embedded bytes",
+            ));
+        }
+        let api_source_fixture: Value = serde_json::from_str(REQUESTER_API_SOURCE)
+            .map_err(|error| ReplayFailure::new(76, format!("API source fixture JSON: {error}")))?;
+        if api_source_fixture != generate_requester_api_v2_source()? {
+            return Err(ReplayFailure::new(
+                76,
+                "requester API v2 source differs from the executable generator",
+            ));
+        }
+        replay_requester_api_byte_parity(&api_source_fixture)?;
         let cases = fixture
             .get("cases")
             .and_then(Value::as_array)
@@ -13598,15 +13831,39 @@ pub mod fixture_replay {
                 .and_then(Value::as_str)
                 .filter(|operation| operation_names.contains(operation))
                 .ok_or_else(|| ReplayFailure::new(80, "requester API case operation is invalid"))?;
-            let variant = case
-                .get("variant")
-                .and_then(Value::as_str)
-                .ok_or_else(|| ReplayFailure::new(81, "requester API case variant is missing"))?;
-            match replay_requester_api_case(operation, variant)
+            let input = case
+                .get("input")
+                .ok_or_else(|| ReplayFailure::new(81, "requester API case input is missing"))?;
+            let input = resolve_requester_api_value(
+                input,
+                &fixture,
+                &source_fixture,
+                &api_source_fixture,
+                0,
+            )
+            .map_err(|error| ReplayFailure::new(81, format!("{name} input: {error}")))?;
+            let schemas = operation_schemas.get(operation).ok_or_else(|| {
+                ReplayFailure::new(80, "requester API operation schema is missing")
+            })?;
+            validate_requester_api_instance(
+                &input,
+                schemas.get("input_schema").unwrap_or(&Value::Null),
+                &fixture,
+                "$input",
+            )
+            .map_err(|error| ReplayFailure::new(81, format!("{name}: {error}")))?;
+            match replay_requester_api_case(operation, &input)
                 .map_err(|error| ReplayFailure::new(82, error))?
             {
                 Ok(output) => {
                     positive_operations.insert(operation);
+                    validate_requester_api_instance(
+                        &output,
+                        schemas.get("output_schema").unwrap_or(&Value::Null),
+                        &fixture,
+                        "$output",
+                    )
+                    .map_err(|error| ReplayFailure::new(83, format!("{name}: {error}")))?;
                     let expected = case
                         .get("expected_sha256")
                         .and_then(Value::as_str)
@@ -13624,14 +13881,38 @@ pub mod fixture_replay {
                             ),
                         ));
                     }
+                    match name {
+                        "requester-session-view-valid" => {
+                            requester_api_assert_exact_delivery(&input, &output, name)?;
+                        }
+                        "requester-session-terminal-signed-only" => {
+                            requester_api_assert_terminal_authority(&input, &output, false, name)?;
+                        }
+                        "requester-session-terminal-restored-authority" => {
+                            requester_api_assert_terminal_authority(&input, &output, true, name)?;
+                        }
+                        _ => {}
+                    }
                 }
                 Err(error) => {
                     negative_operations.insert(operation);
+                    validate_requester_api_instance(
+                        &json!({"code":error.code,"detail":error.detail}),
+                        schemas.get("error_schema").unwrap_or(&Value::Null),
+                        &fixture,
+                        "$error",
+                    )
+                    .map_err(|schema_error| {
+                        ReplayFailure::new(86, format!("{name}: {schema_error}"))
+                    })?;
                     let expected = case
                         .get("expected_error")
                         .and_then(Value::as_str)
                         .ok_or_else(|| {
-                            ReplayFailure::new(86, "negative requester API case has no error")
+                            ReplayFailure::new(
+                                86,
+                                format!("negative requester API case {name} has no error"),
+                            )
                         })?;
                     if error.code != expected {
                         return Err(ReplayFailure::new(
@@ -13651,265 +13932,1032 @@ pub mod fixture_replay {
                 "every requester API operation requires positive and negative replay cases",
             ));
         }
+        for required in [
+            "requester-session-terminal-signed-only",
+            "requester-session-terminal-restored-authority",
+            "requester-session-terminal-request-digest-mutation",
+            "requester-session-terminal-result-digest-mutation",
+            "requester-session-terminal-cardinality-mutation",
+            "requester-session-terminal-funding-mutation",
+            "requester-session-terminal-funding-omission",
+            "requester-order-price-feed-refused",
+            "requester-contract-draft-price-feed-refused",
+            "requester-contract-price-feed-refused",
+            "requester-session-price-feed-refused",
+            "requester-snapshot-price-feed-refused",
+        ] {
+            if !case_names.contains(required) {
+                return Err(ReplayFailure::new(
+                    88,
+                    format!("requester API v2 corpus omits required case {required}"),
+                ));
+            }
+        }
         Ok(())
+    }
+
+    fn replay_requester_api_byte_parity(source: &Value) -> Result<(), ReplayFailure> {
+        let parity = source
+            .get("byte_parity")
+            .and_then(Value::as_object)
+            .ok_or_else(|| ReplayFailure::new(76, "requester API byte parity is missing"))?;
+        let raw = parity
+            .get("raw_signed_event_hex")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ReplayFailure::new(76, "requester API byte parity has no raw hex"))?;
+        let raw = decode_hex(raw, "requester API byte parity")
+            .map_err(|error| ReplayFailure::new(76, error.to_string()))?;
+        if !raw
+            .windows("☃".len())
+            .any(|window| window == "☃".as_bytes())
+        {
+            return Err(ReplayFailure::new(
+                76,
+                "requester API byte parity does not contain multibyte UTF-8",
+            ));
+        }
+        let delivery = SignedRecordDelivery::from_direct(raw.clone(), 100)
+            .map_err(|error| ReplayFailure::new(76, error.to_string()))?;
+        if parity.get("event_id").and_then(Value::as_str) != Some(delivery.event_id())
+            || parity.get("raw_sha256").and_then(Value::as_str)
+                != Some(lower_hex(&Sha256::digest(&raw)).as_str())
+        {
+            return Err(ReplayFailure::new(
+                76,
+                "requester API multibyte byte parity changed",
+            ));
+        }
+        Ok(())
+    }
+
+    fn requester_api_assert_exact_delivery(
+        input: &Value,
+        output: &Value,
+        name: &str,
+    ) -> Result<(), ReplayFailure> {
+        let expected = requester_api_hex(
+            input
+                .pointer("/deliveries/0")
+                .ok_or_else(|| ReplayFailure::new(85, format!("{name} has no delivery input")))?,
+            "raw_signed_event_hex",
+        )
+        .map_err(|error| ReplayFailure::new(85, format!("{name}: {error}")))?;
+        let expected_text = std::str::from_utf8(&expected).map_err(|error| {
+            ReplayFailure::new(85, format!("{name} raw delivery is not UTF-8: {error}"))
+        })?;
+        if !expected_text.contains('\n') || !expected_text.starts_with("{\n  \"sig\"") {
+            return Err(ReplayFailure::new(
+                85,
+                format!("{name} does not exercise noncanonical JSON bytes"),
+            ));
+        }
+        let actual = output
+            .pointer("/deliveries/0/raw_signed_event")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ReplayFailure::new(85, format!("{name} has no raw delivery output")))?
+            .iter()
+            .map(|byte| {
+                byte.as_u64()
+                    .and_then(|byte| u8::try_from(byte).ok())
+                    .ok_or_else(|| ReplayFailure::new(85, format!("{name} has invalid raw bytes")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if actual != expected {
+            return Err(ReplayFailure::new(
+                85,
+                format!("{name} did not preserve exact raw delivery bytes"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn requester_api_assert_terminal_authority(
+        input: &Value,
+        output: &Value,
+        restored: bool,
+        name: &str,
+    ) -> Result<(), ReplayFailure> {
+        if restored {
+            let snapshot = requester_api_hex(input, "snapshot_json_hex")
+                .map_err(|error| ReplayFailure::new(85, format!("{name}: {error}")))?;
+            if !snapshot
+                .windows("☃".len())
+                .any(|window| window == "☃".as_bytes())
+            {
+                return Err(ReplayFailure::new(
+                    85,
+                    format!("{name} does not exercise multibyte snapshot bytes"),
+                ));
+            }
+        }
+        let terminal = output
+            .get("terminal")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                ReplayFailure::new(85, format!("{name} output has no terminal projection"))
+            })?;
+        if terminal.get("watch_terminal").and_then(Value::as_bool) != Some(restored)
+            || terminal
+                .get("local_effects_verified")
+                .and_then(Value::as_bool)
+                != Some(restored)
+        {
+            return Err(ReplayFailure::new(
+                85,
+                format!("{name} does not preserve the persisted-authority boundary"),
+            ));
+        }
+        let expected_state = if restored {
+            "terminal_verified"
+        } else {
+            "contract_terms_verified"
+        };
+        if output
+            .pointer("/verification/state")
+            .and_then(Value::as_str)
+            != Some(expected_state)
+        {
+            return Err(ReplayFailure::new(
+                85,
+                format!("{name} has the wrong verification state"),
+            ));
+        }
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn generate_requester_api_v2_source() -> Result<Value, ReplayFailure> {
+        generate_requester_api_v2_source_inner().map_err(|error| ReplayFailure::new(93, error))
+    }
+
+    fn generate_requester_api_v2_source_inner() -> Result<Value, String> {
+        let terminal = build_terminal_flow("submarine", "completed")?;
+        let terminal_snapshot = terminal.persist().map_err(|error| error.to_string())?;
+        let mut terminal_snapshot_value: Value = serde_json::from_slice(&terminal_snapshot)
+            .map_err(|error| format!("terminal snapshot JSON: {error}"))?;
+        terminal_snapshot_value["external_effects"][0]["external_identifier"] =
+            Value::String("fixture:multibyte:☃".to_owned());
+        let terminal_deliveries = terminal
+            .signed_records()
+            .iter()
+            .map(|event| {
+                serde_json::to_vec_pretty(event)
+                    .map(|raw_signed_event| {
+                        json!({
+                            "raw_signed_event_hex":lower_hex(&raw_signed_event),
+                            "observed_at":event.created_at,
+                            "provenance":"direct",
+                        })
+                    })
+                    .map_err(|error| format!("terminal delivery JSON: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let snapshot_hex = |value: &Value| {
+            serde_json::to_vec(value)
+                .map(|bytes| lower_hex(&bytes))
+                .map_err(|error| format!("requester source snapshot JSON: {error}"))
+        };
+
+        let mut request_digest_mutated = terminal_snapshot_value.clone();
+        request_digest_mutated["external_effects"][0]["request_sha256"] =
+            Value::String("f1".repeat(32));
+        let rail_effect_id = terminal_snapshot_value["external_effect_requests"]
+            .as_array()
+            .and_then(|requests| {
+                requests
+                    .iter()
+                    .find(|request| request["request_type"] == "rail_evidence")
+            })
+            .and_then(|request| request.get("effect_id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "terminal source has no rail evidence request".to_owned())?;
+        let mut result_digest_mutated = terminal_snapshot_value.clone();
+        let result = result_digest_mutated["external_effects"]
+            .as_array_mut()
+            .and_then(|effects| {
+                effects
+                    .iter_mut()
+                    .find(|effect| effect["effect_id"] == rail_effect_id)
+            })
+            .ok_or_else(|| "terminal source has no rail evidence result".to_owned())?;
+        result["result_sha256"] = Value::String("f2".repeat(32));
+        let mut cardinality_mutated = terminal_snapshot_value.clone();
+        cardinality_mutated["external_effect_requests"]
+            .as_array_mut()
+            .and_then(Vec::pop)
+            .ok_or_else(|| "terminal source has no request to omit".to_owned())?;
+        let mut funding_mutated = terminal_snapshot_value.clone();
+        funding_mutated["funding_request"]["quote_id"] = Value::String("f3".repeat(32));
+        let mut funding_missing = terminal_snapshot_value.clone();
+        funding_missing["funding_request"] = Value::Null;
+
+        let (base, _) = load_fixture_session("flows", "submarine")?;
+        let records = base.signed_records();
+        let rfq = records
+            .iter()
+            .find(|event| event.kind == MKT_RFQ_KIND)
+            .ok_or_else(|| "requester source has no RFQ".to_owned())?;
+        let quote = records
+            .iter()
+            .find(|event| event.kind == MKT_QUOTE_KIND)
+            .ok_or_else(|| "requester source has no Quote".to_owned())?;
+        let requester_contract = records
+            .iter()
+            .find(|event| {
+                event.kind == MKT_SWP_SWAP_CONTRACT_KIND
+                    && event.pubkey == base.config().requester_pubkey
+            })
+            .ok_or_else(|| "requester source has no requester contract".to_owned())?;
+        let mut quote_profile: Value = serde_json::from_str(&quote.content)
+            .map_err(|error| format!("requester source Quote JSON: {error}"))?;
+        quote_profile["mkt_swp"]["terms"]["price_feed"] = json!({
+            "url":"https://prices.example.test/btc-usd",
+            "value_pointer":"/data/price",
+            "observed_value":"6543210",
+            "response_sha256":"52".repeat(32),
+            "observed_at":100,
+            "max_age_seconds":30,
+        });
+        let factory = SwapRecordFactory::new(base.config().clone())
+            .map_err(|error| format!("requester source factory: {error}"))?;
+        let provider = fixture_signer(b"provider")?;
+        let requester = fixture_signer(b"requester")?;
+        let mut parity_tags = rfq.tags.clone();
+        let parity_alt = parity_tags
+            .iter_mut()
+            .find(|tag| tag.name() == Some("alt"))
+            .and_then(|tag| tag.0.get_mut(1))
+            .ok_or_else(|| "requester byte-parity RFQ has no alt tag".to_owned())?;
+        parity_alt.push_str(" ☃");
+        let parity_event =
+            requester.sign(rfq.created_at, rfq.kind, parity_tags, rfq.content.clone());
+        let parity_raw = serde_json::to_vec_pretty(&parity_event)
+            .map_err(|error| format!("requester byte-parity event JSON: {error}"))?;
+        SignedRecordDelivery::from_direct(parity_raw.clone(), parity_event.created_at)
+            .map_err(|error| format!("requester byte-parity delivery: {error}"))?;
+        let feed_quote = fixture_signed(
+            factory
+                .soft_quote(
+                    quote.created_at,
+                    &fixture_distinct("requester-api", "feed", 0),
+                    &rfq.id,
+                    1_000,
+                    quote_profile["mkt_swp"].clone(),
+                )
+                .map_err(|error| format!("requester source feed Quote: {error}"))?,
+            &provider,
+        )?;
+        let feed_order = fixture_signed(
+            factory
+                .order(
+                    102,
+                    &fixture_distinct("requester-api", "feed", 1),
+                    &feed_quote.id,
+                    json!({"accepted_quote_id":feed_quote.id}),
+                )
+                .map_err(|error| format!("requester source feed Order: {error}"))?,
+            &requester,
+        )?;
+        let contract_profile: Value = serde_json::from_str(&requester_contract.content)
+            .map_err(|error| format!("requester source contract JSON: {error}"))?;
+        let contract = contract_profile["mkt_swp"]["contract"].clone();
+        let local_inputs = json!({
+            "effect_bindings":contract["effect_bindings"],
+            "exit_package_commitments":contract["exit_package_commitments"],
+        });
+        let feed_records = vec![rfq.clone(), feed_quote.clone(), feed_order.clone()];
+        let feed_deliveries = feed_records
+            .iter()
+            .map(|event| {
+                serde_json::to_vec(event)
+                    .map(|raw_signed_event| {
+                        json!({
+                            "raw_signed_event_hex":lower_hex(&raw_signed_event),
+                            "observed_at":102,
+                            "provenance":"direct",
+                        })
+                    })
+                    .map_err(|error| format!("feed delivery JSON: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let feed_snapshot = json!({
+            "schema":SNAPSHOT_SCHEMA,
+            "config":base.config(),
+            "signed_records":feed_records,
+            "exit_packages":[],
+            "external_effects":[],
+            "external_effect_requests":[],
+            "funding_request":null,
+        });
+
+        Ok(json!({
+            "schema":"openagents.mkt-swp.requester-api-source.v2",
+            "byte_parity":{
+                "raw_signed_event_hex":lower_hex(&parity_raw),
+                "event_id":parity_event.id,
+                "raw_sha256":lower_hex(&Sha256::digest(&parity_raw)),
+            },
+            "terminal":{
+                "config":terminal.config(),
+                "records":terminal.signed_records(),
+                "deliveries":terminal_deliveries,
+                "snapshot_json_hex":snapshot_hex(&terminal_snapshot_value)?,
+                "request_digest_mutated_hex":snapshot_hex(&request_digest_mutated)?,
+                "result_digest_mutated_hex":snapshot_hex(&result_digest_mutated)?,
+                "cardinality_mutated_hex":snapshot_hex(&cardinality_mutated)?,
+                "funding_mutated_hex":snapshot_hex(&funding_mutated)?,
+                "funding_missing_hex":snapshot_hex(&funding_missing)?,
+            },
+            "feed":{
+                "config":base.config(),
+                "rfq":rfq,
+                "quote":feed_quote,
+                "order":feed_order,
+                "contract":contract,
+                "local_inputs":local_inputs,
+                "records":feed_records,
+                "deliveries":feed_deliveries,
+                "snapshot_json_hex":snapshot_hex(&feed_snapshot)?,
+            },
+        }))
     }
 
     fn validate_requester_api_schema_shapes(
         value: &Value,
         definitions: &serde_json::Map<String, Value>,
     ) -> Result<(), ReplayFailure> {
-        match value {
-            Value::Object(object) => {
-                if object.get("type").and_then(Value::as_str) == Some("object")
-                    && (object
-                        .get("properties")
-                        .and_then(Value::as_object)
-                        .is_none()
-                        || object.get("additionalProperties").and_then(Value::as_bool)
-                            != Some(false))
-                {
-                    return Err(ReplayFailure::new(
-                        89,
-                        "requester API object schema is generic or open",
-                    ));
-                }
-                if object.get("type").and_then(Value::as_str) == Some("array")
-                    && !object.contains_key("items")
-                {
-                    return Err(ReplayFailure::new(
-                        90,
-                        "requester API array schema has no item schema",
-                    ));
-                }
-                if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
-                    let name = reference.strip_prefix("#/$defs/").ok_or_else(|| {
-                        ReplayFailure::new(91, "requester API schema reference is not local")
+        let object = value
+            .as_object()
+            .ok_or_else(|| ReplayFailure::new(89, "requester API schema is not an object"))?;
+        const SUPPORTED: [&str; 16] = [
+            "$ref",
+            "type",
+            "required",
+            "properties",
+            "additionalProperties",
+            "minItems",
+            "maxItems",
+            "items",
+            "minLength",
+            "maxLength",
+            "pattern",
+            "minimum",
+            "maximum",
+            "const",
+            "enum",
+            "anyOf",
+        ];
+        for name in object.keys() {
+            if !SUPPORTED.contains(&name.as_str()) && name != "oneOf" {
+                return Err(ReplayFailure::new(
+                    89,
+                    format!("requester API schema keyword {name} is unsupported"),
+                ));
+            }
+        }
+        if object.contains_key("$ref") && object.len() != 1 {
+            return Err(ReplayFailure::new(
+                89,
+                "requester API $ref schema contains ignored siblings",
+            ));
+        }
+        for combinator in ["anyOf", "oneOf"] {
+            if object.contains_key(combinator) && object.len() != 1 {
+                return Err(ReplayFailure::new(
+                    89,
+                    format!("requester API {combinator} schema contains ignored siblings"),
+                ));
+            }
+        }
+        if object.contains_key("anyOf") && object.contains_key("oneOf") {
+            return Err(ReplayFailure::new(
+                89,
+                "requester API schema mixes anyOf and oneOf",
+            ));
+        }
+        if object.contains_key("$ref") && object.get("$ref").and_then(Value::as_str).is_none() {
+            return Err(ReplayFailure::new(89, "requester API $ref is not a string"));
+        }
+        if object.contains_key("type")
+            && !object
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| {
+                    matches!(
+                        kind,
+                        "object" | "array" | "string" | "integer" | "boolean" | "null"
+                    )
+                })
+        {
+            return Err(ReplayFailure::new(
+                89,
+                "requester API schema uses an unsupported type",
+            ));
+        }
+        if !object.keys().any(|name| {
+            matches!(
+                name.as_str(),
+                "$ref" | "type" | "const" | "enum" | "anyOf" | "oneOf"
+            )
+        }) {
+            return Err(ReplayFailure::new(
+                89,
+                "requester API schema has no assertion",
+            ));
+        }
+        if let Some(required) = object.get("required") {
+            let required = required
+                .as_array()
+                .ok_or_else(|| ReplayFailure::new(89, "requester API required is not an array"))?;
+            let names = required
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            if names.len() != required.len()
+                || names.iter().enumerate().any(|(index, name)| {
+                    names
+                        .iter()
+                        .skip(index.saturating_add(1))
+                        .any(|other| other == name)
+                })
+            {
+                return Err(ReplayFailure::new(
+                    89,
+                    "requester API required members are invalid or duplicated",
+                ));
+            }
+        }
+        if let Some(values) = object.get("enum")
+            && values.as_array().is_none_or(Vec::is_empty)
+        {
+            return Err(ReplayFailure::new(
+                89,
+                "requester API enum is empty or invalid",
+            ));
+        }
+        if let Some(pattern) = object.get("pattern") {
+            let pattern = pattern
+                .as_str()
+                .ok_or_else(|| ReplayFailure::new(89, "requester API pattern is not a string"))?;
+            requester_api_pattern_matches("", pattern)
+                .map_err(|error| ReplayFailure::new(89, error))?;
+        }
+        for (minimum, maximum, label) in [
+            ("minItems", "maxItems", "array"),
+            ("minLength", "maxLength", "string"),
+        ] {
+            let lower = match object.get(minimum) {
+                Some(value) => Some(value.as_u64().ok_or_else(|| {
+                    ReplayFailure::new(89, format!("requester API {minimum} is invalid"))
+                })?),
+                None => None,
+            };
+            let upper = match object.get(maximum) {
+                Some(value) => Some(value.as_u64().ok_or_else(|| {
+                    ReplayFailure::new(89, format!("requester API {maximum} is invalid"))
+                })?),
+                None => None,
+            };
+            if lower.zip(upper).is_some_and(|(lower, upper)| lower > upper) {
+                return Err(ReplayFailure::new(
+                    89,
+                    format!("requester API {label} bounds are inverted"),
+                ));
+            }
+        }
+        if object.get("type").and_then(Value::as_str) == Some("object")
+            && (object
+                .get("properties")
+                .and_then(Value::as_object)
+                .is_none()
+                || object.get("additionalProperties").and_then(Value::as_bool) != Some(false))
+        {
+            return Err(ReplayFailure::new(
+                89,
+                "requester API object schema is generic or open",
+            ));
+        }
+        if object.get("type").and_then(Value::as_str) == Some("array")
+            && (!object.contains_key("items")
+                || object.get("maxItems").and_then(Value::as_u64).is_none())
+        {
+            return Err(ReplayFailure::new(
+                90,
+                "requester API array schema has no item schema or maximum bound",
+            ));
+        }
+        if object.get("type").and_then(Value::as_str) == Some("string")
+            && object.get("maxLength").and_then(Value::as_u64).is_none()
+            && !object.contains_key("const")
+            && !object.contains_key("enum")
+        {
+            return Err(ReplayFailure::new(
+                90,
+                "requester API string schema has no maximum bound",
+            ));
+        }
+        if object.get("type").and_then(Value::as_str) == Some("integer")
+            && (object.get("minimum").and_then(Value::as_i64).is_none()
+                || object.get("maximum").and_then(Value::as_i64).is_none())
+        {
+            return Err(ReplayFailure::new(
+                90,
+                "requester API integer schema is unbounded",
+            ));
+        }
+        if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+            let name = reference.strip_prefix("#/$defs/").ok_or_else(|| {
+                ReplayFailure::new(91, "requester API schema reference is not local")
+            })?;
+            if !definitions.contains_key(name) {
+                return Err(ReplayFailure::new(
+                    92,
+                    "requester API schema reference is unresolved",
+                ));
+            }
+        }
+        if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+            for child in properties.values() {
+                validate_requester_api_schema_shapes(child, definitions)?;
+            }
+        }
+        if let Some(items) = object.get("items") {
+            validate_requester_api_schema_shapes(items, definitions)?;
+        }
+        for combinator in ["anyOf", "oneOf"] {
+            if let Some(options) = object.get(combinator) {
+                let options = options
+                    .as_array()
+                    .filter(|options| !options.is_empty())
+                    .ok_or_else(|| {
+                        ReplayFailure::new(89, format!("requester API {combinator} is empty"))
                     })?;
-                    if !definitions.contains_key(name) {
-                        return Err(ReplayFailure::new(
-                            92,
-                            "requester API schema reference is unresolved",
-                        ));
-                    }
-                }
-                for child in object.values() {
-                    validate_requester_api_schema_shapes(child, definitions)?;
+                for option in options {
+                    validate_requester_api_schema_shapes(option, definitions)?;
                 }
             }
-            Value::Array(values) => {
-                for child in values {
-                    validate_requester_api_schema_shapes(child, definitions)?;
-                }
-            }
-            _ => {}
         }
         Ok(())
     }
 
+    fn resolve_requester_api_value(
+        value: &Value,
+        artifact: &Value,
+        source: &Value,
+        api_source: &Value,
+        depth: usize,
+    ) -> Result<Value, String> {
+        if depth > 64 {
+            return Err("requester API fixture reference depth exceeds its bound".to_owned());
+        }
+        match value {
+            Value::Object(object) => {
+                if object.len() == 1 {
+                    if let Some(pointer) = object.get("$artifact_ref").and_then(Value::as_str) {
+                        let referenced = fixture_pointer(artifact, pointer, "$artifact_ref")?;
+                        return resolve_requester_api_value(
+                            referenced,
+                            artifact,
+                            source,
+                            api_source,
+                            depth + 1,
+                        );
+                    }
+                    if let Some(pointer) = object.get("$artifact_json_ref").and_then(Value::as_str)
+                    {
+                        let referenced = fixture_pointer(artifact, pointer, "$artifact_json_ref")?;
+                        let resolved = resolve_requester_api_value(
+                            referenced,
+                            artifact,
+                            source,
+                            api_source,
+                            depth + 1,
+                        )?;
+                        return serde_json::to_string(&resolved)
+                            .map(Value::String)
+                            .map_err(|error| format!("artifact JSON cannot encode: {error}"));
+                    }
+                    if let Some(pointer) =
+                        object.get("$artifact_json_hex_ref").and_then(Value::as_str)
+                    {
+                        let referenced =
+                            fixture_pointer(artifact, pointer, "$artifact_json_hex_ref")?;
+                        let resolved = resolve_requester_api_value(
+                            referenced,
+                            artifact,
+                            source,
+                            api_source,
+                            depth + 1,
+                        )?;
+                        let encoded = serde_json::to_vec(&resolved)
+                            .map_err(|error| format!("artifact JSON cannot encode: {error}"))?;
+                        return Ok(Value::String(lower_hex(&encoded)));
+                    }
+                    if let Some(pointer) = object.get("$fixture_ref").and_then(Value::as_str) {
+                        return Ok(fixture_pointer(source, pointer, "$fixture_ref")?.clone());
+                    }
+                    if let Some(pointer) = object.get("$fixture_json_ref").and_then(Value::as_str) {
+                        return serde_json::to_string(fixture_pointer(
+                            source,
+                            pointer,
+                            "$fixture_json_ref",
+                        )?)
+                        .map(Value::String)
+                        .map_err(|error| format!("fixture snapshot JSON cannot encode: {error}"));
+                    }
+                    if let Some(pointer) =
+                        object.get("$fixture_json_hex_ref").and_then(Value::as_str)
+                    {
+                        let encoded = serde_json::to_vec(fixture_pointer(
+                            source,
+                            pointer,
+                            "$fixture_json_hex_ref",
+                        )?)
+                        .map_err(|error| format!("fixture JSON cannot encode: {error}"))?;
+                        return Ok(Value::String(lower_hex(&encoded)));
+                    }
+                    if let Some(pointer) = object.get("$api_source_ref").and_then(Value::as_str) {
+                        return Ok(fixture_pointer(api_source, pointer, "$api_source_ref")?.clone());
+                    }
+                }
+                if let Some(event_pointer) =
+                    object.get("$fixture_content_ref").and_then(Value::as_str)
+                {
+                    if object.keys().any(|name| {
+                        !matches!(name.as_str(), "$fixture_content_ref" | "pointer" | "merge")
+                    }) {
+                        return Err(
+                            "fixture content reference contains an unknown member".to_owned()
+                        );
+                    }
+                    let event = fixture_pointer(source, event_pointer, "$fixture_content_ref")?;
+                    let content =
+                        event
+                            .get("content")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                "fixture content reference is not a Nostr event".to_owned()
+                            })?;
+                    let content: Value = serde_json::from_str(content)
+                        .map_err(|error| format!("fixture event content is invalid: {error}"))?;
+                    let pointer = object
+                        .get("pointer")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "fixture content reference has no pointer".to_owned())?;
+                    let mut selected = content
+                        .pointer(pointer)
+                        .ok_or_else(|| format!("content pointer {pointer:?} does not resolve"))?
+                        .clone();
+                    if let Some(merge) = object.get("merge") {
+                        let selected = selected.as_object_mut().ok_or_else(|| {
+                            "fixture content merge target is not an object".to_owned()
+                        })?;
+                        let merge = merge.as_object().ok_or_else(|| {
+                            "fixture content merge value is not an object".to_owned()
+                        })?;
+                        for (name, child) in merge {
+                            selected.insert(name.clone(), child.clone());
+                        }
+                    }
+                    return Ok(selected);
+                }
+                object
+                    .iter()
+                    .map(|(name, child)| {
+                        resolve_requester_api_value(child, artifact, source, api_source, depth + 1)
+                            .map(|child| (name.clone(), child))
+                    })
+                    .collect::<Result<serde_json::Map<_, _>, _>>()
+                    .map(Value::Object)
+            }
+            Value::Array(values) => values
+                .iter()
+                .map(|child| {
+                    resolve_requester_api_value(child, artifact, source, api_source, depth + 1)
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array),
+            _ => Ok(value.clone()),
+        }
+    }
+
+    fn fixture_pointer<'a>(
+        document: &'a Value,
+        pointer: &str,
+        label: &str,
+    ) -> Result<&'a Value, String> {
+        let pointer = pointer
+            .strip_prefix('#')
+            .ok_or_else(|| format!("{label} must be a document-local RFC 6901 pointer"))?;
+        document
+            .pointer(pointer)
+            .ok_or_else(|| format!("{label} pointer {pointer:?} does not resolve"))
+    }
+
+    fn validate_requester_api_instance(
+        value: &Value,
+        schema: &Value,
+        root: &Value,
+        path: &str,
+    ) -> Result<(), String> {
+        let schema = schema
+            .as_object()
+            .ok_or_else(|| format!("{path} schema is not an object"))?;
+        if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+            let resolved = fixture_pointer(root, reference, "schema $ref")?;
+            return validate_requester_api_instance(value, resolved, root, path);
+        }
+        if let Some(options) = schema.get("anyOf").and_then(Value::as_array) {
+            if options
+                .iter()
+                .any(|option| validate_requester_api_instance(value, option, root, path).is_ok())
+            {
+                return Ok(());
+            }
+            return Err(format!("{path} does not match any allowed schema"));
+        }
+        if let Some(options) = schema.get("oneOf").and_then(Value::as_array) {
+            let matches = options
+                .iter()
+                .filter(|option| validate_requester_api_instance(value, option, root, path).is_ok())
+                .count();
+            if matches != 1 {
+                return Err(format!(
+                    "{path} matches {matches} schemas where exactly one is required"
+                ));
+            }
+            return Ok(());
+        }
+        if let Some(expected) = schema.get("const")
+            && value != expected
+        {
+            return Err(format!("{path} differs from its constant"));
+        }
+        if let Some(values) = schema.get("enum").and_then(Value::as_array)
+            && !values.contains(value)
+        {
+            return Err(format!("{path} is outside its enumeration"));
+        }
+        match schema.get("type").and_then(Value::as_str) {
+            Some("object") => {
+                let object = value
+                    .as_object()
+                    .ok_or_else(|| format!("{path} is not an object"))?;
+                let properties = schema
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| format!("{path} object schema has no properties"))?;
+                if let Some(required) = schema.get("required").and_then(Value::as_array) {
+                    for name in required.iter().filter_map(Value::as_str) {
+                        if !object.contains_key(name) {
+                            return Err(format!("{path} omits required member {name}"));
+                        }
+                    }
+                }
+                if schema.get("additionalProperties").and_then(Value::as_bool) == Some(false) {
+                    for name in object.keys() {
+                        if !properties.contains_key(name) {
+                            return Err(format!("{path} contains unknown member {name}"));
+                        }
+                    }
+                }
+                for (name, child) in object {
+                    if let Some(child_schema) = properties.get(name) {
+                        validate_requester_api_instance(
+                            child,
+                            child_schema,
+                            root,
+                            &format!("{path}/{name}"),
+                        )?;
+                    }
+                }
+            }
+            Some("array") => {
+                let array = value
+                    .as_array()
+                    .ok_or_else(|| format!("{path} is not an array"))?;
+                let minimum = schema.get("minItems").and_then(Value::as_u64).unwrap_or(0);
+                let maximum = schema
+                    .get("maxItems")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| format!("{path} array schema is unbounded"))?;
+                let length = u64::try_from(array.len())
+                    .map_err(|_| format!("{path} array length does not fit u64"))?;
+                if length < minimum || length > maximum {
+                    return Err(format!("{path} array length is outside its bounds"));
+                }
+                let item_schema = schema
+                    .get("items")
+                    .ok_or_else(|| format!("{path} array schema has no items"))?;
+                for (index, child) in array.iter().enumerate() {
+                    validate_requester_api_instance(
+                        child,
+                        item_schema,
+                        root,
+                        &format!("{path}/{index}"),
+                    )?;
+                }
+            }
+            Some("string") => {
+                let string = value
+                    .as_str()
+                    .ok_or_else(|| format!("{path} is not a string"))?;
+                let length = u64::try_from(string.chars().count())
+                    .map_err(|_| format!("{path} string length does not fit u64"))?;
+                let minimum = schema.get("minLength").and_then(Value::as_u64).unwrap_or(0);
+                let maximum = schema
+                    .get("maxLength")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| format!("{path} string schema is unbounded"))?;
+                if length < minimum || length > maximum {
+                    return Err(format!("{path} string length is outside its bounds"));
+                }
+                if let Some(pattern) = schema.get("pattern").and_then(Value::as_str)
+                    && !requester_api_pattern_matches(string, pattern)?
+                {
+                    return Err(format!("{path} does not match {pattern}"));
+                }
+            }
+            Some("integer") => {
+                let integer = value
+                    .as_i64()
+                    .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+                    .ok_or_else(|| format!("{path} is not a bounded integer"))?;
+                if schema
+                    .get("minimum")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|minimum| integer < minimum)
+                    || schema
+                        .get("maximum")
+                        .and_then(Value::as_i64)
+                        .is_some_and(|maximum| integer > maximum)
+                {
+                    return Err(format!("{path} integer is outside its bounds"));
+                }
+            }
+            Some("boolean") if !value.is_boolean() => {
+                return Err(format!("{path} is not a boolean"));
+            }
+            Some("null") if !value.is_null() => return Err(format!("{path} is not null")),
+            Some("boolean" | "null") | None => {}
+            Some(other) => return Err(format!("{path} uses unsupported schema type {other}")),
+        }
+        Ok(())
+    }
+
+    fn requester_api_pattern_matches(value: &str, pattern: &str) -> Result<bool, String> {
+        let lower_hex = |value: &str| {
+            value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        };
+        match pattern {
+            "^[0-9a-f]{64}$" => Ok(value.len() == 64 && lower_hex(value)),
+            "^[0-9a-f]{128}$" => Ok(value.len() == 128 && lower_hex(value)),
+            "^(0|[1-9][0-9]*)$" => Ok(value == "0"
+                || value
+                    .strip_prefix(|character: char| matches!(character, '1'..='9'))
+                    .is_some_and(|rest| rest.bytes().all(|byte| byte.is_ascii_digit()))),
+            "^[0-9a-f]+$" => Ok(!value.is_empty() && lower_hex(value)),
+            "^([0-9a-f]{2})+$" => Ok(!value.is_empty() && value.len() % 2 == 0 && lower_hex(value)),
+            "^(02|03)[0-9a-f]{64}$" => Ok(value.len() == 66
+                && matches!(&value[..2], "02" | "03")
+                && lower_hex(&value[2..])),
+            "^bip122:[0-9a-f]{32}$" => Ok(value
+                .strip_prefix("bip122:")
+                .is_some_and(|suffix| suffix.len() == 32 && lower_hex(suffix))),
+            "^https://" => Ok(value.starts_with("https://")),
+            "^swp:1:" => Ok(value.starts_with("swp:1:")),
+            _ => Err(format!(
+                "requester API schema uses unsupported pattern {pattern}"
+            )),
+        }
+    }
+
     fn replay_requester_api_case(
         operation: &str,
-        variant: &str,
+        input: &Value,
     ) -> Result<Result<Value, SwapClientError>, String> {
-        let (session, _) = load_fixture_session("flows", "submarine")?;
-        let records = session.signed_records();
-        let rfq = fixture_record(records, MKT_RFQ_KIND, None)?;
-        let quote = fixture_record(records, MKT_QUOTE_KIND, None)?;
-        let order = fixture_record(records, MKT_ORDER_KIND, None)?;
-        let requester_contract = fixture_record(
-            records,
-            MKT_SWP_SWAP_CONTRACT_KIND,
-            Some(session.config().requester_pubkey.as_str()),
-        )?;
-        let factory =
-            SwapRecordFactory::new(session.config().clone()).map_err(|error| error.to_string())?;
-        let order_distinct = tag_value(order, "d").map_err(|error| error.to_string())?;
-        let order_selection = parse_content(order)
-            .map_err(|error| error.to_string())?
-            .get("mkt_swp")
-            .and_then(|profile| profile.get("selection"))
-            .and_then(Value::as_object)
-            .cloned();
-        let contract_distinct =
-            tag_value(requester_contract, "d").map_err(|error| error.to_string())?;
-        let outcome = match (operation, variant) {
-            ("requester_order", "valid") => factory
-                .requester_order(RequesterOrderInput {
-                    rfq,
-                    quote,
-                    created_at: order.created_at,
-                    observed_at: order.created_at,
-                    distinct: order_distinct,
-                    selection: order_selection,
-                })
-                .and_then(requester_api_json),
-            ("requester_order", "pinned_feed") => {
-                let mut quote_profile =
-                    parse_content(quote).map_err(|error| error.to_string())?["mkt_swp"].clone();
-                quote_profile["terms"]["price_feed"] = json!({
-                    "url":"https://prices.example.test/btc-usd",
-                    "value_pointer":"/data/price",
-                    "observed_value":"6543210",
-                    "response_sha256":"52".repeat(32),
-                    "observed_at":100,
-                    "max_age_seconds":30
-                });
-                let provider = fixture_signer(b"provider")?;
-                let feed_quote = fixture_signed(
-                    factory
-                        .soft_quote(
-                            quote.created_at,
-                            &"79".repeat(32),
-                            &rfq.id,
-                            1_000,
-                            quote_profile,
-                        )
-                        .map_err(|error| error.to_string())?,
-                    &provider,
-                )?;
+        let outcome = match operation {
+            "requester_order" => {
+                let config: SwapClientConfig = requester_api_input(input, "config")?;
+                let rfq: Event = requester_api_input(input, "rfq")?;
+                let quote: Event = requester_api_input(input, "quote")?;
+                let factory = SwapRecordFactory::new(config).map_err(|error| error.to_string())?;
+                let selection = input.get("selection").and_then(Value::as_object).cloned();
                 factory
                     .requester_order(RequesterOrderInput {
-                        rfq,
-                        quote: &feed_quote,
-                        created_at: order.created_at,
-                        observed_at: order.created_at,
-                        distinct: &"7b".repeat(32),
-                        selection: None,
+                        rfq: &rfq,
+                        quote: &quote,
+                        created_at: requester_api_u64(input, "created_at")?,
+                        observed_at: requester_api_u64(input, "observed_at")?,
+                        distinct: requester_api_str(input, "distinct")?,
+                        selection,
                     })
                     .and_then(requester_api_json)
             }
-            ("requester_contract_draft", "valid") => requester_api_contract_draft(
-                &factory,
-                rfq,
-                quote,
-                order,
-                requester_contract,
-                order.created_at,
-            ),
-            ("requester_contract_draft", "expired_order_receipt") => {
-                requester_api_contract_draft(&factory, rfq, quote, order, requester_contract, 901)
+            "requester_contract_draft" => {
+                let config: SwapClientConfig = requester_api_input(input, "config")?;
+                let rfq: Event = requester_api_input(input, "rfq")?;
+                let quote: Event = requester_api_input(input, "quote")?;
+                let order: Event = requester_api_input(input, "order")?;
+                let local_inputs: RequesterContractLocalInputs =
+                    requester_api_input(input, "local_inputs")?;
+                SwapRecordFactory::new(config)
+                    .map_err(|error| error.to_string())?
+                    .requester_contract_draft(
+                        &rfq,
+                        &quote,
+                        &order,
+                        requester_api_u64(input, "order_observed_at")?,
+                        local_inputs,
+                    )
             }
-            ("requester_contract", "valid") => requester_api_contract_draft(
-                &factory,
-                rfq,
-                quote,
-                order,
-                requester_contract,
-                order.created_at,
-            )
-            .and_then(|draft| {
-                factory.requester_contract(RequesterContractSigningInput {
-                    rfq,
-                    quote,
-                    order,
-                    order_observed_at: order.created_at,
-                    created_at: requester_contract.created_at,
-                    distinct: contract_distinct,
-                    contract: draft,
-                })
-            })
-            .and_then(requester_api_json),
-            ("requester_contract", "custody_material") => requester_api_contract_draft(
-                &factory,
-                rfq,
-                quote,
-                order,
-                requester_contract,
-                order.created_at,
-            )
-            .and_then(|mut draft| {
-                draft["claim_key"] = json!("94".repeat(32));
-                factory.requester_contract(RequesterContractSigningInput {
-                    rfq,
-                    quote,
-                    order,
-                    order_observed_at: order.created_at,
-                    created_at: requester_contract.created_at,
-                    distinct: contract_distinct,
-                    contract: draft,
-                })
-            })
-            .and_then(requester_api_json),
-            ("requester_session_view", "valid") => RequesterSessionView::from_signed_records(
-                session.config(),
-                records,
-                requester_api_deliveries(records)?,
-            )
-            .and_then(requester_api_json),
-            ("requester_session_view", "missing_delivery") => {
-                let mut deliveries = requester_api_deliveries(records)?;
-                deliveries.pop();
-                RequesterSessionView::from_signed_records(session.config(), records, deliveries)
+            "requester_contract" => {
+                let config: SwapClientConfig = requester_api_input(input, "config")?;
+                let rfq: Event = requester_api_input(input, "rfq")?;
+                let quote: Event = requester_api_input(input, "quote")?;
+                let order: Event = requester_api_input(input, "order")?;
+                let contract = input
+                    .get("contract")
+                    .cloned()
+                    .ok_or_else(|| "requester API input omits contract".to_owned())?;
+                SwapRecordFactory::new(config)
+                    .map_err(|error| error.to_string())?
+                    .requester_contract(RequesterContractSigningInput {
+                        rfq: &rfq,
+                        quote: &quote,
+                        order: &order,
+                        order_observed_at: requester_api_u64(input, "order_observed_at")?,
+                        created_at: requester_api_u64(input, "created_at")?,
+                        distinct: requester_api_str(input, "distinct")?,
+                        contract,
+                    })
                     .and_then(requester_api_json)
             }
-            ("requester_session_view_with_effects", "terminal_verified") => {
-                let terminal = build_terminal_flow("submarine", "completed")?;
-                RequesterSessionView::from_signed_records_with_effects(
-                    terminal.config(),
-                    terminal.signed_records(),
-                    requester_api_deliveries(terminal.signed_records())?,
-                    terminal.external_effect_results(),
-                )
-                .and_then(requester_api_json)
+            "requester_session_view" => {
+                let config: SwapClientConfig = requester_api_input(input, "config")?;
+                let records: Vec<Event> = requester_api_input(input, "records")?;
+                let deliveries = requester_api_input_deliveries(input)?;
+                RequesterSessionView::from_signed_records(&config, &records, deliveries)
+                    .and_then(requester_api_json)
             }
-            ("requester_session_view_with_effects", "missing_local_effects") => {
-                let terminal = build_terminal_flow("submarine", "completed")?;
-                RequesterSessionView::from_signed_records_with_effects(
-                    terminal.config(),
-                    terminal.signed_records(),
-                    requester_api_deliveries(terminal.signed_records())?,
-                    Vec::new(),
-                )
-                .and_then(requester_api_json)
+            "requester_session_view_from_snapshot" => {
+                let snapshot = requester_api_hex(input, "snapshot_json_hex")?;
+                let deliveries = requester_api_input_deliveries(input)?;
+                RequesterSessionView::from_restored_snapshot(&snapshot, deliveries)
+                    .and_then(requester_api_json)
             }
-            _ => {
-                return Err(format!(
-                    "unsupported requester API case {operation}.{variant}"
-                ));
-            }
+            _ => return Err(format!("unsupported requester API operation {operation}")),
         };
         Ok(outcome)
     }
 
-    fn fixture_record<'a>(
-        records: &'a [Event],
-        kind: u16,
-        pubkey: Option<&str>,
-    ) -> Result<&'a Event, String> {
-        records
-            .iter()
-            .find(|event| event.kind == kind && pubkey.is_none_or(|pubkey| event.pubkey == pubkey))
-            .ok_or_else(|| format!("requester API source fixture has no kind {kind}"))
+    fn requester_api_input<T: serde::de::DeserializeOwned>(
+        input: &Value,
+        name: &str,
+    ) -> Result<T, String> {
+        serde_json::from_value(
+            input
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("requester API input omits {name}"))?,
+        )
+        .map_err(|error| format!("requester API input {name} is invalid: {error}"))
     }
 
-    fn requester_api_contract_draft(
-        factory: &SwapRecordFactory,
-        rfq: &Event,
-        quote: &Event,
-        order: &Event,
-        requester_contract: &Event,
-        order_observed_at: u64,
-    ) -> Result<Value, SwapClientError> {
-        let contract = parse_content(requester_contract)?["mkt_swp"]["contract"].clone();
-        let local_inputs = serde_json::from_value(json!({
-            "effect_bindings":contract["effect_bindings"],
-            "exit_package_commitments":contract["exit_package_commitments"]
-        }))
-        .map_err(|error| {
-            SwapClientError::new(
-                "swp_contract_terms_mismatch",
-                format!("requester fixture local inputs are invalid: {error}"),
-            )
-        })?;
-        factory.requester_contract_draft(rfq, quote, order, order_observed_at, local_inputs)
+    fn requester_api_u64(input: &Value, name: &str) -> Result<u64, String> {
+        input
+            .get(name)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("requester API input {name} is not a u64"))
     }
 
-    fn requester_api_deliveries(records: &[Event]) -> Result<Vec<SignedRecordDelivery>, String> {
-        records
+    fn requester_api_str<'a>(input: &'a Value, name: &str) -> Result<&'a str, String> {
+        input
+            .get(name)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("requester API input {name} is not a string"))
+    }
+
+    fn requester_api_hex(input: &Value, name: &str) -> Result<Vec<u8>, String> {
+        decode_hex(requester_api_str(input, name)?, name).map_err(|error| error.to_string())
+    }
+
+    fn requester_api_input_deliveries(input: &Value) -> Result<Vec<SignedRecordDelivery>, String> {
+        input
+            .get("deliveries")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "requester API input deliveries are not an array".to_owned())?
             .iter()
-            .map(|event| {
-                let raw = serde_json::to_vec(event)
-                    .map_err(|error| format!("requester delivery encoding: {error}"))?;
-                SignedRecordDelivery::from_direct(raw, 100).map_err(|error| error.to_string())
+            .map(|delivery| {
+                let raw = requester_api_hex(delivery, "raw_signed_event_hex")?;
+                let observed_at = delivery
+                    .get("observed_at")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| "requester delivery observation is invalid".to_owned())?;
+                SignedRecordDelivery::from_direct(raw, observed_at)
+                    .map_err(|error| error.to_string())
             })
             .collect()
     }
@@ -14309,13 +15357,14 @@ pub mod fixture_replay {
                 } else {
                     records.retain(|event| event.kind != MKT_RFQ_KIND);
                 }
-                let session = SwapSession::from_signed_records(
-                    session.config().clone(),
-                    records,
-                    session.exit_packages().to_vec(),
+                error_outcome(
+                    SwapSession::from_signed_records(
+                        session.config().clone(),
+                        records,
+                        session.exit_packages().to_vec(),
+                    )
+                    .and_then(|session| session.verify_before_fund(input, |_| Ok(()))),
                 )
-                .map_err(|error| format!("mutated fixture session: {error}"))?;
-                error_outcome(session.verify_before_fund(input, |_| Ok(())))
             }
             "snapshot_seed" => {
                 let mut snapshot: Value =
@@ -14796,7 +15845,7 @@ pub mod fixture_replay {
                     )
                     .map_err(|error| format!("fixture rail evidence: {error}"))?;
                 session
-                    .record_external_effect(&verified.request, verified.result)
+                    .record_verified_rail_evidence(verified)
                     .map_err(|error| format!("fixture rail effect: {error}"))?;
                 SwapSession::<AwaitingVerification>::restore(
                     &session.persist().map_err(|error| error.to_string())?,
@@ -14822,7 +15871,7 @@ pub mod fixture_replay {
                     })
                     .map_err(|error| format!("fixture Lightning disposition: {error}"))?;
                 session
-                    .record_external_effect(&disposition.request, disposition.result)
+                    .record_verified_lightning_disposition(disposition)
                     .map_err(|error| format!("fixture disposition effect: {error}"))?;
                 SwapSession::<AwaitingVerification>::restore(
                     &session.persist().map_err(|error| error.to_string())?,
@@ -14981,15 +16030,12 @@ pub mod fixture_replay {
             .map_err(|error| error.to_string())?
             .clone();
         let request = ExternalEffectRequest::Funding(funding.clone());
-        let effect = ExternalEffectResult {
-            order_id: funding.order_id,
-            effect_id: request.effect_id().to_owned(),
-            request_sha256: request.sha256().map_err(|error| error.to_string())?,
-            external_identifier: format!("fixture:{swap_name}:funding"),
-            result_sha256: "91".repeat(32),
-        };
         session
-            .record_external_effect(&request, effect)
+            .record_external_effect(
+                &request,
+                format!("fixture:{swap_name}:funding"),
+                "91".repeat(32),
+            )
             .map_err(|error| format!("fixture funding effect: {error}"))?;
         Ok(())
     }
@@ -15320,21 +16366,12 @@ pub mod fixture_replay {
                 .map_err(|error| error.to_string())?
                 .clone(),
         );
-        let funding_effect = ExternalEffectResult {
-            order_id: authorized
-                .funding_request()
-                .map_err(|error| error.to_string())?
-                .order_id
-                .clone(),
-            effect_id: funding_request.effect_id().to_owned(),
-            request_sha256: funding_request
-                .sha256()
-                .map_err(|error| error.to_string())?,
-            external_identifier: format!("fixture:{swap_name}:funding"),
-            result_sha256: "91".repeat(32),
-        };
         authorized
-            .record_external_effect(&funding_request, funding_effect)
+            .record_external_effect(
+                &funding_request,
+                format!("fixture:{swap_name}:funding"),
+                "91".repeat(32),
+            )
             .map_err(|error| format!("funding effect: {error}"))?;
         if swap_name == "reverse" {
             authorized
@@ -15398,10 +16435,10 @@ pub mod fixture_replay {
                     })
                 })
                 .map_err(|error| format!("terminal evidence: {error}"))?;
+            evidence_refs.push(verified.evidence_reference().clone());
             authorized
-                .record_external_effect(&verified.request, verified.result)
+                .record_verified_rail_evidence(verified)
                 .map_err(|error| format!("terminal evidence effect: {error}"))?;
-            evidence_refs.push(verified.evidence_reference);
         }
         authorized = SwapSession::<AwaitingVerification>::restore(
             &authorized.persist().map_err(|error| error.to_string())?,

@@ -301,6 +301,28 @@ primitives. Funding authority exists only after that verification and an
 embedding-wallet callback succeed. Restored snapshots always return to the
 unverified state.
 
+The requester projection adoption accepts terminal authority only from the
+stateful client session's validated persisted typed request/result ledger.
+Raw external-effect rows are not a projection input, and the exported
+requester artifact exposes a bounded snapshot operation instead. This proves
+snapshot consistency; durability and local provenance remain the embedding
+wallet's trust boundary and are not described as cryptographic proof.
+
+The requester API v1 artifact is retained byte-for-byte as a withdrawn
+historical input. Its generic external-effect row surface could confer
+terminal authority from caller-authored data. The adopted v2 lane removes
+that surface, accepts exact bounded delivery bytes, and permits terminal
+authority only after restoration validates typed effect requests and results,
+funding authorization, lifecycle, and loss accounting. The contract descriptor
+and generated fixture manifest select v2 while continuing to publish the
+withdrawn v1 digest for reproducibility.
+
+Downstream adoption remains pending: `openagents/packages/nip-mkt` in issue
+#9309 is pinned to Immortal `15e77e0` and has no requester API artifact. After
+the v2 Immortal packet is pushed, #9309 must re-pin the contract digest, decode
+the lowercase event/snapshot hex inputs with the published byte caps, and run
+the same multibyte native/WASM parity vectors before it can claim adoption.
+
 The requester flow is frozen per rail: submarine broadcasts `source` Bitcoin
 funding and retains a CLTV refund, reverse pays `lightning` and retains the
 `destination` hashlock claim, and chain broadcasts `source`, retains its CSV

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs::{File, OpenOptions},
     io::{Read, Write},
     net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
@@ -10,14 +11,13 @@ use std::{
 
 use immortal_client::mkt_swp_client::{
     AwaitingVerification, ChainRecoveryState, DeliveryProvenance, ExitPackage, ExitSigningOutcome,
-    ExternalEffectRequest, ExternalEffectResult, FundingAction, FundingAuthorized,
-    FundingVerificationInput, InvoiceVerificationInput, LightningProgressState,
-    LightningReadinessState, LightningRecoveryState, LocalLightningProgress,
-    LocalLightningReadiness, LocalRailEvidence, LocalRecoveryObservation, ParticipantRole,
-    RailObservationRequest, RecoveryAction, RequesterContractLocalInputs,
-    RequesterContractSigningInput, RequesterOrderInput, SignedRecordDelivery, StatusState,
-    SwapClientConfig, SwapRecordFactory, SwapSession, SwapType, VerifyBeforeFundInput,
-    provider_support,
+    ExternalEffectRequest, FundingAction, FundingAuthorized, FundingVerificationInput,
+    InvoiceVerificationInput, LightningProgressState, LightningReadinessState,
+    LightningRecoveryState, LocalLightningProgress, LocalLightningReadiness, LocalRailEvidence,
+    LocalRecoveryObservation, ParticipantRole, RailObservationRequest, RecoveryAction,
+    RequesterContractLocalInputs, RequesterContractSigningInput, RequesterOrderInput,
+    SignedRecordDelivery, StatusState, SwapClientConfig, SwapRecordFactory, SwapSession, SwapType,
+    VerifyBeforeFundInput, provider_support,
 };
 use immortal_core::{
     domain::{
@@ -1570,20 +1570,15 @@ fn continue_reverse_after_funding_effect(
     let request = ExternalEffectRequest::WalletSigning(
         signing_request.ok_or_else(|| "wallet signing callback was not invoked".to_owned())?,
     );
-    let effect = ExternalEffectResult {
-        order_id: session.order.id.clone(),
-        effect_id: request.effect_id().to_owned(),
-        request_sha256: request
-            .sha256()
-            .map_err(|error| format!("could not bind reverse signing request: {error}"))?,
-        external_identifier: claim_txid.clone(),
-        result_sha256: lower_hex(&sha256(claim.broadcast_bytes())),
-    };
     session
         .authorized_verifier
         .as_mut()
         .ok_or_else(|| "reverse session lost its funding authorization".to_owned())?
-        .record_external_effect(&request, effect)
+        .record_external_effect(
+            &request,
+            claim_txid.clone(),
+            lower_hex(&sha256(claim.broadcast_bytes())),
+        )
         .map_err(|error| format!("could not persist reverse signing effect: {error}"))?;
     session.persist_snapshot()?;
     session.persist_authorized_details(
@@ -2300,17 +2295,8 @@ impl SessionContext {
                 .map_err(|error| format!("funded session has no funding request: {error}"))?
                 .clone(),
         );
-        let result = ExternalEffectResult {
-            order_id: self.order.id.clone(),
-            effect_id: request.effect_id().to_owned(),
-            request_sha256: request
-                .sha256()
-                .map_err(|error| format!("could not bind funded execution request: {error}"))?,
-            external_identifier,
-            result_sha256: lower_hex(&result_digest),
-        };
         authorized
-            .record_external_effect(&request, result)
+            .record_external_effect(&request, external_identifier, lower_hex(&result_digest))
             .map_err(|error| format!("could not persist funded execution effect: {error}"))?;
         self.persist_authorized_details(
             "funding_effect_recorded",
@@ -2408,7 +2394,7 @@ impl SessionContext {
                     )
                 })?;
             authorized
-                .record_external_effect(&verified.request, verified.result)
+                .record_verified_rail_evidence(verified)
                 .map_err(|error| {
                     format!("could not persist local {leg_id} terminal evidence: {error}")
                 })?;
@@ -3734,12 +3720,23 @@ fn restore_funded_deliveries(
     if entries.len() != records.len() {
         return Err("funded delivery archive does not cover every signed record".to_owned());
     }
+    let record_ids = records
+        .iter()
+        .map(|event| event.id.as_str())
+        .collect::<BTreeSet<_>>();
+    if record_ids.len() != records.len() {
+        return Err("funded signed-record set contains a duplicate event ID".to_owned());
+    }
+    let mut archive_ids = BTreeSet::new();
     let mut restored = Vec::with_capacity(entries.len());
     for entry in entries {
         let event_id = entry
             .get("event_id")
             .and_then(Value::as_str)
             .ok_or_else(|| "funded delivery archive has no event ID".to_owned())?;
+        if !archive_ids.insert(event_id) {
+            return Err("funded delivery archive contains a duplicate event ID".to_owned());
+        }
         let event = records
             .iter()
             .find(|event| event.id == event_id)
@@ -3790,7 +3787,17 @@ fn restore_funded_deliveries(
                 return Err("funded relay archive cannot contain direct provenance".to_owned());
             }
         };
+        let reconstructed = serde_json::to_value(&delivery)
+            .map_err(|error| format!("restored funded delivery cannot be encoded: {error}"))?;
+        if &reconstructed != entry {
+            return Err(
+                "funded delivery archive differs from its reconstructed signed receipt".to_owned(),
+            );
+        }
         restored.push(delivery);
+    }
+    if archive_ids != record_ids {
+        return Err("funded delivery archive event IDs differ from the session".to_owned());
     }
     Ok(restored)
 }
@@ -4310,6 +4317,91 @@ mod tests {
             Some(r#"{ "id" : "aa", "content" : "},[" }"#)
         );
         assert_eq!(relay_array_element_raw(message, 3), None);
+    }
+
+    #[test]
+    fn funded_delivery_restore_requires_exact_archived_receipt_bytes() {
+        let sender = MarketSigner::from_secret_bytes([1; 32]).expect("sender key should be valid");
+        let requester =
+            MarketSigner::from_secret_bytes([2; 32]).expect("requester key should be valid");
+        let config = SwapClientConfig {
+            session_id: "11".repeat(32),
+            requester_pubkey: sender.pubkey().to_owned(),
+            provider_pubkey: requester.pubkey().to_owned(),
+            offering_address: format!("39601:{}:{}", requester.pubkey(), "22".repeat(32)),
+        };
+        let factory = SwapRecordFactory::new(config).expect("factory config should be valid");
+        let (event, raw_signed_event) = sign_request(
+            factory
+                .rfq(100, &"33".repeat(32), 200, json!({"constraints":{}}))
+                .expect("RFQ should be composed"),
+            &sender,
+        )
+        .expect("RFQ should be signed");
+        let wrapped = wrap_mkt_record(
+            &raw_signed_event,
+            &sender,
+            requester.pubkey(),
+            WrapMaterial {
+                seal_created_at: 101,
+                wrap_created_at: 102,
+                seal_nonce: [3; 32],
+                wrap_nonce: [4; 32],
+                wrap_secret: [5; 32],
+            },
+        )
+        .expect("RFQ should wrap");
+        let raw_wrap = serde_json::to_vec(&wrapped.event).expect("wrap should encode");
+        let delivered = unwrap_mkt_record_raw(&raw_wrap, &requester, &swp_profiles())
+            .expect("wrap should unwrap");
+        let delivery = SignedRecordDelivery::from_delivered(&delivered, 103)
+            .expect("delivery should validate");
+        let archive = json!([delivery]);
+        restore_funded_deliveries(archive.clone(), std::slice::from_ref(&event), &requester)
+            .expect("exact archive should restore");
+
+        for field in ["sender_pubkey", "wrap_event_id"] {
+            let mut mutated = archive.clone();
+            mutated[0][field] = json!("ff".repeat(32));
+            assert!(
+                restore_funded_deliveries(mutated, std::slice::from_ref(&event), &requester,)
+                    .is_err(),
+                "{field} mutation should be rejected"
+            );
+        }
+        let mut mutated_inner = archive;
+        let bytes = mutated_inner[0]["raw_signed_event"]
+            .as_array_mut()
+            .expect("inner bytes should be an array");
+        let byte = bytes.first_mut().expect("inner bytes should not be empty");
+        *byte = json!(byte.as_u64().unwrap_or_default() ^ 1);
+        assert!(
+            restore_funded_deliveries(mutated_inner, std::slice::from_ref(&event), &requester,)
+                .is_err()
+        );
+
+        let (second_event, second_raw_signed_event) = sign_request(
+            factory
+                .rfq(104, &"34".repeat(32), 200, json!({"constraints":{}}))
+                .expect("second RFQ should be composed"),
+            &sender,
+        )
+        .expect("second RFQ should be signed");
+        let second_delivery =
+            SignedRecordDelivery::from_locally_signed(second_raw_signed_event, 105)
+                .expect("local delivery should validate");
+        let records = vec![event, second_event];
+        let exact_archive = json!([delivery, second_delivery]);
+        restore_funded_deliveries(exact_archive.clone(), &records, &requester)
+            .expect("exact event-ID set should restore");
+
+        let mut omitted = exact_archive.clone();
+        omitted.as_array_mut().expect("archive array").pop();
+        assert!(restore_funded_deliveries(omitted, &records, &requester).is_err());
+
+        let mut duplicated = exact_archive;
+        duplicated[1] = duplicated[0].clone();
+        assert!(restore_funded_deliveries(duplicated, &records, &requester).is_err());
     }
 
     #[test]

@@ -217,6 +217,8 @@ fn fixture_manifest_hashes_exact_sorted_committed_bytes() {
     assert!(paths.contains("tests/fixtures/nipmkt/swp-coordination-v1.json"));
     assert!(paths.contains("tests/fixtures/nipmkt/swp-client-engine-v1.json"));
     assert!(paths.contains("tests/fixtures/nipmkt/swp-requester-api-v1.json"));
+    assert!(paths.contains("tests/fixtures/nipmkt/swp-requester-api-v2.json"));
+    assert!(paths.contains("tests/fixtures/nipmkt/swp-requester-api-source-v2.json"));
 }
 
 fn lower_hex(bytes: &[u8]) -> String {

@@ -68,7 +68,10 @@ accept only locally signed bytes, exact direct bytes, or the non-forgeable
 result of the transport unwrap operation.
 The funded lab stores the receipt archive beside the client snapshot, records
 both artifact paths in every restartable checkpoint, and re-decrypts archived
-gift wraps before restoring the requester view.
+gift wraps before restoring the requester view. Restore accepts a receipt only
+when the reconstructed delivery equals the complete archived object, including
+the inner signed bytes, outer wrap bytes and ID, sender, provenance, and
+observation time.
 
 The requester projection exposes a signed Quote's `price_feed` pin for
 inspection. Order construction rejects every non-null pin with
@@ -76,19 +79,51 @@ inspection. Order construction rejects every non-null pin with
 that maps the pinned observation to the signed amounts. A URL and response
 digest alone are not an amount-verification rule.
 
-The versioned `swp-requester-api-v1.json` artifact publishes exact schemas for
+The versioned `swp-requester-api-v2.json` artifact publishes exact schemas for
 Order, Contract draft, Contract signing, signed-only session projection, and
-session projection with persisted local external-effect results. Every
-operation has positive and negative cases replayed by both the native and WASM
-fixture probes. The relay contract descriptor names this artifact and version
-so SDK generation does not infer an API from Rust source.
+session projection from a bounded persisted snapshot. Its cases resolve pinned
+JSON pointers into operation-shaped inputs, validate each input before
+dispatch, and validate the actual output or error against the operation's
+closed schema. Every operation has positive and negative cases replayed by
+both the native and WASM fixture probes. The relay contract descriptor names
+this artifact and version so SDK generation does not infer an API from Rust
+source. Delivery inputs use lowercase even-length `raw_signed_event_hex`, with
+a 65,536-character limit encoding the MKT private-record limit of 32,768 exact
+bytes. Snapshot inputs use `snapshot_json_hex`, capped at 4,194,304 lowercase
+hex characters for the runtime's 2,097,152-byte limit. Hex makes those byte
+bounds identical under draft-2020-12, Rust, and JavaScript string semantics;
+the corpus includes a signed multibyte UTF-8 event and a multibyte terminal
+snapshot parity check. Retained outer gift-wrap bytes remain bounded to
+524,288 bytes. Schema replay implements exact-one `oneOf` and rejects
+unsupported keywords. The exported boundary further limits arrays to 512
+items and JSON integers to the signed 64-bit maximum; the Rust runtime's wider
+internal integer range is not part of this versioned SDK surface.
+
+The published v1 bytes remain frozen for reproducibility, but v1 is withdrawn
+for SDK generation. It exposed generic external-effect result rows as an input
+surface, which could turn caller-authored rows into terminal authority. V2 has
+no such operation: terminal authority is available only through the restored
+snapshot operation after typed request/result and funding-ledger validation.
+The v2 corpus includes signed-only and restored terminal views, digest,
+cardinality, and funding mutations, and non-null price-feed refusal at every
+public operation.
+
+OpenAgents issue #9309 still pins Immortal commit `15e77e0` and does not yet
+consume a requester API artifact. Its re-pin and v2 adoption follow the pushed
+Immortal artifact; until then, the v2 contract is an Immortal export and not a
+claim that the downstream Effect package already generates this surface.
 
 Signed Status and Close records remain counterparty claims. The signed-only
 session operation can project a claimed terminal state, but it keeps
 `watch_terminal` and `local_effects_verified` false and never reports
-`terminal_verified`. The local-effects operation reruns the full lifecycle and
-loss-accounting validators against exact persisted `ExternalEffectResult`
-bindings before those fields can become true.
+`terminal_verified`. The restored-snapshot operation reruns session, lifecycle,
+typed request/result cardinality and binding, post-funding, and loss-accounting
+validation before those fields can become true. External effect result rows
+are serialize-only opaque values: callers provide only adapter outcome
+metadata, while the session derives their Order, effect, and request bindings.
+Snapshot consistency is the library proof. Durable storage and the local
+origin of that snapshot remain responsibilities of the trusted embedding
+wallet and are not presented as cryptographic attestation.
 
 ## Verify before fund
 

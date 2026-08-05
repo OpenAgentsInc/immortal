@@ -1255,8 +1255,8 @@ fn mkt_grammar() -> MktGrammar {
                     "explicit_unresolved_loss",
                 ],
                 fixture: "tests/fixtures/nipmkt/swp-client-engine-v1.json",
-                requester_api_artifact: "tests/fixtures/nipmkt/swp-requester-api-v1.json",
-                requester_api_version: "openagents.mkt-swp.requester-api-fixture.v1",
+                requester_api_artifact: "tests/fixtures/nipmkt/swp-requester-api-v2.json",
+                requester_api_version: "openagents.mkt-swp.requester-api-fixture.v2",
             },
             boltz_facade: BoltzFacadeContract {
                 mapping_revision: BOLTZ_MAPPING_REVISION,

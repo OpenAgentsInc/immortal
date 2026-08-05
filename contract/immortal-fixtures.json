@@ -402,9 +402,21 @@
       "scope": "provider"
     },
     {
+      "path": "tests/fixtures/nipmkt/swp-requester-api-source-v2.json",
+      "sha256": "3f1f6beb1f87fcef4d46adf7896d659b175790368156f772b12016bb482b8f8c",
+      "bytes": 663110,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/nipmkt/swp-requester-api-v1.json",
       "sha256": "7ccd8c25db2ac505d805e22da2ee5d8535092e7eb2141b845749d99fe3173b17",
       "bytes": 36782,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/swp-requester-api-v2.json",
+      "sha256": "3037c61bb348bc34ae486b5949a080a83124968bfc5cadb1dd41822ca6c25486",
+      "bytes": 75963,
       "scope": "client"
     },
     {
