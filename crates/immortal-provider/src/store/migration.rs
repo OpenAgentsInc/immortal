@@ -27,11 +27,18 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "provider_store",
-    sql: include_str!("../../../../migrations/provider/0001_provider_store.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "provider_store",
+        sql: include_str!("../../../../migrations/provider/0001_provider_store.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "boltz_invoice_binding",
+        sql: include_str!("../../../../migrations/provider/0002_boltz_invoice_binding.sql"),
+    },
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderMigrationReport {

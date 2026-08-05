@@ -2,11 +2,17 @@
 
 mod migration;
 
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 use immortal_client::mkt_swp_client::provider_support::reject_custody_material;
-use immortal_core::domain::Event;
-use serde_json::{Value, json};
+use immortal_core::{
+    domain::{
+        Event, MKT_QUOTE_KIND, MKT_RFQ_KIND, MKT_STATUS_KIND, MKT_SWP_SWAP_CONTRACT_KIND,
+        parse_unique_json,
+    },
+    mkt_swp_verify::parse_bolt11,
+};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tokio::task::JoinHandle;
 use tokio_postgres::{Client, NoTls, Transaction};
@@ -16,6 +22,7 @@ pub use migration::ProviderMigrationReport;
 pub(crate) const MAX_SESSION_RECORDS: usize = 512;
 pub(crate) const MAX_SESSION_QUERY: usize = 512;
 pub(crate) const MAX_ACTIVE_SESSION_RECORD_QUERY: usize = 12 * MAX_SESSION_RECORDS;
+pub(crate) const MAX_SESSION_BATCH: usize = 64;
 pub(crate) const MAX_RESERVATION_UTXOS: usize = 64;
 pub(crate) const MAX_WATCH_CLAIM: usize = 64;
 pub(crate) const MAX_ALERT_QUERY: usize = 128;
@@ -37,6 +44,20 @@ const SELECT_SESSION_RECORDS_SQL: &str = r#"
 SELECT signed_event FROM provider_session_record
 WHERE session_id = $1 ORDER BY created_at, event_id LIMIT $2
 "#;
+const SELECT_BOLTZ_INVOICE_CANDIDATE_SESSIONS_SQL: &str = r#"
+SELECT DISTINCT session_id FROM provider_session_record
+WHERE kind = 39607
+  AND session_id > $1
+  AND (signed_event ->> 'content')::jsonb #>> '{mkt_swp,swp_state}' = 'hold_invoice_ready'
+  AND jsonb_typeof((signed_event ->> 'content')::jsonb #> '{mkt_swp,invoice}') = 'string'
+ORDER BY session_id LIMIT $2
+"#;
+const SELECT_SESSION_RECORD_BATCH_SQL: &str = r#"
+SELECT session_id, signed_event FROM provider_session_record
+WHERE session_id = ANY($1)
+ORDER BY session_id, created_at, event_id
+LIMIT $2
+"#;
 const HAS_SESSION_RECORDS_SQL: &str = "SELECT EXISTS (SELECT 1 FROM provider_session_record)";
 const SELECT_ACTIVE_SESSION_RECORDS_SQL: &str = r#"
 SELECT record.session_id, record.signed_event
@@ -48,11 +69,15 @@ WHERE NOT EXISTS (
 ORDER BY record.session_id, record.created_at, record.event_id
 LIMIT $1
 "#;
-const SELECT_BOUNDED_SESSION_RECORDS_SQL: &str = r#"
-SELECT session_id, signed_event
-FROM provider_session_record
-ORDER BY session_id, created_at, event_id
-LIMIT $1
+const INSERT_BOLTZ_INVOICE_BINDING_SQL: &str = r#"
+INSERT INTO provider_boltz_invoice_binding
+    (payment_hash, invoice, session_id, status_event_id)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (payment_hash) DO NOTHING
+"#;
+const SELECT_BOLTZ_INVOICE_BINDING_SQL: &str = r#"
+SELECT invoice, session_id, status_event_id
+FROM provider_boltz_invoice_binding WHERE payment_hash = $1
 "#;
 const INSERT_SESSION_DISPOSITION_SQL: &str = r#"
 INSERT INTO provider_session_disposition (session_id, reason_code, disposed_at)
@@ -599,6 +624,14 @@ pub struct ProviderStore {
     connection: JoinHandle<()>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InvoiceBinding {
+    payment_hash: String,
+    invoice: String,
+    session_id: String,
+    status_event_id: String,
+}
+
 impl ProviderStore {
     pub async fn connect(
         database_url: &str,
@@ -610,17 +643,19 @@ impl ProviderStore {
             }
         });
         let report = migration::apply(&mut client).await?;
+        reconcile_invoice_bindings(&mut client).await?;
         Ok((Self { client, connection }, report))
     }
 
     pub async fn connect_verified(database_url: &str) -> Result<Self, ProviderStoreError> {
-        let (client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
         let connection = tokio::spawn(async move {
             if let Err(error) = connection.await {
                 eprintln!("provider database connection failed: {error}");
             }
         });
         migration::verify(&client).await?;
+        reconcile_invoice_bindings(&mut client).await?;
         Ok(Self { client, connection })
     }
 
@@ -651,6 +686,9 @@ impl ProviderStore {
             let matches = row.get::<_, String>(0) == session_id
                 && row.get::<_, String>(1) == event_sha256
                 && row.get::<_, Value>(2) == signed_event;
+            if matches {
+                persist_validated_invoice_binding(&transaction, session_id).await?;
+            }
             transaction.commit().await?;
             return replay_or_conflict(matches, "signed session record");
         }
@@ -677,6 +715,7 @@ impl ProviderStore {
             )
             .await?;
         if inserted == 1 {
+            persist_validated_invoice_binding(&transaction, session_id).await?;
             transaction.commit().await?;
             return Ok(StoreWriteOutcome::Stored);
         }
@@ -684,6 +723,9 @@ impl ProviderStore {
         let matches = row.get::<_, String>(0) == session_id
             && row.get::<_, String>(1) == event_sha256
             && row.get::<_, Value>(2) == signed_event;
+        if matches {
+            persist_validated_invoice_binding(&transaction, session_id).await?;
+        }
         transaction.commit().await?;
         if matches {
             Ok(StoreWriteOutcome::Replay)
@@ -763,38 +805,90 @@ impl ProviderStore {
         })
     }
 
-    pub async fn bounded_session_records(
+    pub async fn session_records_for_sessions(
         &self,
-        limit: usize,
-    ) -> Result<Vec<Event>, ProviderStoreError> {
+        session_ids: &[String],
+        per_session_limit: usize,
+    ) -> Result<BTreeMap<String, Vec<Event>>, ProviderStoreError> {
         self.ensure_current()?;
-        let limit = bounded_limit(limit, MAX_ACTIVE_SESSION_RECORD_QUERY)?;
-        let query_limit = limit.checked_add(1).ok_or_else(|| {
-            ProviderStoreError::InvalidInput("session record query limit overflows".to_owned())
-        })?;
-        let statement = self
-            .client
-            .prepare(SELECT_BOUNDED_SESSION_RECORDS_SQL)
-            .await?;
-        let rows = self.client.query(&statement, &[&query_limit]).await?;
-        if i64::try_from(rows.len()).unwrap_or(i64::MAX) > limit {
+        if session_ids.is_empty() || session_ids.len() > MAX_SESSION_BATCH {
             return Err(ProviderStoreError::InvalidInput(format!(
-                "session record bound {limit} reached"
+                "session batch must contain 1-{MAX_SESSION_BATCH} IDs"
             )));
         }
-        rows.into_iter()
-            .map(|row| {
-                let stored_session_id: String = row.get(0);
-                let event: Event = serde_json::from_value(row.get::<_, Value>(1))
-                    .map_err(|error| ProviderStoreError::InvalidInput(error.to_string()))?;
-                if exactly_one_tag(&event, "session")? != stored_session_id {
-                    return Err(ProviderStoreError::MigrationDrift(
-                        "stored session record is indexed under another session".to_owned(),
-                    ));
-                }
-                Ok(event)
-            })
-            .collect()
+        for session_id in session_ids {
+            validate_hex(session_id, "session ID")?;
+        }
+        let per_session_limit = bounded_limit(per_session_limit, MAX_SESSION_QUERY)?;
+        let total_limit = usize::try_from(per_session_limit)
+            .ok()
+            .and_then(|limit| limit.checked_mul(session_ids.len()))
+            .ok_or_else(|| {
+                ProviderStoreError::InvalidInput("session batch limit overflows".to_owned())
+            })?;
+        let query_limit = bounded_limit(
+            total_limit.checked_add(1).ok_or_else(|| {
+                ProviderStoreError::InvalidInput("session batch limit overflows".to_owned())
+            })?,
+            MAX_SESSION_BATCH * MAX_SESSION_QUERY + 1,
+        )?;
+        let statement = self.client.prepare(SELECT_SESSION_RECORD_BATCH_SQL).await?;
+        let rows = self
+            .client
+            .query(&statement, &[&session_ids, &query_limit])
+            .await?;
+        if rows.len() > total_limit {
+            return Err(ProviderStoreError::InvalidInput(format!(
+                "session batch record bound {total_limit} reached"
+            )));
+        }
+        let mut grouped = BTreeMap::<String, Vec<Event>>::new();
+        for row in rows {
+            let stored_session_id: String = row.get(0);
+            let event: Event = serde_json::from_value(row.get::<_, Value>(1))
+                .map_err(|error| ProviderStoreError::InvalidInput(error.to_string()))?;
+            if exactly_one_tag(&event, "session")? != stored_session_id {
+                return Err(ProviderStoreError::MigrationDrift(
+                    "stored session record is indexed under another session".to_owned(),
+                ));
+            }
+            let records = grouped.entry(stored_session_id).or_default();
+            if records.len() >= usize::try_from(per_session_limit).unwrap_or(usize::MAX) {
+                return Err(ProviderStoreError::InvalidInput(
+                    "session record bound reached in batch query".to_owned(),
+                ));
+            }
+            records.push(event);
+        }
+        Ok(grouped)
+    }
+
+    pub async fn reverse_invoice_session(
+        &self,
+        invoice: &str,
+    ) -> Result<Option<String>, ProviderStoreError> {
+        self.ensure_current()?;
+        let parsed = parse_bolt11(invoice)
+            .map_err(|error| ProviderStoreError::InvalidInput(error.to_string()))?;
+        let payment_hash = lower_hex(&parsed.payment_hash);
+        let statement = self
+            .client
+            .prepare(SELECT_BOLTZ_INVOICE_BINDING_SQL)
+            .await?;
+        let Some(row) = self.client.query_opt(&statement, &[&payment_hash]).await? else {
+            return Ok(None);
+        };
+        let stored_invoice: String = row.get(0);
+        let session_id: String = row.get(1);
+        let status_event_id: String = row.get(2);
+        validate_hex(&session_id, "invoice session")?;
+        validate_hex(&status_event_id, "invoice status event")?;
+        if stored_invoice != invoice {
+            return Err(ProviderStoreError::Conflict(
+                "payment hash is bound to another invoice".to_owned(),
+            ));
+        }
+        Ok(Some(session_id))
     }
 
     pub async fn dispose_session(
@@ -2438,6 +2532,228 @@ fn validate_watch_request(request: &WatchJobRequest) -> Result<(), ProviderStore
     Ok(())
 }
 
+async fn reconcile_invoice_bindings(client: &mut Client) -> Result<(), ProviderStoreError> {
+    let statement = client
+        .prepare(SELECT_BOLTZ_INVOICE_CANDIDATE_SESSIONS_SQL)
+        .await?;
+    let mut cursor = String::new();
+    loop {
+        let limit = i64::try_from(MAX_SESSION_BATCH).unwrap_or(i64::MAX);
+        let session_ids = client
+            .query(&statement, &[&cursor, &limit])
+            .await?
+            .into_iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<Vec<_>>();
+        let Some(last_session_id) = session_ids.last().cloned() else {
+            return Ok(());
+        };
+        let transaction = client.transaction().await?;
+        let lock = transaction.prepare(LOCK_SESSION_ADVISORY_SQL).await?;
+        for session_id in &session_ids {
+            validate_hex(session_id, "invoice session")?;
+            transaction.execute(&lock, &[session_id]).await?;
+            persist_validated_invoice_binding(&transaction, session_id).await?;
+        }
+        transaction.commit().await?;
+        cursor = last_session_id;
+    }
+}
+
+async fn persist_validated_invoice_binding(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+) -> Result<(), ProviderStoreError> {
+    let select_records = transaction.prepare(SELECT_SESSION_RECORDS_SQL).await?;
+    let records = transaction
+        .query(
+            &select_records,
+            &[
+                &session_id,
+                &(i64::try_from(MAX_SESSION_RECORDS).unwrap_or(i64::MAX)),
+            ],
+        )
+        .await?
+        .into_iter()
+        .map(|row| {
+            serde_json::from_value::<Event>(row.get::<_, Value>(0))
+                .map_err(|error| ProviderStoreError::MigrationDrift(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(binding) = validated_invoice_binding(&records, session_id)? else {
+        return Ok(());
+    };
+    let insert = transaction
+        .prepare(INSERT_BOLTZ_INVOICE_BINDING_SQL)
+        .await?;
+    transaction
+        .execute(
+            &insert,
+            &[
+                &binding.payment_hash,
+                &binding.invoice,
+                &binding.session_id,
+                &binding.status_event_id,
+            ],
+        )
+        .await?;
+    let select = transaction
+        .prepare(SELECT_BOLTZ_INVOICE_BINDING_SQL)
+        .await?;
+    let row = transaction
+        .query_one(&select, &[&binding.payment_hash])
+        .await?;
+    if row.get::<_, String>(0) != binding.invoice
+        || row.get::<_, String>(1) != binding.session_id
+        || row.get::<_, String>(2) != binding.status_event_id
+    {
+        return Err(ProviderStoreError::Conflict(
+            "BOLT11 payment hash replay changed its signed binding".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validated_invoice_binding(
+    records: &[Event],
+    session_id: &str,
+) -> Result<Option<InvoiceBinding>, ProviderStoreError> {
+    let quotes = records
+        .iter()
+        .filter(|event| event.kind == MKT_QUOTE_KIND)
+        .collect::<Vec<_>>();
+    let [quote] = quotes.as_slice() else {
+        if quotes.is_empty() {
+            return Ok(None);
+        }
+        return Err(ProviderStoreError::Conflict(
+            "invoice session has multiple Quotes".to_owned(),
+        ));
+    };
+    let provider = quote.pubkey.as_str();
+    let mut candidates = Vec::new();
+    for event in records
+        .iter()
+        .filter(|event| event.kind == MKT_STATUS_KIND && event.pubkey == provider)
+    {
+        let profile = event_profile(event)?;
+        if profile.get("swp_state").and_then(Value::as_str) == Some("hold_invoice_ready") {
+            candidates.push((event, profile));
+        }
+    }
+    let [(status, status_profile)] = candidates.as_slice() else {
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        return Err(ProviderStoreError::Conflict(
+            "invoice session has multiple provider hold-invoice records".to_owned(),
+        ));
+    };
+    let invoice = status_profile
+        .get("invoice")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ProviderStoreError::Conflict("provider hold-invoice Status has no BOLT11".to_owned())
+        })?;
+
+    let requesters = records
+        .iter()
+        .filter(|event| event.kind == MKT_RFQ_KIND)
+        .collect::<Vec<_>>();
+    let [rfq] = requesters.as_slice() else {
+        if requesters.is_empty() {
+            return Ok(None);
+        }
+        return Err(ProviderStoreError::Conflict(
+            "invoice session has multiple RFQs".to_owned(),
+        ));
+    };
+    if rfq.pubkey == provider {
+        return Err(ProviderStoreError::Conflict(
+            "invoice session participants are not distinct".to_owned(),
+        ));
+    }
+    let quote_profile = event_profile(quote)?;
+    let quote_terms = quote_profile
+        .get("terms")
+        .and_then(Value::as_object)
+        .ok_or_else(|| ProviderStoreError::Conflict("Quote terms are absent".to_owned()))?;
+    if quote_terms.get("swap_type").and_then(Value::as_str) != Some("reverse") {
+        return Err(ProviderStoreError::Conflict(
+            "invoice binding requires a reverse Quote".to_owned(),
+        ));
+    }
+
+    let contracts = records
+        .iter()
+        .filter(|event| event.kind == MKT_SWP_SWAP_CONTRACT_KIND)
+        .collect::<Vec<_>>();
+    if contracts.len() < 2 {
+        return Ok(None);
+    }
+    if contracts.len() != 2
+        || !contracts.iter().any(|event| event.pubkey == rfq.pubkey)
+        || !contracts.iter().any(|event| event.pubkey == provider)
+    {
+        return Err(ProviderStoreError::Conflict(
+            "invoice binding requires exact bilateral Contracts".to_owned(),
+        ));
+    }
+    let first_contract = event_profile(contracts[0])?
+        .get("contract")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| ProviderStoreError::Conflict("Swap Contract is absent".to_owned()))?;
+    let second_contract = event_profile(contracts[1])?
+        .get("contract")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| ProviderStoreError::Conflict("Swap Contract is absent".to_owned()))?;
+    if first_contract != second_contract
+        || first_contract.get("swap_type").and_then(Value::as_str) != Some("reverse")
+    {
+        return Err(ProviderStoreError::Conflict(
+            "bilateral reverse Contracts do not match".to_owned(),
+        ));
+    }
+    let payment_hash = first_contract
+        .get("payment_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ProviderStoreError::Conflict("Contract payment hash is absent".to_owned())
+        })?;
+    validate_hex(payment_hash, "Contract payment hash")?;
+    if quote_terms.get("payment_hash").and_then(Value::as_str) != Some(payment_hash) {
+        return Err(ProviderStoreError::Conflict(
+            "Quote and Contract payment hashes differ".to_owned(),
+        ));
+    }
+    let parsed =
+        parse_bolt11(invoice).map_err(|error| ProviderStoreError::Conflict(error.to_string()))?;
+    if lower_hex(&parsed.payment_hash) != payment_hash {
+        return Err(ProviderStoreError::Conflict(
+            "BOLT11 and Contract payment hashes differ".to_owned(),
+        ));
+    }
+    Ok(Some(InvoiceBinding {
+        payment_hash: payment_hash.to_owned(),
+        invoice: invoice.to_owned(),
+        session_id: session_id.to_owned(),
+        status_event_id: status.id.clone(),
+    }))
+}
+
+fn event_profile(event: &Event) -> Result<Map<String, Value>, ProviderStoreError> {
+    parse_unique_json(&event.content, "provider session record")
+        .map_err(|error| ProviderStoreError::InvalidInput(error.to_string()))?
+        .get("mkt_swp")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| {
+            ProviderStoreError::InvalidInput("provider session profile is absent".to_owned())
+        })
+}
+
 fn validate_signed_event(value: &Value) -> Result<(), ProviderStoreError> {
     validate_public_json(value)?;
     let content = value
@@ -2621,4 +2937,8 @@ fn digest(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

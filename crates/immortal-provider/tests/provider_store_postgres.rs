@@ -3,8 +3,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use immortal_core::{
-    domain::{Event, MKT_CLOSE_KIND, MKT_RFQ_KIND, Tag},
+    domain::{Event, MKT_CLOSE_KIND, MKT_RFQ_KIND, MKT_STATUS_KIND, Tag},
     market::MarketSigner,
+    mkt_swp_verify::parse_bolt11,
 };
 use immortal_provider::store::{
     HardReservationRequest, OutPoint, ProviderStore, ProviderStoreError, PublicEffectRequest,
@@ -31,7 +32,7 @@ async fn provider_state_is_atomic_bounded_and_restart_safe() {
     let (mut first, migration) = ProviderStore::connect(&database_url)
         .await
         .expect("provider migrations must apply");
-    assert!(migration.applied_versions.len() <= 1);
+    assert!(migration.applied_versions.len() <= 2);
     let mut second = ProviderStore::connect_verified(&database_url)
         .await
         .expect("provider migrations must verify");
@@ -673,6 +674,261 @@ async fn active_session_recovery_excludes_only_durable_dispositions() {
             .iter()
             .all(|record| record != &closed_rfq && record != &close)
     );
+}
+
+#[tokio::test]
+async fn reverse_invoice_lookup_is_indexed_beyond_global_history_prefix() {
+    const BOLT11: &str = "lnbc10u1p3unwfusp5t9r3yymhpfqculx78u027lxspgxcr2n2987mx2j55nnfs95nxnzqpp5jmrh92pfld78spqs78v9euf2385t83uvpwk9ldrlvf6ch7tpascqhp5zvkrmemgth3tufcvflmzjzfvjt023nazlhljz2n9hattj4f8jq8qxqyjw5qcqpjrzjqtc4fc44feggv7065fqe5m4ytjarg3repr5j9el35xhmtfexc42yczarjuqqfzqqqqqqqqlgqqqqqqgq9q9qxpqysgq079nkq507a5tw7xgttmj4u990j7wfggtrasah5gd4ywfr2pjcn29383tphp4t48gquelz9z78p4cq7ml3nrrphw5w6eckhjwmhezhnqpy6gyf0";
+
+    let Ok(database_url) = std::env::var("IMMORTAL_PROVIDER_TEST_DATABASE_URL") else {
+        eprintln!("skipping provider Postgres test: IMMORTAL_PROVIDER_TEST_DATABASE_URL is unset");
+        return;
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock must follow Unix epoch")
+        .as_nanos();
+    let namespace = format!("{}-{nonce}", std::process::id());
+    let id = |label: &str| digest(format!("provider-invoice-index:{namespace}:{label}").as_bytes());
+    let event_prefix = &id("event-prefix")[..48];
+    let session_prefix = &id("session-prefix")[..48];
+    let (mut store, _) = ProviderStore::connect(&database_url)
+        .await
+        .expect("provider migrations must apply");
+    let (client, connection) = tokio_postgres::connect(&database_url, tokio_postgres::NoTls)
+        .await
+        .expect("test database must connect");
+    let connection = tokio::spawn(connection);
+    let statement = client
+        .prepare(
+            r#"
+            WITH generated AS (
+                SELECT sequence,
+                       $1::text || lpad(to_hex(sequence), 16, '0') AS event_id,
+                       $2::text || lpad(to_hex(((sequence - 1) / 512) + 1), 16, '0') AS session_id
+                FROM generate_series(1::bigint, 6144::bigint) AS sequence
+            )
+            INSERT INTO provider_session_record
+                (event_id, session_id, author_pubkey, kind, created_at,
+                 event_sha256, signed_event)
+            SELECT event_id, session_id, repeat('1', 64), 39604, sequence,
+                   repeat('a', 64),
+                   jsonb_build_object(
+                       'id', event_id,
+                       'pubkey', repeat('1', 64),
+                       'created_at', sequence,
+                       'kind', 39604,
+                       'tags', jsonb_build_array(jsonb_build_array('session', session_id)),
+                       'content', '{"mkt_swp":{"fixture":"invoice-index-history"}}',
+                       'sig', repeat('2', 128)
+                   )
+            FROM generated
+            "#,
+        )
+        .await
+        .expect("history insert must prepare");
+    assert_eq!(
+        client
+            .execute(&statement, &[&event_prefix, &session_prefix])
+            .await
+            .expect("history records must insert"),
+        6_144
+    );
+
+    let payment_hash = parse_bolt11(BOLT11)
+        .expect("fixture BOLT11 must parse")
+        .payment_hash
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let target_session = id("target-session");
+    let requester = MarketSigner::from_secret_bytes([40; 32]).expect("requester signer");
+    let provider = MarketSigner::from_secret_bytes([41; 32]).expect("provider signer");
+    let target_records = reverse_invoice_records(
+        &requester,
+        &provider,
+        &target_session,
+        &payment_hash,
+        BOLT11,
+        6_145,
+    );
+    for record in &target_records {
+        store
+            .persist_session_record(record)
+            .await
+            .expect("validated invoice session record must persist");
+    }
+    assert_eq!(
+        store
+            .reverse_invoice_session(BOLT11)
+            .await
+            .expect("indexed invoice lookup must succeed"),
+        Some(target_session)
+    );
+
+    let poisoned_session = id("poisoned-session");
+    let foreign = MarketSigner::from_secret_bytes([42; 32]).expect("foreign signer");
+    for record in reverse_session_prerequisites(
+        &requester,
+        &provider,
+        &poisoned_session,
+        &payment_hash,
+        7_000,
+    ) {
+        store
+            .persist_session_record(&record)
+            .await
+            .expect("poison-session prerequisite must persist");
+    }
+    for (signer, created_at) in [(&requester, 7_004), (&foreign, 7_005)] {
+        let poison = signed_store_profile_event(
+            signer,
+            &poisoned_session,
+            MKT_STATUS_KIND,
+            created_at,
+            json!({"invoice":BOLT11,"swp_state":"hold_invoice_ready"}),
+        );
+        store
+            .persist_session_record(&poison)
+            .await
+            .expect("non-provider invoice Status remains durable evidence");
+    }
+    assert_eq!(
+        store
+            .reverse_invoice_session(BOLT11)
+            .await
+            .expect("invoice lookup after poison records must succeed"),
+        Some(id("target-session"))
+    );
+
+    let mismatch_session = id("mismatch-session");
+    let mismatch_hash = "00".repeat(32);
+    for record in reverse_session_prerequisites(
+        &requester,
+        &provider,
+        &mismatch_session,
+        &mismatch_hash,
+        8_000,
+    ) {
+        store
+            .persist_session_record(&record)
+            .await
+            .expect("mismatch-session prerequisite must persist");
+    }
+    let mismatch = signed_store_profile_event(
+        &provider,
+        &mismatch_session,
+        MKT_STATUS_KIND,
+        8_004,
+        json!({"invoice":BOLT11,"swp_state":"hold_invoice_ready"}),
+    );
+    assert!(matches!(
+        store.persist_session_record(&mismatch).await,
+        Err(ProviderStoreError::Conflict(_))
+    ));
+    let delete_binding = client
+        .prepare("DELETE FROM provider_boltz_invoice_binding WHERE session_id = $1")
+        .await
+        .expect("binding deletion must prepare");
+    assert_eq!(
+        client
+            .execute(&delete_binding, &[&id("target-session")])
+            .await
+            .expect("test binding must delete"),
+        1
+    );
+    drop(store);
+    let rebuilt = ProviderStore::connect_verified(&database_url)
+        .await
+        .expect("startup reconciliation must validate and rebuild the invoice index");
+    assert_eq!(
+        rebuilt
+            .reverse_invoice_session(BOLT11)
+            .await
+            .expect("rebuilt invoice lookup must succeed"),
+        Some(id("target-session"))
+    );
+    drop(rebuilt);
+    drop(client);
+    connection
+        .await
+        .expect("database connection task must join")
+        .expect("database connection must close cleanly");
+}
+
+fn reverse_invoice_records(
+    requester: &MarketSigner,
+    provider: &MarketSigner,
+    session_id: &str,
+    payment_hash: &str,
+    invoice: &str,
+    created_at: u64,
+) -> Vec<Event> {
+    let mut records =
+        reverse_session_prerequisites(requester, provider, session_id, payment_hash, created_at);
+    records.push(signed_store_profile_event(
+        provider,
+        session_id,
+        MKT_STATUS_KIND,
+        created_at + 4,
+        json!({"invoice":invoice,"swp_state":"hold_invoice_ready"}),
+    ));
+    records
+}
+
+fn reverse_session_prerequisites(
+    requester: &MarketSigner,
+    provider: &MarketSigner,
+    session_id: &str,
+    payment_hash: &str,
+    created_at: u64,
+) -> Vec<Event> {
+    let contract = json!({"payment_hash":payment_hash,"swap_type":"reverse"});
+    vec![
+        signed_store_profile_event(
+            requester,
+            session_id,
+            MKT_RFQ_KIND,
+            created_at,
+            json!({"constraints":{"payment_hash":payment_hash}}),
+        ),
+        signed_store_profile_event(
+            provider,
+            session_id,
+            immortal_core::domain::MKT_QUOTE_KIND,
+            created_at + 1,
+            json!({"terms":{"payment_hash":payment_hash,"swap_type":"reverse"}}),
+        ),
+        signed_store_profile_event(
+            requester,
+            session_id,
+            immortal_core::domain::MKT_SWP_SWAP_CONTRACT_KIND,
+            created_at + 2,
+            json!({"contract":contract}),
+        ),
+        signed_store_profile_event(
+            provider,
+            session_id,
+            immortal_core::domain::MKT_SWP_SWAP_CONTRACT_KIND,
+            created_at + 3,
+            json!({"contract":contract}),
+        ),
+    ]
+}
+
+fn signed_store_profile_event(
+    signer: &MarketSigner,
+    session_id: &str,
+    kind: u16,
+    created_at: u64,
+    profile: serde_json::Value,
+) -> Event {
+    signer.sign(
+        created_at,
+        kind,
+        vec![Tag::new(vec!["session".to_owned(), session_id.to_owned()])],
+        json!({"mkt_swp":profile}).to_string(),
+    )
 }
 
 fn reservation(

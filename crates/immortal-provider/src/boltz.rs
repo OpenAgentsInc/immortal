@@ -44,8 +44,10 @@ pub const MAX_RAW_TRANSACTION_BYTES: usize = 1_000_000;
 pub const MAX_STATUS_IDS: usize = 64;
 pub const MAX_WS_SUBSCRIPTIONS: usize = 64;
 pub const MAX_WS_FRAME_BYTES: usize = 16 * 1024;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const WS_POLL_INTERVAL: Duration = Duration::from_millis(250);
+pub const MAX_WS_MESSAGES_PER_MINUTE: u32 = 120;
+pub const MAX_WS_STATUS_QUERY_BATCHES_PER_MINUTE: u32 = 60;
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+pub const WS_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltzConfig {
@@ -175,25 +177,37 @@ impl BoltzApi {
         if rates.len() >= MAX_RATE_IDENTITIES && !rates.contains_key(&address) {
             return false;
         }
-        let rate = rates.entry(address).or_insert(RateWindow {
-            started: now,
-            requests: 0,
-        });
-        if now.duration_since(rate.started) >= Duration::from_secs(60) {
-            rate.started = now;
-            rate.requests = 0;
-        }
-        if rate.requests >= MAX_REQUESTS_PER_MINUTE {
-            return false;
-        }
-        rate.requests += 1;
-        true
+        rates
+            .entry(address)
+            .or_insert_with(|| RateWindow::new(now))
+            .admit(now, MAX_REQUESTS_PER_MINUTE)
     }
 }
 
 struct RateWindow {
     started: Instant,
     requests: u32,
+}
+
+impl RateWindow {
+    fn new(now: Instant) -> Self {
+        Self {
+            started: now,
+            requests: 0,
+        }
+    }
+
+    fn admit(&mut self, now: Instant, limit: u32) -> bool {
+        if now.duration_since(self.started) >= Duration::from_secs(60) {
+            self.started = now;
+            self.requests = 0;
+        }
+        if self.requests >= limit {
+            return false;
+        }
+        self.requests += 1;
+        true
+    }
 }
 
 #[derive(Debug)]
@@ -283,7 +297,12 @@ async fn handle_connection(
 }
 
 async fn preview_http_head(stream: &TcpStream) -> Result<String, String> {
-    let started = Instant::now();
+    timeout(REQUEST_TIMEOUT, preview_http_head_inner(stream))
+        .await
+        .map_err(|_| "request head timed out".to_owned())?
+}
+
+async fn preview_http_head_inner(stream: &TcpStream) -> Result<String, String> {
     let mut preview = Box::new([0_u8; MAX_HTTP_HEAD_BYTES]);
     loop {
         let read = stream
@@ -303,9 +322,6 @@ async fn preview_http_head(stream: &TcpStream) -> Result<String, String> {
         }
         if read == MAX_HTTP_HEAD_BYTES {
             return Err("request head is too large".to_owned());
-        }
-        if started.elapsed() >= REQUEST_TIMEOUT {
-            return Err("request head timed out".to_owned());
         }
         sleep(Duration::from_millis(1)).await;
     }
@@ -337,15 +353,21 @@ struct HttpRequest {
 }
 
 async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
+    timeout(REQUEST_TIMEOUT, read_request_inner(stream))
+        .await
+        .map_err(|_| "request_timeout".to_owned())?
+}
+
+async fn read_request_inner(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     let mut bytes = Vec::with_capacity(1_024);
     let head_end = loop {
         if bytes.len() >= MAX_HTTP_HEAD_BYTES {
             return Err("request_head_too_large".to_owned());
         }
         let mut chunk = [0_u8; 1_024];
-        let read = timeout(REQUEST_TIMEOUT, stream.read(&mut chunk))
+        let read = stream
+            .read(&mut chunk)
             .await
-            .map_err(|_| "request_timeout".to_owned())?
             .map_err(|_| "request_read_failed".to_owned())?;
         if read == 0 {
             return Err("request_incomplete".to_owned());
@@ -396,9 +418,9 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     while bytes.len() - head_end < length {
         let remaining = length - (bytes.len() - head_end);
         let mut chunk = vec![0_u8; remaining.min(8 * 1024)];
-        let read = timeout(REQUEST_TIMEOUT, stream.read(&mut chunk))
+        let read = stream
+            .read(&mut chunk)
             .await
-            .map_err(|_| "request_timeout".to_owned())?
             .map_err(|_| "request_read_failed".to_owned())?;
         if read == 0 {
             return Err("request_incomplete".to_owned());
@@ -507,6 +529,7 @@ async fn route_request(api: &BoltzApi, request: HttpRequest) -> HttpResponse {
     }
 }
 
+#[derive(Debug)]
 struct ApiError {
     status: u16,
     code: String,
@@ -712,7 +735,6 @@ async fn create_response(
                 "invoice",
                 "pairHash",
                 "refundPublicKey",
-                "referralId",
                 "mktSessionId",
             ],
         )?;
@@ -723,16 +745,9 @@ async fn create_response(
                 "from",
                 "to",
                 "invoiceAmount",
-                "onchainAmount",
                 "preimageHash",
                 "claimPublicKey",
-                "address",
-                "claimAddress",
                 "pairHash",
-                "referralId",
-                "description",
-                "descriptionHash",
-                "invoiceExpiry",
                 "mktSessionId",
             ],
         )?;
@@ -888,9 +903,16 @@ fn validate_creation_against_native(
         if constraints.get("payment_hash").and_then(Value::as_str) != Some(payment_hash) {
             return Err(ApiError::conflict("payment_hash_differs_from_signed_rfq"));
         }
+        let claim_key = body
+            .get("claimPublicKey")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::bad("claim_public_key_required"))?;
+        let bitcoin = bitcoin_terms(terms, swap_type)?;
+        if bitcoin.leg.get("claim_public_key").and_then(Value::as_str) != Some(claim_key) {
+            return Err(ApiError::conflict("claim_key_differs_from_signed_contract"));
+        }
         let amount = body
             .get("invoiceAmount")
-            .or_else(|| body.get("onchainAmount"))
             .and_then(Value::as_u64)
             .ok_or_else(|| ApiError::bad("reverse_amount_required"))?;
         if constraints.get("input_amount").and_then(Value::as_str)
@@ -1062,19 +1084,25 @@ fn bilateral_contract(records: &[Event]) -> Result<Map<String, Value>, ApiError>
 }
 
 fn reverse_invoice(records: &[Event]) -> Result<String, ApiError> {
-    let statuses = ordered_statuses(records)?;
-    statuses
-        .iter()
-        .rev()
-        .find_map(|status| {
-            profile_object(status).ok().and_then(|profile| {
-                profile
-                    .get("invoice")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
+    let provider = exactly_one_kind(records, MKT_QUOTE_KIND, "quote_missing")?
+        .pubkey
+        .as_str();
+    let invoices = dense_statuses(records)?
+        .into_iter()
+        .filter(|status| status.event.pubkey == provider)
+        .filter_map(|status| {
+            status
+                .profile
+                .get("invoice")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
         })
-        .ok_or_else(|| ApiError::conflict("reverse_invoice_not_released"))
+        .collect::<BTreeSet<_>>();
+    match invoices.iter().collect::<Vec<_>>().as_slice() {
+        [invoice] => Ok((*invoice).clone()),
+        [] => Err(ApiError::conflict("reverse_invoice_not_released")),
+        _ => Err(ApiError::conflict("reverse_invoice_conflict")),
+    }
 }
 
 async fn dynamic_route(
@@ -1302,74 +1330,324 @@ async fn status_batch(api: &BoltzApi, target: &str) -> Result<HttpResponse, ApiE
     if ids.is_empty() {
         return Err(ApiError::bad("status_query_invalid"));
     }
+    let owned_ids = ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+    let grouped = session_record_batch(api, &owned_ids)
+        .await
+        .map_err(|_| ApiError::upstream("provider_store_unavailable"))?;
     let mut result = Map::new();
     for id in ids {
-        let records = session_records(api, id).await?;
-        result.insert(id.to_owned(), project_status(id, &records)?);
+        let records = grouped
+            .get(id)
+            .ok_or_else(|| ApiError::missing("swap_not_found"))?;
+        result.insert(id.to_owned(), project_status(id, records)?);
     }
     Ok(HttpResponse::ok(Value::Object(result)))
 }
 
 fn project_status(session_id: &str, records: &[Event]) -> Result<Value, ApiError> {
-    let statuses = ordered_statuses(records)?;
-    let Some(status) = statuses.last() else {
+    let statuses = dense_statuses(records)?;
+    let Some(status) = statuses.iter().max_by(|left, right| {
+        left.rank
+            .cmp(&right.rank)
+            .then_with(|| left.event.id.cmp(&right.event.id))
+    }) else {
         return Ok(json!({"id":session_id,"status":"swap.created"}));
     };
-    let profile = profile_object(status)?;
-    let swp_state = profile
-        .get("swp_state")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ApiError::conflict("status_state_missing"))?;
-    let status_name = boltz_status(swp_state)
-        .ok_or_else(|| ApiError::conflict("status_state_unrepresentable"))?;
     let mut result = Map::new();
     result.insert("id".to_owned(), Value::String(session_id.to_owned()));
-    result.insert("status".to_owned(), Value::String(status_name.to_owned()));
-    if let Some(reason) = profile.get("failure_code").and_then(Value::as_str) {
+    result.insert(
+        "status".to_owned(),
+        Value::String(status.boltz_status.to_owned()),
+    );
+    if let Some(reason) = status.profile.get("failure_code").and_then(Value::as_str) {
         result.insert("failureReason".to_owned(), Value::String(reason.to_owned()));
     }
-    if let Some(transaction_id) = profile.get("transaction_id").and_then(Value::as_str) {
+    if let Some(transaction_id) = status.profile.get("transaction_id").and_then(Value::as_str) {
         result.insert("transaction".to_owned(), json!({"id":transaction_id}));
     }
     Ok(Value::Object(result))
 }
 
-fn ordered_statuses(records: &[Event]) -> Result<Vec<&Event>, ApiError> {
-    let mut statuses = records
-        .iter()
-        .filter(|record| record.kind == MKT_STATUS_KIND)
-        .map(|record| {
-            let sequence = tag_value(record, "seq")
-                .and_then(|value| value.parse::<u64>().ok())
-                .ok_or_else(|| ApiError::conflict("status_sequence_invalid"))?;
-            Ok((record.created_at, sequence, record.id.as_str(), record))
-        })
-        .collect::<Result<Vec<_>, ApiError>>()?;
-    statuses.sort_by(|left, right| (left.0, left.1, left.2).cmp(&(right.0, right.1, right.2)));
-    Ok(statuses.into_iter().map(|value| value.3).collect())
+#[derive(Debug)]
+struct DenseStatus<'a> {
+    event: &'a Event,
+    profile: Map<String, Value>,
+    rank: u16,
+    boltz_status: &'static str,
 }
 
-fn boltz_status(state: &str) -> Option<&'static str> {
-    match state {
-        "accepted" | "lock_terms_ready" | "hold_invoice_ready" | "provider_lock_terms_ready" => {
-            Some("swap.created")
-        }
-        "requester_funding_broadcast" | "funding_seen" | "provider_funding_broadcast" => {
-            Some("transaction.mempool")
-        }
-        "funding_final" | "provider_funding_final" => Some("transaction.confirmed"),
-        "lightning_payment_pending" | "lightning_settlement_pending" => Some("invoice.pending"),
-        "lightning_paid" => Some("invoice.settled"),
-        "provider_claim_pending" | "cooperative_signing_pending" => {
-            Some("transaction.claim.pending")
-        }
-        "provider_claimed" | "completed" => Some("transaction.claimed"),
-        "provider_refund_prepared" | "provider_refund_pending" => Some("transaction.mempool"),
-        "provider_refunded" | "refunded" => Some("transaction.refunded"),
-        "invoice_cancel_pending" | "invoice_cancelled" | "expired" => Some("swap.expired"),
-        "unresolved" => Some("transaction.failed"),
-        _ => None,
+fn dense_statuses(records: &[Event]) -> Result<Vec<DenseStatus<'_>>, ApiError> {
+    let requester = exactly_one_kind(records, MKT_RFQ_KIND, "rfq_missing")?
+        .pubkey
+        .as_str();
+    let quote = exactly_one_kind(records, MKT_QUOTE_KIND, "quote_missing")?;
+    let provider = quote.pubkey.as_str();
+    if requester == provider {
+        return Err(ApiError::conflict("session_participants_invalid"));
     }
+    let quote_profile = profile_object(quote)?;
+    let swap_type = quote_profile
+        .get("terms")
+        .and_then(Value::as_object)
+        .and_then(|terms| terms.get("swap_type"))
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "submarine" | "reverse"))
+        .ok_or_else(|| ApiError::conflict("session_swap_type_mismatch"))?;
+    let mut streams = BTreeMap::<&str, BTreeMap<u64, Vec<&Event>>>::new();
+    for event in records.iter().filter(|event| event.kind == MKT_STATUS_KIND) {
+        if event.pubkey != requester && event.pubkey != provider {
+            return Err(ApiError::conflict("status_signer_invalid"));
+        }
+        let sequence = tag_value(event, "seq")
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| ApiError::conflict("status_sequence_invalid"))?;
+        streams
+            .entry(event.pubkey.as_str())
+            .or_default()
+            .entry(sequence)
+            .or_default()
+            .push(event);
+    }
+    let mut dense = Vec::new();
+    for (author, stream) in streams {
+        let mut previous: Option<&Event> = None;
+        let mut previous_state: Option<(String, u16)> = None;
+        for (expected, (sequence, events)) in (0_u64..).zip(stream) {
+            if sequence != expected || events.len() != 1 {
+                return Err(ApiError::conflict("status_stream_not_dense"));
+            }
+            let event = events[0];
+            let previous_reference = previous_status_reference(event)?;
+            match previous {
+                None if previous_reference.is_some() => {
+                    return Err(ApiError::conflict("status_previous_invalid"));
+                }
+                Some(previous) if previous_reference != Some(previous.id.as_str()) => {
+                    return Err(ApiError::conflict("status_previous_invalid"));
+                }
+                _ => {}
+            }
+            let profile = profile_object(event)?;
+            let state = profile
+                .get("swp_state")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ApiError::conflict("status_state_missing"))?
+                .to_owned();
+            let role = if author == requester {
+                StatusSigner::Requester
+            } else {
+                StatusSigner::Provider
+            };
+            if !status_signer_allowed(swap_type, &state, role) {
+                return Err(ApiError::conflict("status_signer_invalid"));
+            }
+            let (rank, boltz_status) = boltz_status(swap_type, &state)
+                .ok_or_else(|| ApiError::conflict("status_state_unrepresentable"))?;
+            if previous_state
+                .as_ref()
+                .is_some_and(|(previous_state, previous_rank)| {
+                    rank < *previous_rank
+                        || rank == *previous_rank
+                            && (state != "cooperative_signing_pending"
+                                || previous_state != "cooperative_signing_pending")
+                })
+            {
+                return Err(ApiError::conflict("status_transition_invalid"));
+            }
+            dense.push(DenseStatus {
+                event,
+                profile,
+                rank,
+                boltz_status,
+            });
+            previous = Some(event);
+            previous_state = Some((state, rank));
+        }
+    }
+    Ok(dense)
+}
+
+fn previous_status_reference(event: &Event) -> Result<Option<&str>, ApiError> {
+    let mut references = event.tags.iter().filter(|tag| {
+        tag.name() == Some("e") && tag.as_slice().get(3).map(String::as_str) == Some("previous")
+    });
+    let Some(first) = references.next() else {
+        return Ok(None);
+    };
+    let value = first
+        .value()
+        .filter(|value| valid_hash(value))
+        .ok_or_else(|| ApiError::conflict("status_previous_invalid"))?;
+    if references.next().is_some() {
+        return Err(ApiError::conflict("status_previous_invalid"));
+    }
+    Ok(Some(value))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusSigner {
+    Requester,
+    Provider,
+}
+
+fn status_signer_allowed(swap_type: &str, state: &str, signer: StatusSigner) -> bool {
+    if matches!(
+        state,
+        "funding_observed"
+            | "funding_final"
+            | "cooperative_signing_pending"
+            | "cancelled"
+            | "expired"
+            | "completed"
+            | "refunded"
+            | "disputed"
+            | "failed"
+            | "unresolved"
+    ) {
+        return true;
+    }
+    match (swap_type, signer) {
+        ("submarine", StatusSigner::Requester) => matches!(
+            state,
+            "requester_verification_passed"
+                | "funding_required"
+                | "requester_funding_broadcast"
+                | "refund_prepared"
+                | "refund_pending"
+        ),
+        ("submarine", StatusSigner::Provider) => matches!(
+            state,
+            "accepted"
+                | "lock_terms_ready"
+                | "lightning_payment_pending"
+                | "lightning_paid"
+                | "provider_claim_pending"
+                | "provider_claimed"
+        ),
+        ("reverse", StatusSigner::Requester) => matches!(
+            state,
+            "requester_invoice_verified"
+                | "lightning_payment_pending"
+                | "requester_lock_verified"
+                | "requester_claim_pending"
+                | "requester_claimed"
+        ),
+        ("reverse", StatusSigner::Provider) => matches!(
+            state,
+            "accepted"
+                | "hold_invoice_ready"
+                | "lightning_htlcs_held"
+                | "provider_lock_terms_ready"
+                | "provider_funding_broadcast"
+                | "lightning_settlement_pending"
+                | "lightning_paid"
+                | "provider_refund_prepared"
+                | "provider_refund_pending"
+                | "provider_refunded"
+                | "invoice_cancel_pending"
+                | "invoice_cancelled"
+        ),
+        _ => false,
+    }
+}
+
+fn boltz_status(swap_type: &str, state: &str) -> Option<(u16, &'static str)> {
+    let states: &[&str] = match swap_type {
+        "submarine" => &[
+            "accepted",
+            "lock_terms_ready",
+            "requester_verification_passed",
+            "funding_required",
+            "requester_funding_broadcast",
+            "funding_observed",
+            "funding_final",
+            "lightning_payment_pending",
+            "lightning_paid",
+            "cooperative_signing_pending",
+            "provider_claim_pending",
+            "provider_claimed",
+            "refund_prepared",
+            "refund_pending",
+            "refunded",
+            "cancelled",
+            "expired",
+            "completed",
+            "disputed",
+            "failed",
+            "unresolved",
+        ],
+        "reverse" => &[
+            "accepted",
+            "hold_invoice_ready",
+            "requester_invoice_verified",
+            "lightning_payment_pending",
+            "lightning_htlcs_held",
+            "provider_lock_terms_ready",
+            "requester_lock_verified",
+            "provider_funding_broadcast",
+            "funding_observed",
+            "funding_final",
+            "cooperative_signing_pending",
+            "requester_claim_pending",
+            "requester_claimed",
+            "lightning_settlement_pending",
+            "lightning_paid",
+            "provider_refund_prepared",
+            "provider_refund_pending",
+            "provider_refunded",
+            "invoice_cancel_pending",
+            "invoice_cancelled",
+            "refunded",
+            "cancelled",
+            "expired",
+            "completed",
+            "disputed",
+            "failed",
+            "unresolved",
+        ],
+        _ => return None,
+    };
+    let rank = states
+        .iter()
+        .position(|candidate| *candidate == state)
+        .and_then(|position| u16::try_from(position).ok())?;
+    let status = match (swap_type, state) {
+        (_, "accepted" | "lock_terms_ready" | "requester_verification_passed")
+        | ("submarine", "funding_required" | "requester_funding_broadcast")
+        | (
+            "reverse",
+            "hold_invoice_ready" | "requester_invoice_verified" | "provider_lock_terms_ready",
+        )
+        | ("reverse", "invoice_cancel_pending") => "swap.created",
+        (_, "funding_observed") | ("reverse", "provider_funding_broadcast") => {
+            "transaction.mempool"
+        }
+        (_, "funding_final")
+        | ("submarine", "refund_prepared")
+        | (
+            "reverse",
+            "requester_claim_pending" | "requester_claimed" | "provider_refund_prepared",
+        ) => "transaction.confirmed",
+        (_, "lightning_payment_pending")
+        | ("reverse", "lightning_htlcs_held" | "requester_lock_verified") => "invoice.pending",
+        (_, "lightning_paid") => "invoice.settled",
+        (_, "cooperative_signing_pending")
+        | ("submarine", "provider_claim_pending")
+        | ("reverse", "lightning_settlement_pending") => "transaction.claim.pending",
+        ("submarine", "provider_claimed" | "completed") | ("reverse", "completed") => {
+            "transaction.claimed"
+        }
+        ("submarine", "refund_pending") | ("reverse", "provider_refund_pending") => {
+            "transaction.mempool"
+        }
+        ("submarine", "refunded") | ("reverse", "provider_refunded" | "refunded") => {
+            "transaction.refunded"
+        }
+        (_, "cancelled" | "expired") | ("reverse", "invoice_cancelled") => "swap.expired",
+        (_, "disputed" | "failed" | "unresolved") => "transaction.failed",
+        _ => return None,
+    };
+    Some((rank, status))
 }
 
 async fn public_transaction(
@@ -1416,26 +1694,7 @@ async fn released_preimage(api: &BoltzApi, session_id: &str) -> Result<HttpRespo
         .and_then(Value::as_str)
         .filter(|value| valid_hash(value))
         .ok_or_else(|| ApiError::conflict("payment_hash_missing"))?;
-    let status = ordered_statuses(&records)?
-        .into_iter()
-        .rev()
-        .find_map(|status| {
-            profile_object(status).ok().and_then(|profile| {
-                let state = profile.get("swp_state").and_then(Value::as_str)?;
-                matches!(
-                    state,
-                    "provider_claim_pending" | "provider_claimed" | "completed"
-                )
-                .then(|| {
-                    profile
-                        .get("transaction_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .flatten()
-            })
-        })
-        .ok_or_else(|| ApiError::conflict("preimage_not_public"))?;
+    let status = public_claim_transaction_id(&records)?;
     let response = api
         .bitcoind
         .raw_transaction(&rpc_id("boltz-preimage", session_id)?, &status, true)
@@ -1456,41 +1715,63 @@ async fn released_preimage(api: &BoltzApi, session_id: &str) -> Result<HttpRespo
     Ok(HttpResponse::ok(json!({"preimage":lower_hex(preimage)})))
 }
 
+fn public_claim_transaction_id(records: &[Event]) -> Result<String, ApiError> {
+    dense_statuses(records)?
+        .into_iter()
+        .filter_map(|status| {
+            let state = status.profile.get("swp_state").and_then(Value::as_str)?;
+            if !matches!(state, "provider_claim_pending" | "provider_claimed") {
+                return None;
+            }
+            status
+                .profile
+                .get("transaction_id")
+                .and_then(Value::as_str)
+                .map(|transaction_id| (status.rank, transaction_id.to_owned()))
+        })
+        .max_by_key(|(rank, _)| *rank)
+        .map(|(_, transaction_id)| transaction_id)
+        .ok_or_else(|| ApiError::conflict("preimage_not_public"))
+}
+
 async fn reverse_bip21(api: &BoltzApi, invoice: &str) -> Result<HttpResponse, ApiError> {
-    parse_bolt11(invoice).map_err(|_| ApiError::bad("invoice_invalid"))?;
-    let records = {
+    let parsed = parse_bolt11(invoice).map_err(|_| ApiError::bad("invoice_invalid"))?;
+    let session_id = {
         let store = api.store.lock().await;
         store
-            .bounded_session_records(MAX_SESSION_RECORDS * 12)
+            .reverse_invoice_session(invoice)
             .await
             .map_err(|_| ApiError::upstream("provider_store_unavailable"))?
+            .ok_or_else(|| ApiError::missing("reverse_invoice_not_found"))?
     };
-    let mut grouped = BTreeMap::<String, Vec<Event>>::new();
-    for record in records {
-        let session = tag_value(&record, "session")
-            .filter(|value| valid_hash(value))
-            .ok_or_else(|| ApiError::conflict("signed_session_record_invalid"))?;
-        grouped.entry(session.to_owned()).or_default().push(record);
+    let records = session_records(api, &session_id).await?;
+    if reverse_invoice(&records)? != invoice {
+        return Err(ApiError::conflict("reverse_invoice_binding_mismatch"));
     }
-    for records in grouped.values() {
-        if reverse_invoice(records).ok().as_deref() != Some(invoice) {
-            continue;
-        }
-        let terms = bilateral_contract(records)?;
-        let bitcoin = bitcoin_terms(&terms, "reverse")?;
-        let address = taproot_address(api.network, bitcoin.script_pubkey)?;
-        let amount = canonical_u64(
-            bitcoin
-                .verifier
-                .get("amount")
-                .and_then(Value::as_str)
-                .ok_or_else(|| ApiError::conflict("contract_amount_missing"))?,
-        )?;
-        let signature = records
-            .iter()
-            .filter(|record| record.kind == MKT_STATUS_KIND)
-            .find(|record| {
-                profile_object(record)
+    let terms = bilateral_contract(&records)?;
+    if terms.get("payment_hash").and_then(Value::as_str)
+        != Some(lower_hex(&parsed.payment_hash).as_str())
+    {
+        return Err(ApiError::conflict("reverse_invoice_binding_mismatch"));
+    }
+    let bitcoin = bitcoin_terms(&terms, "reverse")?;
+    let address = taproot_address(api.network, bitcoin.script_pubkey)?;
+    let amount = canonical_u64(
+        bitcoin
+            .verifier
+            .get("amount")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ApiError::conflict("contract_amount_missing"))?,
+    )?;
+    let provider = exactly_one_kind(&records, MKT_QUOTE_KIND, "quote_missing")?
+        .pubkey
+        .as_str();
+    let signature = records
+        .iter()
+        .find(|record| {
+            record.kind == MKT_STATUS_KIND
+                && record.pubkey == provider
+                && profile_object(record)
                     .ok()
                     .and_then(|profile| {
                         profile
@@ -1500,15 +1781,13 @@ async fn reverse_bip21(api: &BoltzApi, invoice: &str) -> Result<HttpResponse, Ap
                     })
                     .as_deref()
                     == Some(invoice)
-            })
-            .map(|record| record.sig.clone())
-            .ok_or_else(|| ApiError::conflict("invoice_status_missing"))?;
-        return Ok(HttpResponse::ok(json!({
-            "bip21":bitcoin_bip21(&address, amount, Some(invoice)),
-            "signature":signature,
-        })));
-    }
-    Err(ApiError::missing("reverse_invoice_not_found"))
+        })
+        .map(|record| record.sig.clone())
+        .ok_or_else(|| ApiError::conflict("invoice_status_missing"))?;
+    Ok(HttpResponse::ok(json!({
+        "bip21":bitcoin_bip21(&address, amount, Some(invoice)),
+        "signature":signature,
+    })))
 }
 
 async fn broadcast(api: &BoltzApi, request: &HttpRequest) -> Result<HttpResponse, ApiError> {
@@ -1564,13 +1843,20 @@ async fn broadcast(api: &BoltzApi, request: &HttpRequest) -> Result<HttpResponse
                     false,
                 )
                 .await;
-            if replay.is_ok() {
+            if replay
+                .as_ref()
+                .is_ok_and(|observed| exact_transaction_replay(observed, raw))
+            {
                 Ok(HttpResponse::ok(json!({"id":expected_txid})))
             } else {
                 Err(ApiError::upstream("broadcast_failed"))
             }
         }
     }
+}
+
+fn exact_transaction_replay(observed: &Value, submitted: &str) -> bool {
+    observed.as_str() == Some(submitted)
 }
 
 fn verify_script_path_spend(
@@ -1585,9 +1871,11 @@ fn verify_script_path_spend(
     }
     let funding = Transaction::parse(&decode_hex_bounded(committed, MAX_RAW_TRANSACTION_BYTES)?)
         .map_err(|_| ApiError::conflict("committed_funding_invalid"))?;
-    let funding_txid = funding
+    let mut funding_txid_wire = funding
         .txid()
         .map_err(|_| ApiError::conflict("committed_funding_invalid"))?;
+    // Transaction inputs serialize outpoints in wire order, while txid() returns display order.
+    funding_txid_wire.reverse();
     let output_index = bitcoin
         .verifier
         .get("output_index")
@@ -1597,7 +1885,9 @@ fn verify_script_path_spend(
     let input = candidate
         .inputs
         .iter()
-        .find(|input| input.previous_txid == funding_txid && input.previous_output == output_index)
+        .find(|input| {
+            input.previous_txid == funding_txid_wire && input.previous_output == output_index
+        })
         .ok_or_else(|| ApiError::conflict("transaction_not_session_bound"))?;
     if input.witness.len() < 3 {
         return Err(ApiError::conflict("claim_witness_invalid"));
@@ -1681,12 +1971,16 @@ async fn handle_websocket(
     api: BoltzApi,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let mut websocket = tokio_tungstenite::accept_async(stream)
+    let mut websocket = timeout(REQUEST_TIMEOUT, tokio_tungstenite::accept_async(stream))
         .await
+        .map_err(|_| "WebSocket handshake timed out".to_owned())?
         .map_err(|_| "WebSocket handshake failed".to_owned())?;
     let stream = websocket.get_mut();
     let mut subscriptions = BTreeSet::<String>::new();
     let mut last_statuses = BTreeMap::<String, Value>::new();
+    let mut missing_sessions = BTreeSet::<String>::new();
+    let mut message_budget = RateWindow::new(Instant::now());
+    let mut query_budget = RateWindow::new(Instant::now());
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
@@ -1697,6 +1991,10 @@ async fn handle_websocket(
             }
             frame = read_ws_frame(stream) => {
                 let frame = frame?;
+                if !message_budget.admit(Instant::now(), MAX_WS_MESSAGES_PER_MINUTE) {
+                    write_ws_json(stream, &json!({"error":"rate_limited"})).await?;
+                    return Err("WebSocket message rate limit reached".to_owned());
+                }
                 match frame.opcode {
                     0x1 => {
                         let request = std::str::from_utf8(&frame.payload)
@@ -1704,6 +2002,7 @@ async fn handle_websocket(
                         let message = parse_unique_json(request, "Boltz WebSocket request")
                             .map_err(|_| "WebSocket JSON is invalid".to_owned())?;
                         let object = message.as_object().ok_or_else(|| "WebSocket request is not an object".to_owned())?;
+                        exact_ws_members(object, &["op", "channel", "args"])?;
                         let operation = object.get("op").and_then(Value::as_str)
                             .ok_or_else(|| "WebSocket operation is missing".to_owned())?;
                         if object.get("channel").and_then(Value::as_str) != Some("swap.update") {
@@ -1727,6 +2026,7 @@ async fn handle_websocket(
                                 "unsubscribe" => {
                                     subscriptions.remove(id);
                                     last_statuses.remove(id);
+                                    missing_sessions.remove(id);
                                 }
                                 _ => return Err("WebSocket operation is unsupported".to_owned()),
                             }
@@ -1745,15 +2045,27 @@ async fn handle_websocket(
             }
             _ = sleep(WS_POLL_INTERVAL) => {
                 let ids = subscriptions.iter().cloned().collect::<Vec<_>>();
+                if ids.is_empty() {
+                    continue;
+                }
+                if !query_budget.admit(
+                    Instant::now(),
+                    MAX_WS_STATUS_QUERY_BATCHES_PER_MINUTE,
+                ) {
+                    write_ws_json(stream, &json!({"error":"status_query_rate_limited"})).await?;
+                    return Err("WebSocket status query budget reached".to_owned());
+                }
+                let grouped = session_record_batch(&api, &ids).await?;
                 for id in ids {
-                    let records = match session_records(&api, &id).await {
-                        Ok(records) => records,
-                        Err(error) => {
-                            write_ws_json(stream, &json!({"error":error.code})).await?;
-                            continue;
+                    let Some(records) = grouped.get(&id) else {
+                        last_statuses.remove(&id);
+                        if missing_sessions.insert(id.clone()) {
+                            write_ws_json(stream, &json!({"error":"swap_not_found","id":id})).await?;
                         }
+                        continue;
                     };
-                    let status = project_status(&id, &records)
+                    missing_sessions.remove(&id);
+                    let status = project_status(&id, records)
                         .map_err(|error| format!("status projection failed: {}", error.code))?;
                     if last_statuses.get(&id) == Some(&status) {
                         continue;
@@ -1770,16 +2082,41 @@ async fn handle_websocket(
     }
 }
 
+fn exact_ws_members(object: &Map<String, Value>, allowed: &[&str]) -> Result<(), String> {
+    let allowed = allowed.iter().copied().collect::<BTreeSet<_>>();
+    if object.keys().any(|name| !allowed.contains(name.as_str())) {
+        return Err("WebSocket request member is outside the released profile".to_owned());
+    }
+    Ok(())
+}
+
+async fn session_record_batch(
+    api: &BoltzApi,
+    session_ids: &[String],
+) -> Result<BTreeMap<String, Vec<Event>>, String> {
+    let store = api.store.lock().await;
+    store
+        .session_records_for_sessions(session_ids, MAX_SESSION_RECORDS)
+        .await
+        .map_err(|_| "provider store is unavailable".to_owned())
+}
+
 struct WebSocketFrame {
     opcode: u8,
     payload: Vec<u8>,
 }
 
 async fn read_ws_frame(stream: &mut TcpStream) -> Result<WebSocketFrame, String> {
-    let mut head = [0_u8; 2];
-    timeout(REQUEST_TIMEOUT, stream.read_exact(&mut head))
+    timeout(REQUEST_TIMEOUT, read_ws_frame_inner(stream))
         .await
-        .map_err(|_| "WebSocket read timed out".to_owned())?
+        .map_err(|_| "WebSocket frame timed out".to_owned())?
+}
+
+async fn read_ws_frame_inner(stream: &mut TcpStream) -> Result<WebSocketFrame, String> {
+    let mut head = [0_u8; 2];
+    stream
+        .read_exact(&mut head)
+        .await
         .map_err(|_| "WebSocket closed".to_owned())?;
     if head[0] & 0x80 == 0 || head[0] & 0x70 != 0 || head[1] & 0x80 == 0 {
         return Err("WebSocket frame flags are invalid".to_owned());
@@ -1793,7 +2130,11 @@ async fn read_ws_frame(stream: &mut TcpStream) -> Result<WebSocketFrame, String>
                 .read_exact(&mut bytes)
                 .await
                 .map_err(|_| "WebSocket length is incomplete".to_owned())?;
-            usize::from(u16::from_be_bytes(bytes))
+            let length = usize::from(u16::from_be_bytes(bytes));
+            if length < 126 {
+                return Err("WebSocket length encoding is not canonical".to_owned());
+            }
+            length
         }
         127 => {
             let mut bytes = [0_u8; 8];
@@ -1801,13 +2142,19 @@ async fn read_ws_frame(stream: &mut TcpStream) -> Result<WebSocketFrame, String>
                 .read_exact(&mut bytes)
                 .await
                 .map_err(|_| "WebSocket length is incomplete".to_owned())?;
-            usize::try_from(u64::from_be_bytes(bytes))
-                .map_err(|_| "WebSocket length overflows".to_owned())?
+            let encoded = u64::from_be_bytes(bytes);
+            if encoded < 65_536 || encoded & (1_u64 << 63) != 0 {
+                return Err("WebSocket length encoding is not canonical".to_owned());
+            }
+            usize::try_from(encoded).map_err(|_| "WebSocket length overflows".to_owned())?
         }
         value => value,
     };
     if length > MAX_WS_FRAME_BYTES {
         return Err("WebSocket frame bound reached".to_owned());
+    }
+    if matches!(opcode, 0x8..=0xA) && length > 125 {
+        return Err("WebSocket control frame bound reached".to_owned());
     }
     let mut mask = [0_u8; 4];
     stream
@@ -1821,6 +2168,14 @@ async fn read_ws_frame(stream: &mut TcpStream) -> Result<WebSocketFrame, String>
         .map_err(|_| "WebSocket payload is incomplete".to_owned())?;
     for (index, byte) in payload.iter_mut().enumerate() {
         *byte ^= mask[index % 4];
+    }
+    if opcode == 0x8 {
+        if payload.len() == 1 {
+            return Err("WebSocket close payload is invalid".to_owned());
+        }
+        if payload.len() > 2 && std::str::from_utf8(&payload[2..]).is_err() {
+            return Err("WebSocket close reason is not UTF-8".to_owned());
+        }
     }
     Ok(WebSocketFrame { opcode, payload })
 }
@@ -1938,6 +2293,8 @@ fn lower_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use immortal_core::domain::Tag;
+    use immortal_core::mkt_swp_verify::{TransactionInput, TransactionOutput};
 
     #[test]
     fn fixture_pins_full_dependent_coverage_and_honest_surface_count() {
@@ -1961,6 +2318,28 @@ mod tests {
         assert_eq!(
             fixture["native_session_binding"]["requester_script_path_exit_package_modes"],
             json!(["presigned", "wallet_sign"])
+        );
+        assert_eq!(fixture["limits"]["request_timeout_seconds"], 10);
+        assert_eq!(
+            fixture["limits"]["websocket_status_query_batches_per_minute"],
+            60
+        );
+        assert_eq!(fixture["projection_law"]["created_at_orders_status"], false);
+        assert_eq!(
+            fixture["broadcast_law"]["duplicate_bitcoind_broadcast"],
+            "idempotent only when getrawtransaction returns exact submitted raw bytes"
+        );
+        assert_eq!(
+            fixture["broadcast_law"]["outpoint_comparison"],
+            "transaction input wire order is compared with the reversed display-order funding transaction id"
+        );
+        assert_eq!(
+            fixture["public_preimage_law"]["later_terminal_status_without_transaction_reference"],
+            "does_not_hide_public_claim"
+        );
+        assert_eq!(
+            fixture["process_gate"]["reverse_claim_evidence"],
+            "both adapted clients resubmit the public script-path claim"
         );
 
         let funded_gate = include_str!("../../../scripts/test-provider-funded.sh");
@@ -1990,12 +2369,189 @@ mod tests {
 
     #[test]
     fn status_mapping_is_explicit_and_refuses_unknown_states() {
-        assert_eq!(boltz_status("funding_final"), Some("transaction.confirmed"));
         assert_eq!(
-            boltz_status("provider_refunded"),
-            Some("transaction.refunded")
+            boltz_status("submarine", "funding_final"),
+            Some((6, "transaction.confirmed"))
         );
-        assert_eq!(boltz_status("future_state"), None);
+        assert_eq!(
+            boltz_status("reverse", "provider_refunded"),
+            Some((17, "transaction.refunded"))
+        );
+        assert_eq!(
+            boltz_status("reverse", "provider_refund_prepared"),
+            Some((15, "transaction.confirmed"))
+        );
+        assert_eq!(boltz_status("reverse", "future_state"), None);
+    }
+
+    #[test]
+    fn status_projection_uses_dense_signer_streams_not_timestamps() {
+        let mut records = session_records_fixture("submarine");
+        records.push(status_fixture('c', '2', 100, 0, None, "accepted"));
+        records.push(status_fixture(
+            'd',
+            '2',
+            1,
+            1,
+            Some('c'),
+            "funding_observed",
+        ));
+        assert_eq!(
+            project_status(&"a".repeat(64), &records).expect("dense status projection")["status"],
+            "transaction.mempool"
+        );
+    }
+
+    #[test]
+    fn prepared_refund_and_wrong_signer_fail_closed() {
+        let mut records = session_records_fixture("reverse");
+        records.push(status_fixture('c', '2', 1, 0, None, "accepted"));
+        records.push(status_fixture(
+            'd',
+            '2',
+            2,
+            1,
+            Some('c'),
+            "provider_refund_prepared",
+        ));
+        assert_eq!(
+            project_status(&"a".repeat(64), &records).expect("prepared projection")["status"],
+            "transaction.confirmed"
+        );
+        records.pop();
+        records.push(status_fixture(
+            'e',
+            '1',
+            2,
+            0,
+            None,
+            "provider_refund_prepared",
+        ));
+        assert_eq!(
+            project_status(&"a".repeat(64), &records)
+                .expect_err("wrong signer must fail")
+                .code,
+            "status_signer_invalid"
+        );
+    }
+
+    #[test]
+    fn completed_status_does_not_hide_public_claim_transaction() {
+        let transaction_id = "f".repeat(64);
+        let mut records = session_records_fixture("submarine");
+        let mut claimed = status_fixture('c', '2', 1, 0, None, "provider_claimed");
+        claimed.content = json!({
+            "mkt_swp":{
+                "swp_state":"provider_claimed",
+                "transaction_id":transaction_id,
+            }
+        })
+        .to_string();
+        records.push(claimed);
+        records.push(status_fixture('d', '2', 2, 1, Some('c'), "completed"));
+
+        assert_eq!(
+            public_claim_transaction_id(&records).expect("public claim transaction"),
+            transaction_id
+        );
+    }
+
+    #[test]
+    fn broadcast_replay_requires_exact_witness_bytes() {
+        let mut transaction = Transaction::new(
+            2,
+            vec![TransactionInput {
+                previous_txid: [0; 32],
+                previous_output: 0,
+                script_sig: Vec::new(),
+                sequence: u32::MAX,
+                witness: vec![vec![1]],
+            }],
+            vec![TransactionOutput {
+                value_sat: 1,
+                script_pubkey: Vec::new(),
+            }],
+            0,
+        );
+        let first_txid = transaction.txid().expect("first txid");
+        let first = lower_hex(&transaction.serialize(true).expect("first transaction"));
+        transaction
+            .set_input_witness(0, vec![vec![2]])
+            .expect("witness mutation");
+        let mutated = lower_hex(&transaction.serialize(true).expect("mutated transaction"));
+        assert_eq!(first_txid, transaction.txid().expect("mutated txid"));
+        assert!(exact_transaction_replay(
+            &Value::String(first.clone()),
+            &first
+        ));
+        assert!(!exact_transaction_replay(&Value::String(mutated), &first));
+    }
+
+    #[test]
+    fn reverse_claim_binding_compares_outpoints_in_wire_order() {
+        let funding = Transaction::new(
+            2,
+            vec![TransactionInput {
+                previous_txid: [0x11; 32],
+                previous_output: 3,
+                script_sig: Vec::new(),
+                sequence: u32::MAX,
+                witness: Vec::new(),
+            }],
+            vec![
+                TransactionOutput {
+                    value_sat: 1,
+                    script_pubkey: vec![0x51],
+                },
+                TransactionOutput {
+                    value_sat: 2,
+                    script_pubkey: vec![0x51],
+                },
+            ],
+            0,
+        );
+        let mut funding_txid_wire = funding.txid().expect("funding txid");
+        funding_txid_wire.reverse();
+        assert_ne!(funding_txid_wire, funding.txid().expect("display txid"));
+
+        let preimage = [0x22; 32];
+        let candidate = Transaction::new(
+            2,
+            vec![TransactionInput {
+                previous_txid: funding_txid_wire,
+                previous_output: 1,
+                script_sig: Vec::new(),
+                sequence: u32::MAX,
+                witness: vec![vec![0x30], preimage.to_vec(), vec![0x51], vec![0xc0, 0x01]],
+            }],
+            vec![TransactionOutput {
+                value_sat: 1,
+                script_pubkey: vec![0x51],
+            }],
+            0,
+        );
+        let verifier = json!({"output_index":1})
+            .as_object()
+            .expect("verifier object")
+            .clone();
+        let leg = Map::new();
+        let bitcoin = BitcoinTerms {
+            verifier: &verifier,
+            leg: &leg,
+            script_pubkey: [0; 34],
+            claim_script: "51",
+            refund_script: "",
+            claim_control_block: "c001",
+            refund_height: 0,
+        };
+        let terms = json!({"payment_hash":lower_hex(&Sha256::digest(preimage))})
+            .as_object()
+            .expect("terms object")
+            .clone();
+        let committed = lower_hex(&funding.serialize(true).expect("funding transaction"));
+
+        verify_script_path_spend(&candidate, &committed, &bitcoin, &terms, "reverse")
+            .expect("wire-order claim binding");
     }
 
     #[test]
@@ -2003,5 +2559,72 @@ mod tests {
         assert!(claim_spend_vbytes() > 0);
         assert!(crate::pricing::refund_spend_vbytes() > 0);
         assert!(lockup_vbytes() > 0);
+    }
+
+    fn session_records_fixture(swap_type: &str) -> Vec<Event> {
+        vec![
+            event_fixture(
+                'a',
+                '1',
+                10,
+                MKT_RFQ_KIND,
+                Vec::new(),
+                json!({"mkt_swp":{"constraints":{}}}),
+            ),
+            event_fixture(
+                'b',
+                '2',
+                11,
+                MKT_QUOTE_KIND,
+                Vec::new(),
+                json!({"mkt_swp":{"terms":{"swap_type":swap_type}}}),
+            ),
+        ]
+    }
+
+    fn status_fixture(
+        id: char,
+        author: char,
+        created_at: u64,
+        sequence: u64,
+        previous: Option<char>,
+        state: &str,
+    ) -> Event {
+        let mut tags = vec![Tag::new(vec!["seq".to_owned(), sequence.to_string()])];
+        if let Some(previous) = previous {
+            tags.push(Tag::new(vec![
+                "e".to_owned(),
+                previous.to_string().repeat(64),
+                String::new(),
+                "previous".to_owned(),
+            ]));
+        }
+        event_fixture(
+            id,
+            author,
+            created_at,
+            MKT_STATUS_KIND,
+            tags,
+            json!({"mkt_swp":{"swp_state":state}}),
+        )
+    }
+
+    fn event_fixture(
+        id: char,
+        author: char,
+        created_at: u64,
+        kind: u16,
+        tags: Vec<Tag>,
+        content: Value,
+    ) -> Event {
+        Event {
+            id: id.to_string().repeat(64),
+            pubkey: author.to_string().repeat(64),
+            created_at,
+            kind,
+            tags,
+            content: content.to_string(),
+            sig: "0".repeat(128),
+        }
     }
 }

@@ -209,6 +209,13 @@ func TestAdaptedGoClientAgainstProviderProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fund through compatibility gate: %v", err)
 	}
+	replayedFunding := mustRequest(t, client, "POST", "/v2/chain/BTC/transaction", map[string]interface{}{
+		"hex":          stringMember(submarineBitcoin.verifier, "funding_transaction"),
+		"mktSessionId": submarine.Config.SessionID,
+	})
+	if stringMember(replayedFunding, "id") != transactionID {
+		t.Fatal("exact funding replay returned another transaction")
+	}
 
 	reverseTerms := processContract(t, reverse)
 	reverseBitcoin := processBitcoin(t, reverseTerms, "destination")
@@ -225,6 +232,21 @@ func TestAdaptedGoClientAgainstProviderProcess(t *testing.T) {
 		"pairHash":       stringMember(reversePair, "hash"),
 		"mktSessionId":   reverse.Config.SessionID,
 	})
+	if _, err := client.request("POST", "/v2/chain/BTC/transaction", map[string]interface{}{
+		"hex":          stringMember(submarineBitcoin.verifier, "funding_transaction"),
+		"mktSessionId": reverse.Config.SessionID,
+	}); err == nil {
+		t.Fatal("provider accepted a transaction bound to another session")
+	}
+	reverseClaimID := processStatusTransaction(t, reverse, "requester_claimed")
+	reverseClaim := mustRequest(t, client, "GET", "/v2/chain/BTC/transaction/"+reverseClaimID, nil)
+	replayedClaim := mustRequest(t, client, "POST", "/v2/chain/BTC/transaction", map[string]interface{}{
+		"hex":          stringMember(reverseClaim, "hex"),
+		"mktSessionId": reverse.Config.SessionID,
+	})
+	if stringMember(replayedClaim, "id") != reverseClaimID {
+		t.Fatal("reverse claim replay returned another transaction")
+	}
 
 	websocketUpdate(t, baseURL, submarine.Config.SessionID)
 	submarineTransaction := mustRequest(t, client, "GET", "/v2/swap/submarine/"+submarine.Config.SessionID+"/transaction", nil)
@@ -247,6 +269,27 @@ func TestAdaptedGoClientAgainstProviderProcess(t *testing.T) {
 	if stringMember(transaction, "hex") != stringMember(submarineTransaction, "hex") {
 		t.Fatal("provider public transaction bytes changed")
 	}
+}
+
+func processStatusTransaction(t *testing.T, snapshot processSnapshot, states ...string) string {
+	t.Helper()
+	wanted := make(map[string]bool, len(states))
+	for _, state := range states {
+		wanted[state] = true
+	}
+	for _, event := range snapshot.SignedRecords {
+		if event.Kind != 39607 {
+			continue
+		}
+		profile := processProfile(t, event)
+		if wanted[stringMember(profile, "swp_state")] {
+			if transactionID, ok := profile["transaction_id"].(string); ok && transactionID != "" {
+				return transactionID
+			}
+		}
+	}
+	t.Fatal("signed session has no public transaction for the requested states")
+	return ""
 }
 
 func assertProcessExitPersisted(

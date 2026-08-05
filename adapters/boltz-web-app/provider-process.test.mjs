@@ -78,6 +78,31 @@ const request = async (method, route, body) => {
     return value;
 };
 
+const refused = async (method, route, body) => {
+    const response = await fetch(`${baseUrl}${route}`, {
+        method,
+        headers: {
+            Origin: "http://127.0.0.1",
+            ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    assert.ok(!response.ok, `${method} ${route} unexpectedly succeeded`);
+};
+
+const statusTransaction = (snapshot, ...states) => {
+    for (const event of snapshot.signed_records) {
+        if (event.kind !== 39607) {
+            continue;
+        }
+        const status = profile(event);
+        if (states.includes(status.swp_state) && typeof status.transaction_id === "string") {
+            return status.transaction_id;
+        }
+    }
+    assert.fail("signed session has no public transaction for the requested states");
+};
+
 const websocketStatus = (sessionId) =>
     new Promise((resolve, reject) => {
         const socket = new WebSocket(`${baseUrl.replace(/^http/, "ws")}/v2/ws`);
@@ -174,6 +199,11 @@ test("adapted web client replays its 15 calls against the provider process", {
         address: submarineCreated.address,
         amountSats: submarineCreated.expectedAmount,
     });
+    const fundingReplay = await request("POST", "/v2/chain/BTC/transaction", {
+        hex: submarineBitcoin.verifier.funding_transaction,
+        mktSessionId: submarineId,
+    });
+    assert.equal(fundingReplay.id, fundingTransactionId);
 
     const reversePairs = await request("GET", "/v2/swap/reverse");
     const reverseCreated = await request("POST", "/v2/swap/reverse", {
@@ -187,6 +217,20 @@ test("adapted web client replays its 15 calls against the provider process", {
     });
     assert.equal(reverseCreated.id, reverseId);
     assert.equal(typeof reverseCreated.invoice, "string");
+    await refused("POST", "/v2/chain/BTC/transaction", {
+        hex: submarineBitcoin.verifier.funding_transaction,
+        mktSessionId: reverseId,
+    });
+    const reverseClaimId = statusTransaction(reverse, "requester_claimed");
+    const reverseClaim = await request(
+        "GET",
+        `/v2/chain/BTC/transaction/${reverseClaimId}`,
+    );
+    const claimReplay = await request("POST", "/v2/chain/BTC/transaction", {
+        hex: reverseClaim.hex,
+        mktSessionId: reverseId,
+    });
+    assert.equal(claimReplay.id, reverseClaimId);
 
     const singleStatus = await request("GET", `/v2/swap/${submarineId}`);
     assert.equal(singleStatus.id, submarineId);

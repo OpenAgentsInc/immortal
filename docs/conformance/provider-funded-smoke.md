@@ -32,10 +32,14 @@ compatibility listener through a random host-loopback port and runs the
 checked-in adapted Go and browser/Node processes against the same daemon and
 signed sessions. Their 13-call and 15-call subsets cover the exact 19-call
 union. The submarine adapter replays prepare, bilateral finalize with its
-persisted script-path exit, and unchanged-byte idempotent broadcast; the
-reverse, status, released-secret, transaction, rail-read, and direct WebSocket
-routes are also exercised. Neither client process mounts provider credentials,
-wallet state, or Postgres.
+persisted script-path exit, unchanged-byte idempotent broadcast, and an
+unbound-broadcast refusal. The reverse adapter replays the public script-path
+claim through the session-bound broadcast route. Status, released-secret,
+transaction, rail-read, reverse-BIP21, and direct WebSocket routes are also
+exercised. The in-process corpus separately proves that a same-txid witness
+mutation is not an idempotent replay and that signed `created_at` skew cannot
+reorder dense signer streams. Neither client process mounts provider
+credentials, wallet state, or Postgres.
 
 **Compatibility process passed locally.** On 2026-08-05 on macOS 26.4
 arm64, the adapted Go client executed and passed its 13-call subset, and the

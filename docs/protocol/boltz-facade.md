@@ -55,8 +55,33 @@ All three absent disables the listener. A partial profile, stale digest,
 public bind, or invalid origin fails startup. Supplied browser origins must
 match exactly; native clients may omit `Origin`. The API applies 64 concurrent
 connection permits, 120 requests per minute per source address, bounded HTTP
-heads/bodies and WebSocket frames/subscriptions, and a bounded signed-record
-scan. It is never advertised in NIP-11.
+heads/bodies and WebSocket frames/subscriptions. The complete HTTP head,
+complete HTTP request, WebSocket handshake, and complete WebSocket frame each
+have a ten-second deadline; byte-by-byte traffic cannot restart a deadline.
+Each WebSocket admits at most 120 client messages and 60 status-query batches
+per minute, polls at one-second intervals, and reads all subscribed sessions
+in one bounded batch. It is never advertised in NIP-11.
+
+Creation bodies use closed member sets. Submarine creation accepts only
+`from`, `to`, `invoice`, `pairHash`, `refundPublicKey`, and `mktSessionId`.
+Reverse creation accepts only `from`, `to`, `invoiceAmount`, `preimageHash`,
+`claimPublicKey`, `pairHash`, and `mktSessionId`; the claim key and amount must
+equal the signed Contract and RFQ. Optional Boltz operator fields are refused
+instead of ignored or defaulted.
+
+Status projection follows each participant's dense `seq` and exact
+`previous` references. It checks the signer allowed for each MKT-SWP state and
+does not use `created_at` to order claims. A signed broadcast intention remains
+`swap.created` until a funding observation exists, and a prepared refund is
+never reported as mempool broadcast. Reverse BIP21 lookup uses the durable
+payment-hash/session index, so unrelated global history cannot hide a valid
+invoice. Only the Quote provider's `hold_invoice_ready` Status can populate
+that index, after exact RFQ/Quote participants, equal bilateral reverse
+Contracts, and the BOLT11/Quote/Contract payment hash have all matched.
+Requester and foreign Status records remain durable evidence but cannot
+populate or redirect the index. Startup rebuilds missing index rows through
+keyset-paged application validation; the SQL migration does not infer a
+payment hash from unparsed invoice text.
 
 Submarine finalize returns the exact signed exit-package commitment mode with
 its SHA-256. `presigned` means a keyless package; `wallet_sign` means the
@@ -97,7 +122,11 @@ relay's `/v2/ws` response is a discovery handoff, not a WebSocket proxy.
 - The client owns preimages, funding inputs, change, claim/refund keys, and
   unilateral exit packages.
 - Provider-local helpers own released-preimage lookup, public raw-transaction
-  lookup, and session-bound broadcast. Their bodies never traverse the relay.
+  lookup, and session-bound broadcast. Reverse claim binding reverses the
+  display-order funding transaction ID before comparing serialized outpoints.
+  Released-preimage lookup selects a claim status carrying a transaction ID,
+  so a later terminal Status without that field cannot hide public evidence.
+  Their bodies never traverse the relay.
 - Recovery uses signed MKT-SWP records and the client snapshot, not operator
   metadata or restore storage.
 
@@ -198,7 +227,7 @@ external provider and covered by its process conformance gate. `refused` and
 | `GET /v2/chain/:currency/fee` | emulated | BTC only; live bitcoind estimate or explicit bounded fallback. |
 | `GET /v2/chain/:currency/height` | emulated | BTC only; live bitcoind chain tip. |
 | `GET /v2/chain/:currency/transaction/:id` | emulated | BTC only; bounded public raw-transaction lookup. |
-| `POST /v2/chain/:currency/transaction` | emulated | BTC only; exact committed funding or verified reverse script-path claim, idempotent by public txid. |
+| `POST /v2/chain/:currency/transaction` | emulated | BTC only; exact committed funding or verified reverse script-path claim. A retry is idempotent only when bitcoind returns the exact submitted raw bytes, including witness. |
 | `GET /v2/chain/:currency/contracts` | deferred | EVM contracts wait for an adopted EVM profile. |
 | `GET /v2/commitment/:currency/details` | deferred | Requires an adopted reservation-class decision. |
 | `POST /v2/commitment/:currency` | deferred | Requires an adopted reservation-class decision. |
@@ -257,9 +286,12 @@ cap and unsafe origin forms remain rejected.
 Dependent-call coverage is **19/19 (100%) emulated**. The completion gate runs
 the adapted Go and web clients against the separate funded provider daemon and
 proves all 19 calls, including direct provider WebSocket status, submarine
-finalization, unchanged-byte idempotent broadcast, reverse creation, and
-public-claim release. This is separate from the **17/53 endpoint-surface**
-result above. A relay `307`, `404`, or configuration promise earns no coverage.
+finalization, unchanged-byte idempotent broadcast, reverse creation and claim
+broadcast, public-claim release, and rejection of an unbound broadcast.
+Fixture and Postgres tests additionally pin signer/sequence projection,
+same-txid witness mutation refusal, and invoice lookup after more than 6,144
+unrelated records. This is separate from the **17/53 endpoint-surface** result
+above. A relay `307`, `404`, or configuration promise earns no coverage.
 
 The process result makes the profile eligible for #18 replacement scenarios.
 Public replacement remains gated on #18 and #19 deployment evidence.

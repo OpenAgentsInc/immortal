@@ -809,6 +809,28 @@ both adapter processes over the 19-call union. This changes no source-lane
 precedence or kind allocation and is the #15 adoption decision; #19 retains the
 public replacement gate.
 
+The funded process gate also pins two Bitcoin evidence details. Reverse claim
+outpoints compare the serialized wire-order previous transaction ID with the
+reversed display-order funding transaction ID. Submarine released-secret
+lookup selects the latest claim Status that carries a transaction ID; a later
+terminal Status without that field cannot hide the public claim.
+
+The correction packet keeps that adoption decision and closes its observable
+edges. Request bodies and WebSocket messages now use closed member sets and
+total read deadlines; WebSocket message, subscription, and batched-query rates
+are explicit. Boltz status is derived from dense signer-local `seq` streams and
+exact `previous` references, never `created_at`; an intention or prepared exit
+does not become a broadcast observation. Broadcast retry compares the exact raw
+transaction returned by bitcoind, including witness, rather than accepting a
+matching txid. Reverse claim keys and amounts are checked against signed terms,
+and reverse BIP21 uses a durable payment-hash/session index instead of a global
+history prefix. The index admits only the Quote provider's
+`hold_invoice_ready` Status after the parsed invoice hash matches the Quote and
+equal bilateral reverse Contracts; requester or foreign Status cannot poison
+it, and startup reconstruction uses the same Rust validation instead of a SQL
+text inference. These are compatibility semantics and storage indexing; they
+add no event kind, lane source, relay custody, or NIP-11 advertisement.
+
 ## M12 LND provider-rail decision (2026-08-05)
 
 Issue #29 changes no NIP source pin, event-kind allocation, relay behavior,

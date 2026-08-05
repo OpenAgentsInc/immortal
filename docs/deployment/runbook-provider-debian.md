@@ -179,6 +179,16 @@ origin and configure adapted clients to use its `wss://.../v2/ws` endpoint
 directly. Do not make the provider bind public. The surface is a compatibility
 API and is never advertised in relay NIP-11.
 
+Startup applies the provider database migrations before the listener opens.
+The Boltz invoice-binding migration adds only the signed public BOLT11,
+payment hash, session ID, and Status event ID. It stores no preimage, wallet
+key, macaroon, or node credential. On startup, the provider keyset-pages
+candidate sessions and populates missing rows only after checking provider
+authorship, exact bilateral reverse Contracts, and the parsed BOLT11 payment
+hash. Back up Postgres before upgrading and keep the old binary available
+until `immortal-provider contract` and the local provider conformance gate pass
+against the migrated database.
+
 For LND, replace the CLN selector/path with the following values. Copy or
 provision the certificate and least-privilege macaroon files through the
 operator's custody system; each macaroon file must be a nonsymlink regular

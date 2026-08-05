@@ -283,8 +283,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/boltz-provider-api-v1.json",
-      "sha256": "2cb8e422dc41f786cd60058ecd5acd8da48d3de65edaa65cfb2487a92ab1997d",
-      "bytes": 5758,
+      "sha256": "c2fb9742fbcd0afe971759db53b12f3ba3f8496e5c1704d04cae289eb7a7195c",
+      "bytes": 10160,
       "scope": "provider"
     },
     {

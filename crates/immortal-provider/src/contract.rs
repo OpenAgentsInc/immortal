@@ -375,6 +375,7 @@ fn limits_contract() -> Value {
         "store":{
             "records_per_session":crate::store::MAX_SESSION_RECORDS,
             "session_query":crate::store::MAX_SESSION_QUERY,
+            "session_batch":crate::store::MAX_SESSION_BATCH,
             "active_session_record_query":crate::store::MAX_ACTIVE_SESSION_RECORD_QUERY,
             "reservation_utxos":crate::store::MAX_RESERVATION_UTXOS,
             "watch_claim":crate::store::MAX_WATCH_CLAIM,
@@ -406,7 +407,11 @@ fn limits_contract() -> Value {
             "raw_transaction_bytes":crate::boltz::MAX_RAW_TRANSACTION_BYTES,
             "status_ids":crate::boltz::MAX_STATUS_IDS,
             "websocket_subscriptions":crate::boltz::MAX_WS_SUBSCRIPTIONS,
-            "websocket_frame_bytes":crate::boltz::MAX_WS_FRAME_BYTES
+            "websocket_frame_bytes":crate::boltz::MAX_WS_FRAME_BYTES,
+            "websocket_messages_per_minute":crate::boltz::MAX_WS_MESSAGES_PER_MINUTE,
+            "websocket_status_query_batches_per_minute":crate::boltz::MAX_WS_STATUS_QUERY_BATCHES_PER_MINUTE,
+            "websocket_poll_interval_milliseconds":crate::boltz::WS_POLL_INTERVAL.as_millis(),
+            "request_timeout_seconds":crate::boltz::REQUEST_TIMEOUT.as_secs()
         },
         "quote":{
             "rail_sync_attempts":crate::funded_mode::QUOTE_RAIL_SYNC_ATTEMPTS,
@@ -446,6 +451,7 @@ fn limits_contract() -> Value {
         "store":{
             "records_per_session":512,
             "session_query":512,
+            "session_batch":64,
             "active_session_record_query":6144,
             "reservation_utxos":64,
             "watch_claim":64,
@@ -473,7 +479,11 @@ fn limits_contract() -> Value {
             "raw_transaction_bytes":1000000,
             "status_ids":64,
             "websocket_subscriptions":64,
-            "websocket_frame_bytes":16384
+            "websocket_frame_bytes":16384,
+            "websocket_messages_per_minute":120,
+            "websocket_status_query_batches_per_minute":60,
+            "websocket_poll_interval_milliseconds":1000,
+            "request_timeout_seconds":10
         },
         "quote":{
             "rail_sync_attempts":40,
