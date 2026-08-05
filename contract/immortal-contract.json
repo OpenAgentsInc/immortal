@@ -15,13 +15,13 @@
         "lane": "block",
         "repo": "https://github.com/block/buzz",
         "subdir": "docs/nips",
-        "commit": "540b58920cef205b838da8be8442aae62bceaaa5"
+        "commit": "8342dfcc5890b81a269a8ec3db73a8a56f76ce79"
       },
       {
         "lane": "openagents",
         "repo": "https://github.com/OpenAgentsInc/openagents",
         "subdir": "docs/nips",
-        "commit": "a7f5522c0a7430f9f5b1cfa09477dae2d16d3682"
+        "commit": "006b35b1f428a2e2a18931ff1546e5a09a8f8961"
       }
     ]
   },
@@ -232,6 +232,12 @@
     },
     {
       "lane": "openagents",
+      "identifier": "nip-mkt-mint:1",
+      "advertisement": "relay_url_and_local_conformance",
+      "status": "relay_observable"
+    },
+    {
+      "lane": "openagents",
       "identifier": "mkt-swp-coordination:1",
       "advertisement": "exact_conformance_digest_and_relay_signer",
       "status": "optional_noncustodial_handler"
@@ -357,6 +363,16 @@
       "publication": "public_head",
       "immutability": "nip01_addressable",
       "enforcement_scope": "relay"
+    },
+    {
+      "kind": 39640,
+      "lane": "openagents",
+      "identifier": "NIP-MKT",
+      "name": "mkt_mint_route_contract",
+      "classification": "addressable",
+      "publication": "private_wrapped",
+      "immutability": "exact_signed_coordinate",
+      "enforcement_scope": "client_and_internal_store"
     }
   ],
   "limits": {
@@ -505,6 +521,12 @@
       },
       {
         "id": "mkt-pfi",
+        "version": 1,
+        "scope": "relay_observable_only",
+        "advertisement": "relay_url_and_local_conformance"
+      },
+      {
+        "id": "mkt-mint",
         "version": 1,
         "scope": "relay_observable_only",
         "advertisement": "relay_url_and_local_conformance"
@@ -770,6 +792,130 @@
       "external_authority": "credential_rail_guarantee_reserve_escrow_dispute_and_settlement_verification_not_claimed",
       "upstream_fixture_cases": 41
     },
+    "mkt_mint": {
+      "id": "mkt-mint",
+      "version": 1,
+      "route_contract_kind": 39640,
+      "scope": "relay_observable_only",
+      "discovery_authority": "official_nip87_announcement_cross_referenced_never_duplicated",
+      "nip87_announcement_kinds": {
+        "cashu": "38172",
+        "fedimint": "38173"
+      },
+      "nip87_recommendation_kind_rejected": "38000",
+      "rails": [
+        "cashu",
+        "fedimint"
+      ],
+      "custody_classes": {
+        "cashu": "a3-mint",
+        "fedimint": "a2-federation"
+      },
+      "custody_disclosure": "custody_class_must_equal_the_rail_class; a_mint_or_federation_route_cannot_present_as_noncustodial",
+      "operations": {
+        "cashu": [
+          "mint",
+          "melt"
+        ],
+        "fedimint": [
+          "withdraw-lightning",
+          "withdraw-onchain"
+        ]
+      },
+      "sides_law": "decimal_string_amounts; max_0_disables_and_requires_min_0; omission_invalid; fedimint_deposit_disabled_in_version_1; enabled_requires_0_lt_min_le_max",
+      "canonical_amount_pattern": "^(0|[1-9][0-9]*)$",
+      "offering_required_members": [
+        "nip87_ref",
+        "rail",
+        "market",
+        "sides",
+        "operations",
+        "protocol_revisions",
+        "custody_class",
+        "credential_burden",
+        "gateway_policy"
+      ],
+      "credential_burdens": [
+        "none",
+        "access-token",
+        "membership-proof",
+        "external-policy"
+      ],
+      "gateway_policies": [
+        "fixed",
+        "requester-selectable",
+        "federation-selected"
+      ],
+      "route_contract_publication": "private_signed_record_nip59_only",
+      "route_contract_alt": "MKT-MINT route contract",
+      "contract_digest_validation": "lower_hex_shape_and_x_body_equality; rfc8785_recomputation_is_client_or_handler_scope",
+      "contract_members": [
+        "quote_event_id",
+        "order_event_id",
+        "accepted_status_event_id",
+        "operation",
+        "native_request_sha256",
+        "native_quote_id_sha256",
+        "native_quote_sha256",
+        "terms_sha256",
+        "custody_sha256",
+        "verifier_policy_sha256",
+        "external_effect_ids_sha256",
+        "recovery_package_sha256"
+      ],
+      "status_extensions": [
+        "quote-issued",
+        "route-contract-pending",
+        "route-contract-bound",
+        "issuance-pending",
+        "proofs-issued",
+        "wallet-verified",
+        "payment-required",
+        "payment-observed",
+        "proofs-submitted-to-mint",
+        "melt-paid",
+        "change-verified",
+        "federation-contract-pending",
+        "federation-contract-accepted",
+        "gateway-pending",
+        "external-settlement-pending",
+        "withdrawal-verified"
+      ],
+      "evidence_provenance": [
+        "pledged",
+        "observed",
+        "verified",
+        "paid",
+        "issued",
+        "refunded",
+        "settled"
+      ],
+      "evidence_reference_validation": "closed_receipt_digest_issuer_provenance_shape; quote_receipts_cannot_claim_paid_issued_refunded_settled; payment_receipts_cannot_claim_issued",
+      "forbidden_custody_members": [
+        "proof",
+        "proofs",
+        "cashu_token",
+        "note",
+        "notes",
+        "blinded_message",
+        "blinding_factor",
+        "secret",
+        "preimage",
+        "macaroon",
+        "seed",
+        "mnemonic",
+        "private_key",
+        "spend_key",
+        "claim_private_key",
+        "refund_private_key",
+        "recovery_secret",
+        "access_token",
+        "bearer_token",
+        "nwc"
+      ],
+      "external_authority": "mint_federation_gateway_lightning_chain_and_price_feed_verification_not_claimed",
+      "upstream_fixture_cases": 29
+    },
     "required_tags": {
       "cancel": [
         "order e",
@@ -780,6 +926,19 @@
         "order e",
         "outcome",
         "terminal_at"
+      ],
+      "mkt_mint_route_contract": [
+        "d",
+        "session",
+        "profile",
+        "p",
+        "alt",
+        "quote e",
+        "order e",
+        "status e when accepted_status_event_id is not null",
+        "rail",
+        "role",
+        "x"
       ],
       "mkt_pfi_offering": [
         "market",

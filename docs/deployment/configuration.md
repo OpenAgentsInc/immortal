@@ -94,7 +94,8 @@ contract and deliberate NIP-29 subset are in
 `docs/protocol/nip-expansion.md`.
 
 The same authenticated-recipient configuration gates the nonnumeric
-`nip-mkt`, `mkt-swp:1`, and `nip-mkt-pfi:1` NIP-11 extensions. The profile
+`nip-mkt`, `mkt-swp:1`, `nip-mkt-pfi:1`, and `nip-mkt-mint:1` NIP-11
+extensions. The profile
 extensions identify only their relay-observable grammar and storage contract;
 they do not configure a wallet, credential verifier, rail adapter, guarantee,
 dispute authority, or custody surface. The separate

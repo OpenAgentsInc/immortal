@@ -76,7 +76,7 @@
   ],
   "bare_private": {
     "scope": "relay_gateway",
-    "kinds": [39604, 39605, 39606, 39607, 39608, 39609, 39610],
+    "kinds": [39604, 39605, 39606, 39607, 39608, 39609, 39610, 39640],
     "expected": {"decision": "reject", "reason": "restricted: mkt-private-requires-gift-wrap"}
   },
   "rates": {
@@ -91,6 +91,8 @@
     {"first": 39600, "last": 39603, "nip01_class": "addressable", "allocation": "public_mkt"},
     {"first": 39604, "last": 39609, "nip01_class": "addressable", "allocation": "private_mkt"},
     {"first": 39610, "last": 39610, "nip01_class": "addressable", "allocation": "private_mkt_swp"},
-    {"first": 39611, "last": 39699, "nip01_class": "addressable", "allocation": "reserved_unallocated"}
+    {"first": 39611, "last": 39639, "nip01_class": "addressable", "allocation": "reserved_unallocated"},
+    {"first": 39640, "last": 39640, "nip01_class": "addressable", "allocation": "private_mkt_mint"},
+    {"first": 39641, "last": 39699, "nip01_class": "addressable", "allocation": "reserved_unallocated"}
   ]
 }

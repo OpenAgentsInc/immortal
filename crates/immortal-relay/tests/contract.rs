@@ -26,7 +26,7 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     assert_eq!(descriptor.identity.contract_version, CONTRACT_VERSION);
     assert_eq!(descriptor.fixture_manifest, FIXTURE_MANIFEST_PATH);
     assert_eq!(descriptor.identity.nips.len(), 3);
-    assert_eq!(descriptor.kinds.len(), 12);
+    assert_eq!(descriptor.kinds.len(), 13);
     assert!(
         descriptor
             .kinds
@@ -38,13 +38,25 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     }
     assert!(MKT_EXECUTABLE_PROFILES.is_empty());
     assert!(descriptor.mkt.executable_profiles.is_empty());
-    assert_eq!(descriptor.mkt.relay_profiles.len(), 2);
+    assert_eq!(descriptor.mkt.relay_profiles.len(), 3);
     assert_eq!(descriptor.mkt.relay_profiles[0].id, "mkt-swp");
     assert_eq!(descriptor.mkt.relay_profiles[1].id, "mkt-pfi");
+    assert_eq!(descriptor.mkt.relay_profiles[2].id, "mkt-mint");
     assert_eq!(descriptor.mkt.mkt_swp.swap_contract_kind, 39_610);
     assert_eq!(descriptor.mkt.mkt_swp.upstream_fixture_cases, 70);
     assert_eq!(descriptor.mkt.mkt_pfi.qualification_policy_kind, 39_630);
     assert_eq!(descriptor.mkt.mkt_pfi.upstream_fixture_cases, 41);
+    assert_eq!(descriptor.mkt.mkt_mint.route_contract_kind, 39_640);
+    assert_eq!(descriptor.mkt.mkt_mint.upstream_fixture_cases, 29);
+    assert_eq!(descriptor.mkt.mkt_mint.custody_classes["cashu"], "a3-mint");
+    assert_eq!(
+        descriptor.mkt.mkt_mint.custody_classes["fedimint"],
+        "a2-federation"
+    );
+    assert_eq!(
+        descriptor.mkt.mkt_mint.nip87_recommendation_kind_rejected,
+        "38000"
+    );
     assert!(!descriptor.mkt.mkt_swp.coordination.enabled_by_default);
     assert_eq!(
         descriptor
@@ -162,6 +174,7 @@ fn fixture_manifest_hashes_exact_sorted_committed_bytes() {
     assert!(paths.contains("tests/fixtures/nipmkt/client-only-cases.json"));
     assert!(paths.contains("tests/fixtures/nipmkt/relay-closing.json"));
     assert!(paths.contains("tests/fixtures/nipmkt/swp-profile-v1.json"));
+    assert!(paths.contains("tests/fixtures/nipmkt/mint-profile-v1.json"));
     assert!(paths.contains("tests/fixtures/nipmkt/swp-coordination-v1.json"));
     assert!(paths.contains("tests/fixtures/nipmkt/swp-client-engine-v1.json"));
 }

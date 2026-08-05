@@ -26,10 +26,48 @@ pub const MKT_SWP_PROFILE_VERSION: u64 = 1;
 pub const MKT_PFI_QUALIFICATION_POLICY_KIND: u16 = 39_630;
 pub const MKT_PFI_PROFILE_ID: &str = "mkt-pfi";
 pub const MKT_PFI_PROFILE_VERSION: u64 = 1;
+pub const MKT_MINT_ROUTE_CONTRACT_KIND: u16 = 39_640;
+pub const MKT_MINT_PROFILE_ID: &str = "mkt-mint";
+pub const MKT_MINT_PROFILE_VERSION: u64 = 1;
 pub const MKT_EXECUTABLE_PROFILES: &[(&str, u64)] = &[];
 pub const MKT_RELAY_PROFILES: &[(&str, u64)] = &[
     (MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION),
     (MKT_PFI_PROFILE_ID, MKT_PFI_PROFILE_VERSION),
+    (MKT_MINT_PROFILE_ID, MKT_MINT_PROFILE_VERSION),
+];
+pub const MKT_MINT_RAILS: &[&str] = &["cashu", "fedimint"];
+pub const MKT_MINT_CUSTODY_CLASSES: &[(&str, &str)] =
+    &[("cashu", "a3-mint"), ("fedimint", "a2-federation")];
+pub const MKT_MINT_OPERATIONS_CASHU: &[&str] = &["mint", "melt"];
+pub const MKT_MINT_OPERATIONS_FEDIMINT: &[&str] = &["withdraw-lightning", "withdraw-onchain"];
+pub const MKT_MINT_CREDENTIAL_BURDENS: &[&str] = &[
+    "none",
+    "access-token",
+    "membership-proof",
+    "external-policy",
+];
+pub const MKT_MINT_GATEWAY_POLICIES: &[&str] =
+    &["fixed", "requester-selectable", "federation-selected"];
+pub const MKT_MINT_EVIDENCE_PROVENANCE: &[&str] = &[
+    "pledged", "observed", "verified", "paid", "issued", "refunded", "settled",
+];
+pub const MKT_MINT_STATUS_EXTENSIONS: &[&str] = &[
+    "quote-issued",
+    "route-contract-pending",
+    "route-contract-bound",
+    "issuance-pending",
+    "proofs-issued",
+    "wallet-verified",
+    "payment-required",
+    "payment-observed",
+    "proofs-submitted-to-mint",
+    "melt-paid",
+    "change-verified",
+    "federation-contract-pending",
+    "federation-contract-accepted",
+    "gateway-pending",
+    "external-settlement-pending",
+    "withdrawal-verified",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +272,20 @@ fn validate_mkt_private_syntax(event: &Event) -> Result<MktPrivateEnvelope, Stri
             ));
         }
     }
+    if event.kind == MKT_MINT_ROUTE_CONTRACT_KIND {
+        if *profile_id != MKT_MINT_PROFILE_ID {
+            return Err(mint_error(
+                "mkt_mint_unsupported_profile",
+                "kind 39640 requires profile mkt-mint",
+            ));
+        }
+        if *profile_version != MKT_MINT_PROFILE_VERSION {
+            return Err(mint_error(
+                "mkt_mint_unsupported_version",
+                "kind 39640 requires MKT-MINT version 1",
+            ));
+        }
+    }
     let alt = single_value(event, "alt", "private MKT event")?;
     if alt.is_empty() || alt.len() > 128 || alt.chars().any(char::is_control) {
         return Err("private MKT alt must be a nonempty bounded description".to_owned());
@@ -300,6 +352,12 @@ pub fn validate_mkt_private_with_profiles(
         && envelope.profile_version == MKT_PFI_PROFILE_VERSION
     {
         validate_mkt_pfi_visible_private(&envelope)
+            .map_err(|detail| validation_error(MktValidationCode::TagGrammar, detail))?;
+    }
+    if envelope.profile_id == MKT_MINT_PROFILE_ID
+        && envelope.profile_version == MKT_MINT_PROFILE_VERSION
+    {
+        validate_mkt_mint_visible_private(event, &envelope)
             .map_err(|detail| validation_error(MktValidationCode::TagGrammar, detail))?;
     }
     Ok(envelope)
@@ -381,9 +439,13 @@ fn validation_error(code: MktValidationCode, detail: impl Into<String>) -> MktVa
 }
 
 fn classify_syntax_error(detail: String) -> MktValidationError {
-    let code = if detail.starts_with("swp_unsupported_profile") {
+    let code = if detail.starts_with("swp_unsupported_profile")
+        || detail.starts_with("mkt_mint_unsupported_profile")
+    {
         MktValidationCode::UnsupportedProfile
-    } else if detail.starts_with("swp_unsupported_version") {
+    } else if detail.starts_with("swp_unsupported_version")
+        || detail.starts_with("mkt_mint_unsupported_version")
+    {
         MktValidationCode::UnsupportedProfileVersion
     } else if detail.contains("exceeds 32768") || detail.contains("serialization failed") {
         MktValidationCode::EventTooLarge
@@ -423,6 +485,7 @@ pub const fn is_mkt_private_kind(kind: u16) -> bool {
             | MKT_CANCEL_KIND
             | MKT_CLOSE_KIND
             | MKT_SWP_SWAP_CONTRACT_KIND
+            | MKT_MINT_ROUTE_CONTRACT_KIND
     )
 }
 
@@ -501,6 +564,14 @@ fn validate_offering(event: &Event) -> Result<(), String> {
             ));
         }
         validate_mkt_pfi_offering(event)?;
+    } else if profiles[0].0 == MKT_MINT_PROFILE_ID {
+        if profiles[0].1 != MKT_MINT_PROFILE_VERSION {
+            return Err(mint_error(
+                "mkt_mint_unsupported_version",
+                "only MKT-MINT profile version 1 is relay-observable",
+            ));
+        }
+        validate_mkt_mint_offering(event)?;
     }
     Ok(())
 }
@@ -574,6 +645,15 @@ fn validate_public_receipt(event: &Event) -> Result<(), String> {
         let content = parse_unique_json(&event.content, "MKT-PFI public receipt content")?;
         reject_pfi_forbidden_material(&content)?;
         validate_mkt_pfi_public_receipt_content(&content)?;
+    } else if profiles[0].0 == MKT_MINT_PROFILE_ID {
+        if profiles[0].1 != MKT_MINT_PROFILE_VERSION {
+            return Err(mint_error(
+                "mkt_mint_unsupported_version",
+                "only MKT-MINT profile version 1 is relay-observable",
+            ));
+        }
+        let content = parse_unique_json(&event.content, "MKT-MINT public receipt content")?;
+        reject_mint_public_material(&content)?;
     }
     Ok(())
 }
@@ -1973,6 +2053,942 @@ fn pfi_hex_with_code(value: &str, subject: &str, code: &str) -> Result<(), Strin
 }
 
 fn pfi_error(code: &str, detail: impl fmt::Display) -> String {
+    format!("{code}: {detail}")
+}
+
+// ---------------------------------------------------------------------------
+// MKT-MINT v1 relay-observable validation (nips/openagents/MKT-MINT.md).
+// Official NIP-87 stays the discovery authority, the Cashu NUTs and Fedimint
+// protocols stay the rail authority, and the relay validates only shapes,
+// cross-reference grammar, custody disclosure, and forbidden material.
+// ---------------------------------------------------------------------------
+
+fn validate_mkt_mint_offering(event: &Event) -> Result<(), String> {
+    let content = parse_unique_json(&event.content, "MKT-MINT Offering content")?;
+    reject_mint_public_material(&content)?;
+    let body = pfi_object(&content, "MKT-MINT Offering", "mkt_mint_invalid_market")?;
+    pfi_closed(
+        body,
+        &["schema", "profile", "profile_version", "mkt_mint"],
+        "MKT-MINT Offering",
+        "mkt_mint_invalid_market",
+    )?;
+    pfi_exact_string(
+        body,
+        "schema",
+        MKT_ENVELOPE_SCHEMA,
+        "mkt_mint_invalid_market",
+    )?;
+    pfi_exact_string(
+        body,
+        "profile",
+        MKT_MINT_PROFILE_ID,
+        "mkt_mint_invalid_market",
+    )?;
+    if body.get("profile_version").and_then(Value::as_u64) != Some(MKT_MINT_PROFILE_VERSION) {
+        return Err(mint_error(
+            "mkt_mint_unsupported_version",
+            "MKT-MINT Offering content requires profile_version 1",
+        ));
+    }
+    let mint = pfi_object(
+        body.get("mkt_mint")
+            .ok_or_else(|| mint_error("mkt_mint_invalid_market", "mkt_mint object is required"))?,
+        "MKT-MINT Offering mkt_mint",
+        "mkt_mint_invalid_market",
+    )?;
+    pfi_closed(
+        mint,
+        &[
+            "nip87_ref",
+            "rail",
+            "market",
+            "sides",
+            "operations",
+            "protocol_revisions",
+            "custody_class",
+            "credential_burden",
+            "gateway_policy",
+        ],
+        "MKT-MINT Offering mkt_mint",
+        "mkt_mint_invalid_market",
+    )?;
+    let rail = pfi_required_string(mint, "rail", "mkt_mint_invalid_market")?;
+    if !MKT_MINT_RAILS.contains(&rail) {
+        return Err(mint_error(
+            "mkt_mint_invalid_market",
+            "rail must be cashu or fedimint",
+        ));
+    }
+    validate_mint_nip87_reference(mint.get("nip87_ref"), rail)?;
+    validate_mint_market(mint.get("market"))?;
+    let operations = validate_mint_operations(mint.get("operations"), rail)?;
+    validate_mint_sides(mint.get("sides"), rail, &operations)?;
+    validate_mint_protocol_revisions(mint.get("protocol_revisions"))?;
+    validate_mint_custody_class_value(
+        pfi_required_string(
+            mint,
+            "custody_class",
+            "mkt_mint_custody_disclosure_mismatch",
+        )?,
+        Some(rail),
+    )?;
+    require_enum(
+        pfi_required_string(mint, "credential_burden", "mkt_mint_invalid_market")?,
+        MKT_MINT_CREDENTIAL_BURDENS,
+        "MKT-MINT credential burden",
+    )
+    .map_err(|detail| mint_error("mkt_mint_invalid_market", detail))?;
+    require_enum(
+        pfi_required_string(mint, "gateway_policy", "mkt_mint_invalid_market")?,
+        MKT_MINT_GATEWAY_POLICIES,
+        "MKT-MINT gateway policy",
+    )
+    .map_err(|detail| mint_error("mkt_mint_invalid_market", detail))?;
+    Ok(())
+}
+
+fn validate_mint_nip87_reference(value: Option<&Value>, rail: &str) -> Result<(), String> {
+    let reference = pfi_object(
+        value.ok_or_else(|| {
+            mint_error(
+                "mkt_mint_invalid_nip87_reference",
+                "nip87_ref is required; NIP-87 owns mint and federation discovery",
+            )
+        })?,
+        "MKT-MINT nip87_ref",
+        "mkt_mint_invalid_nip87_reference",
+    )?;
+    pfi_closed(
+        reference,
+        &["kind", "address", "event_id", "relays"],
+        "MKT-MINT nip87_ref",
+        "mkt_mint_invalid_nip87_reference",
+    )?;
+    let expected_kind = if rail == "cashu" { "38172" } else { "38173" };
+    let kind = pfi_required_string(reference, "kind", "mkt_mint_invalid_nip87_reference")?;
+    if kind == "38000" {
+        return Err(mint_error(
+            "mkt_mint_invalid_nip87_reference",
+            "a kind-38000 recommendation is a user claim and cannot replace the announcement",
+        ));
+    }
+    if kind != expected_kind {
+        return Err(mint_error(
+            "mkt_mint_invalid_nip87_reference",
+            format!("a {rail} route requires the exact kind-{expected_kind} announcement"),
+        ));
+    }
+    let address = pfi_required_string(reference, "address", "mkt_mint_invalid_nip87_reference")?;
+    let mut parts = address.split(':');
+    let address_kind = parts.next().unwrap_or_default();
+    let address_pubkey = parts.next().unwrap_or_default();
+    let address_identifier = parts.next().unwrap_or_default();
+    if address_kind != expected_kind
+        || lower_hex_32(address_pubkey, "NIP-87 announcement pubkey").is_err()
+        || address_identifier.is_empty()
+        || address_identifier.len() > 128
+        || !address_identifier.is_ascii()
+        || address_identifier
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        || parts.next().is_some()
+    {
+        return Err(mint_error(
+            "mkt_mint_invalid_nip87_reference",
+            "nip87_ref address must be the exact kind:pubkey:identifier announcement address",
+        ));
+    }
+    pfi_hex_with_code(
+        pfi_required_string(reference, "event_id", "mkt_mint_invalid_nip87_reference")?,
+        "NIP-87 announcement event id",
+        "mkt_mint_invalid_nip87_reference",
+    )?;
+    let relays = reference
+        .get("relays")
+        .and_then(Value::as_array)
+        .filter(|values| values.len() <= MKT_MAX_HINTS)
+        .ok_or_else(|| {
+            mint_error(
+                "mkt_mint_invalid_nip87_reference",
+                "nip87_ref relays must be a bounded array of relay hints",
+            )
+        })?;
+    for relay in relays {
+        let relay = relay.as_str().unwrap_or_default();
+        if !relay.starts_with("wss://")
+            || relay.len() > 512
+            || !relay.is_ascii()
+            || relay
+                .bytes()
+                .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        {
+            return Err(mint_error(
+                "mkt_mint_invalid_nip87_reference",
+                "nip87_ref relay hints must be bounded wss URLs",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_mint_market(value: Option<&Value>) -> Result<(), String> {
+    let market = pfi_object(
+        value.ok_or_else(|| mint_error("mkt_mint_invalid_market", "market is required"))?,
+        "MKT-MINT market",
+        "mkt_mint_invalid_market",
+    )?;
+    pfi_closed(
+        market,
+        &["base_asset_id", "quote_asset_id"],
+        "MKT-MINT market",
+        "mkt_mint_invalid_market",
+    )?;
+    let base = pfi_required_string(market, "base_asset_id", "mkt_mint_invalid_market")?;
+    let quote = pfi_required_string(market, "quote_asset_id", "mkt_mint_invalid_market")?;
+    for asset in [base, quote] {
+        validate_mint_asset_id(asset)?;
+    }
+    if base == quote {
+        return Err(mint_error(
+            "mkt_mint_invalid_market",
+            "market requires two distinct asset identifiers",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_mint_asset_id(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value.is_ascii()
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
+        return Err(mint_error(
+            "mkt_mint_invalid_market",
+            "asset identifier is empty, unbounded, or noncanonical",
+        ));
+    }
+    if !value.contains(':') {
+        return Err(mint_error(
+            "mkt_mint_invalid_market",
+            "display units such as sat, USD, or EUR are labels and are insufficient identifiers",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_mint_operations<'a>(
+    value: Option<&'a Value>,
+    rail: &str,
+) -> Result<Vec<&'a str>, String> {
+    let allowed = if rail == "cashu" {
+        MKT_MINT_OPERATIONS_CASHU
+    } else {
+        MKT_MINT_OPERATIONS_FEDIMINT
+    };
+    let operations = pfi_string_array(value, 1, 4, "operations", "mkt_mint_invalid_market")?;
+    for operation in &operations {
+        if !allowed.contains(operation) {
+            return Err(mint_error(
+                "mkt_mint_invalid_market",
+                format!("operation {operation:?} is not admitted for a {rail} route"),
+            ));
+        }
+    }
+    Ok(operations)
+}
+
+fn validate_mint_sides(
+    value: Option<&Value>,
+    rail: &str,
+    operations: &[&str],
+) -> Result<(), String> {
+    let sides = pfi_object(
+        value.ok_or_else(|| {
+            mint_error(
+                "mkt_mint_invalid_market",
+                "sides is required; omission is invalid",
+            )
+        })?,
+        "MKT-MINT sides",
+        "mkt_mint_invalid_market",
+    )?;
+    let names: &[&str] = if rail == "cashu" {
+        &["mint", "melt"]
+    } else {
+        &["deposit", "withdrawal"]
+    };
+    pfi_closed(sides, names, "MKT-MINT sides", "mkt_mint_invalid_market")?;
+    let mut enabled = Vec::new();
+    for name in names {
+        enabled.push(validate_mint_side(sides.get(*name), name)?);
+    }
+    if rail == "cashu" {
+        for (index, name) in names.iter().enumerate() {
+            if enabled[index] != operations.contains(name) {
+                return Err(mint_error(
+                    "mkt_mint_side_disabled",
+                    format!("{name} side and the declared operations must agree"),
+                ));
+            }
+        }
+    } else {
+        if enabled[0] {
+            return Err(mint_error(
+                "mkt_mint_side_disabled",
+                "version-1 Fedimint deposit must be present with min 0 and max 0",
+            ));
+        }
+        if !enabled[1] {
+            return Err(mint_error(
+                "mkt_mint_side_disabled",
+                "a Fedimint route requires an enabled withdrawal side",
+            ));
+        }
+    }
+    if !enabled.iter().any(|side| *side) {
+        return Err(mint_error(
+            "mkt_mint_side_disabled",
+            "Offering must enable at least one side",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_mint_side(value: Option<&Value>, name: &str) -> Result<bool, String> {
+    let side = pfi_object(
+        value.ok_or_else(|| {
+            mint_error(
+                "mkt_mint_invalid_market",
+                format!("{name} side is required; omission is invalid"),
+            )
+        })?,
+        name,
+        "mkt_mint_invalid_market",
+    )?;
+    pfi_closed(side, &["min", "max"], name, "mkt_mint_invalid_market")?;
+    let minimum = pfi_decimal_member(side, "min", false, "mkt_mint_invalid_market")?;
+    let maximum = pfi_decimal_member(side, "max", false, "mkt_mint_invalid_market")?;
+    if maximum == 0 {
+        if minimum != 0 {
+            return Err(mint_error(
+                "mkt_mint_side_disabled",
+                format!("disabled {name} requires min 0 and max 0"),
+            ));
+        }
+        return Ok(false);
+    }
+    if minimum == 0 || minimum > maximum {
+        return Err(mint_error(
+            "mkt_mint_invalid_market",
+            format!("enabled {name} requires 0 < min <= max"),
+        ));
+    }
+    Ok(true)
+}
+
+fn validate_mint_protocol_revisions(value: Option<&Value>) -> Result<(), String> {
+    let revisions = pfi_string_array(
+        value,
+        1,
+        16,
+        "protocol_revisions",
+        "mkt_mint_protocol_mismatch",
+    )?;
+    for revision in revisions {
+        mint_identifier(
+            revision,
+            "protocol revision",
+            64,
+            "mkt_mint_protocol_mismatch",
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_mint_custody_class_value(value: &str, rail: Option<&str>) -> Result<(), String> {
+    if !MKT_MINT_CUSTODY_CLASSES
+        .iter()
+        .any(|(_, class)| *class == value)
+    {
+        return Err(mint_error(
+            "mkt_mint_custody_disclosure_mismatch",
+            "custody_class must be a3-mint or a2-federation; a mint or federation route \
+             cannot present itself as noncustodial",
+        ));
+    }
+    if let Some(rail) = rail {
+        let expected = MKT_MINT_CUSTODY_CLASSES
+            .iter()
+            .find(|(class_rail, _)| *class_rail == rail)
+            .map(|(_, class)| *class)
+            .unwrap_or_default();
+        if value != expected {
+            return Err(mint_error(
+                "mkt_mint_custody_disclosure_mismatch",
+                format!("a {rail} route must disclose custody_class {expected}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_mkt_mint_visible_private(
+    event: &Event,
+    envelope: &MktPrivateEnvelope,
+) -> Result<(), String> {
+    let body = Value::Object(envelope.body.clone());
+    reject_mint_custody_material(&body)?;
+    validate_mint_observable_members(&body, None)?;
+    if event.kind == MKT_MINT_ROUTE_CONTRACT_KIND {
+        validate_mint_route_contract(event, envelope)?;
+    }
+    Ok(())
+}
+
+fn validate_mint_observable_members(value: &Value, rail: Option<&str>) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            let object_rail = object
+                .get("rail")
+                .and_then(Value::as_str)
+                .filter(|rail| MKT_MINT_RAILS.contains(rail))
+                .or(rail);
+            if let Some(declared) = object.get("rail").and_then(Value::as_str)
+                && !MKT_MINT_RAILS.contains(&declared)
+            {
+                return Err(mint_error(
+                    "mkt_mint_invalid_market",
+                    "rail must be cashu or fedimint",
+                ));
+            }
+            for (name, child) in object {
+                match name.as_str() {
+                    "custody_class" => validate_mint_custody_class_value(
+                        child.as_str().ok_or_else(|| {
+                            mint_error(
+                                "mkt_mint_custody_disclosure_mismatch",
+                                "custody_class must be a string",
+                            )
+                        })?,
+                        object_rail,
+                    )?,
+                    "evidence_refs" => {
+                        let references = child
+                            .as_array()
+                            .filter(|values| values.len() <= MKT_MAX_REFERENCES)
+                            .ok_or_else(|| {
+                                mint_error(
+                                    "mkt_mint_evidence_mismatch",
+                                    "evidence_refs exceeds the relay bound",
+                                )
+                            })?;
+                        for reference in references {
+                            validate_mkt_mint_evidence_reference(reference)?;
+                        }
+                    }
+                    _ => validate_mint_observable_members(child, object_rail)?,
+                }
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                validate_mint_observable_members(child, rail)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+const MKT_MINT_CONTRACT_DIGEST_MEMBERS: &[&str] = &[
+    "native_request_sha256",
+    "native_quote_id_sha256",
+    "native_quote_sha256",
+    "terms_sha256",
+    "custody_sha256",
+    "verifier_policy_sha256",
+    "external_effect_ids_sha256",
+    "recovery_package_sha256",
+];
+
+fn validate_mint_route_contract(
+    event: &Event,
+    envelope: &MktPrivateEnvelope,
+) -> Result<(), String> {
+    if event
+        .tags
+        .iter()
+        .any(|tag| tag.name() == Some("expiration"))
+    {
+        return Err(mint_error(
+            "mkt_mint_route_contract_mismatch",
+            "Route Contract has no NIP-40 expiration",
+        ));
+    }
+    let counterparties = event
+        .tags
+        .iter()
+        .filter(|tag| tag.name() == Some("p"))
+        .collect::<Vec<_>>();
+    let [counterparty] = counterparties.as_slice() else {
+        return Err(mint_error(
+            "mkt_mint_invalid_contract_signer",
+            "Route Contract requires exactly one counterparty",
+        ));
+    };
+    let role = single_value(event, "role", "MKT-MINT Route Contract")?;
+    if !matches!(role, "requester" | "provider") {
+        return Err(mint_error(
+            "mkt_mint_invalid_contract_signer",
+            "Route Contract role is invalid",
+        ));
+    }
+    let counterparty = counterparty.as_slice();
+    let counterparty_pubkey = counterparty.get(1).map(String::as_str).unwrap_or_default();
+    let counterparty_role = counterparty.get(3).map(String::as_str).unwrap_or_default();
+    let expected_counterparty_role = if role == "requester" {
+        "provider"
+    } else {
+        "requester"
+    };
+    if counterparty_pubkey == event.pubkey || counterparty_role != expected_counterparty_role {
+        return Err(mint_error(
+            "mkt_mint_invalid_contract_signer",
+            "Route Contract requires a distinct counterparty with the complementary role",
+        ));
+    }
+    let rail = single_value(event, "rail", "MKT-MINT Route Contract")?;
+    if !MKT_MINT_RAILS.contains(&rail) {
+        return Err(mint_error(
+            "mkt_mint_route_contract_mismatch",
+            "Route Contract rail must be cashu or fedimint",
+        ));
+    }
+    let alt = single_value(event, "alt", "MKT-MINT Route Contract")?;
+    if alt != "MKT-MINT route contract" {
+        return Err(mint_error(
+            "mkt_mint_route_contract_mismatch",
+            "Route Contract alt text is fixed",
+        ));
+    }
+    let digest = single_value(event, "x", "MKT-MINT Route Contract")?;
+    lower_hex_32(digest, "MKT-MINT contract digest")?;
+
+    let mut quote_id = None;
+    let mut order_id = None;
+    let mut status_id = None;
+    for tag in event.tags.iter().filter(|tag| tag.name() == Some("e")) {
+        let values = tag.as_slice();
+        let id = values.get(1).map(String::as_str).unwrap_or_default();
+        let slot = match values.get(3).map(String::as_str) {
+            Some("quote") => &mut quote_id,
+            Some("order") => &mut order_id,
+            Some("status") => &mut status_id,
+            _ => {
+                return Err(mint_error(
+                    "mkt_mint_route_contract_mismatch",
+                    "Route Contract has an unsupported event reference",
+                ));
+            }
+        };
+        if slot.replace(id).is_some() {
+            return Err(mint_error(
+                "mkt_mint_route_contract_mismatch",
+                "Route Contract has a duplicate causal reference",
+            ));
+        }
+    }
+    let (Some(quote_id), Some(order_id)) = (quote_id, order_id) else {
+        return Err(mint_error(
+            "mkt_mint_route_contract_mismatch",
+            "Route Contract requires one Quote and one Order reference",
+        ));
+    };
+
+    let profile = envelope
+        .body
+        .get("mkt_mint")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            mint_error(
+                "mkt_mint_route_contract_mismatch",
+                "Route Contract requires an mkt_mint object",
+            )
+        })?;
+    pfi_closed(
+        profile,
+        &["contract", "contract_sha256", "signer_role"],
+        "MKT-MINT Route Contract content",
+        "mkt_mint_route_contract_mismatch",
+    )?;
+    let signer_role =
+        pfi_required_string(profile, "signer_role", "mkt_mint_invalid_contract_signer")?;
+    if signer_role != role {
+        return Err(mint_error(
+            "mkt_mint_invalid_contract_signer",
+            "Route Contract tag and content roles differ",
+        ));
+    }
+    let content_digest = pfi_required_string(
+        profile,
+        "contract_sha256",
+        "mkt_mint_route_contract_mismatch",
+    )?;
+    if content_digest != digest {
+        return Err(mint_error(
+            "mkt_mint_route_contract_mismatch",
+            "Route Contract x tag and contract_sha256 differ",
+        ));
+    }
+    let contract = pfi_object(
+        profile.get("contract").ok_or_else(|| {
+            mint_error(
+                "mkt_mint_route_contract_mismatch",
+                "Route Contract requires a contract object",
+            )
+        })?,
+        "MKT-MINT contract",
+        "mkt_mint_route_contract_mismatch",
+    )?;
+    pfi_closed(
+        contract,
+        &[
+            "quote_event_id",
+            "order_event_id",
+            "accepted_status_event_id",
+            "operation",
+            "native_request_sha256",
+            "native_quote_id_sha256",
+            "native_quote_sha256",
+            "terms_sha256",
+            "custody_sha256",
+            "verifier_policy_sha256",
+            "external_effect_ids_sha256",
+            "recovery_package_sha256",
+        ],
+        "MKT-MINT contract",
+        "mkt_mint_route_contract_mismatch",
+    )?;
+    let operation = pfi_required_string(contract, "operation", "mkt_mint_route_contract_mismatch")?;
+    let allowed_operations = if rail == "cashu" {
+        MKT_MINT_OPERATIONS_CASHU
+    } else {
+        MKT_MINT_OPERATIONS_FEDIMINT
+    };
+    if !allowed_operations.contains(&operation) {
+        return Err(mint_error(
+            "mkt_mint_route_contract_mismatch",
+            format!("operation {operation:?} is not admitted for a {rail} route"),
+        ));
+    }
+    for member in MKT_MINT_CONTRACT_DIGEST_MEMBERS {
+        pfi_hex_with_code(
+            pfi_required_string(contract, member, "mkt_mint_route_contract_mismatch")?,
+            member,
+            "mkt_mint_route_contract_mismatch",
+        )?;
+    }
+    for (member, expected) in [("quote_event_id", quote_id), ("order_event_id", order_id)] {
+        let value = pfi_required_string(contract, member, "mkt_mint_route_contract_mismatch")?;
+        pfi_hex_with_code(value, member, "mkt_mint_route_contract_mismatch")?;
+        if value != expected {
+            return Err(mint_error(
+                "mkt_mint_route_contract_mismatch",
+                format!("{member} must equal the causal tag"),
+            ));
+        }
+    }
+    match contract.get("accepted_status_event_id") {
+        Some(Value::Null) => {
+            if status_id.is_some() {
+                return Err(mint_error(
+                    "mkt_mint_route_contract_mismatch",
+                    "a firm-Quote contract forbids the status reference",
+                ));
+            }
+        }
+        Some(Value::String(value)) => {
+            pfi_hex_with_code(
+                value,
+                "accepted_status_event_id",
+                "mkt_mint_route_contract_mismatch",
+            )?;
+            if status_id != Some(value.as_str()) {
+                return Err(mint_error(
+                    "mkt_mint_route_contract_mismatch",
+                    "accepted_status_event_id must equal the status causal tag",
+                ));
+            }
+        }
+        _ => {
+            return Err(mint_error(
+                "mkt_mint_route_contract_mismatch",
+                "accepted_status_event_id must be the accepted Status id or null",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_mkt_mint_evidence_reference(value: &Value) -> Result<(), String> {
+    let evidence = pfi_object(
+        value,
+        "MKT-MINT evidence reference",
+        "mkt_mint_evidence_mismatch",
+    )?;
+    pfi_closed(
+        evidence,
+        &[
+            "receipt_type",
+            "artifact_sha256",
+            "issuer",
+            "provenance",
+            "observed_at",
+            "verifier_policy",
+        ],
+        "MKT-MINT evidence reference",
+        "mkt_mint_evidence_mismatch",
+    )?;
+    let receipt_type = pfi_required_string(evidence, "receipt_type", "mkt_mint_evidence_mismatch")?;
+    mint_identifier(
+        receipt_type,
+        "MKT-MINT receipt type",
+        64,
+        "mkt_mint_evidence_mismatch",
+    )?;
+    pfi_hex_with_code(
+        pfi_required_string(evidence, "artifact_sha256", "mkt_mint_evidence_mismatch")?,
+        "MKT-MINT evidence digest",
+        "mkt_mint_evidence_mismatch",
+    )?;
+    let issuer = pfi_required_string(evidence, "issuer", "mkt_mint_evidence_mismatch")?;
+    pfi_bounded_ascii(
+        issuer,
+        "MKT-MINT evidence issuer",
+        512,
+        "mkt_mint_evidence_mismatch",
+    )?;
+    if mint_value_is_custody_shaped(issuer) || pfi_value_is_bearer_shaped(issuer) {
+        return Err(mint_error(
+            "mkt_mint_bearer_material_forbidden",
+            "evidence issuer is bearer-shaped",
+        ));
+    }
+    let provenance = pfi_required_string(evidence, "provenance", "mkt_mint_evidence_mismatch")?;
+    if !MKT_MINT_EVIDENCE_PROVENANCE.contains(&provenance) {
+        return Err(mint_error(
+            "mkt_mint_settlement_overclaim",
+            "unknown provenance label; labels are never inferred upward",
+        ));
+    }
+    pfi_decimal_member(evidence, "observed_at", false, "mkt_mint_evidence_mismatch")?;
+    match evidence.get("verifier_policy") {
+        Some(Value::Null) => {}
+        Some(Value::String(value)) => mint_identifier(
+            value,
+            "MKT-MINT verifier policy",
+            128,
+            "mkt_mint_evidence_mismatch",
+        )?,
+        _ => {
+            return Err(mint_error(
+                "mkt_mint_evidence_mismatch",
+                "verifier_policy must be an identifier or null",
+            ));
+        }
+    }
+    if receipt_type.contains("quote")
+        && matches!(provenance, "paid" | "issued" | "refunded" | "settled")
+    {
+        return Err(mint_error(
+            "mkt_mint_settlement_overclaim",
+            "a quote does not prove payment, issuance, redemption, or finality",
+        ));
+    }
+    if (receipt_type.contains("invoice") || receipt_type.contains("payment"))
+        && provenance == "issued"
+    {
+        return Err(mint_error(
+            "mkt_mint_settlement_overclaim",
+            "payment evidence cannot prove proof issuance",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_mint_custody_material(value: &Value) -> Result<(), String> {
+    mint_material_sweep(value, false)
+}
+
+fn reject_mint_public_material(value: &Value) -> Result<(), String> {
+    mint_material_sweep(value, true)
+}
+
+fn mint_material_sweep(value: &Value, public: bool) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                let normalized = name
+                    .bytes()
+                    .filter(|byte| byte.is_ascii_alphanumeric())
+                    .map(|byte| byte.to_ascii_lowercase() as char)
+                    .collect::<String>();
+                if matches!(
+                    normalized.as_str(),
+                    "proof"
+                        | "proofs"
+                        | "ecashproof"
+                        | "ecashproofs"
+                        | "cashutoken"
+                        | "cashutokens"
+                        | "note"
+                        | "notes"
+                        | "ecashnote"
+                        | "ecashnotes"
+                        | "blindedmessage"
+                        | "blindedmessages"
+                        | "blindingfactor"
+                        | "blindingfactors"
+                        | "secret"
+                        | "secrets"
+                        | "preimage"
+                        | "macaroon"
+                        | "seed"
+                        | "walletseed"
+                        | "mnemonic"
+                        | "privatekey"
+                        | "spendkey"
+                        | "spendkeys"
+                        | "claimprivatekey"
+                        | "refundprivatekey"
+                        | "recoverysecret"
+                        | "recoverysecrets"
+                        | "accesstoken"
+                        | "bearertoken"
+                        | "authorization"
+                        | "password"
+                        | "nwc"
+                        | "nwcstring"
+                        | "nwcuri"
+                ) {
+                    return Err(mint_error(
+                        "mkt_mint_bearer_material_forbidden",
+                        format!("market record contains custody member {name:?}"),
+                    ));
+                }
+                if public {
+                    if matches!(
+                        normalized.as_str(),
+                        "minturl"
+                            | "mintendpoint"
+                            | "federationinvite"
+                            | "federationinvitecode"
+                            | "federationinvitation"
+                            | "invitecode"
+                            | "nutlist"
+                            | "modulelist"
+                            | "operatorclaim"
+                    ) {
+                        return Err(mint_error(
+                            "mkt_mint_discovery_duplication",
+                            format!(
+                                "public record copies NIP-87 discovery authority member {name:?}"
+                            ),
+                        ));
+                    }
+                    if matches!(
+                        normalized.as_str(),
+                        "invoice"
+                            | "invoices"
+                            | "bolt11"
+                            | "paymentrequest"
+                            | "mintquote"
+                            | "meltquote"
+                            | "nativequote"
+                            | "withdrawaladdress"
+                            | "account"
+                            | "accountnumber"
+                            | "accountidentifier"
+                            | "membershippresentation"
+                            | "invitationcode"
+                            | "recoverypackage"
+                    ) {
+                        return Err(mint_error(
+                            "mkt_mint_bearer_material_forbidden",
+                            format!("public record contains forbidden member {name:?}"),
+                        ));
+                    }
+                }
+                mint_material_sweep(child, public)?;
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                mint_material_sweep(child, public)?;
+            }
+        }
+        Value::String(value) => {
+            if mint_value_is_custody_shaped(value) {
+                return Err(mint_error(
+                    "mkt_mint_bearer_material_forbidden",
+                    "market record contains a bearer ecash value",
+                ));
+            }
+            if public && mint_value_is_public_forbidden(value) {
+                return Err(mint_error(
+                    "mkt_mint_bearer_material_forbidden",
+                    "public record contains an invoice, invitation, or bearer value",
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn mint_value_is_custody_shaped(value: &str) -> bool {
+    let lowercase = value.to_ascii_lowercase();
+    lowercase.starts_with("cashua") || lowercase.starts_with("cashub")
+}
+
+fn mint_value_is_public_forbidden(value: &str) -> bool {
+    let lowercase = value.to_ascii_lowercase();
+    if lowercase.starts_with("fed1") {
+        return true;
+    }
+    if lowercase.len() >= 20
+        && ["lnbc", "lntb", "lntbs", "lnbcrt"]
+            .iter()
+            .any(|prefix| lowercase.starts_with(prefix))
+        && lowercase.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return true;
+    }
+    pfi_value_is_bearer_shaped(value)
+}
+
+fn mint_identifier(value: &str, subject: &str, maximum: usize, code: &str) -> Result<(), String> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > maximum
+        || !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit()
+        || !bytes.iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+    {
+        return Err(mint_error(
+            code,
+            format!("{subject} is not a bounded identifier"),
+        ));
+    }
+    Ok(())
+}
+
+fn mint_error(code: &str, detail: impl fmt::Display) -> String {
     format!("{code}: {detail}")
 }
 

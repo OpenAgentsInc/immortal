@@ -392,3 +392,56 @@ JSON, does not advertise a new NIP-11 extension, and leaves the relay's
 executable-profile set unchanged. Provider fixture scope is recorded
 separately in the shared fixture manifest. No source-lane precedence
 exception was created.
+
+## M13 MKT-MINT adoption decision (2026-08-05)
+
+Issue #22 adopts the relay-observable subset of MKT-MINT v1 from the freshly
+synced OpenAgents commit `006b35b1f428a2e2a18931ff1546e5a09a8f8961`. Before
+admitting `kind:39640`, fresh clones of the three NIP lanes and the kind
+registry were reviewed again:
+
+| Source | Reviewed revision | Result |
+| --- | --- | --- |
+| Official NIPs | `c53877571f96eb423661fc23c620d629d37b8f19` | No assignment in `39640-39649`. |
+| Block NIPs | `8342dfcc5890b81a269a8ec3db73a8a56f76ce79` | No assignment in `39640-39649`; the only textual hits are hex-encoded fixture blobs. |
+| OpenAgents NIPs | `006b35b1f428a2e2a18931ff1546e5a09a8f8961` | MKT-MINT assigns private immutable `39640` to the Mint Route Contract; `39641-39649` remain reserved and unallocated. All other hits are the profile specification and NIP-MKT reservation text. |
+| [`nostr-protocol/registry-of-kinds`](https://github.com/nostr-protocol/registry-of-kinds) `schema.yaml` | `2483e752146d171524dcb10dffd06de2aa271bf3` | No entry in `39640-39649`; the nearest registered `39xxx` kinds are `39000-39003`, `39089`, `39092`, and `39701`. |
+
+The review found no collision and creates no lane-precedence exception.
+Immortal therefore admits `39640` as an eighth private immutable NIP-59-only
+kind bound to exactly `mkt-mint` v1. Kinds `39641-39649` and all other
+unadopted profile kinds remain unallocated.
+
+The adoption is deliberately thin. Official NIP-87 remains the discovery
+authority: every MKT-MINT Offering must cross-reference exactly one
+`kind:38172` (Cashu) or `kind:38173` (Fedimint) announcement by exact
+address and event ID, a `kind:38000` recommendation is refused as authority,
+and members that copy a mint URL, federation invite code, NUT list, module
+list, or operator claim into a new discovery authority are refused as
+`mkt_mint_discovery_duplication`. Cashu NUTs and the Fedimint protocol
+remain the rail authority; the relay never verifies a keyset, proof, quote,
+federation configuration, gateway, payment, or consensus fact.
+
+Custody disclosure is a relay admission check wherever it is observable. The
+profile discloses exactly two custody classes — `a3-mint` for a Cashu route
+and `a2-federation` for a Fedimint route — and the validator requires the
+Offering `custody_class` (and any custody class visible to an authorized
+profile consumer) to equal the rail's class. There is no admissible spelling
+under which a mint-custodial or federation-custodial route presents itself
+as noncustodial; the local admission code
+`mkt_mint_custody_disclosure_mismatch` records that refusal, and the spec's
+error vocabulary otherwise maps onto the exported `mkt_mint_*` codes.
+Evidence references carry the seven provenance labels with two overclaim
+floors the relay can see: a quote-typed receipt cannot claim `paid`,
+`issued`, `refunded`, or `settled`, and payment evidence cannot claim
+`issued`.
+
+The 29-case upstream manifest is exported without claiming the client-only
+wallet-verification, keyset/configuration pinning, price-feed, gateway
+selection, replay, expiry, privacy-wrap, recovery, or loss cases as relay
+enforcement. Those authorities remain external. The contract lists
+`mkt-mint:1` as `relay_observable_only`, keeps executable profiles empty,
+and advertises `nip-mkt-mint:1` only under the authenticated relay URL gate
+after the local relay-observable conformance gate passes. The optional
+`cdk-mintd` lab leg for issue #18 remains future work and is not part of
+this packet.

@@ -429,7 +429,7 @@ lanes.
 | [#27](https://github.com/OpenAgentsInc/immortal/issues/27) | Liquid rail: elementsd leg for BTC↔L-BTC swaps — provider RPC client, bounded confidential-transaction handling, client-engine Liquid legs, elementsd in the lab. First among extensions: core Boltz volume | M12 #25, #18 |
 | [#20](https://github.com/OpenAgentsInc/immortal/issues/20) | Ark rail leg: VTXO/operator/exit verification, pre-signed exit packages as the doomsday-drill shape, covenant-reserve evidence, arkd in the lab | M12 #10, #12, #13 |
 | [#21](https://github.com/OpenAgentsInc/immortal/issues/21) | Adopt MKT-P2P: Mostro/NIP-69 bridge, bonds, disputes, per-trade key rotation | 9312 |
-| [#22](https://github.com/OpenAgentsInc/immortal/issues/22) | Adopt MKT-MINT: Cashu NUTs / Fedimint gateway quotes, NIP-87 cross-reference, custody disclosure | 9312 |
+| [#22](https://github.com/OpenAgentsInc/immortal/issues/22) | Adopt MKT-MINT: Cashu NUTs / Fedimint gateway quotes, NIP-87 cross-reference, custody disclosure — relay-observable v1 adopted (kind 39640, `nip-mkt-mint:1`, 29-case manifest; see `docs/protocol/nip-mkt-validation.md`); the optional cdk-mintd lab leg stays with #18 | 9312 |
 | [#23](https://github.com/OpenAgentsInc/immortal/issues/23) | Adopt MKT-LSP: channel/JIT liquidity negotiation aligned with bLIP-50/51/52 | 9312 |
 
 Distribution surfaces (WDK swidge provider, BTCPay plugin, embed widget)

@@ -18,13 +18,13 @@
         "lane": "block",
         "repo": "https://github.com/block/buzz",
         "subdir": "docs/nips",
-        "commit": "540b58920cef205b838da8be8442aae62bceaaa5"
+        "commit": "8342dfcc5890b81a269a8ec3db73a8a56f76ce79"
       },
       {
         "lane": "openagents",
         "repo": "https://github.com/OpenAgentsInc/openagents",
         "subdir": "docs/nips",
-        "commit": "a7f5522c0a7430f9f5b1cfa09477dae2d16d3682"
+        "commit": "006b35b1f428a2e2a18931ff1546e5a09a8f8961"
       }
     ]
   },
@@ -61,8 +61,8 @@
     },
     {
       "path": "tests/fixtures/nip11/document.json",
-      "sha256": "2e524d203c9a1a6a6681acded984ba5b656bcf7d774bddf152d8f7f8f80d195e",
-      "bytes": 676,
+      "sha256": "72ca10b820961c219fe3545d6d01e43f71a2250af88238daa9cf2eb23d0d30e5",
+      "bytes": 694,
       "scope": "relay"
     },
     {
@@ -229,9 +229,15 @@
     },
     {
       "path": "tests/fixtures/nipmkt/immutability.json",
-      "sha256": "aac6a6b6629283987dc9d0c0f3cc2f319306a3255f50e0f8e6147edd79971eac",
-      "bytes": 860,
+      "sha256": "eac2e9e4f642791f5973ecab4b02c639cc7783397c251fe48ffe77243c8f0490",
+      "bytes": 867,
       "scope": "relay"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/mint-profile-v1.json",
+      "sha256": "28d105f7d78567edc77a3406640ea283558e659b47a5ae6e28203a067d316f4f",
+      "bytes": 13085,
+      "scope": "relay_and_client"
     },
     {
       "path": "tests/fixtures/nipmkt/pfi-profile-v1.json",
@@ -247,8 +253,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/relay-closing.json",
-      "sha256": "ea9c581ae46ffd9a27123363cf743bb4137c1eddc951f1e5a8a33856a18368d7",
-      "bytes": 5975,
+      "sha256": "4fbf74bb7a8b15f338e3ec65f8d6b839278af3d5b64bf0de08c87c19c6d3aabc",
+      "bytes": 6188,
       "scope": "relay_and_client"
     },
     {
@@ -268,6 +274,12 @@
       "sha256": "28ea72d1ad2c86cdd342cbb29ee43f1141ed0b513dc7a90aa34ba4cc2c094c0a",
       "bytes": 209865,
       "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/swp-pricing-v1.json",
+      "sha256": "bf7dc9790b59db55767cd23dcfef473fab3d3bdb408f0b7df01469d6eada7cc0",
+      "bytes": 21087,
+      "scope": "relay"
     },
     {
       "path": "tests/fixtures/nipmkt/swp-profile-v1.json",

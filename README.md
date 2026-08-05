@@ -182,8 +182,8 @@ The adopted NIP-MKT relay contract is documented in
 It covers public discovery, immutable internal records, wrapped transport,
 recipient-gated reads, rate limits, and the client-only boundary. NIP-11
 advertises `nip-mkt` only when `IMMORTAL_RELAY_URL` enables authenticated
-recipient transport. The same gate advertises `mkt-swp:1` and
-`nip-mkt-pfi:1` for their relay-observable v1 grammar. The separate
+recipient transport. The same gate advertises `mkt-swp:1`,
+`nip-mkt-pfi:1`, and `nip-mkt-mint:1` for their relay-observable v1 grammar. The separate
 [`coordination handler`](docs/protocol/mkt-swp-coordination.md) advertises
 `mkt-swp-coordination:1` only with its exact compiled conformance digest; the
 machine contract separately records the completed MKT-SWP client engine, and

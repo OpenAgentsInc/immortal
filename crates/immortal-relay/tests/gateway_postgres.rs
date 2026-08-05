@@ -283,6 +283,7 @@ async fn assert_nip11_http(address: SocketAddr) {
     for extension in [
         "mkt-swp:1",
         "nip-mkt-pfi:1",
+        "nip-mkt-mint:1",
         "nip-aa",
         "nip-ae",
         "nip-am",

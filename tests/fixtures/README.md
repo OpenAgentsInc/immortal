@@ -88,6 +88,15 @@ names the NIP that owns the behavior.
   public receipts, and bounded commitment/evidence/dispute/recourse shapes.
   It exports all 41 upstream cases while keeping credential, rail, guarantee,
   reserve, dispute, external-effect, and recovery authority client-only.
+- `nipmkt/mint-profile-v1.json` pins the relay-observable MKT-MINT v1
+  adoption at OpenAgents revision `006b35b1f4`: Offering NIP-87
+  cross-reference, rail, market, side, operation, protocol-revision, and
+  mandatory custody-disclosure grammar; immutable wrapped kind-39640 Route
+  Contracts; bounded evidence references with provenance overclaim floors;
+  and bearer/discovery tripwires. It exports all 29 upstream cases while
+  keeping wallet proof verification, native quote/payment verification,
+  gateway selection, replay, expiry, recovery, and loss authority
+  client-only.
 - `nipmkt/swp-client-engine-v1.json` pins the transport-neutral requester
   engine: exact externally signed records, bilateral canonical contract
   binding, distinct submarine/reverse/chain funding and exit topology, Quote

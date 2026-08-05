@@ -76,7 +76,7 @@ fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
 
     assert_eq!(
         fixture["bare_private"]["kinds"],
-        serde_json::json!([39604, 39605, 39606, 39607, 39608, 39609, 39610])
+        serde_json::json!([39604, 39605, 39606, 39607, 39608, 39609, 39610, 39640])
     );
     assert_eq!(
         fixture["rewrapped_same_inner"]["expected"]["relay"],
@@ -99,7 +99,10 @@ fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
         let last = u16::try_from(range["last"].as_u64().unwrap()).unwrap();
         for kind in first..=last {
             assert_eq!(EventClass::from_kind(kind), EventClass::Addressable);
-            assert_eq!(is_mkt_private_kind(kind), (39_604..=39_610).contains(&kind));
+            assert_eq!(
+                is_mkt_private_kind(kind),
+                (39_604..=39_610).contains(&kind) || kind == 39_640
+            );
         }
     }
     assert_eq!(

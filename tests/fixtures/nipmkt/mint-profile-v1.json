@@ -1,0 +1,299 @@
+{
+  "source": {
+    "lane": "openagents",
+    "commit": "006b35b1f428a2e2a18931ff1546e5a09a8f8961",
+    "specification": "nips/openagents/MKT-MINT.md",
+    "profile": "mkt-mint",
+    "version": 1,
+    "route_contract_kind": 39640
+  },
+  "relay_observable": {
+    "offering_cashu": {
+      "kind": 39601,
+      "tags": [
+        ["d", "cashu-sat-lightning"],
+        ["profile", "mkt-mint", "1"],
+        ["status", "active"],
+        ["provider", "39600:1111111111111111111111111111111111111111111111111111111111111111:provider-one"],
+        ["published_at", "1785859200"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-mint",
+        "profile_version": 1,
+        "mkt_mint": {
+          "nip87_ref": {
+            "kind": "38172",
+            "address": "38172:3333333333333333333333333333333333333333333333333333333333333333:mint-announce-1",
+            "event_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "relays": ["wss://relay.example.invalid"]
+          },
+          "rail": "cashu",
+          "market": {
+            "base_asset_id": "cashu:mint.example.invalid:sat:keyset-00ffd1",
+            "quote_asset_id": "lightning:bip122:000000000019d6689c085ae165831e93:btc"
+          },
+          "sides": {
+            "mint": { "min": "1000", "max": "1000000" },
+            "melt": { "min": "1000", "max": "500000" }
+          },
+          "operations": ["mint", "melt"],
+          "protocol_revisions": ["nut-00", "nut-04", "nut-05"],
+          "custody_class": "a3-mint",
+          "credential_burden": "none",
+          "gateway_policy": "fixed"
+        }
+      }
+    },
+    "offering_fedimint": {
+      "kind": 39601,
+      "tags": [
+        ["d", "fedimint-msat-lightning"],
+        ["profile", "mkt-mint", "1"],
+        ["status", "active"],
+        ["provider", "39600:1111111111111111111111111111111111111111111111111111111111111111:provider-one"],
+        ["published_at", "1785859200"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-mint",
+        "profile_version": 1,
+        "mkt_mint": {
+          "nip87_ref": {
+            "kind": "38173",
+            "address": "38173:4444444444444444444444444444444444444444444444444444444444444444:fed-announce-1",
+            "event_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "relays": ["wss://relay.example.invalid"]
+          },
+          "rail": "fedimint",
+          "market": {
+            "base_asset_id": "fedimint:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:msat:config-aa",
+            "quote_asset_id": "lightning:bip122:000000000019d6689c085ae165831e93:btc"
+          },
+          "sides": {
+            "deposit": { "min": "0", "max": "0" },
+            "withdrawal": { "min": "10000", "max": "2000000" }
+          },
+          "operations": ["withdraw-lightning", "withdraw-onchain"],
+          "protocol_revisions": ["fedimint-0.4", "lnv2-gateway"],
+          "custody_class": "a2-federation",
+          "credential_burden": "membership-proof",
+          "gateway_policy": "requester-selectable"
+        }
+      }
+    },
+    "route_contract": {
+      "kind": 39640,
+      "tags": [
+        ["d", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"],
+        ["session", "9999999999999999999999999999999999999999999999999999999999999999"],
+        ["profile", "mkt-mint", "1"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "provider"],
+        ["alt", "MKT-MINT route contract"],
+        ["e", "8888888888888888888888888888888888888888888888888888888888888888", "", "quote"],
+        ["e", "3333333333333333333333333333333333333333333333333333333333333333", "", "order"],
+        ["rail", "cashu"],
+        ["role", "requester"],
+        ["x", "5555555555555555555555555555555555555555555555555555555555555555"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-mint",
+        "profile_version": 1,
+        "session_id": "9999999999999999999999999999999999999999999999999999999999999999",
+        "mkt_mint": {
+          "contract": {
+            "quote_event_id": "8888888888888888888888888888888888888888888888888888888888888888",
+            "order_event_id": "3333333333333333333333333333333333333333333333333333333333333333",
+            "accepted_status_event_id": null,
+            "operation": "mint",
+            "native_request_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "native_quote_id_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "native_quote_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "terms_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "custody_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "verifier_policy_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+            "external_effect_ids_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+            "recovery_package_sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "contract_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+          "signer_role": "requester"
+        }
+      }
+    },
+    "status_record": {
+      "kind": 39607,
+      "tags": [
+        ["d", "abababababababababababababababababababababababababababababababab"],
+        ["session", "9999999999999999999999999999999999999999999999999999999999999999"],
+        ["profile", "mkt-mint", "1"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "provider"],
+        ["alt", "MKT-MINT status"],
+        ["e", "3333333333333333333333333333333333333333333333333333333333333333", "", "order"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-mint",
+        "profile_version": 1,
+        "session_id": "9999999999999999999999999999999999999999999999999999999999999999",
+        "mkt_mint": {
+          "rail": "cashu",
+          "custody_class": "a3-mint",
+          "evidence_refs": [
+            {
+              "receipt_type": "mint-quote",
+              "artifact_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+              "issuer": "mint.example.invalid",
+              "provenance": "observed",
+              "observed_at": "1785859500",
+              "verifier_policy": "nut-04-quote-v1"
+            },
+            {
+              "receipt_type": "lightning-payment",
+              "artifact_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+              "issuer": "requester-wallet",
+              "provenance": "paid",
+              "observed_at": "1785859600",
+              "verifier_policy": null
+            }
+          ]
+        }
+      }
+    },
+    "offering_errors": [
+      ["unsupported_version", "mkt_mint_unsupported_version"],
+      ["nip87_wrong_kind", "mkt_mint_invalid_nip87_reference"],
+      ["nip87_recommendation", "mkt_mint_invalid_nip87_reference"],
+      ["nip87_address_kind_mismatch", "mkt_mint_invalid_nip87_reference"],
+      ["nip87_bad_event_id", "mkt_mint_invalid_nip87_reference"],
+      ["discovery_mint_url", "mkt_mint_discovery_duplication"],
+      ["json_number_amount", "mkt_mint_invalid_market"],
+      ["disabled_side_min_nonzero", "mkt_mint_side_disabled"],
+      ["missing_side", "mkt_mint_invalid_market"],
+      ["min_over_max", "mkt_mint_invalid_market"],
+      ["operation_side_mismatch", "mkt_mint_side_disabled"],
+      ["cashu_withdraw_operation", "mkt_mint_invalid_market"],
+      ["ticker_asset", "mkt_mint_invalid_market"],
+      ["custody_class_noncustodial", "mkt_mint_custody_disclosure_mismatch"],
+      ["custody_class_rail_mismatch", "mkt_mint_custody_disclosure_mismatch"],
+      ["unknown_member", "mkt_mint_invalid_market"],
+      ["credential_burden_unknown", "mkt_mint_invalid_market"],
+      ["gateway_policy_unknown", "mkt_mint_invalid_market"],
+      ["protocol_revisions_empty", "mkt_mint_protocol_mismatch"],
+      ["public_invoice_member", "mkt_mint_bearer_material_forbidden"],
+      ["public_invite_value", "mkt_mint_bearer_material_forbidden"],
+      ["bearer_proof_value", "mkt_mint_bearer_material_forbidden"]
+    ],
+    "offering_fedimint_errors": [
+      ["fedimint_deposit_enabled", "mkt_mint_side_disabled"],
+      ["fedimint_deposit_omitted", "mkt_mint_invalid_market"],
+      ["fedimint_nip87_cashu_kind", "mkt_mint_invalid_nip87_reference"]
+    ],
+    "contract_errors": [
+      ["wrong_profile", "mkt_mint_unsupported_profile"],
+      ["wrong_profile_version", "mkt_mint_unsupported_version"],
+      ["expiration_tag", "mkt_mint_route_contract_mismatch"],
+      ["digest_mismatch", "mkt_mint_route_contract_mismatch"],
+      ["missing_quote_ref", "mkt_mint_route_contract_mismatch"],
+      ["unknown_reference", "mkt_mint_route_contract_mismatch"],
+      ["quote_id_mismatch", "mkt_mint_route_contract_mismatch"],
+      ["status_tag_forbidden", "mkt_mint_route_contract_mismatch"],
+      ["accepted_status_missing_tag", "mkt_mint_route_contract_mismatch"],
+      ["operation_rail_mismatch", "mkt_mint_route_contract_mismatch"],
+      ["unknown_contract_member", "mkt_mint_route_contract_mismatch"],
+      ["alt_mismatch", "mkt_mint_route_contract_mismatch"],
+      ["rail_unknown", "mkt_mint_route_contract_mismatch"],
+      ["complementary_role_missing", "mkt_mint_invalid_contract_signer"],
+      ["self_counterparty", "mkt_mint_invalid_contract_signer"],
+      ["signer_role_mismatch", "mkt_mint_invalid_contract_signer"],
+      ["bearer_secret_member", "mkt_mint_bearer_material_forbidden"],
+      ["cashu_token_value", "mkt_mint_bearer_material_forbidden"]
+    ],
+    "private_errors": [
+      ["custody_class_noncustodial", "mkt_mint_custody_disclosure_mismatch"],
+      ["custody_class_rail_mismatch", "mkt_mint_custody_disclosure_mismatch"],
+      ["unknown_provenance", "mkt_mint_settlement_overclaim"],
+      ["quote_settled_overclaim", "mkt_mint_settlement_overclaim"],
+      ["invoice_issued_overclaim", "mkt_mint_settlement_overclaim"],
+      ["evidence_unknown_member", "mkt_mint_evidence_mismatch"],
+      ["bearer_proofs_member", "mkt_mint_bearer_material_forbidden"],
+      ["blinding_factor_member", "mkt_mint_bearer_material_forbidden"],
+      ["cashu_token_value", "mkt_mint_bearer_material_forbidden"]
+    ],
+    "receipt_errors": [
+      ["wrong_version", "mkt_mint_unsupported_version"],
+      ["invoice_member", "mkt_mint_bearer_material_forbidden"],
+      ["invite_value", "mkt_mint_bearer_material_forbidden"],
+      ["mint_url_member", "mkt_mint_discovery_duplication"]
+    ]
+  },
+  "client_only_requirements": {
+    "relay_enforced": false,
+    "external_authorities": [
+      "cashu_mint",
+      "federation_guardians",
+      "gateway",
+      "lightning_rail",
+      "chain_rail",
+      "price_feed",
+      "independent_verifier"
+    ],
+    "case_categories": {
+      "wallet_verification": [
+        "mint-positive-cashu-mint",
+        "mint-positive-cashu-melt",
+        "mint-negative-keyset-substitution",
+        "mint-negative-federation-config-substitution"
+      ],
+      "lifecycle_and_overclaim": [
+        "mint-negative-quote-is-settlement",
+        "mint-negative-invoice-paid-is-issued",
+        "mint-negative-gateway-is-federation"
+      ],
+      "price_feed": ["mint-negative-substitute-feed"],
+      "replay_and_fork": [
+        "mint-replay-same-contract",
+        "mint-replay-contract-conflict",
+        "mint-fork-status"
+      ],
+      "recovery_and_loss": [
+        "mint-recovery-market-coordinator-gone",
+        "mint-recovery-gateway-gone",
+        "mint-loss-mint-unavailable",
+        "mint-loss-chain-reorg",
+        "mint-expiry-quote"
+      ]
+    }
+  },
+  "upstream_fixture_manifest": [
+    "mint-positive-cashu-mint",
+    "mint-positive-cashu-melt",
+    "mint-positive-fedimint-withdraw",
+    "mint-positive-nip87-cashu-ref",
+    "mint-positive-nip87-fedimint-ref",
+    "mint-positive-gateway-selection",
+    "mint-positive-route-contract",
+    "mint-negative-disabled-side",
+    "mint-negative-json-number-amount",
+    "mint-negative-nip87-recommendation-as-authority",
+    "mint-negative-keyset-substitution",
+    "mint-negative-federation-config-substitution",
+    "mint-negative-substitute-feed",
+    "mint-negative-quote-is-settlement",
+    "mint-negative-invoice-paid-is-issued",
+    "mint-negative-gateway-is-federation",
+    "mint-negative-route-contract-mismatch",
+    "mint-negative-contract-signer",
+    "mint-negative-public-invite",
+    "mint-negative-bearer-proof",
+    "mint-replay-same-contract",
+    "mint-replay-contract-conflict",
+    "mint-fork-status",
+    "mint-expiry-quote",
+    "mint-privacy-independent-wraps",
+    "mint-recovery-market-coordinator-gone",
+    "mint-recovery-gateway-gone",
+    "mint-loss-mint-unavailable",
+    "mint-loss-chain-reorg"
+  ]
+}
