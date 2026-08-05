@@ -63,8 +63,8 @@ if test -n "${IMMORTAL_DEBIAN_PROVIDER_RECEIPT_DIRECTORY:-}"; then
     echo "test-provider-funded: Debian receipt directory is unavailable" >&2
     exit 1
   fi
-  receipt_physical_path="$(cd "${IMMORTAL_DEBIAN_PROVIDER_RECEIPT_DIRECTORY}" && pwd -P)"
-  private_physical_path="$(cd "${private_root}" && pwd -P)"
+  receipt_physical_path="$(CDPATH= cd -- "${IMMORTAL_DEBIAN_PROVIDER_RECEIPT_DIRECTORY}" && pwd -P)"
+  private_physical_path="$(CDPATH= cd -- "${private_root}" && pwd -P)"
   case "${private_physical_path}" in
     "${receipt_physical_path}"|"${receipt_physical_path}"/*)
       echo "test-provider-funded: private runtime directory is inside the Debian receipt mount" >&2

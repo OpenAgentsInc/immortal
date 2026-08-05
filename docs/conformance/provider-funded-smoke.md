@@ -276,7 +276,9 @@ only in a separate mode-0700 controller directory. On failure or interruption,
 the wrapper stops its named outer container, removes any result, deletes that
 raw controller log, and retains only a mode-0600 `failure.log` capped at the
 first 64 KiB and 200 lines. It retains no private runtime directory or result.
-The receipt records that container boundary instead of describing it as an
+After the exact container and controller cleanup succeeds, the result is staged
+beside its final path and atomically published only as the last mutation. The
+receipt records that container boundary instead of describing it as an
 independent VM or live deployment.
 
 The first command replays the provider runtime fixture through the production

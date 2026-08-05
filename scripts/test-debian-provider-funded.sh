@@ -47,7 +47,10 @@ fi
 if ! grep -Fqx 'controller_log="${controller_directory}/container.log"' scripts/run-debian-provider-funded.sh \
     || ! grep -Fqx "            head -c 65536 \"\${controller_log}\" | sed -n '1,200p' >\"\${failure_log}\"" scripts/run-debian-provider-funded.sh \
     || ! grep -Fqx 'trap cleanup 0' scripts/run-debian-provider-funded.sh \
-    || ! grep -Fqx 'trap handle_signal HUP INT TERM' scripts/run-debian-provider-funded.sh; then
+    || ! grep -Fqx 'trap handle_signal HUP INT TERM' scripts/run-debian-provider-funded.sh \
+    || ! grep -Fqx 'if ! docker start --attach "${outer_container_id}" >>"${controller_log}" 2>&1; then' scripts/run-debian-provider-funded.sh \
+    || ! grep -Fqx 'if ! docker rm "${outer_container_id}" >>"${controller_log}" 2>&1; then' scripts/run-debian-provider-funded.sh \
+    || ! grep -Fqx 'if docker inspect "${outer_container_id}" >/dev/null 2>&1; then' scripts/run-debian-provider-funded.sh; then
     echo "test-debian-provider-funded: failure retention must be bounded and signal-cleaned" >&2
     exit 1
 fi

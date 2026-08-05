@@ -43,6 +43,11 @@ if test -n "$(git -C "${repository}" status --porcelain --untracked-files=all)";
     exit 1
 fi
 
+receipt_pending_path="${receipt_path}.pending-$(LC_ALL=C od -An -N 8 -tx1 /dev/urandom | tr -d ' \n')"
+if test -e "${receipt_pending_path}"; then
+    echo "run-debian-provider-funded: pending receipt path already exists" >&2
+    exit 1
+fi
 source_commit="$(git -C "${repository}" rev-parse HEAD)"
 receipt_directory="$(mktemp -d /tmp/immortal-debian-provider-receipt.XXXXXX)"
 case "$(basename "${receipt_directory}")" in
@@ -65,25 +70,41 @@ chmod 0700 "${controller_directory}"
 controller_log="${controller_directory}/container.log"
 failure_log="${receipt_directory}/failure.log"
 outer_container_name="immortal-debian-provider-$(LC_ALL=C od -An -N 8 -tx1 /dev/urandom | tr -d ' \n')"
+outer_container_id=""
 failure_reason="Debian gate failed"
 
 cleanup() {
     exit_status=$?
     trap - 0 HUP INT TERM
+    cleanup_failed=false
     if test "${exit_status}" -ne 0; then
-        docker stop --timeout 15 "${outer_container_name}" >/dev/null 2>&1 || true
-        docker rm --force "${outer_container_name}" >/dev/null 2>&1 || true
-        rm -f "${receipt_directory}/result.json"
-        : >"${failure_log}"
-        if test -f "${controller_log}"; then
-            head -c 65536 "${controller_log}" | sed -n '1,200p' >"${failure_log}"
+        if test -n "${outer_container_id}" \
+            && ! docker rm --force "${outer_container_id}" >>"${controller_log}" 2>&1; then
+            cleanup_failed=true
         fi
-        chmod 0600 "${failure_log}"
-        sed -n '1,200p' "${failure_log}" >&2
-        echo "run-debian-provider-funded: ${failure_reason}; retained bounded console ${failure_log}" >&2
+        rm -f "${receipt_pending_path}"
+        if test -n "${receipt_directory}" && test -d "${receipt_directory}"; then
+            rm -f "${receipt_directory}/result.json"
+            : >"${failure_log}"
+            if test -f "${controller_log}"; then
+                head -c 65536 "${controller_log}" | sed -n '1,200p' >"${failure_log}"
+            fi
+            chmod 0600 "${failure_log}"
+            sed -n '1,200p' "${failure_log}" >&2
+            echo "run-debian-provider-funded: ${failure_reason}; retained bounded console ${failure_log}" >&2
+        else
+            echo "run-debian-provider-funded: ${failure_reason}; receipt directory was removed before failure cleanup" >&2
+        fi
     fi
-    rm -f "${controller_log}"
-    rmdir "${controller_directory}" >/dev/null 2>&1 || true
+    if test -n "${controller_directory}" && ! rm -f "${controller_log}"; then
+        cleanup_failed=true
+    fi
+    if test -n "${controller_directory}" && ! rmdir "${controller_directory}"; then
+        cleanup_failed=true
+    fi
+    if test "${cleanup_failed}" = true; then
+        echo "run-debian-provider-funded: controller cleanup failed; no receipt was published" >&2
+    fi
     exit "${exit_status}"
 }
 
@@ -95,7 +116,7 @@ handle_signal() {
 trap cleanup 0
 trap handle_signal HUP INT TERM
 
-if ! docker run --rm \
+if ! outer_container_id="$(docker create \
     --name "${outer_container_name}" \
     --privileged \
     --cpus 4 \
@@ -148,7 +169,15 @@ if ! docker run --rm \
         done
         cd /work
         scripts/test-debian-provider-funded.sh
-    ' >"${controller_log}" 2>&1; then
+    ' 2>"${controller_log}")"; then
+    failure_reason="Debian gate container creation failed"
+    exit 1
+fi
+if ! printf '%s\n' "${outer_container_id}" | grep -Eq '^[0-9a-f]{64}$'; then
+    failure_reason="Debian gate returned an invalid container identity"
+    exit 1
+fi
+if ! docker start --attach "${outer_container_id}" >>"${controller_log}" 2>&1; then
     failure_reason="Debian gate failed"
     exit 1
 fi
@@ -158,6 +187,32 @@ if test ! -f "${receipt_result}"; then
     failure_reason="Debian gate produced no receipt"
     exit 1
 fi
-mv "${receipt_result}" "${receipt_path}"
-rmdir "${receipt_directory}"
+if ! docker rm "${outer_container_id}" >>"${controller_log}" 2>&1; then
+    failure_reason="Debian gate exact container cleanup failed"
+    exit 1
+fi
+if docker inspect "${outer_container_id}" >/dev/null 2>&1; then
+    failure_reason="Debian gate exact container remains after cleanup"
+    exit 1
+fi
+outer_container_id=""
+if ! mv "${receipt_result}" "${receipt_pending_path}"; then
+    failure_reason="Debian gate receipt staging failed"
+    exit 1
+fi
+if ! rmdir "${receipt_directory}"; then
+    failure_reason="Debian gate receipt directory cleanup failed"
+    exit 1
+fi
+receipt_directory=""
+if ! rm -f "${controller_log}"; then
+    failure_reason="Debian gate controller log cleanup failed"
+    exit 1
+fi
+if ! rmdir "${controller_directory}"; then
+    failure_reason="Debian gate controller directory cleanup failed"
+    exit 1
+fi
+controller_directory=""
+mv "${receipt_pending_path}" "${receipt_path}"
 echo "run-debian-provider-funded: wrote ${receipt_relative_path}"
