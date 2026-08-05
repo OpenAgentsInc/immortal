@@ -445,3 +445,47 @@ and advertises `nip-mkt-mint:1` only under the authenticated relay URL gate
 after the local relay-observable conformance gate passes. The optional
 `cdk-mintd` lab leg for issue #18 remains future work and is not part of
 this packet.
+
+## M13 MKT-P2P adoption decision (2026-08-04)
+
+Issue #21 adopts the relay-observable subset of MKT-P2P v1 from the
+2026-08-04 lane sync at OpenAgents commit
+`006b35b1f428a2e2a18931ff1546e5a09a8f8961` (MKT.md v0.3 and `MKT-P2P.md`).
+Before allocating `kind:39620`, fresh clones of the three NIP lanes and the
+kind registry were reviewed again:
+
+| Source | Reviewed revision | Result |
+| --- | --- | --- |
+| Official NIPs | `c53877571f96eb423661fc23c620d629d37b8f19` | No assignment in `39620-39629`. |
+| Block NIPs | `8342dfcc5890b81a269a8ec3db73a8a56f76ce79` | No assignment in `39620-39629`; the only `3962x` byte match is inside a NIP-OA hex example. |
+| OpenAgents NIPs | `006b35b1f428a2e2a18931ff1546e5a09a8f8961` | MKT.md v0.3 assigns private immutable `39620` to the MKT-P2P Resolution; `39621-39629` remain reserved and unallocated. All other hits are the profile specification or reservation text. |
+| [`nostr-protocol/registry-of-kinds`](https://github.com/nostr-protocol/registry-of-kinds) `schema.yaml` | `2483e752146d171524dcb10dffd06de2aa271bf3` (current HEAD at review time) | No entry in `39620-39629`; the nearest higher registered kind is `39701`. |
+
+The review found no collision and creates no lane-precedence exception.
+Immortal therefore admits `39620` as a private immutable NIP-59-only kind
+under the same store/gateway rules as `39610` (migration 0012). Kinds
+`39621-39629` and all other unadopted profile kinds remain unallocated.
+
+The relay validates MKT-P2P Offering registry asset pairs, the explicit
+buy/sell disable law, canonical decimal amounts, payment-method identifier
+bounds, the amount-mode vocabulary, a bounded NIP-69 source declaration, the
+exact `a1-coordinated-hold` custody class, the bond-policy summary shape, the
+dispute-policy digest shape, and public PII/private-material refusal on
+Offerings and receipts. An authorized profile consumer can apply the exact
+Resolution grammar (role, order/previous consistency, recipient roles,
+decision and scope vocabularies, evidence provenance), the closed
+NIP-69/Mostro source-reference mapping, and the admitted Status-state set
+after decryption. NIP-69 and Mostro source events stay canonical for their
+own meaning: the mapping proves only the reference and never upgrades the
+source signature, escrow, reputation, payment, or dispute authority.
+
+The 26-case upstream manifest is exported without claiming the client-only
+bond, hold-invoice, fiat-payment, price-feed, solver-set, appeal,
+coordinator-independent-recovery, replay-side-effect, or chargeback-loss
+cases as relay enforcement. Per-trade key rotation is respected: the
+fixtures prove two sessions under distinct trade keys validate with no
+identity-linkage member, and public records refuse trade-key-linkage members
+outright. The contract lists `mkt-p2p:1` as `relay_observable_only`, keeps
+executable profiles empty, and advertises `nip-mkt-p2p:1` only under the
+authenticated relay URL gate after the complete local relay-observable
+conformance gate passes.

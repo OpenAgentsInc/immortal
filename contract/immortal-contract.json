@@ -238,6 +238,12 @@
     },
     {
       "lane": "openagents",
+      "identifier": "nip-mkt-p2p:1",
+      "advertisement": "relay_url_and_local_conformance",
+      "status": "relay_observable"
+    },
+    {
+      "lane": "openagents",
       "identifier": "mkt-swp-coordination:1",
       "advertisement": "exact_conformance_digest_and_relay_signer",
       "status": "optional_noncustodial_handler"
@@ -363,6 +369,16 @@
       "publication": "public_head",
       "immutability": "nip01_addressable",
       "enforcement_scope": "relay"
+    },
+    {
+      "kind": 39620,
+      "lane": "openagents",
+      "identifier": "NIP-MKT",
+      "name": "mkt_p2p_resolution",
+      "classification": "addressable",
+      "publication": "private_wrapped",
+      "immutability": "exact_signed_coordinate",
+      "enforcement_scope": "client_and_internal_store"
     },
     {
       "kind": 39640,
@@ -527,6 +543,12 @@
       },
       {
         "id": "mkt-mint",
+        "version": 1,
+        "scope": "relay_observable_only",
+        "advertisement": "relay_url_and_local_conformance"
+      },
+      {
+        "id": "mkt-p2p",
         "version": 1,
         "scope": "relay_observable_only",
         "advertisement": "relay_url_and_local_conformance"
@@ -916,6 +938,95 @@
       "external_authority": "mint_federation_gateway_lightning_chain_and_price_feed_verification_not_claimed",
       "upstream_fixture_cases": 29
     },
+    "mkt_p2p": {
+      "id": "mkt-p2p",
+      "version": 1,
+      "resolution_kind": 39620,
+      "scope": "relay_observable_only",
+      "resolution_publication": "private_signed_record_nip59_only",
+      "resolution_alt": "MKT-P2P resolution",
+      "resolution_roles": [
+        "solver",
+        "appeal-arbiter"
+      ],
+      "recipient_roles": [
+        "maker",
+        "taker",
+        "coordinator",
+        "solver",
+        "appeal-arbiter"
+      ],
+      "resolution_decisions": [
+        "release-to-buyer",
+        "refund-to-seller",
+        "cooperative-cancel",
+        "slash-maker-bond",
+        "slash-taker-bond",
+        "dismissed",
+        "unresolved"
+      ],
+      "resolution_scopes": [
+        "principal",
+        "bond",
+        "both"
+      ],
+      "evidence_provenance": [
+        "pledged",
+        "observed",
+        "verified",
+        "paid",
+        "refunded",
+        "settled"
+      ],
+      "registry_asset_id_rule": "namespace:reference registry identifiers only; bare tickers rejected",
+      "canonical_amount_pattern": "^(0|[1-9][0-9]*)$",
+      "offering_required_members": [
+        "market",
+        "sides",
+        "payment_method_ids",
+        "amount_mode",
+        "nip69",
+        "custody_class",
+        "bond_policy",
+        "dispute_policy_digest"
+      ],
+      "amount_modes": [
+        "fixed",
+        "range",
+        "both"
+      ],
+      "custody_class": "a1-coordinated-hold",
+      "nip69_bridge": "source_reference_mapping_only; nip69_and_mostro_events_stay_canonical; no_signature_upgrade",
+      "source_reference_members": [
+        "protocol",
+        "revision",
+        "event_id",
+        "source_sha256",
+        "mapping_version",
+        "dropped_fields",
+        "defaulted_fields",
+        "ambiguous_fields"
+      ],
+      "admitted_status_states": [
+        "accepted",
+        "settlement_pending",
+        "completed",
+        "disputed",
+        "bond-required",
+        "bond-locked",
+        "seller-funding-required",
+        "seller-funding-locked",
+        "fiat-payment-pending",
+        "fiat-sent",
+        "release-pending",
+        "solver-pending",
+        "solver-taken",
+        "appeal-pending"
+      ],
+      "public_privacy": "no_pii_account_invoice_credential_trade_key_linkage_or_dispute_evidence_in_public_records",
+      "external_authority": "escrow_hold_invoice_bond_dispute_payment_and_settlement_verification_not_claimed; no_independent_exit_evaluation_is_client_scope",
+      "upstream_fixture_cases": 26
+    },
     "required_tags": {
       "cancel": [
         "order e",
@@ -939,6 +1050,19 @@
         "rail",
         "role",
         "x"
+      ],
+      "mkt_p2p_resolution": [
+        "d",
+        "session",
+        "profile=mkt-p2p:1",
+        "order e",
+        "previous e when appeal",
+        "maker p",
+        "taker p",
+        "coordinator p",
+        "author solver/appeal-arbiter p",
+        "role",
+        "alt=MKT-P2P resolution"
       ],
       "mkt_pfi_offering": [
         "market",

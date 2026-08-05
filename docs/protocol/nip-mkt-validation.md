@@ -1,13 +1,15 @@
 # NIP-MKT Validation Boundary
 
 Immortal implements the profile-neutral NIP-MKT base grammar, the relay-
-observable subsets of MKT-SWP v1, MKT-PFI v1, and MKT-MINT v1, and an
-optional configured noncustodial coordination handler. The handler boundary is documented in
+observable subsets of MKT-SWP v1, MKT-PFI v1, MKT-P2P v1, and MKT-MINT v1,
+and an optional configured noncustodial coordination handler. The handler
+boundary is documented in
 [`mkt-swp-coordination.md`](mkt-swp-coordination.md). It does not implement an
-executable PFI profile: credential, rail, guarantee, reserve, escrow, dispute,
-wallet, and settlement authority remain external. It also does not implement
-a Cashu mint, Fedimint client, or gateway: NIP-87 discovery, NUT and Fedimint
-rail semantics, and payment verification remain external authorities.
+executable PFI or P2P profile: credential, rail, guarantee, reserve, escrow,
+hold-invoice, bond, solver/arbiter, dispute, wallet, and settlement authority
+remain external. It also does not implement a Cashu mint, Fedimint client, or
+gateway: NIP-87 discovery, NUT and Fedimint rail semantics, and payment
+verification remain external authorities.
 
 ## Kind and publication contract
 
@@ -16,11 +18,12 @@ rail semantics, and payment verification remain external authorities.
 | `39600-39603` | Provider Profile, Offering, Profile Descriptor, Public Market Receipt | addressable | public head, admitted only after the kind-specific grammar |
 | `39604-39609` | RFQ, Quote, Order, Status, Cancel, Close | addressable with an immutable-coordinate override | bare publication refused; signed records travel inside kind-1059 gift wraps |
 | `39610` | MKT-SWP v1 Swap Contract | addressable with an immutable-coordinate override | bare publication refused; signed record travels inside kind-1059 gift wraps |
+| `39620` | MKT-P2P v1 Resolution | addressable with an immutable-coordinate override | bare publication refused; signed record travels inside kind-1059 gift wraps |
 | `39630` | MKT-PFI v1 Qualification Policy | addressable | public replacement head, admitted only after closed-shape, digest, and public-privacy validation |
 | `39640` | MKT-MINT v1 Mint Route Contract | addressable with an immutable-coordinate override | bare publication refused; signed record travels inside kind-1059 gift wraps |
-| `39611-39629`, `39631-39639`, `39641-39699` | reserved profile allocation block | addressable | unallocated by this runtime packet |
+| `39611-39619`, `39621-39629`, `39631-39639`, `39641-39699` | reserved profile allocation block | addressable | unallocated by this runtime packet |
 
-The public heads use ordinary NIP-01 replacement ordering. The eight adopted
+The public heads use ordinary NIP-01 replacement ordering. The nine adopted
 private kinds bind `(pubkey, kind, d)` to one exact event ID and signature in the
 internal store: exact replay is idempotent, while changed bytes fail with
 `invalid: idempotency-conflict`. Deletion and expiration never release that
@@ -33,12 +36,14 @@ created by an older release or legacy import.
 | Surface | What Immortal can validate |
 | --- | --- |
 | Public kinds `39600-39603` | Required discovery tags, identifier/version grammar, enums, content byte limits, duplicate-free JSON-object content, and common collection caps. The private session envelope does not apply to public content. |
-| Visible/internal signed kinds `39604-39610` | The store enforces immutable-coordinate replay, then the profile-neutral common tags, envelope agreement, duplicate-free JSON at every nesting depth, compact serialized size, references, and collection caps. Kind `39610` is bound to exactly `mkt-swp` v1. Existing immutable bindings are checked first so validator upgrades cannot change a prior replay result. The gateway separately measures the exact raw EVENT-object bytes before deserialization. Gateway acceptance policy is defined separately and does not belong to the durable/internal store contract. |
+| Visible/internal signed kinds `39604-39610` and `39620` | The store enforces immutable-coordinate replay, then the profile-neutral common tags, envelope agreement, duplicate-free JSON at every nesting depth, compact serialized size, references, and collection caps. Kind `39610` is bound to exactly `mkt-swp` v1 and kind `39620` to exactly `mkt-p2p` v1. Existing immutable bindings are checked first so validator upgrades cannot change a prior replay result. The gateway separately measures the exact raw EVENT-object bytes before deserialization. Gateway acceptance policy is defined separately and does not belong to the durable/internal store contract. |
 | MKT-SWP Offering and authorized visible record | The profile validator checks public Offering network/asset IDs, side networks and ordered rail pairs against the advertised networks/swap types, canonical decimal amounts, explicit side-disable semantics, fee bounds, script/proof/confirmation classes, evidence class/rail compatibility, receipt outcomes and named-field privacy tripwires, Swap Contract tag/body digest agreement, complementary counterparty roles, and the v1 null/absent EVM extension rule. Custody-member scanning covers the complete parsed profile envelope. It checks digest shape and `x`/body equality; RFC 8785 recomputation and bilateral semantic agreement belong to the client or configured handler. |
 | MKT-PFI Qualification Policy and Offering | The validator checks the public `39630` policy's exact profile/version/status/version/published/digest/alt tags, exact content-byte SHA-256, closed nested requirement and retention shapes, ISO jurisdiction and bounded identifier/URL rules, and recursively named PII/bearer tripwires. Offerings bind canonical ISO-4217/CAIP-19 asset IDs to the market digest, policy address/event pins, enabled direction tags, atomic-unit limits, fee cap, risk and rail sets, jurisdictions, and closed public custody labels. |
 | MKT-PFI authorized visible record | After an authorized endpoint decrypts an inner record, the profile validator permits only commitments for credential presentations and bounded non-bearer evidence references. It applies closed shapes to named credential commitment, evidence, dispute, and recourse objects and rejects unknown risk/evidence classes. It does not fetch or verify the credential, external evidence, rail action, guarantee, reserve, dispute, or settlement. |
 | MKT-MINT Offering | The validator checks the exact NIP-87 cross-reference (kind 38172 for a `cashu` rail, kind 38173 for `fedimint`, the exact `kind:pubkey:identifier` address, a 64-hex event ID, and bounded `wss` relay hints), rejects a kind-38000 recommendation as authority, rejects members that copy mint URLs, invite codes, NUT lists, module lists, or operator claims into a new discovery authority, and validates the asset-ID pair, canonical decimal side bounds (`max "0"` disables and requires `min "0"`, omission invalid, version-1 Fedimint deposit disabled), rail-scoped operations agreeing with enabled sides, protocol-revision identifiers, credential-burden and gateway-policy enums, and mandatory custody disclosure: `custody_class` must equal the rail's class (`a3-mint` for cashu, `a2-federation` for fedimint), so a mint- or federation-custodial route can never be admitted as noncustodial. |
 | MKT-MINT authorized visible record and Route Contract | After an authorized endpoint decrypts an inner record, the validator sweeps bearer ecash material (proofs, notes, blinded messages, blinding factors, secrets, seeds, spend keys, preimages, macaroons, `cashuA`/`cashuB` token values), guards every visible `custody_class` against the two disclosed classes and the visible rail, and applies the closed evidence-reference shape with the seven provenance labels; a quote-typed receipt cannot claim `paid`/`issued`/`refunded`/`settled` and payment evidence cannot claim `issued`. Kind `39640` is bound to exactly `mkt-mint` v1 and additionally binds the fixed `alt` text, complementary counterparty roles, the `rail` tag, `x`/`contract_sha256` equality, the closed 12-member contract object, rail-compatible operation, causal Quote/Order tag equality, and the accepted-Status/`status`-tag agreement. RFC 8785 recomputation and native mint/federation verification remain client scope. |
+| MKT-P2P Offering and public receipt | The profile validator checks registry-identifier asset pairs (bare tickers rejected), the explicit buy/sell zero-max disable law, canonical decimal amounts, 1-16 bounded payment-method identifiers, the `fixed`/`range`/`both` amount-mode vocabulary, a bounded `nip69` source declaration, the exact `a1-coordinated-hold` custody class, a bounded bond-policy summary, and the dispute-policy digest shape. Public Offering and receipt content recursively refuses the profile's named PII, account, invoice, payment-reference, credential, trade-key-linkage, IP, private-relay, and dispute-evidence members. |
+| MKT-P2P authorized visible record | After an authorized endpoint decrypts an inner record, the profile validator binds kind `39620` to the exact Resolution grammar: fixed `alt` text, `solver`/`appeal-arbiter` role, exactly one `order` reference, initial-versus-appeal `previous` consistency between the tag and `previous_resolution_event_id`, exactly one role-marked maker/taker/coordinator recipient each plus an author-matching role tag, the closed decision object with the exact decision and scope vocabularies, the policy digest shape, and bounded non-bearer evidence with the profile provenance ladder. Base-kind records under `mkt-p2p` bind any `source` object to the closed NIP-69/Mostro mapping shape (source events stay canonical; no signature upgrade) and restrict Status `state` tags to the exact admitted v1 set. It does not evaluate solver-set admission, bond terms, hold invoices, payment evidence, or the coordinator-independent exit; those are Quote-pinned client checks. |
 | Raw client/handler record | `validate_mkt_private_raw` checks the exact received byte length, one complete duplicate-free event object with no unknown outer members, event structure and signature, base grammar, and an explicit caller-supplied profile registry. It returns the authoritative raw signed bytes with the decoded event and envelope. This is the exact 32 KiB client/future-handler path; reserializing an `Event` can only bound its compact in-memory form. |
 | Explicit profile consumer | `validate_mkt_private_with_profiles` additionally requires a caller-supplied `MktProfileSupport` with an exact ID/version and rejects profile-declared critical members that the consumer does not understand. Unknown noncritical members remain in the returned body. |
 | NIP-59 gift wrap at the transport relay | The inner signed record is encrypted and opaque. The relay can validate and recipient-gate the outer wrap, but cannot claim it checked inner MKT grammar, signer roles, terms, or profile semantics. |
@@ -54,8 +59,9 @@ Applications create independent outer material for the counterparty and the
 sender's recovery copy. The committed NIP-44 vector and NIP-MKT client
 transport fixture are part of the exported SDK conformance manifest.
 
-The public gateway refuses bare `39604-39610` and `39640` publication with the stable
-reason `restricted: mkt-private-requires-gift-wrap` before database, keyed-rate,
+The public gateway refuses bare `39604-39610`, `39620`, and `39640`
+publication with the stable reason
+`restricted: mkt-private-requires-gift-wrap` before database, keyed-rate,
 or store work, after consuming only the generic IP attempt budget. The internal
 store path remains available for trusted import and future in-binary handlers,
 but existing/internal private-kind rows are unconditionally hidden by SQL,
@@ -94,7 +100,8 @@ Gift-wrap REQ and COUNT filter refusals retain the existing NIP-42 strings:
 `restricted: gift-wrap reads must be scoped to #p self`.
 
 The exported executable-profile set remains empty. Separate relay-profile
-entries identify the observable MKT-SWP v1, MKT-PFI v1, and MKT-MINT v1
+entries identify the observable MKT-SWP v1, MKT-PFI v1, MKT-P2P v1, and
+MKT-MINT v1
 schemas. The optional
 handler has its own exact-digest `mkt-swp-coordination:1` advertisement and is
 not a client or wallet execution claim. Profile-aware base fixtures use the
@@ -166,6 +173,16 @@ selection, external-effect idempotency, replay, expiry, recovery, and loss
 accounting remain client or external-rail cases; a relay admission is never
 issuance, payment, redemption, or settlement evidence.
 
+The MKT-P2P manifest carries all 26 upstream case names. Relay conformance
+enforces only Offering and receipt admission; base private transport and
+kind-39620 immutability; the Resolution, source-reference, and Status-state
+grammar visible to an authorized profile consumer; and per-trade-key fixtures
+proving the profile introduces no identity-linkage requirement. Bond payment
+and slash execution, hold-invoice and fiat-payment verification, price-feed
+reproduction, solver-set and appeal admission against the pinned Quote,
+replayed-order external effects, coordinator-independent recovery, and
+chargeback loss accounting remain client or external-authority cases.
+
 `immortal dev-market-seed` uses the synthetic `local-dev` profile only for a
 loopback smoke. It drives RFQ, Quote, Order, completed Status, and Close with
 two throwaway actors and validates both deliveries of every record. Its final
@@ -175,9 +192,10 @@ state is a coordination claim, not a relay or settlement capability claim.
 
 NIP-MKT has no numeric NIP-11 identifier. When `IMMORTAL_RELAY_URL` is
 configured so NIP-42 recipient authentication is available, Immortal adds
-`nip-mkt`, `mkt-swp:1`, `nip-mkt-pfi:1`, and `nip-mkt-mint:1` to
-`supported_extensions`. The
-profile extensions mean only the relay-observable v1 grammar described on
-this page. The executable-profile set remains empty; credential and external
-authority, reservation accounting, lifecycle execution, wallet authority,
+`nip-mkt`, `mkt-swp:1`, `nip-mkt-pfi:1`, `nip-mkt-mint:1`, and
+`nip-mkt-p2p:1` to `supported_extensions`. The profile extensions mean only
+the relay-observable v1 grammar described on this page. The
+executable-profile set remains empty; credential and external authority,
+escrow and bond custody, dispute resolution, reservation accounting,
+lifecycle execution, wallet authority,
 and settlement proof are not advertised.

@@ -26,7 +26,7 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     assert_eq!(descriptor.identity.contract_version, CONTRACT_VERSION);
     assert_eq!(descriptor.fixture_manifest, FIXTURE_MANIFEST_PATH);
     assert_eq!(descriptor.identity.nips.len(), 3);
-    assert_eq!(descriptor.kinds.len(), 13);
+    assert_eq!(descriptor.kinds.len(), 14);
     assert!(
         descriptor
             .kinds
@@ -38,10 +38,11 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     }
     assert!(MKT_EXECUTABLE_PROFILES.is_empty());
     assert!(descriptor.mkt.executable_profiles.is_empty());
-    assert_eq!(descriptor.mkt.relay_profiles.len(), 3);
+    assert_eq!(descriptor.mkt.relay_profiles.len(), 4);
     assert_eq!(descriptor.mkt.relay_profiles[0].id, "mkt-swp");
     assert_eq!(descriptor.mkt.relay_profiles[1].id, "mkt-pfi");
     assert_eq!(descriptor.mkt.relay_profiles[2].id, "mkt-mint");
+    assert_eq!(descriptor.mkt.relay_profiles[3].id, "mkt-p2p");
     assert_eq!(descriptor.mkt.mkt_swp.swap_contract_kind, 39_610);
     assert_eq!(descriptor.mkt.mkt_swp.upstream_fixture_cases, 70);
     assert_eq!(descriptor.mkt.mkt_pfi.qualification_policy_kind, 39_630);
@@ -57,6 +58,9 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
         descriptor.mkt.mkt_mint.nip87_recommendation_kind_rejected,
         "38000"
     );
+    assert_eq!(descriptor.mkt.mkt_p2p.resolution_kind, 39_620);
+    assert_eq!(descriptor.mkt.mkt_p2p.upstream_fixture_cases, 26);
+    assert_eq!(descriptor.mkt.mkt_p2p.custody_class, "a1-coordinated-hold");
     assert!(!descriptor.mkt.mkt_swp.coordination.enabled_by_default);
     assert_eq!(
         descriptor

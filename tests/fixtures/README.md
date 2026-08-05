@@ -97,6 +97,17 @@ names the NIP that owns the behavior.
   keeping wallet proof verification, native quote/payment verification,
   gateway selection, replay, expiry, recovery, and loss authority
   client-only.
+- `nipmkt/p2p-profile-v1.json` pins the relay-observable MKT-P2P v1 adoption
+  at OpenAgents commit `006b35b1f428a2e2a18931ff1546e5a09a8f8961`: Offering
+  registry-asset/side/amount/payment-method/bridge/custody/bond grammar,
+  immutable wrapped kind-39620 Resolutions with the exact role, previous,
+  recipient, decision, scope, and evidence grammar, the closed NIP-69/Mostro
+  source-reference mapping without signature upgrade, the admitted Status
+  states, redacted public receipts, and per-trade-key non-linkage proofs.
+  It exports all 26 upstream cases while keeping bond payment, hold-invoice
+  and fiat verification, price-feed reproduction, solver/appeal admission,
+  coordinator-independent recovery, and chargeback loss accounting
+  client-only.
 - `nipmkt/swp-client-engine-v1.json` pins the transport-neutral requester
   engine: exact externally signed records, bilateral canonical contract
   binding, distinct submarine/reverse/chain funding and exit topology, Quote

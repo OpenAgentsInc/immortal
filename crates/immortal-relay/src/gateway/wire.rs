@@ -348,6 +348,7 @@ pub fn nip11_json_with_icon(
     if config.relay_url.is_some() {
         supported_extensions.extend([
             "mkt-swp:1",
+            "nip-mkt-p2p:1",
             "nip-mkt-pfi:1",
             "nip-mkt-mint:1",
             "nip-aa",
@@ -570,6 +571,7 @@ mod tests {
         );
         for extension in [
             "mkt-swp:1",
+            "nip-mkt-p2p:1",
             "nip-mkt-pfi:1",
             "nip-mkt-mint:1",
             "nip-aa",

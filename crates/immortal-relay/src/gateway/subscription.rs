@@ -569,6 +569,10 @@ fn event_visible_to_reader(event: &Event, readers: &HashSet<String>) -> bool {
     if (39_604..=39_610).contains(&event.kind) {
         return false;
     }
+    // MKT-P2P Resolution: private wrapped kind, never bare-visible.
+    if event.kind == 39_620 {
+        return false;
+    }
     match event.kind {
         1_059 => {
             let recipients = event.tag_values("p").collect::<Vec<_>>();
@@ -671,6 +675,9 @@ mod tests {
         let mut swap_contract = event('e', 10, 39_610);
         swap_contract.tags = vec![crate::domain::Tag::new(vec!["p".into(), recipient.clone()])];
         assert!(!event_visible_to_reader(&swap_contract, &readers));
+        let mut p2p_resolution = event('g', 10, 39_620);
+        p2p_resolution.tags = vec![crate::domain::Tag::new(vec!["p".into(), recipient.clone()])];
+        assert!(!event_visible_to_reader(&p2p_resolution, &readers));
 
         let mut valid_wrap = event('b', 10, 1_059);
         valid_wrap.tags = vec![crate::domain::Tag::new(vec!["p".into(), recipient.clone()])];

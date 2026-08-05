@@ -61,8 +61,8 @@
     },
     {
       "path": "tests/fixtures/nip11/document.json",
-      "sha256": "72ca10b820961c219fe3545d6d01e43f71a2250af88238daa9cf2eb23d0d30e5",
-      "bytes": 694,
+      "sha256": "4031b8f7d25af16a676d800c28d8de38be4bdf9ce597cb0184c60b302df6d35f",
+      "bytes": 711,
       "scope": "relay"
     },
     {
@@ -229,14 +229,20 @@
     },
     {
       "path": "tests/fixtures/nipmkt/immutability.json",
-      "sha256": "eac2e9e4f642791f5973ecab4b02c639cc7783397c251fe48ffe77243c8f0490",
-      "bytes": 867,
+      "sha256": "956e8b2058ac2f3a344601d8cc60141ba8ce48db965cae9c239b35ebe66a4efb",
+      "bytes": 874,
       "scope": "relay"
     },
     {
       "path": "tests/fixtures/nipmkt/mint-profile-v1.json",
       "sha256": "28d105f7d78567edc77a3406640ea283558e659b47a5ae6e28203a067d316f4f",
       "bytes": 13085,
+      "scope": "relay_and_client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/p2p-profile-v1.json",
+      "sha256": "31b06aa659feddf015c95aad0dc46a2dcdc4283238ac7c4b2d6959635ad5a279",
+      "bytes": 12318,
       "scope": "relay_and_client"
     },
     {
@@ -253,8 +259,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/relay-closing.json",
-      "sha256": "4fbf74bb7a8b15f338e3ec65f8d6b839278af3d5b64bf0de08c87c19c6d3aabc",
-      "bytes": 6188,
+      "sha256": "23f222e24aacee429e1bf10154853393d02593e5dd76fe261195a41313f11d93",
+      "bytes": 6597,
       "scope": "relay_and_client"
     },
     {

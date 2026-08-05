@@ -30,13 +30,13 @@ async fn m2_store_contract_against_postgres() {
     let (initial_store, report) = Store::connect_with_report(&database_url).await.unwrap();
     assert_eq!(
         report.applied_versions,
-        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     );
     drop(initial_store);
     seed_pre_gateway_and_swp_rows(&database_url).await;
 
     let (mut store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![9, 10]);
+    assert_eq!(report.applied_versions, vec![9, 10, 12]);
     assert_pre_adoption_rows_are_private_immutable_and_preserved(&database_url).await;
     assert!(store.is_current());
 
@@ -232,6 +232,8 @@ ALTER TABLE mkt_immutable_coordinate
         kind BETWEEN 39604 AND 39609
     );
 DELETE FROM schema_migrations WHERE version = 10;
+DELETE FROM mkt_immutable_coordinate WHERE kind = 39620;
+DELETE FROM schema_migrations WHERE version = 12;
 "#,
         )
         .await
@@ -266,6 +268,13 @@ INSERT INTO nostr_event (
         39_610,
         vec![Tag::new(vec!["d".into(), "e".repeat(64)])],
         "pre-v10 MKT-SWP searchable marker",
+    );
+    let p2p_resolution = signed_event(
+        93,
+        11,
+        39_620,
+        vec![Tag::new(vec!["d".into(), "f".repeat(64)])],
+        "pre-v12 MKT-P2P searchable marker",
     );
     transaction
         .execute(
@@ -317,20 +326,41 @@ INSERT INTO nostr_event (
         .unwrap();
     transaction
         .execute(
-            r#"
-INSERT INTO replaceable_head (kind, pubkey, identifier, event_id, created_at)
-VALUES ($1, $2, $3, $4, $5)
-"#,
+            &insert,
             &[
-                &39_610_i32,
-                &swap_contract.pubkey,
-                &"e".repeat(64),
-                &swap_contract.id,
-                &i64::try_from(swap_contract.created_at).unwrap(),
+                &p2p_resolution.id,
+                &p2p_resolution.pubkey,
+                &i64::try_from(p2p_resolution.created_at).unwrap(),
+                &39_620_i32,
+                &serde_json::to_string(&p2p_resolution.tags).unwrap(),
+                &p2p_resolution.content,
+                &p2p_resolution.sig,
+                &Some("f".repeat(64)),
             ],
         )
         .await
         .unwrap();
+    for (kind, event, identifier) in [
+        (39_610_i32, &swap_contract, "e".repeat(64)),
+        (39_620_i32, &p2p_resolution, "f".repeat(64)),
+    ] {
+        transaction
+            .execute(
+                r#"
+INSERT INTO replaceable_head (kind, pubkey, identifier, event_id, created_at)
+VALUES ($1, $2, $3, $4, $5)
+"#,
+                &[
+                    &kind,
+                    &event.pubkey,
+                    &identifier,
+                    &event.id,
+                    &i64::try_from(event.created_at).unwrap(),
+                ],
+            )
+            .await
+            .unwrap();
+    }
     let indexed = transaction
         .query_one(
             "SELECT count(*) FROM nostr_event WHERE content LIKE '%pre-v%' AND search_vector IS NOT NULL",
@@ -339,7 +369,7 @@ VALUES ($1, $2, $3, $4, $5)
         .await
         .unwrap()
         .get::<_, i64>(0);
-    assert_eq!(indexed, 3);
+    assert_eq!(indexed, 4);
     transaction.commit().await.unwrap();
 }
 
@@ -353,30 +383,32 @@ async fn assert_pre_adoption_rows_are_private_immutable_and_preserved(database_u
         )
         .await
         .unwrap();
-    assert_eq!(row.get::<_, i64>(0), 3, "migrations preserve all rows");
+    assert_eq!(row.get::<_, i64>(0), 4, "migrations preserve all rows");
     assert_eq!(
         row.get::<_, i64>(1),
-        3,
+        4,
         "migrations recalculate all private search vectors to NULL"
     );
-    let immutable = client
-        .query_one(
-            "SELECT count(*) FROM mkt_immutable_coordinate WHERE kind = 39610",
-            &[],
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0);
-    assert_eq!(immutable, 1, "MKT-SWP coordinate is backfilled");
-    let generic_head = client
-        .query_one(
-            "SELECT count(*) FROM replaceable_head WHERE kind = 39610",
-            &[],
-        )
-        .await
-        .unwrap()
-        .get::<_, i64>(0);
-    assert_eq!(generic_head, 0, "MKT-SWP generic head is removed");
+    for (kind, profile) in [(39_610, "MKT-SWP"), (39_620, "MKT-P2P")] {
+        let immutable = client
+            .query_one(
+                "SELECT count(*) FROM mkt_immutable_coordinate WHERE kind = $1",
+                &[&kind],
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0);
+        assert_eq!(immutable, 1, "{profile} coordinate is backfilled");
+        let generic_head = client
+            .query_one(
+                "SELECT count(*) FROM replaceable_head WHERE kind = $1",
+                &[&kind],
+            )
+            .await
+            .unwrap()
+            .get::<_, i64>(0);
+        assert_eq!(generic_head, 0, "{profile} generic head is removed");
+    }
 }
 
 async fn nostr_effect_import_is_idempotent(database_url: &str, store: &mut Store) {
@@ -607,7 +639,7 @@ fn mkt_pfi_policy_event(secret_byte: u8, created_at: u64, version: &str, country
 }
 
 async fn mkt_immutable_admission(database_url: &str, store: &mut Store) {
-    for (offset, kind) in (39_604..=39_610).enumerate() {
+    for (offset, kind) in (39_604..=39_610).chain(std::iter::once(39_620)).enumerate() {
         let identifier = format!("{:064x}", offset + 1);
         let first = signed_event(
             20,
@@ -1340,6 +1372,43 @@ fn signed_event(
                 "contract_sha256": digest,
                 "signer_role": "requester",
             },
+        })
+        .to_string()
+    } else if kind == 39_620 {
+        let session = format!("{secret_byte:02x}").repeat(32);
+        tags.extend([
+            Tag::new(vec!["session".into(), session.clone()]),
+            Tag::new(vec!["profile".into(), "mkt-p2p".into(), "1".into()]),
+            Tag::new(vec![
+                "p".into(),
+                "c".repeat(64),
+                String::new(),
+                "maker".into(),
+            ]),
+            Tag::new(vec![
+                "e".into(),
+                "3".repeat(64),
+                String::new(),
+                "order".into(),
+            ]),
+            Tag::new(vec!["role".into(), "solver".into()]),
+            Tag::new(vec!["alt".into(), "MKT-P2P resolution".into()]),
+        ]);
+        serde_json::json!({
+            "schema": "openagents.mkt.v1",
+            "profile": "mkt-p2p",
+            "profile_version": 1,
+            "session_id": session,
+            "resolution": {
+                "previous_resolution_event_id": null,
+                "decision": "release-to-buyer",
+                "scope": "principal",
+                "reason": "fixture-note",
+                "policy_sha256": "5".repeat(64),
+                "evidence": []
+            },
+            "loss": [],
+            "payload": content,
         })
         .to_string()
     } else if (39_604..=39_609).contains(&kind) {

@@ -29,11 +29,51 @@ pub const MKT_PFI_PROFILE_VERSION: u64 = 1;
 pub const MKT_MINT_ROUTE_CONTRACT_KIND: u16 = 39_640;
 pub const MKT_MINT_PROFILE_ID: &str = "mkt-mint";
 pub const MKT_MINT_PROFILE_VERSION: u64 = 1;
+// MKT-P2P v1 (nips/openagents/MKT-P2P.md) relay-observable adoption.
+pub const MKT_P2P_RESOLUTION_KIND: u16 = 39_620;
+pub const MKT_P2P_PROFILE_ID: &str = "mkt-p2p";
+pub const MKT_P2P_PROFILE_VERSION: u64 = 1;
+pub const MKT_P2P_CUSTODY_CLASS: &str = "a1-coordinated-hold";
+pub const MKT_P2P_RESOLUTION_ALT: &str = "MKT-P2P resolution";
+pub const MKT_P2P_SOURCE_PROTOCOL: &str = "nip-69-mostro";
+pub const MKT_P2P_SOURCE_MAPPING_VERSION: &str = "mkt-p2p-v1";
+pub const MKT_P2P_AMOUNT_MODES: &[&str] = &["fixed", "range", "both"];
+pub const MKT_P2P_RECIPIENT_ROLES: &[&str] =
+    &["maker", "taker", "coordinator", "solver", "appeal-arbiter"];
+pub const MKT_P2P_RESOLUTION_ROLES: &[&str] = &["solver", "appeal-arbiter"];
+pub const MKT_P2P_RESOLUTION_DECISIONS: &[&str] = &[
+    "release-to-buyer",
+    "refund-to-seller",
+    "cooperative-cancel",
+    "slash-maker-bond",
+    "slash-taker-bond",
+    "dismissed",
+    "unresolved",
+];
+pub const MKT_P2P_RESOLUTION_SCOPES: &[&str] = &["principal", "bond", "both"];
+pub const MKT_P2P_EVIDENCE_PROVENANCE: &[&str] = &[
+    "pledged", "observed", "verified", "paid", "refunded", "settled",
+];
+pub const MKT_P2P_STATUS_BASE_STATES: &[&str] =
+    &["accepted", "settlement_pending", "completed", "disputed"];
+pub const MKT_P2P_STATUS_EXTENSION_STATES: &[&str] = &[
+    "bond-required",
+    "bond-locked",
+    "seller-funding-required",
+    "seller-funding-locked",
+    "fiat-payment-pending",
+    "fiat-sent",
+    "release-pending",
+    "solver-pending",
+    "solver-taken",
+    "appeal-pending",
+];
 pub const MKT_EXECUTABLE_PROFILES: &[(&str, u64)] = &[];
 pub const MKT_RELAY_PROFILES: &[(&str, u64)] = &[
     (MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION),
     (MKT_PFI_PROFILE_ID, MKT_PFI_PROFILE_VERSION),
     (MKT_MINT_PROFILE_ID, MKT_MINT_PROFILE_VERSION),
+    (MKT_P2P_PROFILE_ID, MKT_P2P_PROFILE_VERSION),
 ];
 pub const MKT_MINT_RAILS: &[&str] = &["cashu", "fedimint"];
 pub const MKT_MINT_CUSTODY_CLASSES: &[(&str, &str)] =
@@ -272,6 +312,20 @@ fn validate_mkt_private_syntax(event: &Event) -> Result<MktPrivateEnvelope, Stri
             ));
         }
     }
+    if event.kind == MKT_P2P_RESOLUTION_KIND {
+        if *profile_id != MKT_P2P_PROFILE_ID {
+            return Err(p2p_error(
+                "mkt_p2p_invalid_resolution",
+                "kind 39620 requires profile mkt-p2p",
+            ));
+        }
+        if *profile_version != MKT_P2P_PROFILE_VERSION {
+            return Err(p2p_error(
+                "mkt_p2p_unsupported_version",
+                "kind 39620 requires MKT-P2P version 1",
+            ));
+        }
+    }
     if event.kind == MKT_MINT_ROUTE_CONTRACT_KIND {
         if *profile_id != MKT_MINT_PROFILE_ID {
             return Err(mint_error(
@@ -360,6 +414,12 @@ pub fn validate_mkt_private_with_profiles(
         validate_mkt_mint_visible_private(event, &envelope)
             .map_err(|detail| validation_error(MktValidationCode::TagGrammar, detail))?;
     }
+    if envelope.profile_id == MKT_P2P_PROFILE_ID
+        && envelope.profile_version == MKT_P2P_PROFILE_VERSION
+    {
+        validate_mkt_p2p_visible_private(event, &envelope)
+            .map_err(|detail| validation_error(MktValidationCode::TagGrammar, detail))?;
+    }
     Ok(envelope)
 }
 
@@ -441,10 +501,12 @@ fn validation_error(code: MktValidationCode, detail: impl Into<String>) -> MktVa
 fn classify_syntax_error(detail: String) -> MktValidationError {
     let code = if detail.starts_with("swp_unsupported_profile")
         || detail.starts_with("mkt_mint_unsupported_profile")
+        || detail.contains("kind 39620 requires profile mkt-p2p")
     {
         MktValidationCode::UnsupportedProfile
     } else if detail.starts_with("swp_unsupported_version")
         || detail.starts_with("mkt_mint_unsupported_version")
+        || detail.starts_with("mkt_p2p_unsupported_version")
     {
         MktValidationCode::UnsupportedProfileVersion
     } else if detail.contains("exceeds 32768") || detail.contains("serialization failed") {
@@ -485,6 +547,7 @@ pub const fn is_mkt_private_kind(kind: u16) -> bool {
             | MKT_CANCEL_KIND
             | MKT_CLOSE_KIND
             | MKT_SWP_SWAP_CONTRACT_KIND
+            | MKT_P2P_RESOLUTION_KIND
             | MKT_MINT_ROUTE_CONTRACT_KIND
     )
 }
@@ -572,6 +635,14 @@ fn validate_offering(event: &Event) -> Result<(), String> {
             ));
         }
         validate_mkt_mint_offering(event)?;
+    } else if profiles[0].0 == MKT_P2P_PROFILE_ID {
+        if profiles[0].1 != MKT_P2P_PROFILE_VERSION {
+            return Err(p2p_error(
+                "mkt_p2p_unsupported_version",
+                "only MKT-P2P profile version 1 is relay-observable",
+            ));
+        }
+        validate_mkt_p2p_offering(event)?;
     }
     Ok(())
 }
@@ -654,6 +725,16 @@ fn validate_public_receipt(event: &Event) -> Result<(), String> {
         }
         let content = parse_unique_json(&event.content, "MKT-MINT public receipt content")?;
         reject_mint_public_material(&content)?;
+    } else if profiles[0].0 == MKT_P2P_PROFILE_ID {
+        if profiles[0].1 != MKT_P2P_PROFILE_VERSION {
+            return Err(p2p_error(
+                "mkt_p2p_unsupported_version",
+                "only MKT-P2P profile version 1 is relay-observable",
+            ));
+        }
+        let content = parse_unique_json(&event.content, "MKT-P2P public receipt content")?;
+        reject_p2p_public_private_material(&content)?;
+        reject_p2p_public_receipt_material(&content)?;
     }
     Ok(())
 }
@@ -2992,6 +3073,790 @@ fn mint_error(code: &str, detail: impl fmt::Display) -> String {
     format!("{code}: {detail}")
 }
 
+// MKT-P2P v1 relay-observable validation (nips/openagents/MKT-P2P.md).
+// The relay validates only the visible grammar: public Offering and
+// receipt shapes, the wrapped kind-39620 Resolution record, admitted
+// Status states, and the NIP-69/Mostro source-reference mapping. Escrow,
+// bond, dispute, payment, and settlement authority stay external.
+
+fn validate_mkt_p2p_offering(event: &Event) -> Result<(), String> {
+    let content = parse_unique_json(&event.content, "MKT-P2P Offering content")?;
+    reject_p2p_public_private_material(&content)?;
+    let body = content
+        .as_object()
+        .ok_or_else(|| "MKT-P2P Offering content must be a JSON object".to_owned())?;
+
+    let market = p2p_object(
+        body.get("market"),
+        "MKT-P2P Offering market",
+        "mkt_p2p_invalid_market",
+    )?;
+    p2p_closed(
+        market,
+        &["base_asset_id", "quote_asset_id"],
+        "MKT-P2P Offering market",
+        "mkt_p2p_invalid_market",
+    )?;
+    for member in ["base_asset_id", "quote_asset_id"] {
+        validate_p2p_registry_asset_id(p2p_required_string(
+            market,
+            member,
+            "mkt_p2p_invalid_market",
+        )?)?;
+    }
+
+    let sides = p2p_object(
+        body.get("sides"),
+        "MKT-P2P Offering sides",
+        "mkt_p2p_invalid_market",
+    )?;
+    p2p_closed(
+        sides,
+        &["buy", "sell"],
+        "MKT-P2P Offering sides",
+        "mkt_p2p_invalid_market",
+    )?;
+    for side_name in ["buy", "sell"] {
+        let side = p2p_object(
+            sides.get(side_name),
+            "MKT-P2P Offering side",
+            "mkt_p2p_invalid_market",
+        )?;
+        p2p_closed(
+            side,
+            &["min", "max"],
+            "MKT-P2P Offering side",
+            "mkt_p2p_invalid_market",
+        )?;
+        let minimum = canonical_decimal(
+            p2p_required_string(side, "min", "mkt_p2p_invalid_market")?,
+            false,
+            "MKT-P2P side min",
+        )
+        .map_err(|detail| p2p_error("mkt_p2p_invalid_market", detail))?;
+        let maximum = canonical_decimal(
+            p2p_required_string(side, "max", "mkt_p2p_invalid_market")?,
+            false,
+            "MKT-P2P side max",
+        )
+        .map_err(|detail| p2p_error("mkt_p2p_invalid_market", detail))?;
+        if maximum == 0 {
+            if minimum != 0 {
+                return Err(p2p_error(
+                    "mkt_p2p_side_disabled",
+                    format!("disabled {side_name} side requires min=0 and max=0"),
+                ));
+            }
+        } else if minimum == 0 || minimum > maximum {
+            return Err(p2p_error(
+                "mkt_p2p_invalid_market",
+                format!("enabled {side_name} side requires 0 < min <= max"),
+            ));
+        }
+    }
+
+    let methods = body
+        .get("payment_method_ids")
+        .and_then(Value::as_array)
+        .filter(|values| (1..=16).contains(&values.len()))
+        .ok_or_else(|| "MKT-P2P Offering requires 1-16 payment_method_ids".to_owned())?;
+    let mut method_ids = BTreeSet::new();
+    for method in methods {
+        let method = method
+            .as_str()
+            .ok_or_else(|| "MKT-P2P payment method ids must be strings".to_owned())?;
+        validate_identifier(method, "MKT-P2P payment method id")?;
+        if !method_ids.insert(method) {
+            return Err("MKT-P2P payment method ids must be duplicate-free".to_owned());
+        }
+    }
+
+    require_enum(
+        p2p_required_string(body, "amount_mode", "mkt_p2p_invalid_market")?,
+        MKT_P2P_AMOUNT_MODES,
+        "MKT-P2P amount_mode",
+    )
+    .map_err(|detail| p2p_error("mkt_p2p_invalid_market", detail))?;
+
+    validate_p2p_nip69_declaration(body.get("nip69"))?;
+
+    if p2p_required_string(body, "custody_class", "mkt_p2p_unsupported_version")?
+        != MKT_P2P_CUSTODY_CLASS
+    {
+        return Err(p2p_error(
+            "mkt_p2p_unsupported_version",
+            "MKT-P2P v1 supports only custody class a1-coordinated-hold",
+        ));
+    }
+
+    let bond_policy = p2p_required_string(body, "bond_policy", "mkt_p2p_bond_mismatch")?;
+    if bond_policy != "none" {
+        p2p_bounded_ascii(
+            bond_policy,
+            "bond policy summary",
+            512,
+            "mkt_p2p_bond_mismatch",
+        )?;
+    }
+
+    p2p_hex(
+        p2p_required_string(body, "dispute_policy_digest", "mkt_p2p_invalid_resolution")?,
+        "dispute policy digest",
+        "mkt_p2p_invalid_resolution",
+    )?;
+    Ok(())
+}
+
+fn validate_p2p_registry_asset_id(value: &str) -> Result<(), String> {
+    let Some((namespace, reference)) = value.split_once(':') else {
+        return Err(p2p_error(
+            "mkt_p2p_invalid_market",
+            "asset id must be a collision-resistant registry identifier, not a ticker",
+        ));
+    };
+    if !(2..=16).contains(&namespace.len())
+        || !namespace
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        || reference.is_empty()
+        || reference.len() > 128
+        || !reference
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\')
+    {
+        return Err(p2p_error(
+            "mkt_p2p_invalid_market",
+            "asset id registry namespace or reference is noncanonical",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_p2p_nip69_declaration(value: Option<&Value>) -> Result<(), String> {
+    let nip69 = p2p_object(value, "Offering nip69", "mkt_p2p_invalid_nip69_reference")?;
+    if nip69.is_empty() || nip69.len() > 8 {
+        return Err(p2p_error(
+            "mkt_p2p_invalid_nip69_reference",
+            "nip69 declaration requires 1-8 bounded members",
+        ));
+    }
+    for (name, child) in nip69 {
+        p2p_bounded_ascii(
+            name,
+            "nip69 member name",
+            64,
+            "mkt_p2p_invalid_nip69_reference",
+        )?;
+        match child {
+            Value::String(child) => p2p_bounded_ascii(
+                child,
+                "nip69 member value",
+                128,
+                "mkt_p2p_invalid_nip69_reference",
+            )?,
+            Value::Array(children) if children.len() <= 16 => {
+                for child in children {
+                    p2p_bounded_ascii(
+                        child.as_str().ok_or_else(|| {
+                            p2p_error(
+                                "mkt_p2p_invalid_nip69_reference",
+                                "nip69 list values must be strings",
+                            )
+                        })?,
+                        "nip69 list value",
+                        128,
+                        "mkt_p2p_invalid_nip69_reference",
+                    )?;
+                }
+            }
+            _ => {
+                return Err(p2p_error(
+                    "mkt_p2p_invalid_nip69_reference",
+                    "nip69 members must be bounded strings or string lists",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_mkt_p2p_visible_private(
+    event: &Event,
+    envelope: &MktPrivateEnvelope,
+) -> Result<(), String> {
+    validate_p2p_source_members(&Value::Object(envelope.body.clone()))?;
+    if event.kind == MKT_STATUS_KIND {
+        for tag in event.tags.iter().filter(|tag| tag.name() == Some("state")) {
+            let state = tag.value().unwrap_or_default();
+            if !MKT_P2P_STATUS_BASE_STATES.contains(&state)
+                && !MKT_P2P_STATUS_EXTENSION_STATES.contains(&state)
+            {
+                return Err(p2p_error(
+                    "mkt_p2p_invalid_transition",
+                    "Status state is not admitted by MKT-P2P version 1",
+                ));
+            }
+        }
+    }
+    if event.kind == MKT_P2P_RESOLUTION_KIND {
+        validate_mkt_p2p_resolution(event, envelope)?;
+    }
+    Ok(())
+}
+
+fn validate_p2p_source_members(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                if name == "source" {
+                    validate_mkt_p2p_source_reference(child)?;
+                } else {
+                    validate_p2p_source_members(child)?;
+                }
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                validate_p2p_source_members(child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn validate_mkt_p2p_source_reference(value: &Value) -> Result<(), String> {
+    let source = p2p_object(
+        Some(value),
+        "MKT-P2P source reference",
+        "mkt_p2p_invalid_nip69_reference",
+    )?;
+    p2p_closed(
+        source,
+        &[
+            "protocol",
+            "revision",
+            "event_id",
+            "source_sha256",
+            "mapping_version",
+            "dropped_fields",
+            "defaulted_fields",
+            "ambiguous_fields",
+        ],
+        "MKT-P2P source reference",
+        "mkt_p2p_invalid_nip69_reference",
+    )?;
+    if p2p_required_string(source, "protocol", "mkt_p2p_invalid_nip69_reference")?
+        != MKT_P2P_SOURCE_PROTOCOL
+    {
+        return Err(p2p_error(
+            "mkt_p2p_unrepresentable_source",
+            "MKT-P2P v1 bridges only nip-69-mostro sources",
+        ));
+    }
+    p2p_bounded_ascii(
+        p2p_required_string(source, "revision", "mkt_p2p_invalid_nip69_reference")?,
+        "source revision",
+        128,
+        "mkt_p2p_invalid_nip69_reference",
+    )?;
+    for member in ["event_id", "source_sha256"] {
+        p2p_hex(
+            p2p_required_string(source, member, "mkt_p2p_invalid_nip69_reference")?,
+            member,
+            "mkt_p2p_invalid_nip69_reference",
+        )?;
+    }
+    if p2p_required_string(source, "mapping_version", "mkt_p2p_invalid_nip69_reference")?
+        != MKT_P2P_SOURCE_MAPPING_VERSION
+    {
+        return Err(p2p_error(
+            "mkt_p2p_invalid_nip69_reference",
+            "source mapping_version must be mkt-p2p-v1",
+        ));
+    }
+    for member in ["dropped_fields", "defaulted_fields", "ambiguous_fields"] {
+        let fields = source
+            .get(member)
+            .and_then(Value::as_array)
+            .filter(|values| values.len() <= 32)
+            .ok_or_else(|| {
+                p2p_error(
+                    "mkt_p2p_invalid_nip69_reference",
+                    format!("source {member} must be a bounded array"),
+                )
+            })?;
+        for field in fields {
+            p2p_bounded_ascii(
+                field.as_str().ok_or_else(|| {
+                    p2p_error(
+                        "mkt_p2p_invalid_nip69_reference",
+                        format!("source {member} entries must be strings"),
+                    )
+                })?,
+                "source loss-accounting field",
+                128,
+                "mkt_p2p_invalid_nip69_reference",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_mkt_p2p_resolution(event: &Event, envelope: &MktPrivateEnvelope) -> Result<(), String> {
+    if single_value(event, "alt", "MKT-P2P Resolution")? != MKT_P2P_RESOLUTION_ALT {
+        return Err(p2p_error(
+            "mkt_p2p_invalid_resolution",
+            "Resolution alt tag is not the fixed profile label",
+        ));
+    }
+    let role = single_value(event, "role", "MKT-P2P Resolution")?;
+    if !MKT_P2P_RESOLUTION_ROLES.contains(&role) {
+        return Err(p2p_error(
+            "mkt_p2p_invalid_resolution",
+            "Resolution role must be solver or appeal-arbiter",
+        ));
+    }
+
+    let mut order = 0;
+    let mut previous_tag = None;
+    for tag in event.tags.iter().filter(|tag| tag.name() == Some("e")) {
+        match tag.as_slice().get(3).map(String::as_str) {
+            Some("order") => order += 1,
+            Some("previous") => {
+                if previous_tag
+                    .replace(
+                        tag.as_slice()
+                            .get(1)
+                            .map(String::as_str)
+                            .unwrap_or_default(),
+                    )
+                    .is_some()
+                {
+                    return Err(p2p_error(
+                        "mkt_p2p_invalid_resolution",
+                        "Resolution permits exactly one previous reference",
+                    ));
+                }
+            }
+            Some("evidence") => {}
+            _ => {
+                return Err(p2p_error(
+                    "mkt_p2p_invalid_resolution",
+                    "Resolution has an unsupported event reference",
+                ));
+            }
+        }
+    }
+    if order != 1 {
+        return Err(p2p_error(
+            "mkt_p2p_invalid_resolution",
+            "Resolution requires exactly one order reference",
+        ));
+    }
+
+    let mut maker = 0;
+    let mut taker = 0;
+    let mut coordinator = 0;
+    let mut author_role_marked = false;
+    for tag in event.tags.iter().filter(|tag| tag.name() == Some("p")) {
+        let values = tag.as_slice();
+        let tag_role = values.get(3).map(String::as_str).unwrap_or_default();
+        if !MKT_P2P_RECIPIENT_ROLES.contains(&tag_role) {
+            return Err(p2p_error(
+                "mkt_p2p_invalid_resolution",
+                "every Resolution p tag must carry a profile recipient role",
+            ));
+        }
+        let pubkey = values.get(1).map(String::as_str).unwrap_or_default();
+        lower_hex_32(pubkey, "Resolution recipient")
+            .map_err(|detail| p2p_error("mkt_p2p_invalid_resolution", detail))?;
+        match tag_role {
+            "maker" => maker += 1,
+            "taker" => taker += 1,
+            "coordinator" => coordinator += 1,
+            _ => {}
+        }
+        if pubkey == event.pubkey && tag_role == role {
+            author_role_marked = true;
+        }
+    }
+    if maker != 1 || taker != 1 || coordinator != 1 {
+        return Err(p2p_error(
+            "mkt_p2p_invalid_resolution",
+            "Resolution requires one maker, one taker, and one coordinator recipient",
+        ));
+    }
+    if !author_role_marked {
+        return Err(p2p_error(
+            "mkt_p2p_invalid_resolution",
+            "Resolution author requires a matching role-marked p tag",
+        ));
+    }
+
+    p2p_closed(
+        &envelope.body,
+        &[
+            "schema",
+            "profile",
+            "profile_version",
+            "session_id",
+            "resolution",
+            "loss",
+        ],
+        "Resolution content",
+        "mkt_p2p_invalid_resolution",
+    )?;
+    let resolution = p2p_object(
+        envelope.body.get("resolution"),
+        "Resolution decision",
+        "mkt_p2p_invalid_resolution",
+    )?;
+    p2p_closed(
+        resolution,
+        &[
+            "previous_resolution_event_id",
+            "decision",
+            "scope",
+            "reason",
+            "effective_after",
+            "appeal_deadline",
+            "policy_sha256",
+            "evidence",
+        ],
+        "Resolution decision",
+        "mkt_p2p_invalid_resolution",
+    )?;
+    require_enum(
+        p2p_required_string(resolution, "decision", "mkt_p2p_invalid_resolution")?,
+        MKT_P2P_RESOLUTION_DECISIONS,
+        "MKT-P2P decision",
+    )
+    .map_err(|detail| p2p_error("mkt_p2p_invalid_resolution", detail))?;
+    require_enum(
+        p2p_required_string(resolution, "scope", "mkt_p2p_invalid_resolution")?,
+        MKT_P2P_RESOLUTION_SCOPES,
+        "MKT-P2P decision scope",
+    )
+    .map_err(|detail| p2p_error("mkt_p2p_invalid_resolution", detail))?;
+    validate_identifier(
+        p2p_required_string(resolution, "reason", "mkt_p2p_invalid_resolution")?,
+        "MKT-P2P decision reason",
+    )
+    .map_err(|detail| p2p_error("mkt_p2p_invalid_resolution", detail))?;
+    for member in ["effective_after", "appeal_deadline"] {
+        if resolution.contains_key(member) {
+            canonical_decimal(
+                p2p_required_string(resolution, member, "mkt_p2p_invalid_resolution")?,
+                false,
+                member,
+            )
+            .map_err(|detail| p2p_error("mkt_p2p_invalid_resolution", detail))?;
+        }
+    }
+    p2p_hex(
+        p2p_required_string(resolution, "policy_sha256", "mkt_p2p_invalid_resolution")?,
+        "Resolution policy digest",
+        "mkt_p2p_invalid_resolution",
+    )?;
+
+    match resolution.get("previous_resolution_event_id") {
+        Some(Value::Null) => {
+            if previous_tag.is_some() || role != "solver" {
+                return Err(p2p_error(
+                    "mkt_p2p_invalid_resolution",
+                    "an initial decision permits no previous reference and requires the solver role",
+                ));
+            }
+        }
+        Some(Value::String(previous_id)) => {
+            p2p_hex(
+                previous_id,
+                "previous Resolution event id",
+                "mkt_p2p_invalid_resolution",
+            )?;
+            if previous_tag != Some(previous_id.as_str()) || role != "appeal-arbiter" {
+                return Err(p2p_error(
+                    "mkt_p2p_invalid_resolution",
+                    "an appeal requires the appeal-arbiter role and the exact previous reference",
+                ));
+            }
+        }
+        _ => {
+            return Err(p2p_error(
+                "mkt_p2p_invalid_resolution",
+                "previous_resolution_event_id must be null or an exact event id",
+            ));
+        }
+    }
+
+    let evidence = resolution
+        .get("evidence")
+        .and_then(Value::as_array)
+        .filter(|values| values.len() <= MKT_MAX_REFERENCES)
+        .ok_or_else(|| {
+            p2p_error(
+                "mkt_p2p_evidence_mismatch",
+                "Resolution evidence must be a bounded array",
+            )
+        })?;
+    for reference in evidence {
+        validate_mkt_p2p_resolution_evidence(reference)?;
+    }
+
+    if let Some(loss) = envelope.body.get("loss") {
+        let entries = loss
+            .as_array()
+            .filter(|values| values.len() <= 32)
+            .ok_or_else(|| {
+                p2p_error(
+                    "mkt_p2p_invalid_resolution",
+                    "Resolution loss must be a bounded array",
+                )
+            })?;
+        for entry in entries {
+            validate_identifier(
+                entry.as_str().ok_or_else(|| {
+                    p2p_error(
+                        "mkt_p2p_invalid_resolution",
+                        "Resolution loss entries must be strings",
+                    )
+                })?,
+                "MKT-P2P loss state",
+            )
+            .map_err(|detail| p2p_error("mkt_p2p_invalid_resolution", detail))?;
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_mkt_p2p_resolution_evidence(value: &Value) -> Result<(), String> {
+    let evidence = p2p_object(
+        Some(value),
+        "Resolution evidence reference",
+        "mkt_p2p_evidence_mismatch",
+    )?;
+    p2p_closed(
+        evidence,
+        &["ref", "sha256", "provenance"],
+        "Resolution evidence reference",
+        "mkt_p2p_evidence_mismatch",
+    )?;
+    let reference = p2p_required_string(evidence, "ref", "mkt_p2p_evidence_mismatch")?;
+    if reference.is_empty()
+        || reference.len() > 512
+        || reference.chars().any(char::is_control)
+        || reference.contains("://") && (reference.contains('@') || reference.contains('?'))
+    {
+        return Err(p2p_error(
+            "mkt_p2p_evidence_mismatch",
+            "evidence ref is empty, unbounded, or bearer-shaped",
+        ));
+    }
+    p2p_hex(
+        p2p_required_string(evidence, "sha256", "mkt_p2p_evidence_mismatch")?,
+        "evidence digest",
+        "mkt_p2p_evidence_mismatch",
+    )?;
+    require_enum(
+        p2p_required_string(evidence, "provenance", "mkt_p2p_evidence_mismatch")?,
+        MKT_P2P_EVIDENCE_PROVENANCE,
+        "MKT-P2P evidence provenance",
+    )
+    .map_err(|detail| p2p_error("mkt_p2p_evidence_mismatch", detail))
+}
+
+fn reject_p2p_public_private_material(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                let normalized = name
+                    .bytes()
+                    .filter(|byte| byte.is_ascii_alphanumeric())
+                    .map(|byte| byte.to_ascii_lowercase() as char)
+                    .collect::<String>();
+                if matches!(
+                    normalized.as_str(),
+                    "name"
+                        | "fullname"
+                        | "phone"
+                        | "phonenumber"
+                        | "physicaladdress"
+                        | "streetaddress"
+                        | "address"
+                        | "location"
+                        | "geohash"
+                        | "bankaccount"
+                        | "account"
+                        | "accountnumber"
+                        | "iban"
+                        | "routingnumber"
+                        | "sortcode"
+                        | "mobilemoney"
+                        | "mobilemoneyaccount"
+                        | "paymentreference"
+                        | "paymentref"
+                        | "paymentinstruction"
+                        | "paymentinstructions"
+                        | "invoice"
+                        | "invoices"
+                        | "bolt11"
+                        | "paymenthash"
+                        | "preimage"
+                        | "credential"
+                        | "credentials"
+                        | "credentialpresentation"
+                        | "presentation"
+                        | "presentationbytes"
+                        | "tradekeylink"
+                        | "tradekeylinkage"
+                        | "identitylink"
+                        | "linkedidentity"
+                        | "ipaddress"
+                        | "clientip"
+                        | "privaterelayurl"
+                        | "disputeevidence"
+                        | "disputenarrative"
+                        | "seed"
+                        | "privatekey"
+                        | "claimprivatekey"
+                        | "refundprivatekey"
+                        | "macaroon"
+                ) {
+                    return Err(p2p_error(
+                        "mkt_p2p_private_data_public",
+                        format!("public MKT-P2P record contains forbidden member {name:?}"),
+                    ));
+                }
+                reject_p2p_public_private_material(child)?;
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                reject_p2p_public_private_material(child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn reject_p2p_public_receipt_material(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                let normalized = name
+                    .bytes()
+                    .filter(|byte| byte.is_ascii_alphanumeric())
+                    .map(|byte| byte.to_ascii_lowercase() as char)
+                    .collect::<String>();
+                if matches!(
+                    normalized.as_str(),
+                    "sessionid"
+                        | "counterparty"
+                        | "counterparties"
+                        | "maker"
+                        | "taker"
+                        | "amount"
+                        | "baseamount"
+                        | "quoteamount"
+                        | "minamount"
+                        | "maxamount"
+                        | "price"
+                        | "fee"
+                        | "feebps"
+                        | "route"
+                        | "transactionid"
+                        | "txid"
+                        | "bond"
+                        | "bonds"
+                        | "bondstatus"
+                        | "dispute"
+                        | "resolution"
+                        | "evidence"
+                        | "evidencerefs"
+                        | "source"
+                        | "timingladder"
+                ) {
+                    return Err(p2p_error(
+                        "mkt_p2p_private_data_public",
+                        format!("public MKT-P2P receipt contains private member {name:?}"),
+                    ));
+                }
+                reject_p2p_public_receipt_material(child)?;
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                reject_p2p_public_receipt_material(child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn p2p_object<'a>(
+    value: Option<&'a Value>,
+    subject: &str,
+    code: &str,
+) -> Result<&'a Map<String, Value>, String> {
+    value
+        .and_then(Value::as_object)
+        .ok_or_else(|| p2p_error(code, format!("{subject} must be an object")))
+}
+
+fn p2p_closed(
+    object: &Map<String, Value>,
+    allowed: &[&str],
+    subject: &str,
+    code: &str,
+) -> Result<(), String> {
+    if let Some(member) = object
+        .keys()
+        .find(|member| !allowed.contains(&member.as_str()))
+    {
+        return Err(p2p_error(
+            code,
+            format!("{subject} contains unknown member {member:?}"),
+        ));
+    }
+    Ok(())
+}
+
+fn p2p_required_string<'a>(
+    object: &'a Map<String, Value>,
+    name: &str,
+    code: &str,
+) -> Result<&'a str, String> {
+    object
+        .get(name)
+        .and_then(Value::as_str)
+        .ok_or_else(|| p2p_error(code, format!("{name} must be a string")))
+}
+
+fn p2p_bounded_ascii(value: &str, subject: &str, maximum: usize, code: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > maximum
+        || !value.is_ascii()
+        || value.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(p2p_error(
+            code,
+            format!("{subject} is invalid or unbounded"),
+        ));
+    }
+    Ok(())
+}
+
+fn p2p_hex(value: &str, subject: &str, code: &str) -> Result<(), String> {
+    lower_hex_32(value, subject).map_err(|detail| p2p_error(code, detail))
+}
+
+fn p2p_error(code: &str, detail: impl fmt::Display) -> String {
+    format!("{code}: {detail}")
+}
+
 fn validate_mkt_swp_offering(event: &Event) -> Result<(), String> {
     let content = parse_unique_json(&event.content, "MKT-SWP Offering content")?;
     reject_swp_secret_material(&content)?;
@@ -3782,6 +4647,9 @@ fn validate_collection_bounds(event: &Event) -> Result<(), String> {
 }
 
 fn validate_counterparties(event: &Event) -> Result<(), String> {
+    // MKT-P2P extends the private recipient-role vocabulary for its
+    // Resolution kind; every other private kind keeps the base roles.
+    let p2p_resolution = event.kind == MKT_P2P_RESOLUTION_KIND;
     let counterparties = event
         .tags
         .iter()
@@ -3790,16 +4658,26 @@ fn validate_counterparties(event: &Event) -> Result<(), String> {
     let mut role_marked = 0;
     for tag in counterparties {
         let values = tag.as_slice();
-        if values
-            .get(3)
-            .is_some_and(|role| matches!(role.as_str(), "requester" | "provider"))
-        {
+        let role_matches = values.get(3).is_some_and(|role| {
+            if p2p_resolution {
+                MKT_P2P_RECIPIENT_ROLES.contains(&role.as_str())
+            } else {
+                matches!(role.as_str(), "requester" | "provider")
+            }
+        });
+        if role_matches {
             let pubkey = values.get(1).map(String::as_str).unwrap_or_default();
             lower_hex_32(pubkey, "private MKT counterparty")?;
             role_marked += 1;
         }
     }
     if role_marked == 0 {
+        if p2p_resolution {
+            return Err(p2p_error(
+                "mkt_p2p_invalid_resolution",
+                "Resolution requires role-marked p tags",
+            ));
+        }
         return Err("private MKT event requires a requester/provider role-marked p tag".to_owned());
     }
     Ok(())

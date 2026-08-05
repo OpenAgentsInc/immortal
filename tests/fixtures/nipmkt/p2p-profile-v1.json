@@ -1,0 +1,294 @@
+{
+  "source": {
+    "lane": "openagents",
+    "commit": "006b35b1f428a2e2a18931ff1546e5a09a8f8961",
+    "specification": "nips/openagents/MKT-P2P.md",
+    "profile": "mkt-p2p",
+    "version": 1,
+    "resolution_kind": 39620
+  },
+  "relay_observable": {
+    "offering": {
+      "kind": 39601,
+      "tags": [
+        ["d", "btc-usd-peer-trades"],
+        ["profile", "mkt-p2p", "1"],
+        ["status", "active"],
+        ["provider", "39600:1111111111111111111111111111111111111111111111111111111111111111:provider-one"],
+        ["published_at", "1785859200"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-p2p",
+        "profile_version": 1,
+        "market": {
+          "base_asset_id": "caip19:bip122:000000000019d6689c085ae165831e93/slip44:0",
+          "quote_asset_id": "iso4217:USD"
+        },
+        "sides": {
+          "buy": { "min": "0", "max": "0" },
+          "sell": { "min": "10000", "max": "1000000" }
+        },
+        "payment_method_ids": ["bank-transfer-us", "mobile-money-ke"],
+        "amount_mode": "both",
+        "nip69": {
+          "revisions": ["nip-69-2026-06"],
+          "order_kinds": ["38383"]
+        },
+        "custody_class": "a1-coordinated-hold",
+        "bond_policy": "maker-and-taker-2-percent",
+        "dispute_policy_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "offering_errors": [
+      ["wrong_version", "mkt_p2p_unsupported_version"],
+      ["ticker_asset", "mkt_p2p_invalid_market"],
+      ["unknown_market_member", "mkt_p2p_invalid_market"],
+      ["json_number_amount", "mkt_p2p_invalid_market"],
+      ["disabled_side_min_nonzero", "mkt_p2p_side_disabled"],
+      ["inverted_range", "mkt_p2p_invalid_market"],
+      ["amount_mode_unknown", "mkt_p2p_invalid_market"],
+      ["nip69_unbounded", "mkt_p2p_invalid_nip69_reference"],
+      ["custody_class_unknown", "mkt_p2p_unsupported_version"],
+      ["bond_policy_shape", "mkt_p2p_bond_mismatch"],
+      ["dispute_digest_invalid", "mkt_p2p_invalid_resolution"],
+      ["public_pii_member", "mkt_p2p_private_data_public"],
+      ["public_invoice_member", "mkt_p2p_private_data_public"]
+    ],
+    "resolution": {
+      "kind": 39620,
+      "tags": [
+        ["d", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0001"],
+        ["session", "9999999999999999999999999999999999999999999999999999999999999999"],
+        ["profile", "mkt-p2p", "1"],
+        ["e", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "", "order"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "maker"],
+        ["p", "3333333333333333333333333333333333333333333333333333333333333333", "", "taker"],
+        ["p", "4444444444444444444444444444444444444444444444444444444444444444", "", "coordinator"],
+        ["p", "1111111111111111111111111111111111111111111111111111111111111111", "", "solver"],
+        ["role", "solver"],
+        ["alt", "MKT-P2P resolution"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-p2p",
+        "profile_version": 1,
+        "session_id": "9999999999999999999999999999999999999999999999999999999999999999",
+        "resolution": {
+          "previous_resolution_event_id": null,
+          "decision": "release-to-buyer",
+          "scope": "principal",
+          "reason": "fiat-payment-verified",
+          "effective_after": "1785862800",
+          "appeal_deadline": "1785866400",
+          "policy_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "evidence": [
+            {
+              "ref": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "provenance": "verified"
+            }
+          ]
+        },
+        "loss": []
+      }
+    },
+    "appeal": {
+      "kind": 39620,
+      "tags": [
+        ["d", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0002"],
+        ["session", "9999999999999999999999999999999999999999999999999999999999999999"],
+        ["profile", "mkt-p2p", "1"],
+        ["e", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "", "order"],
+        ["e", "abababababababababababababababababababababababababababababababab", "", "previous"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "maker"],
+        ["p", "3333333333333333333333333333333333333333333333333333333333333333", "", "taker"],
+        ["p", "4444444444444444444444444444444444444444444444444444444444444444", "", "coordinator"],
+        ["p", "5555555555555555555555555555555555555555555555555555555555555555", "", "solver"],
+        ["p", "1111111111111111111111111111111111111111111111111111111111111111", "", "appeal-arbiter"],
+        ["role", "appeal-arbiter"],
+        ["alt", "MKT-P2P resolution"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-p2p",
+        "profile_version": 1,
+        "session_id": "9999999999999999999999999999999999999999999999999999999999999999",
+        "resolution": {
+          "previous_resolution_event_id": "abababababababababababababababababababababababababababababababab",
+          "decision": "refund-to-seller",
+          "scope": "both",
+          "reason": "payment-evidence-refuted",
+          "effective_after": "1785870000",
+          "policy_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "evidence": []
+        },
+        "loss": ["chargeback_pending"]
+      }
+    },
+    "resolution_errors": [
+      ["wrong_profile", "mkt_p2p_invalid_resolution"],
+      ["wrong_version", "mkt_p2p_unsupported_version"],
+      ["alt_mismatch", "mkt_p2p_invalid_resolution"],
+      ["role_unknown", "mkt_p2p_invalid_resolution"],
+      ["two_order_refs", "mkt_p2p_invalid_resolution"],
+      ["unmarked_recipient", "mkt_p2p_invalid_resolution"],
+      ["missing_coordinator", "mkt_p2p_invalid_resolution"],
+      ["author_role_missing", "mkt_p2p_invalid_resolution"],
+      ["unknown_content_member", "mkt_p2p_invalid_resolution"],
+      ["unknown_resolution_member", "mkt_p2p_invalid_resolution"],
+      ["decision_unknown", "mkt_p2p_invalid_resolution"],
+      ["scope_unknown", "mkt_p2p_invalid_resolution"],
+      ["initial_with_previous_tag", "mkt_p2p_invalid_resolution"],
+      ["policy_digest_invalid", "mkt_p2p_invalid_resolution"],
+      ["evidence_provenance", "mkt_p2p_evidence_mismatch"],
+      ["evidence_bearer_ref", "mkt_p2p_evidence_mismatch"]
+    ],
+    "appeal_errors": [
+      ["appeal_previous_mismatch", "mkt_p2p_invalid_resolution"],
+      ["appeal_role_solver", "mkt_p2p_invalid_resolution"]
+    ],
+    "rfq_with_source": {
+      "kind": 39604,
+      "tags": [
+        ["d", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0003"],
+        ["session", "9999999999999999999999999999999999999999999999999999999999999999"],
+        ["profile", "mkt-p2p", "1"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "provider"],
+        ["e", "6666666666666666666666666666666666666666666666666666666666666666", "", "evidence"],
+        ["alt", "MKT-P2P rfq"],
+        ["expiration", "1785862800"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-p2p",
+        "profile_version": 1,
+        "session_id": "9999999999999999999999999999999999999999999999999999999999999999",
+        "source": {
+          "protocol": "nip-69-mostro",
+          "revision": "nip-69-2026-06",
+          "event_id": "6666666666666666666666666666666666666666666666666666666666666666",
+          "source_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+          "mapping_version": "mkt-p2p-v1",
+          "dropped_fields": [],
+          "defaulted_fields": ["premium"],
+          "ambiguous_fields": []
+        }
+      }
+    },
+    "source_errors": [
+      ["source_not_object", "mkt_p2p_invalid_nip69_reference"],
+      ["protocol_unknown", "mkt_p2p_unrepresentable_source"],
+      ["mapping_version_unknown", "mkt_p2p_invalid_nip69_reference"],
+      ["event_id_invalid", "mkt_p2p_invalid_nip69_reference"],
+      ["unknown_source_member", "mkt_p2p_invalid_nip69_reference"],
+      ["dropped_fields_shape", "mkt_p2p_invalid_nip69_reference"]
+    ],
+    "status_extension": {
+      "kind": 39607,
+      "tags": [
+        ["d", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0004"],
+        ["session", "9999999999999999999999999999999999999999999999999999999999999999"],
+        ["profile", "mkt-p2p", "1"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "provider"],
+        ["e", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "", "order"],
+        ["seq", "3"],
+        ["state", "fiat-sent"],
+        ["alt", "MKT-P2P status"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-p2p",
+        "profile_version": 1,
+        "session_id": "9999999999999999999999999999999999999999999999999999999999999999"
+      }
+    },
+    "status_errors": [
+      ["base_state_not_admitted", "mkt_p2p_invalid_transition"],
+      ["unknown_state", "mkt_p2p_invalid_transition"]
+    ],
+    "public_receipt_errors": [
+      ["wrong_version", "mkt_p2p_unsupported_version"],
+      ["session_member", "mkt_p2p_private_data_public"],
+      ["amount_member", "mkt_p2p_private_data_public"],
+      ["invoice_member", "mkt_p2p_private_data_public"],
+      ["trade_key_linkage", "mkt_p2p_private_data_public"],
+      ["dispute_evidence", "mkt_p2p_private_data_public"]
+    ],
+    "per_trade_keys": {
+      "first_pubkey": "1111111111111111111111111111111111111111111111111111111111111111",
+      "second_pubkey": "8888888888888888888888888888888888888888888888888888888888888888",
+      "second_session": "abababababababababababababababababababababababababababababababab",
+      "second_d": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0005"
+    }
+  },
+  "client_only_requirements": {
+    "relay_enforced": false,
+    "external_authorities": [
+      "coordinator",
+      "hold_invoice_service",
+      "solver",
+      "appeal_arbiter",
+      "rail_verifier",
+      "payment_rail",
+      "bitcoin_rail",
+      "lightning_rail"
+    ],
+    "case_categories": {
+      "bond_lifecycle": [
+        "p2p-positive-bond-release",
+        "p2p-negative-bond-slash-authority",
+        "p2p-expiry-bond-timeout"
+      ],
+      "dispute_resolution": [
+        "p2p-positive-dispute-resolution",
+        "p2p-positive-appeal-supersession",
+        "p2p-negative-resolution-scope",
+        "p2p-fork-resolution"
+      ],
+      "recovery_and_exit": [
+        "p2p-recovery-coordinator-gone-before-fiat",
+        "p2p-recovery-coordinator-gone-after-fiat",
+        "p2p-negative-no-independent-exit"
+      ],
+      "replay_and_fork": [
+        "p2p-replay-same-resolution",
+        "p2p-replay-resolution-conflict",
+        "p2p-fork-participant-status"
+      ],
+      "privacy_and_keys": [
+        "p2p-positive-per-trade-keys",
+        "p2p-privacy-independent-wraps"
+      ],
+      "external_loss": ["p2p-loss-external-chargeback"]
+    }
+  },
+  "upstream_fixture_manifest": [
+    "p2p-positive-fixed-complete",
+    "p2p-positive-range-selection",
+    "p2p-positive-nip69-reference",
+    "p2p-positive-bond-release",
+    "p2p-positive-cooperative-cancel",
+    "p2p-positive-dispute-resolution",
+    "p2p-positive-appeal-supersession",
+    "p2p-positive-per-trade-keys",
+    "p2p-negative-disabled-side",
+    "p2p-negative-range-outside-quote",
+    "p2p-negative-substitute-feed",
+    "p2p-negative-nip69-silent-upgrade",
+    "p2p-negative-bond-slash-authority",
+    "p2p-negative-resolution-scope",
+    "p2p-negative-fiat-sent-signer",
+    "p2p-negative-public-pii",
+    "p2p-negative-no-independent-exit",
+    "p2p-replay-same-resolution",
+    "p2p-replay-resolution-conflict",
+    "p2p-fork-participant-status",
+    "p2p-fork-resolution",
+    "p2p-expiry-bond-timeout",
+    "p2p-privacy-independent-wraps",
+    "p2p-recovery-coordinator-gone-before-fiat",
+    "p2p-recovery-coordinator-gone-after-fiat",
+    "p2p-loss-external-chargeback"
+  ]
+}

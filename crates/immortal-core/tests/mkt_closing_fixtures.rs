@@ -8,12 +8,14 @@ use immortal_core::domain::{
 use serde_json::Value;
 
 const MKT_BASE_COMMIT: &str = "b839dd43bad7915a35639b562d4d7ebf7d51c3f6";
-const MKT_SWP_COMMIT: &str = "a7f5522c0a7430f9f5b1cfa09477dae2d16d3682";
+// The boundary corpus pins the OpenAgents revision whose MKT.md kind
+// allocation table it reproduces (v0.3: SWP 39610, P2P 39620, PFI 39630).
+const MKT_ALLOCATION_COMMIT: &str = "006b35b1f428a2e2a18931ff1546e5a09a8f8961";
 
 #[test]
 fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
     let fixture = relay_fixture();
-    assert_eq!(fixture["source"]["commit"], MKT_SWP_COMMIT);
+    assert_eq!(fixture["source"]["commit"], MKT_ALLOCATION_COMMIT);
 
     let base = event_from_fixture(&fixture["private_base"]);
     assert!(validate_mkt_private_base(&base).is_ok());
@@ -101,7 +103,7 @@ fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
             assert_eq!(EventClass::from_kind(kind), EventClass::Addressable);
             assert_eq!(
                 is_mkt_private_kind(kind),
-                (39_604..=39_610).contains(&kind) || kind == 39_640
+                (39_604..=39_610).contains(&kind) || kind == 39_620 || kind == 39_640
             );
         }
     }

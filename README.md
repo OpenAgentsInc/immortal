@@ -116,10 +116,11 @@ discovery, immutable internal validation, private wrapped transport, and a
 complete relay/client conformance boundary, and M11's deterministic contract
 export (`immortal contract`, `scripts/export-contract.sh`) is the generation
 source for downstream SDKs. M12 now includes the owned Bitcoin/Lightning
-verification primitives and the relay-observable MKT-SWP and MKT-PFI v1
-adoptions: public Offering grammar, immutable wrapped Swap Contracts on kind
-`39610`, public Qualification Policy heads on kind `39630`, bounded
-commitment/evidence shapes, exported fixtures, and gated profile discovery. It
+verification primitives and the relay-observable MKT-SWP, MKT-PFI, and
+MKT-P2P v1 adoptions: public Offering grammar, immutable wrapped Swap
+Contracts on kind `39610` and P2P Resolutions on kind `39620`, public
+Qualification Policy heads on kind `39630`, bounded commitment/evidence
+shapes, exported fixtures, and gated profile discovery. It
 also includes the transport-neutral MKT-SWP client engine with verify-before-
 fund transitions, wallet-owned signing, and keyless recovery, plus the off-by-
 default `mkt-swp-coordination:1` handler for signed capacity accounting,
@@ -183,7 +184,9 @@ It covers public discovery, immutable internal records, wrapped transport,
 recipient-gated reads, rate limits, and the client-only boundary. NIP-11
 advertises `nip-mkt` only when `IMMORTAL_RELAY_URL` enables authenticated
 recipient transport. The same gate advertises `mkt-swp:1`,
-`nip-mkt-pfi:1`, and `nip-mkt-mint:1` for their relay-observable v1 grammar. The separate
+`nip-mkt-pfi:1`, `nip-mkt-mint:1`, and `nip-mkt-p2p:1` for their
+relay-observable v1 grammar.
+The separate
 [`coordination handler`](docs/protocol/mkt-swp-coordination.md) advertises
 `mkt-swp-coordination:1` only with its exact compiled conformance digest; the
 machine contract separately records the completed MKT-SWP client engine, and
