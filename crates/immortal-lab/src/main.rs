@@ -3,7 +3,7 @@
 use immortal_lab::{
     adversarial,
     cli::{self, Command, Step},
-    funded::{self, FundedJourney},
+    funded::{self, DoomsdayCase, FundedJourney},
     relay::{relay_url_from_env, topology_relay_urls_from_env},
     state::LabPaths,
     steps,
@@ -54,6 +54,15 @@ fn execute(command: Command) -> Result<(), Exit> {
         Command::FundedSmoke => funded::run_funded_smoke().map_err(Exit::Failure),
         Command::FundedTopology => emit(funded::run_funded_topology()),
         Command::AdversarialCase => emit(adversarial::run_from_env()),
+        Command::DoomsdayPrepare => {
+            let selected = std::env::var("IMMORTAL_LAB_ADVERSARIAL_CASE_ID").map_err(|_| {
+                Exit::Failure("doomsday preparation requires the selected case".to_owned())
+            })?;
+            let case = DoomsdayCase::parse(&selected).map_err(Exit::Failure)?;
+            emit(funded::prepare_doomsday_case(case))
+        }
+        Command::DoomsdayKeylessRequest => emit(funded::prepare_doomsday_keyless_request()),
+        Command::DoomsdayKeylessExecutor => emit(funded::run_doomsday_keyless_executor()),
         Command::BoltzAdapter => emit(funded::run_boltz_adapter_session()),
         Command::Run { to } => {
             if to >= Step::Fund {

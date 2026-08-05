@@ -11,21 +11,22 @@ use std::{
 
 use immortal_client::mkt_swp_client::{
     AwaitingVerification, Cancellation, ChainRecoveryState, CooperativeSigningAction,
-    CooperativeSigningContext, CooperativeSigningMessage, DeliveryProvenance, ExitPackage,
-    ExitSigningOutcome, ExternalEffectRequest, FundingAction, FundingAuthorized,
-    FundingVerificationInput, InvoiceVerificationInput, LightningProgressState,
-    LightningReadinessState, LightningRecoveryState, LocalBitcoinObservation,
-    LocalLightningProgress, LocalLightningReadiness, LocalRailEvidence, LocalRecoveryObservation,
-    ParticipantRole, RailObservationRequest, RecoveryAction, RequesterContractLocalInputs,
-    RequesterContractSigningInput, RequesterOrderInput, RequesterQuoteView, RequesterSessionView,
-    RequesterVerificationState, SignedRecordDelivery, StatusState, SwapClientConfig,
-    SwapRecordFactory, SwapSession, SwapType, VerifyBeforeFundInput, provider_support,
+    CooperativeSigningContext, CooperativeSigningMessage, DeliveryProvenance,
+    EsploraBroadcastRequest, ExitPackage, ExitSigningOutcome, ExternalEffectRequest, FundingAction,
+    FundingAuthorized, FundingVerificationInput, InvoiceVerificationInput, KeylessEsploraExecutor,
+    LightningProgressState, LightningReadinessState, LightningRecoveryState,
+    LocalBitcoinObservation, LocalLightningProgress, LocalLightningReadiness, LocalRailEvidence,
+    LocalRecoveryObservation, ParticipantRole, RailObservationRequest, RecoveryAction,
+    RequesterContractLocalInputs, RequesterContractSigningInput, RequesterOrderInput,
+    RequesterQuoteView, RequesterSessionView, RequesterVerificationState, SignedRecordDelivery,
+    StatusState, SwapClientConfig, SwapRecordFactory, SwapSession, SwapType, VerifyBeforeFundInput,
+    provider_support,
 };
 use immortal_core::{
     domain::{
         Event, MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_ORDER_KIND, MKT_QUOTE_KIND, MKT_STATUS_KIND,
         MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND, MktProfileSupport,
-        Tag, validate_mkt_public_event,
+        Tag, parse_unique_json, validate_mkt_public_event,
     },
     market::{MarketSigner, WrapMaterial, unwrap_mkt_record_raw, wrap_mkt_record},
     mkt_swp_verify::{Transaction, TransactionInput, TransactionOutput, sha256},
@@ -70,6 +71,11 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const JOURNEY_TIMEOUT: Duration = Duration::from_secs(180);
 const LIGHTNING_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 const SUBMARINE_REFUND_INVOICE_EXPIRY_SECONDS: u32 = 86_400;
+const DOOMSDAY_DIRECT_RECOVERY_TIMEOUT: Duration = Duration::from_secs(90);
+const DOOMSDAY_DIRECT_RECOVERY_MAX_BYTES: usize = 8 * 1_024 * 1_024;
+const DOOMSDAY_KEYLESS_MAX_BYTES: usize = 64 * 1_024;
+const DOOMSDAY_KEYLESS_REQUEST_SCHEMA: &str = "openagents.immortal.doomsday-keyless-request.v1";
+const DOOMSDAY_KEYLESS_RESULT_SCHEMA: &str = "openagents.immortal.doomsday-keyless-result.v1";
 const FUNDED_TOPOLOGY_FIXTURE: &str =
     include_str!("../../../tests/fixtures/lab/topology-funded-v1.json");
 
@@ -94,6 +100,48 @@ impl CooperativeJourney {
             Self::Complete => "cooperative",
             Self::AbortAfterProviderNonce => "cooperative_abort",
             Self::CrashCutRecovery => "cooperative_crash_cut",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DoomsdayCase {
+    SubmarineProviderGone,
+    ReverseCoordinatorGone,
+    KeylessEsploraBroadcast,
+}
+
+impl DoomsdayCase {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "doomsday-submarine-provider-gone" => Ok(Self::SubmarineProviderGone),
+            "doomsday-reverse-coordinator-gone" => Ok(Self::ReverseCoordinatorGone),
+            "doomsday-keyless-esplora-broadcast" => Ok(Self::KeylessEsploraBroadcast),
+            _ => Err("selected case is not a doomsday scenario".to_owned()),
+        }
+    }
+
+    fn journey_name(self) -> &'static str {
+        match self {
+            Self::SubmarineProviderGone => "doomsday_submarine_provider_gone",
+            Self::ReverseCoordinatorGone => "doomsday_reverse_coord_gone",
+            Self::KeylessEsploraBroadcast => "doomsday_keyless_esplora_exit",
+        }
+    }
+
+    fn invoice_label(self) -> &'static str {
+        match self {
+            Self::SubmarineProviderGone => "immortal-doomsday-submarine",
+            Self::ReverseCoordinatorGone => "immortal-doomsday-reverse",
+            Self::KeylessEsploraBroadcast => "immortal-doomsday-keyless",
+        }
+    }
+
+    fn case_id(self) -> &'static str {
+        match self {
+            Self::SubmarineProviderGone => "doomsday-submarine-provider-gone",
+            Self::ReverseCoordinatorGone => "doomsday-reverse-coordinator-gone",
+            Self::KeylessEsploraBroadcast => "doomsday-keyless-esplora-broadcast",
         }
     }
 }
@@ -669,6 +717,7 @@ struct NegotiationInput<'a> {
     requester_key: [u8; 32],
     requester_funding_input: Option<&'a FundingInput>,
     exit_destination_script_pubkey: &'a [u8],
+    presign_submarine_refund: bool,
 }
 
 pub fn test_bounded_numeric_output_index() {
@@ -772,6 +821,7 @@ pub fn run_funded_topology() -> Result<Value, String> {
             requester_key,
             requester_funding_input: Some(&client_input),
             exit_destination_script_pubkey: &exit_destination.script_pubkey,
+            presign_submarine_refund: false,
         };
         let quoted = prepare_quote(&environments[index], &provider_pubkeys[index], input)?;
         candidates.push(funded_topology_candidate(index, quoted)?);
@@ -815,6 +865,7 @@ pub fn run_funded_topology() -> Result<Value, String> {
         requester_key,
         requester_funding_input: Some(&client_input),
         exit_destination_script_pubkey: &exit_destination.script_pubkey,
+        presign_submarine_refund: false,
     };
     let unselected_environment = &environments[unselected.environment_index];
     let unselected_quote = unselected.quote;
@@ -833,6 +884,7 @@ pub fn run_funded_topology() -> Result<Value, String> {
         requester_key,
         requester_funding_input: Some(&client_input),
         exit_destination_script_pubkey: &exit_destination.script_pubkey,
+        presign_submarine_refund: false,
     };
     let selected_environment = &environments[selected.environment_index];
     let selected_provider_pubkey = selected.quote.provider_pubkey.clone();
@@ -1212,6 +1264,7 @@ pub fn run_adversarial_double_reservation() -> Result<Value, String> {
         requester_key: active_requester_key,
         requester_funding_input: None,
         exit_destination_script_pubkey: &active_exit_destination.script_pubkey,
+        presign_submarine_refund: false,
     };
     let active = prepare_quote_with_terms(
         &environment,
@@ -1265,6 +1318,7 @@ pub fn run_adversarial_double_reservation() -> Result<Value, String> {
         requester_key: refused_requester_key,
         requester_funding_input: None,
         exit_destination_script_pubkey: &refused_exit_destination.script_pubkey,
+        presign_submarine_refund: false,
     };
     let (refused_session_id, refused_rfq) = publish_quote_request_with_terms(
         &environment,
@@ -1303,6 +1357,648 @@ pub fn run_adversarial_double_reservation() -> Result<Value, String> {
     }))
 }
 
+pub fn prepare_doomsday_case(case: DoomsdayCase) -> Result<Value, String> {
+    let runtime =
+        Runtime::new().map_err(|error| format!("could not start doomsday runtime: {error}"))?;
+    let environment = SmokeEnvironment::load_topology_selected(0, None)?;
+    verify_health(&environment.health_url)?;
+    let provider_pubkey = discover_provider(
+        &environment.relay_url,
+        &environment.requester,
+        JOURNEY_TIMEOUT,
+    )?;
+    match case {
+        DoomsdayCase::SubmarineProviderGone | DoomsdayCase::KeylessEsploraBroadcast => {
+            prepare_doomsday_submarine(&runtime, &environment, &provider_pubkey, case)
+        }
+        DoomsdayCase::ReverseCoordinatorGone => {
+            prepare_doomsday_reverse(&runtime, &environment, &provider_pubkey, case)
+        }
+    }
+}
+
+pub fn recover_doomsday_case(case: DoomsdayCase) -> Result<Value, String> {
+    let runtime =
+        Runtime::new().map_err(|error| format!("could not start doomsday runtime: {error}"))?;
+    let environment = SmokeEnvironment::load_topology_selected(0, None)?;
+    let mut restored = restore_doomsday_session(&environment, case)?;
+    restored.controller_audit = load_doomsday_controller_audit(case)?;
+    match case {
+        DoomsdayCase::SubmarineProviderGone => {
+            recover_doomsday_submarine(&runtime, &environment, restored, case, false)
+        }
+        DoomsdayCase::KeylessEsploraBroadcast => {
+            finish_doomsday_keyless(&runtime, &environment, restored)
+        }
+        DoomsdayCase::ReverseCoordinatorGone => {
+            recover_doomsday_reverse(&runtime, &environment, restored, case)
+        }
+    }
+}
+
+pub fn prepare_doomsday_keyless_request() -> Result<Value, String> {
+    let case = DoomsdayCase::KeylessEsploraBroadcast;
+    let runtime = Runtime::new()
+        .map_err(|error| format!("could not start keyless planner runtime: {error}"))?;
+    let environment = SmokeEnvironment::load_topology_selected(0, None)?;
+    let restored = restore_doomsday_session(&environment, case)?;
+    let prepared = prepare_doomsday_submarine_recovery(&runtime, &environment, restored, case)?;
+    let request_path = PathBuf::from(required_environment("IMMORTAL_LAB_KEYLESS_REQUEST_FILE")?);
+    store_doomsday_keyless_request(&request_path, &prepared.request)?;
+    Ok(json!({
+        "schema":DOOMSDAY_KEYLESS_REQUEST_SCHEMA,
+        "case_id":"doomsday-keyless-esplora-broadcast",
+        "effect_id":prepared.request.effect_id,
+        "transaction_id":prepared.transaction_id,
+        "planner_authorized":true,
+        "signed_before_contract":true,
+        "broadcast":false,
+    }))
+}
+
+struct DoomsdayRestoredSession {
+    authorized: SwapSession<FundingAuthorized>,
+    requester: MarketSigner,
+    provider_pubkey: String,
+    factory: SwapRecordFactory,
+    order: Event,
+    contract: Value,
+    requester_status: Option<(u64, String)>,
+    paths: LabPaths,
+    journey_name: String,
+    controller_audit: Value,
+    pending_provider_close: Option<Event>,
+}
+
+struct PreparedSubmarineRecovery {
+    restored: DoomsdayRestoredSession,
+    request: EsploraBroadcastRequest,
+    funding_transaction_id: String,
+    funding_output_index: u32,
+    transaction_id: String,
+    funding_confirmation_height: u32,
+    refund_lock_height: u32,
+    payment_hash: String,
+}
+
+fn prepare_doomsday_submarine(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    case: DoomsdayCase,
+) -> Result<Value, String> {
+    let invoice = runtime
+        .block_on(
+            environment.peer_cln.invoice(
+                &cln_id(case.invoice_label())?,
+                Millisatoshi::from_satoshis(OUTPUT_AMOUNT_SAT)
+                    .map_err(|error| format!("doomsday invoice amount is invalid: {error}"))?,
+                case.invoice_label(),
+                "Immortal adversarial doomsday refund",
+                SUBMARINE_REFUND_INVOICE_EXPIRY_SECONDS,
+            ),
+        )
+        .map_err(|error| format!("could not create doomsday invoice: {error}"))?;
+    let client_input = fund_client_wallet(runtime, environment)?;
+    let refund_path = WalletPath::new(2, false, 0)
+        .map_err(|error| format!("doomsday refund path is invalid: {error}"))?;
+    let requester_key = environment
+        .wallet
+        .derive_address(refund_path)
+        .map_err(|error| format!("could not derive doomsday refund key: {error}"))?
+        .internal_key;
+    let destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 10)
+                .map_err(|error| format!("doomsday destination path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive doomsday destination: {error}"))?;
+    let mut session = negotiate(
+        environment,
+        provider_pubkey,
+        NegotiationInput {
+            journey_name: case.journey_name(),
+            swap_type: "submarine",
+            payment_hash: &invoice.payment_hash,
+            invoice: Some(&invoice.bolt11),
+            requester_key,
+            requester_funding_input: Some(&client_input),
+            exit_destination_script_pubkey: &destination.script_pubkey,
+            presign_submarine_refund: true,
+        },
+    )?;
+    session.wait_provider_state("accepted")?;
+    session.wait_provider_state("lock_terms_ready")?;
+    let funding = session
+        .requester_funding
+        .take()
+        .ok_or_else(|| "doomsday session has no contract-bound funding".to_owned())?;
+    let authorized = verify_submarine_before_fund(&session, &invoice.bolt11, &funding)?;
+    let package = authorized
+        .exit_packages()
+        .iter()
+        .find(|package| package.path().ok() == Some("refund"))
+        .ok_or_else(|| "doomsday session has no requester refund package".to_owned())?;
+    if package.mode().map_err(|error| error.to_string())? != "presigned"
+        || !matches!(
+            package.document().pointer("/exit/signer_ref"),
+            Some(Value::Null)
+        )
+    {
+        return Err("doomsday refund was not pre-signed before Contracts".to_owned());
+    }
+    session.set_authorized_verifier(authorized)?;
+    session.publish_requester_status("requester_verification_passed", Map::new())?;
+    session.persist_authorized_details(
+        "funding_execution_ready",
+        true,
+        json!({"external_identifier":funding.txid}),
+    )?;
+    let funding_transaction_id = broadcast_bitcoin_once(
+        runtime,
+        &environment.bitcoind,
+        "doomsday-funding",
+        &funding.raw_transaction,
+        &funding.txid,
+    )?;
+    session.record_funding_effect(
+        funding_transaction_id.clone(),
+        sha256(funding.raw_transaction.as_bytes()),
+    )?;
+    let bitcoin = bitcoin_terms(&session.contract, "source")?;
+    session.persist_authorized_details(
+        "doomsday_prepared",
+        true,
+        json!({
+            "funding_transaction_id":funding_transaction_id,
+            "refund_lock_height":bitcoin.refund_lock_height,
+            "package_mode":"presigned",
+            "signed_before_contract":true,
+            "signed_before_funding":true,
+        }),
+    )?;
+    Ok(json!({
+        "schema":"openagents.immortal.doomsday-prepared.v1",
+        "case_id":match case {
+            DoomsdayCase::SubmarineProviderGone => "doomsday-submarine-provider-gone",
+            DoomsdayCase::KeylessEsploraBroadcast => "doomsday-keyless-esplora-broadcast",
+            DoomsdayCase::ReverseCoordinatorGone => return Err("reverse case reached submarine preparation".to_owned()),
+        },
+        "provider_pubkey":provider_pubkey,
+        "order_id":session.order.id,
+        "funding_transaction_id":funding_transaction_id,
+        "refund_lock_height":bitcoin.refund_lock_height,
+        "package_mode":"presigned",
+        "signer_ref":null,
+        "signed_before_contract":true,
+        "signed_before_funding":true,
+        "requester_process_exit":true,
+    }))
+}
+
+fn restore_doomsday_session(
+    environment: &SmokeEnvironment,
+    case: DoomsdayCase,
+) -> Result<DoomsdayRestoredSession, String> {
+    let journey_name = case.journey_name();
+    let snapshot_path = environment.control.paths.funded_snapshot(journey_name);
+    let snapshot = std::fs::read(&snapshot_path).map_err(|error| {
+        format!(
+            "could not restore doomsday snapshot {}: {error}",
+            snapshot_path.display()
+        )
+    })?;
+    let authorized = SwapSession::<AwaitingVerification>::restore(&snapshot)
+        .and_then(SwapSession::resume_funding_authorized)
+        .map_err(|error| format!("could not restore doomsday authorization: {error}"))?;
+    let checkpoint = load_funded_journey_checkpoint(&environment.control.paths, journey_name)?
+        .ok_or_else(|| "doomsday snapshot has no checkpoint".to_owned())?;
+    if checkpoint.run_id != environment.control.run_id
+        || checkpoint.journey != journey_name
+        || checkpoint.label != "doomsday_prepared"
+    {
+        return Err("doomsday checkpoint does not bind the prepared session".to_owned());
+    }
+    let config = authorized.config().clone();
+    let order = authorized
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == MKT_ORDER_KIND)
+        .cloned()
+        .ok_or_else(|| "doomsday snapshot has no Order".to_owned())?;
+    let contract = authorized
+        .signed_records()
+        .iter()
+        .filter(|event| event.kind == MKT_SWP_SWAP_CONTRACT_KIND)
+        .find_map(|event| record_profile(event).ok()?.get("contract").cloned())
+        .ok_or_else(|| "doomsday snapshot has no contract".to_owned())?;
+    let requester_status =
+        latest_requester_status(authorized.signed_records(), environment.requester.pubkey())?;
+    Ok(DoomsdayRestoredSession {
+        authorized,
+        requester: environment.requester.clone(),
+        provider_pubkey: config.provider_pubkey.clone(),
+        factory: SwapRecordFactory::new(config)
+            .map_err(|error| format!("could not restore doomsday factory: {error}"))?,
+        order,
+        contract,
+        requester_status,
+        paths: environment.control.paths.clone(),
+        journey_name: journey_name.to_owned(),
+        controller_audit: Value::Null,
+        pending_provider_close: None,
+    })
+}
+
+fn load_doomsday_controller_audit(case: DoomsdayCase) -> Result<Value, String> {
+    let path = PathBuf::from(required_environment("IMMORTAL_LAB_DOOMSDAY_CONTROL_FILE")?);
+    let value = read_bounded_unique_json(&path, 8 * 1_024)?;
+    provider_support::reject_custody_material(&value).map_err(|error| {
+        format!("doomsday controller evidence contains custody material: {error}")
+    })?;
+    let object = value
+        .as_object()
+        .filter(|object| {
+            object.len() == 10
+                && [
+                    "schema",
+                    "case_id",
+                    "stopped_targets",
+                    "stopped_targets_absent_before_recovery",
+                    "stopped_targets_absent_after_recovery",
+                    "relay_services_absent",
+                    "provider_http_websocket_api_absent",
+                    "direct_recovery_retained",
+                    "direct_recovery_only_session_surface",
+                    "keyless_process",
+                ]
+                .iter()
+                .all(|member| object.contains_key(*member))
+        })
+        .ok_or_else(|| "doomsday controller evidence has unknown or missing members".to_owned())?;
+    let expected_targets = match case {
+        DoomsdayCase::ReverseCoordinatorGone => ["provider-b", "relay-a", "relay-b"].as_slice(),
+        DoomsdayCase::SubmarineProviderGone | DoomsdayCase::KeylessEsploraBroadcast => {
+            ["provider-a", "provider-b", "relay-a", "relay-b"].as_slice()
+        }
+    };
+    let targets = object
+        .get("stopped_targets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "doomsday controller stopped targets are not an array".to_owned())?;
+    if targets.len() != expected_targets.len()
+        || targets
+            .iter()
+            .zip(expected_targets)
+            .any(|(actual, expected)| actual.as_str() != Some(expected))
+        || object.get("schema").and_then(Value::as_str)
+            != Some("openagents.immortal.doomsday-controller-audit.v1")
+        || object.get("case_id").and_then(Value::as_str) != Some(case.case_id())
+        || object
+            .get("stopped_targets_absent_before_recovery")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || !matches!(
+            object
+                .get("stopped_targets_absent_after_recovery")
+                .and_then(Value::as_bool),
+            Some(false | true)
+        )
+        || object.get("relay_services_absent").and_then(Value::as_bool) != Some(true)
+        || object
+            .get("provider_http_websocket_api_absent")
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
+        return Err("doomsday controller evidence does not bind the removal cut".to_owned());
+    }
+    let expects_direct = case == DoomsdayCase::ReverseCoordinatorGone;
+    if object
+        .get("direct_recovery_retained")
+        .and_then(Value::as_bool)
+        != Some(expects_direct)
+        || object
+            .get("direct_recovery_only_session_surface")
+            .and_then(Value::as_bool)
+            != Some(expects_direct)
+    {
+        return Err("doomsday controller evidence changed the direct recovery cut".to_owned());
+    }
+    validate_doomsday_keyless_process_audit(object.get("keyless_process"), case)?;
+    Ok(value)
+}
+
+fn validate_doomsday_keyless_process_audit(
+    audit: Option<&Value>,
+    case: DoomsdayCase,
+) -> Result<(), String> {
+    if case != DoomsdayCase::KeylessEsploraBroadcast {
+        return if matches!(audit, Some(Value::Null)) {
+            Ok(())
+        } else {
+            Err("non-keyless doomsday case contains a keyless process audit".to_owned())
+        };
+    }
+    let object = audit
+        .and_then(Value::as_object)
+        .filter(|object| {
+            object.len() == 10
+                && [
+                    "separate_container",
+                    "application_environment_names",
+                    "mount_targets",
+                    "observed_environment_count",
+                    "observed_mount_count",
+                    "environment_allowlist_exact",
+                    "mount_allowlist_exact",
+                    "rail_access",
+                    "runtime_environment_scan_passed",
+                    "exact_presigned_request_only",
+                ]
+                .iter()
+                .all(|member| object.contains_key(*member))
+        })
+        .ok_or_else(|| "keyless process audit has unknown or missing members".to_owned())?;
+    let strings = |member: &str| -> Option<Vec<&str>> {
+        object
+            .get(member)?
+            .as_array()?
+            .iter()
+            .map(Value::as_str)
+            .collect()
+    };
+    if object.get("separate_container").and_then(Value::as_bool) != Some(true)
+        || strings("application_environment_names").as_deref()
+            != Some(
+                [
+                    "IMMORTAL_LAB_KEYLESS_REQUEST_FILE",
+                    "IMMORTAL_LAB_KEYLESS_RESULT_FILE",
+                ]
+                .as_slice(),
+            )
+        || strings("mount_targets").as_deref() != Some(["/keyless"].as_slice())
+        || object
+            .get("observed_environment_count")
+            .and_then(Value::as_u64)
+            != Some(3)
+        || object.get("observed_mount_count").and_then(Value::as_u64) != Some(1)
+        || object
+            .get("environment_allowlist_exact")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || object.get("mount_allowlist_exact").and_then(Value::as_bool) != Some(true)
+        || object.get("rail_access").and_then(Value::as_bool) != Some(false)
+        || object
+            .get("runtime_environment_scan_passed")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || object
+            .get("exact_presigned_request_only")
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
+        return Err("keyless process audit does not prove its credential-free boundary".to_owned());
+    }
+    Ok(())
+}
+
+fn prepare_doomsday_submarine_recovery(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    restored: DoomsdayRestoredSession,
+    case: DoomsdayCase,
+) -> Result<PreparedSubmarineRecovery, String> {
+    let verifier = verifier_for_leg(&restored.contract, "source")?;
+    let funding_transaction_id = transaction_id(required_string(verifier, "funding_transaction")?)?;
+    let funding_output_index = verifier
+        .get("output_index")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "doomsday funding output is not bounded".to_owned())?;
+    require_known_bitcoin_transaction(
+        runtime,
+        &environment.bitcoind,
+        "doomsday-funding",
+        &funding_transaction_id,
+        Some(required_string(verifier, "funding_transaction")?),
+    )?;
+    mine_blocks(runtime, &environment.bitcoind, 1, "doomsday-funding")?;
+    let funding_confirmation_height = transaction_confirmation_height(
+        runtime,
+        &environment.bitcoind,
+        "doomsday-funding-confirmation",
+        &funding_transaction_id,
+    )?;
+    let payment_hash = restored
+        .contract
+        .get("payment_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "doomsday contract has no payment hash".to_owned())?
+        .to_owned();
+    finalize_invoice_unpaid(
+        runtime,
+        &environment.peer_cln,
+        case.invoice_label(),
+        &payment_hash,
+    )?;
+    let bitcoin = bitcoin_terms(&restored.contract, "source")?;
+    let current_height = chain_height(runtime, &environment.bitcoind, "doomsday-before-timeout")?;
+    let before_timeout = doomsday_submarine_recovery_action(
+        &restored.authorized,
+        current_height,
+        funding_confirmation_height,
+    )?;
+    if before_timeout != RecoveryAction::WaitForTimeout {
+        return Err("doomsday planner authorized an early refund broadcast".to_owned());
+    }
+    mine_blocks(
+        runtime,
+        &environment.bitcoind,
+        u64::from(bitcoin.refund_lock_height.saturating_sub(current_height)),
+        "doomsday-refund-timeout",
+    )?;
+    let timeout_height = chain_height(runtime, &environment.bitcoind, "doomsday-timeout")?;
+    if timeout_height < bitcoin.refund_lock_height {
+        return Err("doomsday recovery did not reach the committed refund height".to_owned());
+    }
+    let action = doomsday_submarine_recovery_action(
+        &restored.authorized,
+        timeout_height,
+        funding_confirmation_height,
+    )?;
+    let expected_effect_id = match action {
+        RecoveryAction::BroadcastPresigned { effect_id } => effect_id,
+        _ => return Err("doomsday planner did not authorize the pre-signed refund".to_owned()),
+    };
+    let package = restored
+        .authorized
+        .exit_packages()
+        .iter()
+        .find(|package| package.effect_id().ok() == Some(expected_effect_id.as_str()))
+        .ok_or_else(|| "doomsday planner selected an unbound exit package".to_owned())?;
+    let esplora_url = package
+        .document()
+        .pointer("/broadcast/esplora_urls/0")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "doomsday package has no Esplora endpoint".to_owned())?;
+    let request = KeylessEsploraExecutor::request(package, esplora_url)
+        .map_err(|error| format!("could not build exact keyless request: {error}"))?;
+    let transaction = Transaction::parse(&decode_hex(&request.body)?)
+        .map_err(|error| format!("doomsday signed refund is invalid: {error}"))?;
+    let transaction_id = lower_hex(
+        &transaction
+            .txid()
+            .map_err(|error| format!("could not derive doomsday refund txid: {error}"))?,
+    );
+    Ok(PreparedSubmarineRecovery {
+        restored,
+        request,
+        funding_transaction_id,
+        funding_output_index,
+        transaction_id,
+        funding_confirmation_height,
+        refund_lock_height: bitcoin.refund_lock_height,
+        payment_hash,
+    })
+}
+
+fn doomsday_submarine_recovery_action(
+    authorized: &SwapSession<FundingAuthorized>,
+    current_height: u32,
+    funding_confirmation_height: u32,
+) -> Result<RecoveryAction, String> {
+    authorized
+        .recovery_action_with(|request| {
+            Ok(LocalRecoveryObservation {
+                session_id: request.session_id.clone(),
+                order_id: request.order_id.clone(),
+                binding_sha256: request.binding_sha256.clone(),
+                current_height,
+                source_funding_confirmation_height: Some(funding_confirmation_height),
+                counterparty_available: false,
+                completed: false,
+                record_loss: false,
+                rail_state_unknown: false,
+                lightning_state: Some(LightningRecoveryState::UnpaidFinal),
+                chain_state: None,
+            })
+        })
+        .map_err(|error| format!("doomsday planner rejected local observations: {error}"))
+}
+
+fn recover_doomsday_submarine(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    restored: DoomsdayRestoredSession,
+    case: DoomsdayCase,
+    _keyless: bool,
+) -> Result<Value, String> {
+    let mut prepared = prepare_doomsday_submarine_recovery(runtime, environment, restored, case)?;
+    let transaction_id = broadcast_bitcoin_once(
+        runtime,
+        &environment.bitcoind,
+        "doomsday-presigned-refund",
+        &prepared.request.body,
+        &prepared.transaction_id,
+    )?;
+    record_doomsday_esplora_effect(&mut prepared.restored, &prepared.request, &transaction_id)?;
+    finish_doomsday_submarine_refund(runtime, environment, prepared, false)
+}
+
+fn record_doomsday_esplora_effect(
+    restored: &mut DoomsdayRestoredSession,
+    request: &EsploraBroadcastRequest,
+    transaction_id: &str,
+) -> Result<(), String> {
+    let effect = ExternalEffectRequest::EsploraBroadcast(request.clone());
+    restored
+        .authorized
+        .record_external_effect(
+            &effect,
+            transaction_id.to_owned(),
+            lower_hex(&sha256(&decode_hex(&request.body)?)),
+        )
+        .map_err(|error| format!("could not persist doomsday broadcast effect: {error}"))?;
+    let snapshot = restored
+        .authorized
+        .persist()
+        .map_err(|error| format!("could not serialize doomsday recovery: {error}"))?;
+    store_funded_snapshot(&restored.paths, &restored.journey_name, &snapshot)
+}
+
+fn finish_doomsday_submarine_refund(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    prepared: PreparedSubmarineRecovery,
+    keyless: bool,
+) -> Result<Value, String> {
+    mine_blocks(
+        runtime,
+        &environment.bitcoind,
+        environment.terminal_confirmations,
+        "doomsday-refund-confirmation",
+    )?;
+    let peer_bitcoind = load_adversarial_bitcoind("B")?;
+    verify_refund_spend_on_both_nodes(
+        runtime,
+        [&environment.bitcoind, &peer_bitcoind],
+        &prepared.funding_transaction_id,
+        prepared.funding_output_index,
+        &prepared.transaction_id,
+        &prepared.request.body,
+    )?;
+    let invoices = runtime
+        .block_on(
+            environment
+                .peer_cln
+                .list_invoices(&cln_id("doomsday-terminal-invoice")?, None),
+        )
+        .map_err(|error| format!("could not inspect doomsday terminal invoice: {error}"))?;
+    if invoices
+        .get("invoices")
+        .and_then(Value::as_array)
+        .is_some_and(|values| {
+            values.iter().any(|invoice| {
+                invoice.get("payment_hash").and_then(Value::as_str)
+                    == Some(prepared.payment_hash.as_str())
+            })
+        })
+    {
+        return Err("doomsday submarine invoice did not reach unpaid-final removal".to_owned());
+    }
+    Ok(json!({
+        "proof_class":if keyless {"keyless_presigned_regtest_exit"} else {"presigned_regtest_exit"},
+        "provider_pubkey":prepared.restored.provider_pubkey,
+        "order_id":prepared.restored.order.id,
+        "funding_transaction_id":prepared.funding_transaction_id,
+        "funding_output_index":prepared.funding_output_index,
+        "refund_transaction_id":prepared.transaction_id,
+        "funding_confirmation_height":prepared.funding_confirmation_height,
+        "refund_lock_height":prepared.refund_lock_height,
+        "payment_hash":prepared.payment_hash,
+        "outcome":"refunded",
+        "controller_audit":prepared.restored.controller_audit,
+        "checks":{
+            "fresh_requester_process_restored_before_relay":true,
+            "relay_connections_after_restore":0,
+            "provider_process_absent":true,
+            "relay_processes_absent":true,
+            "presigned_before_contract":true,
+            "presigned_before_funding":true,
+            "wallet_sign_after_contract":false,
+            "broadcast_before_timeout":false,
+            "verified_local_chain_observation":true,
+            "verified_local_lightning_observation":true,
+            "exact_outpoint_spent":true,
+            "both_bitcoind_nodes_agree":true,
+            "transaction_confirmed":true,
+            "lightning_unpaid_final":true,
+            "keyless_process":keyless,
+        }
+    }))
+}
+
 pub fn run_adversarial_cooperative_journey(
     provider_index: usize,
     journey: CooperativeJourney,
@@ -1332,6 +2028,1079 @@ pub fn run_adversarial_cooperative_journey(
         "provider_pubkey":provider_pubkey,
         "journey":proof,
     }))
+}
+
+fn finish_doomsday_keyless(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    restored: DoomsdayRestoredSession,
+) -> Result<Value, String> {
+    let request_path = PathBuf::from(required_environment("IMMORTAL_LAB_KEYLESS_REQUEST_FILE")?);
+    let result_path = PathBuf::from(required_environment("IMMORTAL_LAB_KEYLESS_RESULT_FILE")?);
+    let (request, expected_transaction_id) = load_doomsday_keyless_request(&request_path)?;
+    let result = read_bounded_unique_json(&result_path, DOOMSDAY_KEYLESS_MAX_BYTES)?;
+    let object = result
+        .as_object()
+        .filter(|object| {
+            object.len() == 5
+                && [
+                    "schema",
+                    "effect_id",
+                    "transaction_id",
+                    "request_sha256",
+                    "broadcast_accepted",
+                ]
+                .iter()
+                .all(|name| object.contains_key(*name))
+        })
+        .ok_or_else(|| "keyless result has unknown or missing members".to_owned())?;
+    let request_sha256 =
+        lower_hex(&sha256(&serde_json::to_vec(&request).map_err(|error| {
+            format!("could not serialize keyless request: {error}")
+        })?));
+    if object.get("schema").and_then(Value::as_str) != Some(DOOMSDAY_KEYLESS_RESULT_SCHEMA)
+        || object.get("effect_id").and_then(Value::as_str) != Some(request.effect_id.as_str())
+        || object.get("transaction_id").and_then(Value::as_str)
+            != Some(expected_transaction_id.as_str())
+        || object.get("request_sha256").and_then(Value::as_str) != Some(request_sha256.as_str())
+        || object.get("broadcast_accepted").and_then(Value::as_bool) != Some(true)
+    {
+        return Err("keyless result does not bind the exact accepted request".to_owned());
+    }
+    require_known_bitcoin_transaction(
+        runtime,
+        &environment.bitcoind,
+        "doomsday-keyless-refund",
+        &expected_transaction_id,
+        Some(&request.body),
+    )?;
+    let mut prepared = prepared_submarine_from_keyless_result(
+        runtime,
+        environment,
+        restored,
+        request,
+        expected_transaction_id,
+    )?;
+    let transaction_id = prepared.transaction_id.clone();
+    let request = prepared.request.clone();
+    record_doomsday_esplora_effect(&mut prepared.restored, &request, &transaction_id)?;
+    finish_doomsday_submarine_refund(runtime, environment, prepared, true)
+}
+
+fn prepared_submarine_from_keyless_result(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    restored: DoomsdayRestoredSession,
+    request: EsploraBroadcastRequest,
+    transaction_id: String,
+) -> Result<PreparedSubmarineRecovery, String> {
+    let verifier = verifier_for_leg(&restored.contract, "source")?;
+    let funding_transaction_id = transaction_id_from_verifier(verifier)?;
+    let funding_output_index = verifier
+        .get("output_index")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "keyless funding output is not bounded".to_owned())?;
+    let funding_confirmation_height = transaction_confirmation_height(
+        runtime,
+        &environment.bitcoind,
+        "keyless-funding-confirmation",
+        &funding_transaction_id,
+    )?;
+    let refund_lock_height = bitcoin_terms(&restored.contract, "source")?.refund_lock_height;
+    let current_height = chain_height(runtime, &environment.bitcoind, "keyless-result-height")?;
+    if current_height < refund_lock_height {
+        return Err("keyless broadcaster accepted a refund before timeout".to_owned());
+    }
+    let payment_hash = restored
+        .contract
+        .get("payment_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "keyless contract has no payment hash".to_owned())?
+        .to_owned();
+    Ok(PreparedSubmarineRecovery {
+        restored,
+        request,
+        funding_transaction_id,
+        funding_output_index,
+        transaction_id,
+        funding_confirmation_height,
+        refund_lock_height,
+        payment_hash,
+    })
+}
+
+fn transaction_id_from_verifier(verifier: &Map<String, Value>) -> Result<String, String> {
+    transaction_id(required_string(verifier, "funding_transaction")?)
+}
+
+fn store_doomsday_keyless_request(
+    path: &Path,
+    request: &EsploraBroadcastRequest,
+) -> Result<(), String> {
+    let transaction = Transaction::parse(&decode_hex(&request.body)?)
+        .map_err(|error| format!("keyless request transaction is invalid: {error}"))?;
+    let transaction_id = lower_hex(
+        &transaction
+            .txid()
+            .map_err(|error| format!("could not derive keyless request txid: {error}"))?,
+    );
+    store_bounded_private_json(
+        path,
+        &json!({
+            "schema":DOOMSDAY_KEYLESS_REQUEST_SCHEMA,
+            "transaction_id":transaction_id,
+            "request":request,
+        }),
+        DOOMSDAY_KEYLESS_MAX_BYTES,
+    )
+}
+
+fn load_doomsday_keyless_request(path: &Path) -> Result<(EsploraBroadcastRequest, String), String> {
+    let value = read_bounded_unique_json(path, DOOMSDAY_KEYLESS_MAX_BYTES)?;
+    provider_support::reject_custody_material(&value)
+        .map_err(|error| format!("keyless request contains custody material: {error}"))?;
+    let object = value
+        .as_object()
+        .filter(|object| {
+            object.len() == 3
+                && object.contains_key("schema")
+                && object.contains_key("transaction_id")
+                && object.contains_key("request")
+        })
+        .ok_or_else(|| "keyless request has unknown or missing members".to_owned())?;
+    if object.get("schema").and_then(Value::as_str) != Some(DOOMSDAY_KEYLESS_REQUEST_SCHEMA) {
+        return Err("keyless request schema is unsupported".to_owned());
+    }
+    let transaction_id = object
+        .get("transaction_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "keyless request has no transaction ID".to_owned())?;
+    require_lower_hex_32(transaction_id, "keyless transaction ID")?;
+    let request: EsploraBroadcastRequest = serde_json::from_value(
+        object
+            .get("request")
+            .cloned()
+            .ok_or_else(|| "keyless request has no HTTP request".to_owned())?,
+    )
+    .map_err(|error| format!("keyless HTTP request is invalid: {error}"))?;
+    validate_doomsday_keyless_http_request(&request, transaction_id)?;
+    Ok((request, transaction_id.to_owned()))
+}
+
+fn prepare_doomsday_reverse(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    case: DoomsdayCase,
+) -> Result<Value, String> {
+    let mut preimage = random_32()?;
+    store_funded_secret(&environment.control.paths, case.journey_name(), &preimage)?;
+    let payment_hash = lower_hex(&sha256(&preimage));
+    let claim_path = WalletPath::new(2, false, 1)
+        .map_err(|error| format!("doomsday reverse claim path is invalid: {error}"))?;
+    let requester_key = environment
+        .wallet
+        .derive_address(claim_path)
+        .map_err(|error| format!("could not derive doomsday reverse claim key: {error}"))?
+        .internal_key;
+    let destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 1)
+                .map_err(|error| format!("doomsday reverse destination is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive doomsday reverse destination: {error}"))?;
+    let mut session = negotiate(
+        environment,
+        provider_pubkey,
+        NegotiationInput {
+            journey_name: case.journey_name(),
+            swap_type: "reverse",
+            payment_hash: &payment_hash,
+            invoice: None,
+            requester_key,
+            requester_funding_input: None,
+            exit_destination_script_pubkey: &destination.script_pubkey,
+            presign_submarine_refund: false,
+        },
+    )?;
+    session.wait_provider_state("accepted")?;
+    let invoice_status = session.wait_provider_state("hold_invoice_ready")?;
+    let invoice = record_profile(&invoice_status)?
+        .get("invoice")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "doomsday provider Status has no hold invoice".to_owned())?
+        .to_owned();
+    let authorized = verify_reverse_before_fund(runtime, environment, &session, &invoice)?;
+    let package = authorized
+        .exit_packages()
+        .iter()
+        .find(|package| package.path().ok() == Some("claim"))
+        .ok_or_else(|| "doomsday reverse has no claim package".to_owned())?;
+    if package.mode().map_err(|error| error.to_string())? != "wallet_sign" {
+        return Err("doomsday reverse claim changed from wallet_sign".to_owned());
+    }
+    session.set_authorized_verifier(authorized)?;
+    session.publish_requester_status("requester_invoice_verified", Map::new())?;
+    let payment_task = spawn_reverse_payment_once(
+        runtime,
+        &environment.peer_cln,
+        case.journey_name(),
+        invoice.clone(),
+        payment_hash.clone(),
+    )?;
+    session.record_funding_effect(payment_hash.clone(), sha256(payment_hash.as_bytes()))?;
+    session.publish_requester_status("lightning_payment_pending", Map::new())?;
+    wait_for_lightning_payment_attempt(runtime, &environment.peer_cln, &invoice, &payment_hash)?;
+    drop(payment_task);
+    session.persist_authorized_details(
+        "doomsday_prepared",
+        true,
+        json!({
+            "payment_hash":payment_hash,
+            "package_mode":"wallet_sign",
+            "requester_restores_before_direct_recovery":true,
+        }),
+    )?;
+    preimage.fill(0);
+    Ok(json!({
+        "schema":"openagents.immortal.doomsday-prepared.v1",
+        "case_id":"doomsday-reverse-coordinator-gone",
+        "provider_pubkey":provider_pubkey,
+        "order_id":session.order.id,
+        "payment_hash":payment_hash,
+        "package_mode":"wallet_sign",
+        "requester_process_exit":true,
+    }))
+}
+
+fn recover_doomsday_reverse(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    mut restored: DoomsdayRestoredSession,
+    case: DoomsdayCase,
+) -> Result<Value, String> {
+    let mut direct_rounds = 0_u32;
+    direct_recovery_exchange(&mut restored)?;
+    direct_rounds += 1;
+    wait_for_direct_provider_state(&mut restored, "lightning_htlcs_held", &mut direct_rounds)?;
+    wait_for_direct_provider_state(
+        &mut restored,
+        "provider_lock_terms_ready",
+        &mut direct_rounds,
+    )?;
+    doomsday_requester_status(&mut restored, "requester_lock_verified", Map::new())?;
+    direct_recovery_exchange(&mut restored)?;
+    direct_rounds += 1;
+    let funding_status = wait_for_direct_provider_state(
+        &mut restored,
+        "provider_funding_broadcast",
+        &mut direct_rounds,
+    )?;
+    let (funding_transaction_id, funding_output_index) = status_outpoint(&funding_status)?;
+    mine_blocks(
+        runtime,
+        &environment.bitcoind,
+        1,
+        "doomsday-reverse-funding",
+    )?;
+    wait_for_direct_provider_state(&mut restored, "funding_final", &mut direct_rounds)?;
+    let preimage = load_funded_secret(&restored.paths, case.journey_name())?;
+    let payment_hash = lower_hex(&sha256(&preimage));
+    let invoice = match restored
+        .authorized
+        .funding_request()
+        .map_err(|error| format!("doomsday reverse funding request is invalid: {error}"))?
+        .action
+        .clone()
+    {
+        FundingAction::PayLightningInvoice { invoice, .. } => invoice,
+        _ => return Err("doomsday reverse restored another funding action".to_owned()),
+    };
+    let payment = wait_for_lightning_payment_attempt(
+        runtime,
+        &environment.peer_cln,
+        &invoice,
+        &payment_hash,
+    )?;
+    if payment.status != "pending" {
+        return Err("doomsday reverse payment was not held before claim".to_owned());
+    }
+    let current_height = chain_height(runtime, &environment.bitcoind, "doomsday-reverse-height")?;
+    let claim_path = WalletPath::new(2, false, 1)
+        .map_err(|error| format!("doomsday reverse claim path is invalid: {error}"))?;
+    let destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 1)
+                .map_err(|error| format!("doomsday reverse destination is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not restore reverse destination: {error}"))?;
+    let bitcoin = bitcoin_terms(&restored.contract, "destination")?;
+    let destination_value_sat = bitcoin
+        .amount_sat
+        .checked_sub(bitcoin.miner_fee_budget_sat)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "doomsday reverse fee consumes the output".to_owned())?;
+    let claim = SettlementBridge::new(&environment.wallet)
+        .claim(
+            &SettlementTemplate {
+                wallet_path: claim_path,
+                previous_txid_wire: display_txid_wire(&funding_transaction_id)?,
+                previous_output: funding_output_index,
+                prevout_value_sat: bitcoin.amount_sat,
+                prevout_script_pubkey: bitcoin.script_pubkey,
+                destination_value_sat,
+                destination_script_pubkey: destination.script_pubkey.to_vec(),
+                transaction_version: 2,
+                input_sequence: 0xffff_fffe,
+                lock_time: 0,
+                taproot_script: bitcoin.claim_script,
+                taproot_control_block: bitcoin.claim_control_block,
+                maximum_fee_sat: bitcoin.miner_fee_budget_sat,
+                maximum_fee_rate_sat_per_vbyte: 10_000,
+                maximum_weight: 1_600,
+                dust_relay_fee_sat_per_kilobyte: 3_000,
+            },
+            ClaimPreimage::new(preimage),
+        )
+        .map_err(|error| format!("could not construct doomsday reverse claim: {error}"))?;
+    doomsday_requester_status(&mut restored, "requester_claim_pending", Map::new())?;
+    direct_recovery_exchange(&mut restored)?;
+    direct_rounds += 1;
+    let observed = restored
+        .authorized
+        .clone()
+        .observe_reverse_payment_with(|request| {
+            Ok(LocalLightningProgress {
+                invoice_sha256: request.invoice_sha256.clone(),
+                payment_hash: request.payment_hash.clone(),
+                observed_at: unix_now()?,
+                view_sha256: lower_hex(&sha256(payment_hash.as_bytes())),
+                state: LightningProgressState::HtlcsHeld,
+            })
+        })
+        .map_err(|error| format!("doomsday reverse observation failed: {error}"))?;
+    let recovery = observed
+        .recovery_action_with(|request| {
+            Ok(LocalRecoveryObservation {
+                session_id: request.session_id.clone(),
+                order_id: request.order_id.clone(),
+                binding_sha256: request.binding_sha256.clone(),
+                current_height,
+                source_funding_confirmation_height: None,
+                counterparty_available: true,
+                completed: false,
+                record_loss: false,
+                rail_state_unknown: false,
+                lightning_state: Some(LightningRecoveryState::Pending),
+                chain_state: Some(ChainRecoveryState::DestinationClaimable),
+            })
+        })
+        .map_err(|error| format!("doomsday reverse planner rejected local rails: {error}"))?;
+    let expected_effect_id = match recovery {
+        RecoveryAction::RequestWalletClaim { effect_id } => effect_id,
+        _ => return Err("doomsday reverse planner did not authorize the claim".to_owned()),
+    };
+    let raw_claim = lower_hex(claim.broadcast_bytes());
+    let claim_transaction_id = lower_hex(&claim.transaction_id());
+    let mut signing_request = None;
+    let signed = observed
+        .sign_exit_with(0, |request| {
+            signing_request = Some(request.clone());
+            Ok(claim.broadcast_bytes().to_vec())
+        })
+        .map_err(|error| format!("doomsday reverse claim signing failed: {error}"))?;
+    let ExitSigningOutcome::Signed(signed) = signed else {
+        return Err("doomsday reverse claim reused another effect".to_owned());
+    };
+    if signed.effect_id != expected_effect_id || signed.transaction != raw_claim {
+        return Err("doomsday reverse signed another claim".to_owned());
+    }
+    let mut observed = observed;
+    observed
+        .record_external_effect(
+            &ExternalEffectRequest::WalletSigning(
+                signing_request
+                    .ok_or_else(|| "doomsday wallet signer was not called".to_owned())?,
+            ),
+            claim_transaction_id.clone(),
+            lower_hex(&sha256(claim.broadcast_bytes())),
+        )
+        .map_err(|error| format!("could not record doomsday reverse claim: {error}"))?;
+    let claim_snapshot = observed
+        .persist()
+        .map_err(|error| format!("could not persist doomsday reverse claim: {error}"))?;
+    store_funded_snapshot(&restored.paths, &restored.journey_name, &claim_snapshot)?;
+    restored.authorized = SwapSession::<AwaitingVerification>::restore(&claim_snapshot)
+        .and_then(SwapSession::resume_funding_authorized)
+        .map_err(|error| format!("could not resume recorded doomsday claim: {error}"))?;
+    broadcast_bitcoin_once(
+        runtime,
+        &environment.bitcoind,
+        "doomsday-reverse-claim",
+        &raw_claim,
+        &claim_transaction_id,
+    )?;
+    let mut claim_extra = Map::new();
+    claim_extra.insert(
+        "transaction_id".to_owned(),
+        Value::String(claim_transaction_id.clone()),
+    );
+    doomsday_requester_status(&mut restored, "requester_claimed", claim_extra)?;
+    direct_recovery_exchange(&mut restored)?;
+    direct_rounds += 1;
+    mine_blocks(
+        runtime,
+        &environment.bitcoind,
+        environment.terminal_confirmations,
+        "doomsday-reverse-claim",
+    )?;
+    wait_for_direct_provider_state(
+        &mut restored,
+        "lightning_settlement_pending",
+        &mut direct_rounds,
+    )?;
+    wait_for_direct_provider_state(&mut restored, "lightning_paid", &mut direct_rounds)?;
+    wait_for_direct_provider_state(&mut restored, "completed", &mut direct_rounds)?;
+    let terminal_payment = wait_for_lightning_payment_terminal(
+        runtime,
+        &environment.peer_cln,
+        &invoice,
+        &payment_hash,
+    )?;
+    if terminal_payment.status != "complete" {
+        return Err("doomsday reverse Lightning payment did not complete".to_owned());
+    }
+    let unspent = runtime
+        .block_on(environment.bitcoind.transaction_output(
+            &rpc_id("doomsday-reverse-outpoint")?,
+            &funding_transaction_id,
+            funding_output_index,
+            true,
+        ))
+        .map_err(|error| format!("could not inspect doomsday reverse outpoint: {error}"))?;
+    if unspent.is_some() {
+        return Err("doomsday reverse funding outpoint remains unspent".to_owned());
+    }
+    wait_for_direct_provider_close(&mut restored, &mut direct_rounds)?;
+    ingest_doomsday_direct_close(
+        runtime,
+        environment,
+        &mut restored,
+        "completed",
+        &claim_transaction_id,
+        &invoice,
+        &payment_hash,
+    )?;
+    remove_funded_secret(&restored.paths, case.journey_name())?;
+    Ok(json!({
+        "proof_class":"authenticated_direct_reverse_recovery",
+        "provider_pubkey":restored.provider_pubkey,
+        "order_id":restored.order.id,
+        "funding_transaction_id":funding_transaction_id,
+        "funding_output_index":funding_output_index,
+        "claim_transaction_id":claim_transaction_id,
+        "payment_hash":payment_hash,
+        "outcome":"completed",
+        "controller_audit":restored.controller_audit,
+        "checks":{
+            "fresh_requester_process_restored_before_relay":true,
+            "relay_connections_after_restore":0,
+            "relay_processes_absent":true,
+            "provider_http_websocket_api_absent":true,
+            "direct_channel_nip59_only":true,
+            "direct_channel_post_contract_only":true,
+            "exact_durable_rfq_replayed":true,
+            "direct_channel_opened_rfq_or_new_session":false,
+            "direct_rounds":direct_rounds,
+            "reverse_package_mode":"wallet_sign",
+            "verified_local_chain_observation":true,
+            "verified_local_lightning_observation":true,
+            "exact_outpoint_spent":true,
+            "transaction_confirmed":true,
+            "lightning_paid":true,
+        }
+    }))
+}
+
+fn direct_recovery_exchange(restored: &mut DoomsdayRestoredSession) -> Result<usize, String> {
+    let endpoint = required_environment("IMMORTAL_LAB_DOOMSDAY_DIRECT_RECOVERY")?
+        .parse::<SocketAddr>()
+        .map_err(|_| "doomsday direct recovery endpoint is invalid".to_owned())?;
+    if !endpoint.ip().is_loopback() {
+        return Err("doomsday direct recovery endpoint must be loopback".to_owned());
+    }
+    let mut wraps = Vec::new();
+    for record in restored
+        .authorized
+        .signed_records()
+        .iter()
+        .filter(|record| {
+            record.pubkey == restored.requester.pubkey()
+                && matches!(
+                    record.kind,
+                    immortal_core::domain::MKT_RFQ_KIND
+                        | MKT_SWP_SWAP_CONTRACT_KIND
+                        | MKT_STATUS_KIND
+                )
+        })
+    {
+        let raw = serde_json::to_vec(record)
+            .map_err(|error| format!("could not encode direct recovery record: {error}"))?;
+        let wrap = wrap_mkt_record(
+            &raw,
+            &restored.requester,
+            &restored.provider_pubkey,
+            random_wrap_material()?,
+        )?;
+        if wrap.event.kind != 1_059
+            || !wrap
+                .event
+                .tag_values("p")
+                .eq([restored.provider_pubkey.as_str()])
+        {
+            return Err("direct recovery produced a bare or misaddressed record".to_owned());
+        }
+        wraps.push(wrap.event);
+    }
+    if wraps.is_empty() || wraps.len() > 32 {
+        return Err("direct recovery request is empty or exceeds its wrap bound".to_owned());
+    }
+    let request = serde_json::to_vec(&json!({
+        "schema":"openagents.immortal.provider-direct-recovery-request.v1",
+        "wraps":wraps,
+    }))
+    .map_err(|error| format!("could not encode direct recovery request: {error}"))?;
+    if request.len() > 2 * 1_024 * 1_024 {
+        return Err("direct recovery request exceeds its byte bound".to_owned());
+    }
+    let mut stream = TcpStream::connect_timeout(&endpoint, IO_TIMEOUT)
+        .map_err(|error| format!("could not connect to direct recovery: {error}"))?;
+    stream
+        .set_read_timeout(Some(IO_TIMEOUT))
+        .and_then(|()| stream.set_write_timeout(Some(IO_TIMEOUT)))
+        .map_err(|error| format!("could not bound direct recovery socket: {error}"))?;
+    let length = u32::try_from(request.len())
+        .map_err(|_| "direct recovery request length exceeds u32".to_owned())?;
+    stream
+        .write_all(&length.to_be_bytes())
+        .and_then(|()| stream.write_all(&request))
+        .and_then(|()| stream.flush())
+        .map_err(|error| format!("could not write direct recovery request: {error}"))?;
+    let mut response_length = [0_u8; 4];
+    stream
+        .read_exact(&mut response_length)
+        .map_err(|error| format!("could not read direct recovery response length: {error}"))?;
+    let response_length = usize::try_from(u32::from_be_bytes(response_length))
+        .map_err(|_| "direct recovery response length is unsupported".to_owned())?;
+    if response_length == 0 || response_length > DOOMSDAY_DIRECT_RECOVERY_MAX_BYTES {
+        return Err("direct recovery response is empty or exceeds its bound".to_owned());
+    }
+    let mut response = vec![0_u8; response_length];
+    stream
+        .read_exact(&mut response)
+        .map_err(|error| format!("could not read direct recovery response: {error}"))?;
+    let text = std::str::from_utf8(&response)
+        .map_err(|_| "direct recovery response is not UTF-8".to_owned())?;
+    let value = parse_unique_json(text, "doomsday direct recovery response")?;
+    let object = value
+        .as_object()
+        .filter(|object| {
+            object.len() == 2 && object.contains_key("schema") && object.contains_key("wraps")
+        })
+        .ok_or_else(|| "direct recovery response has unknown or missing members".to_owned())?;
+    if object.get("schema").and_then(Value::as_str)
+        != Some("openagents.immortal.provider-direct-recovery-response.v1")
+    {
+        return Err("direct recovery response schema is unsupported".to_owned());
+    }
+    let wraps = object
+        .get("wraps")
+        .and_then(Value::as_array)
+        .filter(|wraps| wraps.len() <= 512)
+        .ok_or_else(|| "direct recovery response wraps exceed their bound".to_owned())?;
+    let mut accepted = 0_usize;
+    for wrap in wraps {
+        let raw_wrap = serde_json::to_vec(wrap)
+            .map_err(|error| format!("could not encode direct response wrap: {error}"))?;
+        let outer: Event = serde_json::from_value(wrap.clone())
+            .map_err(|error| format!("direct response wrap is invalid: {error}"))?;
+        if outer.kind != 1_059 || !outer.tag_values("p").eq([restored.requester.pubkey()]) {
+            return Err("direct recovery returned a bare or misaddressed record".to_owned());
+        }
+        let delivered = unwrap_mkt_record_raw(&raw_wrap, &restored.requester, &swp_profiles())?;
+        let record = delivered.record().event().clone();
+        if record.pubkey != restored.provider_pubkey {
+            return Err("direct recovery returned a non-provider record".to_owned());
+        }
+        if record.kind == MKT_CLOSE_KIND {
+            match restored.pending_provider_close.as_ref() {
+                Some(existing) if existing != &record => {
+                    return Err("direct recovery returned conflicting provider Closes".to_owned());
+                }
+                Some(_) => {}
+                None => restored.pending_provider_close = Some(record),
+            }
+            continue;
+        }
+        if restored
+            .authorized
+            .ingest_signed_record(record)
+            .map_err(|error| format!("direct recovery record was rejected: {error}"))?
+        {
+            accepted = accepted.saturating_add(1);
+        }
+    }
+    let snapshot = restored
+        .authorized
+        .persist()
+        .map_err(|error| format!("could not persist direct recovery records: {error}"))?;
+    store_funded_snapshot(&restored.paths, &restored.journey_name, &snapshot)?;
+    Ok(accepted)
+}
+
+fn wait_for_direct_provider_close(
+    restored: &mut DoomsdayRestoredSession,
+    direct_rounds: &mut u32,
+) -> Result<(), String> {
+    let started = Instant::now();
+    while restored.pending_provider_close.is_none() {
+        if started.elapsed() >= DOOMSDAY_DIRECT_RECOVERY_TIMEOUT {
+            return Err("timed out waiting for provider Close through direct recovery".to_owned());
+        }
+        thread::sleep(Duration::from_millis(250));
+        direct_recovery_exchange(restored)?;
+        *direct_rounds = direct_rounds.saturating_add(1);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ingest_doomsday_direct_close(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    restored: &mut DoomsdayRestoredSession,
+    expected_outcome: &str,
+    bitcoin_settlement_transaction_id: &str,
+    invoice: &str,
+    payment_hash: &str,
+) -> Result<(), String> {
+    let close = restored
+        .pending_provider_close
+        .take()
+        .ok_or_else(|| "direct recovery has no provider Close".to_owned())?;
+    if close.pubkey != restored.provider_pubkey
+        || !close
+            .tag_values("outcome")
+            .eq(std::iter::once(expected_outcome))
+    {
+        return Err("direct recovery returned another provider Close".to_owned());
+    }
+    let check = TerminalRailCheck {
+        runtime,
+        environment,
+        bitcoin_settlement_txid: bitcoin_settlement_transaction_id,
+        lightning: LightningTerminalCheck::OutgoingPayment {
+            invoice,
+            payment_hash,
+            expected_status: "complete",
+        },
+    };
+    for leg_id in contract_leg_ids(&restored.contract)? {
+        let verified = restored
+            .authorized
+            .verify_terminal_rail_evidence_with(&leg_id, expected_outcome, |request| {
+                local_terminal_rail_evidence(&close, request, &check, &restored.contract)
+            })
+            .map_err(|error| {
+                format!("local {leg_id} terminal evidence rejected before direct Close: {error}")
+            })?;
+        restored
+            .authorized
+            .record_verified_rail_evidence(verified)
+            .map_err(|error| {
+                format!("could not persist direct {leg_id} terminal evidence: {error}")
+            })?;
+    }
+    restored
+        .authorized
+        .ingest_signed_record(close)
+        .map_err(|error| format!("direct provider Close was rejected: {error}"))?;
+    let snapshot = restored
+        .authorized
+        .persist()
+        .map_err(|error| format!("could not persist direct provider Close: {error}"))?;
+    store_funded_snapshot(&restored.paths, &restored.journey_name, &snapshot)
+}
+
+fn doomsday_requester_status(
+    restored: &mut DoomsdayRestoredSession,
+    state: &str,
+    extra: Map<String, Value>,
+) -> Result<Event, String> {
+    let (sequence, previous) = match restored.requester_status.as_ref() {
+        Some((sequence, previous)) => (
+            sequence
+                .checked_add(1)
+                .ok_or_else(|| "doomsday requester Status sequence overflowed".to_owned())?,
+            Some(previous.as_str()),
+        ),
+        None => (0, None),
+    };
+    let (event, _) = sign_request(
+        restored
+            .factory
+            .status(
+                ParticipantRole::Requester,
+                next_created_at_records(restored.authorized.signed_records())?,
+                &digest(&format!(
+                    "doomsday-requester-status:{state}:{}",
+                    restored.authorized.config().session_id
+                )),
+                &restored.order.id,
+                StatusState {
+                    sequence,
+                    previous,
+                    base_state: base_state(state)?,
+                    swp_state: state,
+                },
+                extra,
+            )
+            .map_err(|error| format!("could not build doomsday requester Status: {error}"))?,
+        &restored.requester,
+    )?;
+    restored
+        .authorized
+        .ingest_signed_record(event.clone())
+        .map_err(|error| format!("doomsday requester Status was rejected: {error}"))?;
+    restored.requester_status = Some((sequence, event.id.clone()));
+    let snapshot = restored
+        .authorized
+        .persist()
+        .map_err(|error| format!("could not persist doomsday requester Status: {error}"))?;
+    store_funded_snapshot(&restored.paths, &restored.journey_name, &snapshot)?;
+    Ok(event)
+}
+
+fn provider_state(records: &[Event], provider_pubkey: &str, expected: &str) -> Option<Event> {
+    records.iter().find_map(|event| {
+        if event.kind == MKT_STATUS_KIND
+            && event.pubkey == provider_pubkey
+            && record_profile(event)
+                .ok()
+                .and_then(|profile| profile.get("swp_state").cloned())
+                .and_then(|state| state.as_str().map(str::to_owned))
+                .as_deref()
+                == Some(expected)
+        {
+            Some(event.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn wait_for_direct_provider_state(
+    restored: &mut DoomsdayRestoredSession,
+    expected: &str,
+    direct_rounds: &mut u32,
+) -> Result<Event, String> {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = provider_state(
+            restored.authorized.signed_records(),
+            &restored.provider_pubkey,
+            expected,
+        ) {
+            return Ok(status);
+        }
+        if started.elapsed() >= DOOMSDAY_DIRECT_RECOVERY_TIMEOUT {
+            return Err(format!(
+                "timed out waiting for provider {expected} through direct recovery"
+            ));
+        }
+        thread::sleep(Duration::from_millis(500));
+        direct_recovery_exchange(restored)?;
+        *direct_rounds = direct_rounds.saturating_add(1);
+    }
+}
+
+fn wait_for_lightning_payment_attempt(
+    runtime: &Runtime,
+    cln: &ClnClient,
+    invoice: &str,
+    payment_hash: &str,
+) -> Result<PaymentResult, String> {
+    wait_for_lightning_payment_status(runtime, cln, invoice, payment_hash, false)
+}
+
+fn wait_for_lightning_payment_terminal(
+    runtime: &Runtime,
+    cln: &ClnClient,
+    invoice: &str,
+    payment_hash: &str,
+) -> Result<PaymentResult, String> {
+    wait_for_lightning_payment_status(runtime, cln, invoice, payment_hash, true)
+}
+
+fn wait_for_lightning_payment_status(
+    runtime: &Runtime,
+    cln: &ClnClient,
+    invoice: &str,
+    payment_hash: &str,
+    terminal: bool,
+) -> Result<PaymentResult, String> {
+    let started = Instant::now();
+    loop {
+        let response = runtime
+            .block_on(cln.list_pays(
+                &cln_id(if terminal {
+                    "doomsday-payment-terminal"
+                } else {
+                    "doomsday-payment-attempt"
+                })?,
+                Some(invoice),
+            ))
+            .map_err(|error| format!("could not inspect doomsday payment: {error}"))?;
+        let matching = response
+            .get("pays")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry.get("payment_hash").and_then(Value::as_str) == Some(payment_hash))
+            .collect::<Vec<_>>();
+        if matching.len() > 1 {
+            return Err("doomsday payment has multiple matching attempts".to_owned());
+        }
+        if let Some(entry) = matching.first() {
+            let result = parse_payment_result(entry)?;
+            if !terminal || matches!(result.status.as_str(), "complete" | "failed") {
+                return Ok(result);
+            }
+        }
+        if started.elapsed() >= DOOMSDAY_DIRECT_RECOVERY_TIMEOUT {
+            return Err("timed out observing doomsday Lightning payment".to_owned());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
+pub fn run_doomsday_keyless_executor() -> Result<Value, String> {
+    reject_keyless_process_credentials()?;
+    let request_path = PathBuf::from(required_environment("IMMORTAL_LAB_KEYLESS_REQUEST_FILE")?);
+    let result_path = PathBuf::from(required_environment("IMMORTAL_LAB_KEYLESS_RESULT_FILE")?);
+    if result_path.exists() {
+        return Err("keyless result already exists".to_owned());
+    }
+    let (request, transaction_id) = load_doomsday_keyless_request(&request_path)?;
+    let response_transaction_id = execute_keyless_http_request(&request)?;
+    if response_transaction_id != transaction_id {
+        return Err("Esplora response returned another transaction ID".to_owned());
+    }
+    let request_sha256 =
+        lower_hex(&sha256(&serde_json::to_vec(&request).map_err(|error| {
+            format!("could not serialize exact keyless request: {error}")
+        })?));
+    let result = json!({
+        "schema":DOOMSDAY_KEYLESS_RESULT_SCHEMA,
+        "effect_id":request.effect_id,
+        "transaction_id":transaction_id,
+        "request_sha256":request_sha256,
+        "broadcast_accepted":true,
+    });
+    store_bounded_private_json(&result_path, &result, DOOMSDAY_KEYLESS_MAX_BYTES)?;
+    Ok(result)
+}
+
+fn reject_keyless_process_credentials() -> Result<(), String> {
+    const FORBIDDEN: [&str; 10] = [
+        "PASSWORD",
+        "MACAROON",
+        "PREIMAGE",
+        "PRIVATE_KEY",
+        "REFUND_KEY",
+        "CLAIM_KEY",
+        "SEED",
+        "RPC_USER",
+        "RPC_PASSWORD",
+        "IDENTITY_SECRET",
+    ];
+    for (name, _) in std::env::vars_os() {
+        let name = name
+            .to_str()
+            .ok_or_else(|| "keyless process environment name is not Unicode".to_owned())?;
+        if FORBIDDEN.iter().any(|forbidden| name.contains(forbidden)) || name.contains("WALLET") {
+            return Err(format!(
+                "keyless process environment contains forbidden credential-shaped variable {name}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_doomsday_keyless_http_request(
+    request: &EsploraBroadcastRequest,
+    transaction_id: &str,
+) -> Result<(), String> {
+    if request.method != "POST"
+        || request.content_type != "text/plain"
+        || request.effect_id.len() != 64
+    {
+        return Err("keyless request method, content type, or effect ID is invalid".to_owned());
+    }
+    require_lower_hex_32(&request.effect_id, "keyless effect ID")?;
+    if request.body.is_empty()
+        || request.body.len() > DOOMSDAY_KEYLESS_MAX_BYTES
+        || request.body.len() % 2 != 0
+        || !request
+            .body
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("keyless request body is not bounded lowercase transaction hex".to_owned());
+    }
+    let transaction = Transaction::parse(&decode_hex(&request.body)?)
+        .map_err(|error| format!("keyless request body is not a transaction: {error}"))?;
+    let derived = lower_hex(
+        &transaction
+            .txid()
+            .map_err(|error| format!("could not derive keyless transaction ID: {error}"))?,
+    );
+    if derived != transaction_id {
+        return Err("keyless request transaction ID is non-canonical".to_owned());
+    }
+    let (authority, path) = parse_loopback_http_url(&request.url)?;
+    if path != "/api/tx" || !authority.starts_with("127.0.0.1:") {
+        return Err("keyless request URL is not the configured loopback Esplora path".to_owned());
+    }
+    Ok(())
+}
+
+fn execute_keyless_http_request(request: &EsploraBroadcastRequest) -> Result<String, String> {
+    let (authority, path) = parse_loopback_http_url(&request.url)?;
+    let address = resolve_one_private(&authority)?;
+    let mut stream = TcpStream::connect_timeout(&address, IO_TIMEOUT)
+        .map_err(|error| format!("could not connect to keyless Esplora endpoint: {error}"))?;
+    stream
+        .set_read_timeout(Some(IO_TIMEOUT))
+        .and_then(|()| stream.set_write_timeout(Some(IO_TIMEOUT)))
+        .map_err(|error| format!("could not bound keyless HTTP socket: {error}"))?;
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        request.body.len()
+    );
+    stream
+        .write_all(head.as_bytes())
+        .and_then(|()| stream.write_all(request.body.as_bytes()))
+        .and_then(|()| stream.flush())
+        .map_err(|error| format!("could not write keyless HTTP request: {error}"))?;
+    let mut response = Vec::new();
+    stream
+        .take(8 * 1_024 + 1)
+        .read_to_end(&mut response)
+        .map_err(|error| format!("could not read keyless HTTP response: {error}"))?;
+    if response.len() > 8 * 1_024 {
+        return Err("keyless HTTP response exceeds its bound".to_owned());
+    }
+    let response = std::str::from_utf8(&response)
+        .map_err(|_| "keyless HTTP response is not UTF-8".to_owned())?;
+    let (head, body) = response
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "keyless HTTP response has no header boundary".to_owned())?;
+    if !head.starts_with("HTTP/1.1 200 ") {
+        return Err("keyless Esplora endpoint refused the transaction".to_owned());
+    }
+    let transaction_id = body.trim();
+    require_lower_hex_32(transaction_id, "keyless response transaction ID")?;
+    Ok(transaction_id.to_owned())
+}
+
+fn parse_loopback_http_url(url: &str) -> Result<(String, String), String> {
+    if url.len() > 2_048 || !url.starts_with("http://127.0.0.1:") {
+        return Err("keyless HTTP endpoint must be bounded loopback plaintext".to_owned());
+    }
+    let remainder = &url[7..];
+    let (authority, path) = remainder
+        .split_once('/')
+        .map(|(authority, path)| (authority, format!("/{path}")))
+        .ok_or_else(|| "keyless HTTP endpoint has no path".to_owned())?;
+    if authority.contains('@')
+        || path
+            .bytes()
+            .any(|byte| matches!(byte, b'?' | b'#') || byte.is_ascii_control())
+    {
+        return Err("keyless HTTP endpoint contains forbidden URL syntax".to_owned());
+    }
+    let port = authority
+        .strip_prefix("127.0.0.1:")
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port > 0)
+        .ok_or_else(|| "keyless HTTP endpoint has an invalid port".to_owned())?;
+    Ok((format!("127.0.0.1:{port}"), path))
+}
+
+fn resolve_one_private(authority: &str) -> Result<SocketAddr, String> {
+    authority
+        .to_socket_addrs()
+        .map_err(|error| format!("could not resolve keyless endpoint: {error}"))?
+        .find(|address| address.ip().is_loopback())
+        .ok_or_else(|| "keyless endpoint did not resolve to loopback".to_owned())
+}
+
+fn read_bounded_unique_json(path: &Path, maximum_bytes: usize) -> Result<Value, String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
+    if metadata.len() == 0 || metadata.len() > maximum_bytes as u64 {
+        return Err(format!("{} is empty or exceeds its bound", path.display()));
+    }
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    let text =
+        std::str::from_utf8(&bytes).map_err(|_| format!("{} is not UTF-8", path.display()))?;
+    parse_unique_json(text, "doomsday keyless document")
+}
+
+fn store_bounded_private_json(
+    path: &Path,
+    value: &Value,
+    maximum_bytes: usize,
+) -> Result<(), String> {
+    provider_support::reject_custody_material(value)
+        .map_err(|error| format!("refusing custody-bearing keyless document: {error}"))?;
+    let mut bytes = serde_json::to_vec(value)
+        .map_err(|error| format!("could not serialize {}: {error}", path.display()))?;
+    bytes.push(b'\n');
+    if bytes.is_empty() || bytes.len() > maximum_bytes {
+        return Err(format!("{} exceeds its byte bound", path.display()));
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "keyless document path has no parent".to_owned())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    let temporary = path.with_extension("tmp");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .map_err(|error| format!("could not create {}: {error}", temporary.display()))?;
+    if let Err(error) = file
+        .write_all(&bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| std::fs::rename(&temporary, path))
+    {
+        if let Err(cleanup_error) = std::fs::remove_file(&temporary) {
+            return Err(format!(
+                "could not persist {}: {error}; temporary cleanup failed: {cleanup_error}",
+                path.display()
+            ));
+        }
+        return Err(format!("could not persist {}: {error}", path.display()));
+    }
+    Ok(())
 }
 
 fn run_funded_journey_with_environment(
@@ -1448,6 +3217,7 @@ pub fn run_boltz_adapter_session() -> Result<Value, String> {
             requester_key,
             requester_funding_input: Some(&client_input),
             exit_destination_script_pubkey: &exit_destination.script_pubkey,
+            presign_submarine_refund: false,
         },
     )?;
     let funding = pending
@@ -2058,6 +3828,7 @@ fn drive_submarine(
             requester_key,
             requester_funding_input: Some(&client_input),
             exit_destination_script_pubkey: &exit_destination.script_pubkey,
+            presign_submarine_refund: false,
         },
     )?;
     session.wait_provider_state("accepted")?;
@@ -2132,6 +3903,7 @@ fn drive_cooperative_submarine(
             requester_key,
             requester_funding_input: Some(&client_input),
             exit_destination_script_pubkey: &exit_destination.script_pubkey,
+            presign_submarine_refund: false,
         },
     )?;
     if session
@@ -2852,6 +4624,7 @@ fn drive_submarine_refund(
             requester_key,
             requester_funding_input: Some(&client_input),
             exit_destination_script_pubkey: &exit_destination.script_pubkey,
+            presign_submarine_refund: false,
         },
     )?;
     session.wait_provider_state("accepted")?;
@@ -3442,6 +5215,7 @@ fn drive_reverse(
             requester_key,
             requester_funding_input: None,
             exit_destination_script_pubkey: &destination.script_pubkey,
+            presign_submarine_refund: false,
         },
     )?;
     if environment.control.injection == Some(HarnessInjection::WrongClaimKey) {
@@ -4306,12 +6080,13 @@ fn prepare_order(
         _ => return Err("funded smoke requester funding input has the wrong shape".to_owned()),
     };
     let exit_package_seeds = bind_requester_exit_packages(
+        environment,
         &config,
         &mut contract,
         input.swap_type,
-        &order.id,
-        &quote.id,
+        (&order.id, &quote.id),
         input.exit_destination_script_pubkey,
+        input.presign_submarine_refund,
     )?;
     Ok(PendingSession {
         relay_url,
@@ -5409,13 +7184,15 @@ fn bind_requester_funding(
 }
 
 fn bind_requester_exit_packages(
+    environment: &SmokeEnvironment,
     config: &SwapClientConfig,
     contract: &mut Value,
     swap_type: &str,
-    order_id: &str,
-    quote_id: &str,
+    order_and_quote_ids: (&str, &str),
     destination_script_pubkey: &[u8],
+    presign_submarine_refund: bool,
 ) -> Result<Vec<ExitPackage>, String> {
+    let (order_id, quote_id) = order_and_quote_ids;
     let (leg_id, path, funding_role, funding_leg_id) = match swap_type {
         "submarine" => ("source", "refund", "chain_fund", "source"),
         "reverse" => ("destination", "claim", "invoice_pay", "lightning"),
@@ -5423,6 +7200,9 @@ fn bind_requester_exit_packages(
     };
     let cooperative = swap_type == "submarine"
         && contract.get("musig2_execution").and_then(Value::as_bool) == Some(true);
+    if presign_submarine_refund && swap_type != "submarine" {
+        return Err("only the submarine CLTV refund can be pre-signed".to_owned());
+    }
     {
         let root = contract
             .as_object_mut()
@@ -5438,7 +7218,7 @@ fn bind_requester_exit_packages(
             upsert_effect_binding(bindings, "chain_claim", "source");
         }
     }
-    let document = requester_exit_document(
+    let mut document = requester_exit_document(
         contract,
         order_id,
         quote_id,
@@ -5446,8 +7226,19 @@ fn bind_requester_exit_packages(
         path,
         destination_script_pubkey,
     )?;
+    if presign_submarine_refund {
+        presign_requester_submarine_refund(
+            environment,
+            contract,
+            &mut document,
+            destination_script_pubkey,
+        )?;
+    }
     let requester_package = ExitPackage::parse(document)
         .map_err(|error| format!("dynamic requester exit package is invalid: {error}"))?;
+    let requester_package_mode = requester_package
+        .mode()
+        .map_err(|error| format!("could not read requester exit mode: {error}"))?;
     let requester_package_sha256 = requester_package
         .commitment_sha256()
         .map_err(|error| format!("could not commit requester exit package: {error}"))?;
@@ -5478,7 +7269,7 @@ fn bind_requester_exit_packages(
         "requester",
         leg_id,
         path,
-        "wallet_sign",
+        requester_package_mode,
         &requester_package_sha256,
     );
     if let Some(provider_digest) = provider_package_sha256.as_deref() {
@@ -5527,6 +7318,70 @@ fn upsert_exit_commitment(
         "package_mode":package_mode,
         "package_sha256":package_sha256,
     }));
+}
+
+fn presign_requester_submarine_refund(
+    environment: &SmokeEnvironment,
+    contract: &Value,
+    document: &mut Value,
+    destination_script_pubkey: &[u8],
+) -> Result<(), String> {
+    let verifier = verifier_for_leg(contract, "source")?;
+    let funding_transaction = required_string(verifier, "funding_transaction")?;
+    let funding_txid = transaction_id(funding_transaction)?;
+    let output_index = verifier
+        .get("output_index")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "doomsday refund has no bounded funding output".to_owned())?;
+    let bitcoin = bitcoin_terms(contract, "source")?;
+    let destination_value_sat = bitcoin
+        .amount_sat
+        .checked_sub(bitcoin.miner_fee_budget_sat)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "doomsday refund fee consumes the funding output".to_owned())?;
+    let refund_path = WalletPath::new(2, false, 0)
+        .map_err(|error| format!("doomsday refund wallet path is invalid: {error}"))?;
+    let refund = SettlementBridge::new(&environment.wallet)
+        .refund(&SettlementTemplate {
+            wallet_path: refund_path,
+            previous_txid_wire: display_txid_wire(&funding_txid)?,
+            previous_output: output_index,
+            prevout_value_sat: bitcoin.amount_sat,
+            prevout_script_pubkey: bitcoin.script_pubkey,
+            destination_value_sat,
+            destination_script_pubkey: destination_script_pubkey.to_vec(),
+            transaction_version: 2,
+            input_sequence: 0xffff_fffe,
+            lock_time: bitcoin.refund_lock_height,
+            taproot_script: bitcoin.refund_script,
+            taproot_control_block: bitcoin.refund_control_block,
+            maximum_fee_sat: bitcoin.miner_fee_budget_sat,
+            maximum_fee_rate_sat_per_vbyte: 10_000,
+            maximum_weight: 1_600,
+            dust_relay_fee_sat_per_kilobyte: 3_000,
+        })
+        .map_err(|error| format!("could not pre-sign doomsday refund: {error}"))?;
+    let exit = document
+        .get_mut("exit")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "doomsday exit package has no mutable exit".to_owned())?;
+    exit.insert("mode".to_owned(), Value::String("presigned".to_owned()));
+    exit.insert(
+        "signed_transaction".to_owned(),
+        Value::String(lower_hex(refund.broadcast_bytes())),
+    );
+    exit.insert("signer_ref".to_owned(), Value::Null);
+    let esplora_url = required_environment("IMMORTAL_LAB_DOOMSDAY_ESPLORA_URL")?;
+    document["broadcast"] = json!({
+        "esplora_urls":[esplora_url],
+        "minimum_agreeing_sources":1
+    });
+    let package = ExitPackage::parse(document.clone())
+        .map_err(|error| format!("pre-signed doomsday refund package is invalid: {error}"))?;
+    KeylessEsploraExecutor::request(&package, &esplora_url)
+        .map_err(|error| format!("doomsday Esplora endpoint is invalid: {error}"))?;
+    Ok(())
 }
 
 fn requester_exit_document(
@@ -7665,5 +9520,142 @@ mod tests {
             "amount_sent_msat":"999msat"
         });
         assert!(parse_payment_result(&response).is_err());
+    }
+
+    #[test]
+    fn keyless_controller_audit_is_exact_and_custody_scanner_safe() {
+        let audit = json!({
+            "separate_container":true,
+            "application_environment_names":[
+                "IMMORTAL_LAB_KEYLESS_REQUEST_FILE",
+                "IMMORTAL_LAB_KEYLESS_RESULT_FILE"
+            ],
+            "mount_targets":["/keyless"],
+            "observed_environment_count":3,
+            "observed_mount_count":1,
+            "environment_allowlist_exact":true,
+            "mount_allowlist_exact":true,
+            "rail_access":false,
+            "runtime_environment_scan_passed":true,
+            "exact_presigned_request_only":true,
+        });
+        provider_support::reject_custody_material(&audit)
+            .expect("public keyless audit should be custody-scanner safe");
+        validate_doomsday_keyless_process_audit(
+            Some(&audit),
+            DoomsdayCase::KeylessEsploraBroadcast,
+        )
+        .expect("exact keyless process audit should pass");
+
+        let mut rail_access = audit.clone();
+        rail_access["rail_access"] = Value::Bool(true);
+        assert!(
+            validate_doomsday_keyless_process_audit(
+                Some(&rail_access),
+                DoomsdayCase::KeylessEsploraBroadcast,
+            )
+            .is_err()
+        );
+        let mut unknown = audit;
+        unknown["unknown"] = Value::Bool(true);
+        assert!(
+            validate_doomsday_keyless_process_audit(
+                Some(&unknown),
+                DoomsdayCase::KeylessEsploraBroadcast,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn keyless_request_is_closed_bounded_and_txid_bound() {
+        let raw = Transaction::new(
+            2,
+            vec![TransactionInput {
+                previous_txid: [1; 32],
+                previous_output: 0,
+                script_sig: Vec::new(),
+                sequence: 0xffff_fffe,
+                witness: vec![vec![2; 64]],
+            }],
+            vec![TransactionOutput {
+                value_sat: 10_000,
+                script_pubkey: vec![0x51],
+            }],
+            0,
+        )
+        .serialize(true)
+        .expect("test transaction should serialize");
+        let transaction = Transaction::parse(&raw).expect("test transaction should parse");
+        let transaction_id = lower_hex(&transaction.txid().expect("test txid should derive"));
+        let request = EsploraBroadcastRequest {
+            effect_id: "11".repeat(32),
+            method: "POST".to_owned(),
+            url: "http://127.0.0.1:3002/api/tx".to_owned(),
+            content_type: "text/plain".to_owned(),
+            body: lower_hex(&raw),
+        };
+        validate_doomsday_keyless_http_request(&request, &transaction_id)
+            .expect("exact keyless request should pass");
+
+        let mut wrong_id = transaction_id.clone();
+        wrong_id.replace_range(..2, "00");
+        assert!(validate_doomsday_keyless_http_request(&request, &wrong_id).is_err());
+        let mut oversized = request.clone();
+        oversized.body = "00".repeat(DOOMSDAY_KEYLESS_MAX_BYTES + 1);
+        assert!(validate_doomsday_keyless_http_request(&oversized, &transaction_id).is_err());
+        let mut wrong_path = request;
+        wrong_path.url = "http://127.0.0.1:3002/other/tx".to_owned();
+        assert!(validate_doomsday_keyless_http_request(&wrong_path, &transaction_id).is_err());
+    }
+
+    #[test]
+    fn keyless_file_rejects_duplicate_unknown_and_custody_members() {
+        let root =
+            std::env::temp_dir().join(format!("immortal-keyless-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("keyless test directory should be created");
+        let path = root.join("request.json");
+        let duplicate = format!(
+            r#"{{"schema":"{DOOMSDAY_KEYLESS_REQUEST_SCHEMA}","schema":"{DOOMSDAY_KEYLESS_REQUEST_SCHEMA}","transaction_id":"{}","request":{{}}}}"#,
+            "11".repeat(32)
+        );
+        std::fs::write(&path, duplicate).expect("duplicate fixture should be written");
+        assert!(load_doomsday_keyless_request(&path).is_err());
+
+        for extra in [json!({"unknown":true}), json!({"wallet_seed":"00"})] {
+            let mut value = json!({
+                "schema":DOOMSDAY_KEYLESS_REQUEST_SCHEMA,
+                "transaction_id":"11".repeat(32),
+                "request":{},
+            });
+            value
+                .as_object_mut()
+                .expect("request should be an object")
+                .extend(
+                    extra
+                        .as_object()
+                        .expect("extra should be an object")
+                        .clone(),
+                );
+            std::fs::write(&path, value.to_string()).expect("invalid fixture should be written");
+            assert!(load_doomsday_keyless_request(&path).is_err());
+        }
+        std::fs::remove_file(&path).expect("keyless test file should be removed");
+        std::fs::remove_dir(&root).expect("keyless test directory should be removed");
+    }
+
+    #[test]
+    fn keyless_acceptance_is_not_terminal_evidence() {
+        let result = json!({
+            "schema":DOOMSDAY_KEYLESS_RESULT_SCHEMA,
+            "effect_id":"11".repeat(32),
+            "transaction_id":"22".repeat(32),
+            "request_sha256":"33".repeat(32),
+            "broadcast_accepted":true,
+        });
+        let object = result.as_object().expect("result should be an object");
+        assert!(!object.contains_key("passed"));
+        assert!(!object.contains_key("outcome"));
+        assert!(!object.contains_key("terminal"));
     }
 }

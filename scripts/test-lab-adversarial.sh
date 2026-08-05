@@ -129,6 +129,7 @@ run_case() (
   local maximum_seconds case_deadline failure_reason record_path
   local external_injection external_checkpoint external_target cooperative_signing
   local wallet_driver_container_name
+  local -a doomsday_stopped_targets=()
   private_root="$(mktemp -d "${TMPDIR:-/tmp}/immortal-adversarial-case.XXXXXX")"
   project_name="immortal-18-$(printf '%s' "${case_id}" | cut -c1-24)-$(random_hex 5)"
   provider_image_ref="${project_name}-provider:local"
@@ -299,6 +300,154 @@ PY
       echo "test-lab-adversarial: ${case_id}: exceeded ${maximum_seconds}s runtime bound" >&2
       return 1
     fi
+  }
+
+  print_bounded_diagnostic() {
+    local label="$1" path="$2"
+    python3 - "${label}" "${path}" <<'PY' >&2
+import pathlib
+import re
+import sys
+
+label = sys.argv[1]
+path = pathlib.Path(sys.argv[2])
+encoded = path.read_bytes()[:4096] if path.exists() else b""
+text = encoded.decode("utf-8", errors="replace")
+if re.search(r"(?i)(claim.key|macaroon|password|preimage|private.key|refund.key|seed|secret)", text):
+    print(f"test-lab-adversarial: {label} diagnostic contained a custody term and was redacted")
+else:
+    text = re.sub(r"\b[0-9a-f]{64}\b", "<hex64>", text)
+    lines = text.splitlines()[:12]
+    if lines:
+        print(f"test-lab-adversarial: bounded {label} diagnostic:")
+        print("\n".join(lines))
+PY
+  }
+
+  write_doomsday_control_audit() {
+    local inspect_path="${1:-}"
+    python3 - "${private_root}/evidence/doomsday-control.json" "${case_id}" \
+      "${inspect_path}" <<'PY'
+import json
+import os
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+case_id = sys.argv[2]
+inspect_path = pathlib.Path(sys.argv[3]) if sys.argv[3] else None
+if case_id == "doomsday-reverse-coordinator-gone":
+    stopped_targets = ["provider-b", "relay-a", "relay-b"]
+    direct_recovery_retained = True
+elif case_id in {
+    "doomsday-submarine-provider-gone",
+    "doomsday-keyless-esplora-broadcast",
+}:
+    stopped_targets = ["provider-a", "provider-b", "relay-a", "relay-b"]
+    direct_recovery_retained = False
+else:
+    raise SystemExit("controller audit received another case")
+
+keyless = None
+if case_id == "doomsday-keyless-esplora-broadcast":
+    if inspect_path is None or inspect_path.stat().st_size > 65536:
+        raise SystemExit("keyless runtime inspection is absent or oversized")
+    inspected = json.loads(inspect_path.read_text(encoding="utf-8"))
+    if not isinstance(inspected, list) or len(inspected) != 1:
+        raise SystemExit("keyless runtime inspection has another shape")
+    container = inspected[0]
+    environment = container.get("Config", {}).get("Env", [])
+    mounts = container.get("Mounts", [])
+    if not isinstance(environment, list) or not isinstance(mounts, list):
+        raise SystemExit("keyless runtime environment or mounts are invalid")
+    environment_names = sorted(value.split("=", 1)[0] for value in environment)
+    application_names = [name for name in environment_names if name.startswith("IMMORTAL_")]
+    credential_terms = re.compile(
+        r"(?i)(password|macaroon|preimage|private.?key|refund.?key|claim.?key|seed|rpc.?user|identity.?secret|wallet)"
+    )
+    forbidden_environment_names = [
+        name for name in environment_names if credential_terms.search(name)
+    ]
+    mount_targets = sorted(
+        mount.get("Destination") for mount in mounts
+        if isinstance(mount, dict) and isinstance(mount.get("Destination"), str)
+    )
+    forbidden_mount_targets = [
+        target for target in mount_targets if credential_terms.search(target)
+    ]
+    expected_environment_names = sorted([
+        "IMMORTAL_LAB_KEYLESS_REQUEST_FILE",
+        "IMMORTAL_LAB_KEYLESS_RESULT_FILE",
+        "PATH",
+    ])
+    if (
+        environment_names != expected_environment_names
+        or mount_targets != ["/keyless"]
+        or forbidden_environment_names
+        or forbidden_mount_targets
+    ):
+        raise SystemExit("keyless runtime environment or mounts exceed their allowlist")
+    keyless = {
+        "separate_container": True,
+        "application_environment_names": application_names,
+        "mount_targets": mount_targets,
+        "observed_environment_count": len(environment_names),
+        "observed_mount_count": len(mount_targets),
+        "environment_allowlist_exact": True,
+        "mount_allowlist_exact": True,
+        "rail_access": False,
+        "runtime_environment_scan_passed": True,
+        "exact_presigned_request_only": True,
+    }
+
+record = {
+    "schema": "openagents.immortal.doomsday-controller-audit.v1",
+    "case_id": case_id,
+    "stopped_targets": stopped_targets,
+    "stopped_targets_absent_before_recovery": True,
+    "stopped_targets_absent_after_recovery": False,
+    "relay_services_absent": True,
+    "provider_http_websocket_api_absent": True,
+    "direct_recovery_retained": direct_recovery_retained,
+    "direct_recovery_only_session_surface": direct_recovery_retained,
+    "keyless_process": keyless,
+}
+encoded = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
+if len(encoded) > 8192:
+    raise SystemExit("doomsday controller audit exceeds its bound")
+descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "wb") as output:
+    output.write(encoded)
+    output.flush()
+    os.fsync(output.fileno())
+PY
+  }
+
+  mark_doomsday_services_absent_after_recovery() {
+    python3 - "${private_root}/evidence/doomsday-control.json" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if path.stat().st_size > 8192:
+    raise SystemExit("doomsday controller audit exceeds its bound")
+record = json.loads(path.read_text(encoding="utf-8"))
+if record.get("stopped_targets_absent_before_recovery") is not True:
+    raise SystemExit("doomsday controller audit lacks its pre-recovery check")
+record["stopped_targets_absent_after_recovery"] = True
+encoded = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
+temporary = path.with_name(path.name + ".tmp")
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "wb") as output:
+    output.write(encoded)
+    output.flush()
+    os.fsync(output.fileno())
+os.replace(temporary, path)
+os.chmod(path, 0o600)
+PY
   }
 
   wait_for() {
@@ -1053,6 +1202,7 @@ IMMORTAL_PROVIDER_BITCOIND_RPC_PASSWORD=${rpc_password}
 IMMORTAL_PROVIDER_CLN_RPC_PATH=${socket_path}
 IMMORTAL_PROVIDER_WALLET_SEED_FILE=${seed_path}
 IMMORTAL_PROVIDER_HEALTH_BIND=127.0.0.1:${health_port}
+IMMORTAL_PROVIDER_DIRECT_RECOVERY_BIND=127.0.0.1:$((health_port + 100))
 IMMORTAL_PROVIDER_ALERT_URL=http://127.0.0.1:19092/provider-alert
 IMMORTAL_PROVIDER_CHAIN_POLL_SECONDS=1
 IMMORTAL_PROVIDER_CHAIN_STALE_SECONDS=10
@@ -1075,6 +1225,11 @@ EOF
   write_provider_env "${private_root}/provider-b.env" b "${provider_b_password}" 18081 \
     "${provider_b_identity}" "${bitcoin_b_user}" "${bitcoin_b_password}" \
     /rail/cln-provider-b/lightning-rpc /run/immortal-private/provider-b-wallet-seed 9092
+
+  cat >"${private_root}/esplora.env" <<EOF
+IMMORTAL_ESPLORA_BITCOIND_RPC_USER=${bitcoin_a_user}
+IMMORTAL_ESPLORA_BITCOIND_RPC_PASSWORD=${bitcoin_a_password}
+EOF
 
   cat >"${private_root}/wallet-driver.env" <<EOF
 IMMORTAL_LAB_ADVERSARIAL_CASE_ID=${case_id}
@@ -1099,6 +1254,11 @@ IMMORTAL_PROVIDER_FUNDED_SMOKE_CLIENT_WALLET_SEED_FILE=/run/immortal-private/cli
 IMMORTAL_PROVIDER_FUNDED_SMOKE_EVIDENCE_FILE=/evidence/driver-evidence.json
 IMMORTAL_PROVIDER_FUNDED_SMOKE_TERMINAL_CONFIRMATIONS=3
 IMMORTAL_LAB_STATE_DIR=/state
+IMMORTAL_LAB_DOOMSDAY_DIRECT_RECOVERY=127.0.0.1:9191
+IMMORTAL_LAB_DOOMSDAY_ESPLORA_URL=http://127.0.0.1:3002/api
+IMMORTAL_LAB_DOOMSDAY_CONTROL_FILE=/evidence/doomsday-control.json
+IMMORTAL_LAB_KEYLESS_REQUEST_FILE=/evidence/doomsday-keyless-request.json
+IMMORTAL_LAB_KEYLESS_RESULT_FILE=/evidence/doomsday-keyless-result.json
 EOF
   if test -n "${external_injection}"; then
     cat >>"${private_root}/wallet-driver.env" <<EOF
@@ -1112,7 +1272,8 @@ EOF
   compose config --quiet
   current_phase=image-build
   compose build bitcoin-a bitcoin-b cln-provider-a cln-provider-b cln-wallet \
-    relay-a relay-b provider-a provider-b wallet-driver alert-sink-a alert-sink-b \
+    relay-a relay-b provider-a provider-b wallet-driver keyless-executor \
+    alert-sink-a alert-sink-b esplora-broadcast \
     provider-a-egress provider-b-egress wallet-gateway \
     >"${private_root}/build.log" 2>&1
 
@@ -1167,7 +1328,8 @@ EOF
   compose up --detach --no-deps provider-a-egress provider-b-egress \
     >>"${private_root}/startup.log" 2>&1
   compose up --detach wallet-gateway cln-provider-a cln-provider-b cln-wallet \
-    relay-a relay-b alert-sink-a alert-sink-b >>"${private_root}/startup.log" 2>&1
+    relay-a relay-b alert-sink-a alert-sink-b esplora-broadcast \
+    >>"${private_root}/startup.log" 2>&1
   for service in cln-provider-a cln-provider-b cln-wallet; do
     wait_for "${service}" cln_cli "${service}" getinfo
   done
@@ -1183,6 +1345,8 @@ EOF
     --fail --silent http://127.0.0.1:18080/health
   wait_for "relay B" compose run --rm --no-deps --entrypoint /usr/bin/curl provider-b \
     --fail --silent http://127.0.0.1:18081/health
+  wait_for "Esplora-compatible broadcaster" compose run --rm --no-deps \
+    --entrypoint /usr/bin/curl provider-a --fail --silent http://127.0.0.1:3002/healthz
 
   current_phase=rail-funding
   local service address chain_height
@@ -1339,7 +1503,7 @@ PY
   chain_height_final="$(bitcoin_cli a getblockcount)"
   chain_hash_final="$(bitcoin_cli a getbestblockhash)"
   running_count="$(docker ps --quiet --filter "label=com.docker.compose.project=${project_name}" | wc -l | tr -d ' ')"
-  test "${running_count}" = 18
+  test "${running_count}" = 19
   provider_image="$(docker inspect --format '{{.Image}}' "${provider_a_container}")"
 
   current_phase=infrastructure-evidence
@@ -1405,7 +1569,120 @@ PY
     failure_reason=case_runtime_exceeded
     exit 1
   fi
-  if test -n "${external_injection}"; then
+  if test "${group}" = doomsday; then
+    current_phase=doomsday-requester-prepare
+    if ! compose run --rm --no-deps wallet-driver doomsday-prepare \
+      >"${private_root}/evidence/doomsday-prepared.json" \
+      2>"${private_root}/doomsday-prepare-error.log"; then
+      failure_reason=doomsday_preparation_failed
+      print_bounded_diagnostic "doomsday prepare" \
+        "${private_root}/doomsday-prepare-error.log"
+      exit 1
+    fi
+    python3 - "${private_root}/evidence/doomsday-prepared.json" "${case_id}" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if path.stat().st_size > 8192:
+    raise SystemExit("doomsday preparation evidence exceeds its bound")
+value = json.loads(path.read_text(encoding="utf-8"))
+if (
+    value.get("schema") != "openagents.immortal.doomsday-prepared.v1"
+    or value.get("case_id") != sys.argv[2]
+    or value.get("requester_process_exit") is not True
+):
+    raise SystemExit("doomsday preparation did not bind the selected case")
+PY
+    current_phase=doomsday-permanent-removal
+    compose stop relay-a relay-b >/dev/null
+    if test "${case_id}" = doomsday-reverse-coordinator-gone; then
+      compose stop provider-b >/dev/null
+      doomsday_stopped_targets=(provider-b relay-a relay-b)
+    else
+      compose stop provider-a provider-b >/dev/null
+      doomsday_stopped_targets=(provider-a provider-b relay-a relay-b)
+    fi
+    for service in "${doomsday_stopped_targets[@]}"; do
+      if compose ps --services --status running | grep -Fx "${service}" >/dev/null; then
+        echo "test-lab-adversarial: ${case_id}: ${service} survived permanent removal" >&2
+        exit 1
+      fi
+    done
+    for provider_env in "${private_root}/provider-a.env" "${private_root}/provider-b.env"; do
+      if grep -F 'IMMORTAL_PROVIDER_BOLTZ_BIND=' "${provider_env}" >/dev/null; then
+        echo "test-lab-adversarial: ${case_id}: provider HTTP/WebSocket API was enabled" >&2
+        exit 1
+      fi
+    done
+    if test "${case_id}" = doomsday-keyless-esplora-broadcast; then
+      current_phase=doomsday-keyless-planner
+      if ! compose run --rm --no-deps wallet-driver doomsday-keyless-request \
+          >"${private_root}/evidence/doomsday-keyless-planner.json" \
+          2>"${private_root}/doomsday-keyless-planner-error.log"; then
+        failure_reason=doomsday_keyless_planner_failed
+        print_bounded_diagnostic "doomsday keyless planner" \
+          "${private_root}/doomsday-keyless-planner-error.log"
+        exit 1
+      fi
+      current_phase=doomsday-keyless-process
+      local keyless_container_id keyless_status keyless_wait_status
+      if ! keyless_container_id="$(compose run --no-deps \
+          --name "${project_name}-keyless-executor" -d keyless-executor \
+          2>"${private_root}/doomsday-keyless-process-error.log")"; then
+        failure_reason=doomsday_keyless_process_failed
+        print_bounded_diagnostic "doomsday keyless process" \
+          "${private_root}/doomsday-keyless-process-error.log"
+        exit 1
+      fi
+      docker inspect "${keyless_container_id}" \
+        >"${private_root}/keyless-container-inspect.json"
+      set +e
+      keyless_status="$(docker wait "${keyless_container_id}")"
+      keyless_wait_status=$?
+      set -e
+      docker logs "${keyless_container_id}" \
+        >"${private_root}/evidence/doomsday-keyless-process.json" \
+        2>>"${private_root}/doomsday-keyless-process-error.log"
+      docker rm "${keyless_container_id}" >/dev/null
+      if test "${keyless_wait_status}" -ne 0 || test "${keyless_status}" != 0; then
+        failure_reason=doomsday_keyless_process_failed
+        print_bounded_diagnostic "doomsday keyless process" \
+          "${private_root}/doomsday-keyless-process-error.log"
+        compose logs --no-color esplora-broadcast \
+          >"${private_root}/doomsday-esplora-error.log" 2>&1
+        print_bounded_diagnostic "doomsday Esplora adapter" \
+          "${private_root}/doomsday-esplora-error.log"
+        exit 1
+      fi
+      write_doomsday_control_audit "${private_root}/keyless-container-inspect.json"
+    else
+      write_doomsday_control_audit
+    fi
+    current_phase=doomsday-fresh-requester-recovery
+    remaining_seconds=$((case_deadline - $(date +%s)))
+    if test "${remaining_seconds}" -le 0; then
+      failure_reason=case_runtime_exceeded
+      exit 1
+    fi
+    set +e
+    IMMORTAL_ADVERSARIAL_PRIVATE_DIR="${private_root}" \
+      IMMORTAL_ADVERSARIAL_PROVIDER_IMAGE="${provider_image_ref}" python3 - \
+        "${remaining_seconds}" "${compose_prefix[@]}" run --rm --no-deps wallet-driver \
+        >"${private_root}/evidence/driver.json" 2>"${private_root}/driver-error.log" <<'PY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(sys.argv[2:], timeout=int(sys.argv[1]), check=False)
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+raise SystemExit(result.returncode)
+PY
+    driver_status=$?
+    set -e
+  elif test -n "${external_injection}"; then
     wallet_driver_container_name="${project_name}-wallet-driver-initial"
     set +e
     compose run --name "${wallet_driver_container_name}" --rm --no-deps wallet-driver \
@@ -1443,23 +1720,7 @@ PY
     set -e
   fi
   if test "${driver_status}" -ne 0; then
-    python3 - "${private_root}/driver-error.log" <<'PY' >&2
-import pathlib
-import re
-import sys
-
-path = pathlib.Path(sys.argv[1])
-encoded = path.read_bytes()[:4096]
-text = encoded.decode("utf-8", errors="replace")
-if re.search(r"(?i)(claim.key|macaroon|password|preimage|private.key|refund.key|seed|secret)", text):
-    print("test-lab-adversarial: wallet driver diagnostic contained a custody term and was redacted")
-else:
-    text = re.sub(r"\b[0-9a-f]{64}\b", "<hex64>", text)
-    lines = text.splitlines()[:12]
-    if lines:
-        print("test-lab-adversarial: bounded wallet driver diagnostic:")
-        print("\n".join(lines))
-PY
+    print_bounded_diagnostic "wallet driver" "${private_root}/driver-error.log"
     if grep -F 'immortal-lab: unknown command: adversarial-case' \
       "${private_root}/driver-error.log" >/dev/null 2>&1; then
       current_phase=runtime-command-unavailable
@@ -1564,6 +1825,17 @@ os.chmod(path, 0o600)
 PY
   fi
 
+  if test "${group}" = doomsday; then
+    current_phase=doomsday-post-recovery-removal-audit
+    for service in "${doomsday_stopped_targets[@]}"; do
+      if compose ps --services --status running | grep -Fx "${service}" >/dev/null; then
+        echo "test-lab-adversarial: ${case_id}: ${service} restarted during recovery" >&2
+        exit 1
+      fi
+    done
+    mark_doomsday_services_absent_after_recovery
+  fi
+
   current_phase=sanitized-evidence
   python3 - "${fixture}" "${private_root}" "${private_root}/evidence/infrastructure.json" \
     "${private_root}/evidence/driver.json" "${record_path}" "${case_id}" "${expected}" <<'PY'
@@ -1604,6 +1876,19 @@ def scan(value):
         for child in value:
             scan(child)
 scan(driver)
+controller_path = private_root / "evidence" / "doomsday-control.json"
+controller = None
+if controller_path.exists():
+    if controller_path.stat().st_size > 8192:
+        raise SystemExit("doomsday controller evidence exceeds its bound")
+    controller = json.loads(controller_path.read_text(encoding="utf-8"))
+    if (
+        controller.get("case_id") != case_id
+        or controller.get("stopped_targets_absent_before_recovery") is not True
+        or controller.get("stopped_targets_absent_after_recovery") is not True
+    ):
+        raise SystemExit("doomsday controller evidence does not prove durable removal")
+    scan(controller)
 record = {
     "schema": fixture["evidence"]["retained_record"]["schema"],
     "case_id": case_id,
@@ -1612,6 +1897,8 @@ record = {
     "result": driver,
     "local_only": True,
 }
+if controller is not None:
+    record["controller_audit"] = controller
 encoded = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
 for name in (
     "relay-a-postgres-password", "relay-b-postgres-password",

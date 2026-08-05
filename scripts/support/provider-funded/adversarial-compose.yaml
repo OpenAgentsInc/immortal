@@ -205,6 +205,18 @@ services:
         source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/evidence
         target: /evidence
 
+  esplora-broadcast:
+    build:
+      context: .
+      dockerfile: Dockerfile.support
+    entrypoint: ["python3", "/usr/local/libexec/immortal-lab-esplora-broadcast"]
+    env_file:
+      - ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/esplora.env
+    depends_on:
+      - bitcoin-a
+    network_mode: service:bitcoin-a
+    restart: "no"
+
   provider-a:
     image: ${IMMORTAL_ADVERSARIAL_PROVIDER_IMAGE:?provider image is required}
     build:
@@ -269,7 +281,11 @@ services:
       - --rule
       - 0.0.0.0:29091=127.0.0.1:9091
       - --rule
+      - 0.0.0.0:29191=127.0.0.1:9191
+      - --rule
       - 0.0.0.0:28443=127.0.0.1:18443
+      - --rule
+      - 0.0.0.0:23002=127.0.0.1:3002
     depends_on:
       - provider-a
       - relay-a
@@ -285,6 +301,8 @@ services:
       - 0.0.0.0:28081=127.0.0.1:18081
       - --rule
       - 0.0.0.0:29092=127.0.0.1:9092
+      - --rule
+      - 0.0.0.0:29192=127.0.0.1:9192
       - --rule
       - 0.0.0.0:28443=127.0.0.1:18443
     depends_on:
@@ -306,6 +324,12 @@ services:
       - 127.0.0.1:9091=bitcoin-a:29091
       - --rule
       - 127.0.0.1:9092=bitcoin-b:29092
+      - --rule
+      - 127.0.0.1:9191=bitcoin-a:29191
+      - --rule
+      - 127.0.0.1:9192=bitcoin-b:29192
+      - --rule
+      - 127.0.0.1:3002=bitcoin-a:23002
       - --rule
       - 127.0.0.1:18443=bitcoin-a:28443
       - --rule
@@ -347,6 +371,25 @@ services:
       - type: bind
         source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/state
         target: /state
+
+  keyless-executor:
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.provider
+      target: driver
+    command: ["doomsday-keyless-executor"]
+    environment:
+      IMMORTAL_LAB_KEYLESS_REQUEST_FILE: /keyless/doomsday-keyless-request.json
+      IMMORTAL_LAB_KEYLESS_RESULT_FILE: /keyless/doomsday-keyless-result.json
+    depends_on:
+      - esplora-broadcast
+      - wallet-gateway
+    network_mode: service:wallet-gateway
+    restart: "no"
+    volumes:
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/evidence
+        target: /keyless
 
 networks:
   adversarial:

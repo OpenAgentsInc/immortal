@@ -102,6 +102,11 @@
     ]
   },
   "doomsday_contract": {
+    "requester_processes": {
+      "prepare": "persist_post_contract_recovery_state_then_exit",
+      "recover": "fresh_process_restores_before_any_relay_connection",
+      "shared_memory": false
+    },
     "remove_permanently": [
       "relay-a",
       "relay-b",
@@ -121,6 +126,42 @@
     ],
     "missing_signed_record_policy": "fail_closed",
     "database_or_ui_reconstruction": false,
+    "direct_recovery": {
+      "wire": "bounded-nip59-gift-wraps",
+      "durable_post_contract_only": true,
+      "opens_rfq_or_new_session": false,
+      "accepts_bare_private_events": false
+    },
+    "submarine_refund": {
+      "package_mode": "presigned",
+      "signer_ref": null,
+      "signed_before_requester_contract": true,
+      "signed_before_funding_broadcast": true,
+      "broadcast_before_timeout": false
+    },
+    "reverse_claim": {
+      "package_mode": "wallet_sign",
+      "preimage_release_requires_local_chain_and_lightning_observation": true
+    },
+    "keyless_process": {
+      "separate_process": true,
+      "accepts_only_exact_esplora_request": true,
+      "accepts_signing_material": false,
+      "has_wallet_or_node_credentials": false,
+      "has_custody_mounts": false,
+      "maximum_request_bytes": 65536
+    },
+    "recovery_planner_requires": [
+      "verified-local-chain-observation",
+      "verified-local-lightning-observation",
+      "bound-signed-records",
+      "bound-exit-package"
+    ],
+    "real_regtest_terminal_proof": [
+      "exact-outpoint-spent",
+      "transaction-confirmed",
+      "lightning-terminal-state"
+    ],
     "keyless_broadcaster_accepts_signing_material": false
   },
   "evidence": {

@@ -22,6 +22,11 @@ COMMANDS:
     funded-topology     Compare two funded providers, execute rank one, and
                         cancel rank two before any selected funding broadcast
     adversarial-case    Execute the manifest-selected #18 process proof
+    doomsday-prepare    Persist a doomsday recovery cut and exit the requester
+    doomsday-keyless-request
+                        Authorize and persist one exact keyless HTTP request
+    doomsday-keyless-executor
+                        Execute one bounded credential-free Esplora request
     boltz-adapter       Run the process-gated transaction-first adapter callback
     status              Print persisted lab state
     run [--to STEP]     Run through STEP (discover, rfq, quote, verify, fund,
@@ -128,6 +133,9 @@ pub enum Command {
     FundedSmoke,
     FundedTopology,
     AdversarialCase,
+    DoomsdayPrepare,
+    DoomsdayKeylessRequest,
+    DoomsdayKeylessExecutor,
     BoltzAdapter,
     Status,
     Run { to: Step },
@@ -166,6 +174,9 @@ pub fn parse(arguments: &[String]) -> Result<Command, String> {
         "funded-smoke" => Command::FundedSmoke,
         "funded-topology" => Command::FundedTopology,
         "adversarial-case" => Command::AdversarialCase,
+        "doomsday-prepare" => Command::DoomsdayPrepare,
+        "doomsday-keyless-request" => Command::DoomsdayKeylessRequest,
+        "doomsday-keyless-executor" => Command::DoomsdayKeylessExecutor,
         "boltz-adapter" => Command::BoltzAdapter,
         "status" => Command::Status,
         "run" => {

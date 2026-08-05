@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use immortal_client::mkt_swp_client::provider_support;
 use serde_json::{Map, Value, json};
 
-use crate::funded::{self, CooperativeJourney, FundedJourney};
+use crate::funded::{self, CooperativeJourney, DoomsdayCase, FundedJourney};
 
 const MANIFEST: &str = include_str!("../../../tests/fixtures/lab/adversarial-v1.json");
 const MANIFEST_SCHEMA: &str = "openagents.immortal.adversarial-lab.v1";
@@ -60,6 +60,7 @@ enum ProofPlan {
         provider_index: usize,
         journey: CooperativeJourney,
     },
+    Doomsday(DoomsdayCase),
     Unsupported {
         reason: &'static str,
     },
@@ -290,6 +291,7 @@ fn execute_proof(selected: &SelectedCase) -> Result<Value, String> {
             let result = funded::run_adversarial_cooperative_journey(provider_index, journey)?;
             cooperative_proof(&result, provider_index, journey)
         }
+        ProofPlan::Doomsday(case) => funded::recover_doomsday_case(case),
         ProofPlan::Unsupported { reason } => Err(format!(
             "unsupported adversarial proof for {}: {reason}",
             selected.manifest.case_id
@@ -945,11 +947,15 @@ fn proof_plan(case_id: &str) -> ProofPlan {
             injection: Some("provider_noncooperative"),
             outcome: JourneyOutcome::Refunded,
         },
-        "doomsday-submarine-provider-gone"
-        | "doomsday-reverse-coordinator-gone"
-        | "doomsday-keyless-esplora-broadcast" => ProofPlan::Unsupported {
-            reason: "the direct-counterparty and keyless doomsday executors are not implemented",
-        },
+        "doomsday-submarine-provider-gone" => {
+            ProofPlan::Doomsday(DoomsdayCase::SubmarineProviderGone)
+        }
+        "doomsday-reverse-coordinator-gone" => {
+            ProofPlan::Doomsday(DoomsdayCase::ReverseCoordinatorGone)
+        }
+        "doomsday-keyless-esplora-broadcast" => {
+            ProofPlan::Doomsday(DoomsdayCase::KeylessEsploraBroadcast)
+        }
         "musig2-submarine-provider-a" => ProofPlan::Cooperative {
             provider_index: 0,
             journey: CooperativeJourney::Complete,
@@ -1107,7 +1113,7 @@ mod tests {
             .keys()
             .filter(|case_id| !matches!(proof_plan(case_id), ProofPlan::Unsupported { .. }))
             .count();
-        assert_eq!(supported, 30);
+        assert_eq!(supported, 33);
         for case_id in cases.keys() {
             if let ProofPlan::Unsupported { reason } = proof_plan(case_id) {
                 assert!(
@@ -1535,19 +1541,6 @@ mod tests {
                 "outcome":"rejected_before_effect",
             })
         );
-    }
-
-    #[test]
-    fn unsupported_case_fails_closed_without_a_result() {
-        let selected = selection(
-            "doomsday-keyless-esplora-broadcast",
-            "broadcast_complete_presigned_transaction",
-            None,
-        )
-        .expect("doomsday case should bind the manifest");
-        let error = execute_proof(&selected).expect_err("unsupported proof must fail");
-        assert!(error.starts_with("unsupported adversarial proof"));
-        assert!(error.contains("keyless doomsday executors are not implemented"));
     }
 
     #[test]

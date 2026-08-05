@@ -141,6 +141,55 @@ if doomsday.get("keyless_broadcaster_accepts_signing_material") is not False:
     raise SystemExit("keyless broadcaster accepts signing material")
 if "authenticated-direct-counterparty-channel" not in doomsday.get("retain_only", []):
     raise SystemExit("doomsday recovery has no direct authenticated channel")
+requester_processes = doomsday.get("requester_processes", {})
+if requester_processes != {
+    "prepare": "persist_post_contract_recovery_state_then_exit",
+    "recover": "fresh_process_restores_before_any_relay_connection",
+    "shared_memory": False,
+}:
+    raise SystemExit("doomsday requester process cut is not closed")
+if doomsday.get("direct_recovery") != {
+    "wire": "bounded-nip59-gift-wraps",
+    "durable_post_contract_only": True,
+    "opens_rfq_or_new_session": False,
+    "accepts_bare_private_events": False,
+}:
+    raise SystemExit("doomsday direct recovery surface is not closed")
+if doomsday.get("submarine_refund") != {
+    "package_mode": "presigned",
+    "signer_ref": None,
+    "signed_before_requester_contract": True,
+    "signed_before_funding_broadcast": True,
+    "broadcast_before_timeout": False,
+}:
+    raise SystemExit("doomsday submarine refund cut is not pre-signed")
+if doomsday.get("reverse_claim") != {
+    "package_mode": "wallet_sign",
+    "preimage_release_requires_local_chain_and_lightning_observation": True,
+}:
+    raise SystemExit("doomsday reverse claim boundary changed")
+if doomsday.get("keyless_process") != {
+    "separate_process": True,
+    "accepts_only_exact_esplora_request": True,
+    "accepts_signing_material": False,
+    "has_wallet_or_node_credentials": False,
+    "has_custody_mounts": False,
+    "maximum_request_bytes": 65536,
+}:
+    raise SystemExit("doomsday keyless process boundary changed")
+if doomsday.get("recovery_planner_requires") != [
+    "verified-local-chain-observation",
+    "verified-local-lightning-observation",
+    "bound-signed-records",
+    "bound-exit-package",
+]:
+    raise SystemExit("doomsday planner does not require exact local observations")
+if doomsday.get("real_regtest_terminal_proof") != [
+    "exact-outpoint-spent",
+    "transaction-confirmed",
+    "lightning-terminal-state",
+]:
+    raise SystemExit("doomsday terminal proof is not bound to real rails")
 
 claims = fixture.get("claims", {})
 for forbidden in (

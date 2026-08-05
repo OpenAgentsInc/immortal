@@ -33,7 +33,7 @@ mkdir -m 0700 "${private_root}/evidence" "${private_root}/state"
 for name in \
   bitcoin-a.conf bitcoin-b.conf \
   cln-provider-a.conf cln-provider-b.conf cln-wallet.conf \
-  relay-a.env relay-b.env provider-a.env provider-b.env wallet-driver.env \
+  relay-a.env relay-b.env provider-a.env provider-b.env wallet-driver.env esplora.env \
   relay-a-postgres-password relay-b-postgres-password \
   provider-a-postgres-password provider-b-postgres-password \
   provider-a-wallet-seed provider-b-wallet-seed client-wallet-seed; do
@@ -111,6 +111,7 @@ services = document.get("services", {})
 expected = {
     "alert-sink-a", "alert-sink-b", "bitcoin-a", "bitcoin-b",
     "cln-provider-a", "cln-provider-b", "cln-wallet",
+    "esplora-broadcast", "keyless-executor",
     "provider-a", "provider-a-egress", "provider-a-postgres",
     "provider-b", "provider-b-egress", "provider-b-postgres",
     "relay-a", "relay-a-postgres", "relay-b", "relay-b-postgres",
@@ -125,6 +126,7 @@ namespace = {
     "provider-a": "service:bitcoin-a",
     "alert-sink-a": "service:bitcoin-a",
     "provider-a-egress": "service:bitcoin-a",
+    "esplora-broadcast": "service:bitcoin-a",
     "relay-b": "service:bitcoin-b",
     "provider-b": "service:bitcoin-b",
     "alert-sink-b": "service:bitcoin-b",
@@ -133,6 +135,7 @@ namespace = {
     "cln-provider-b": "service:bitcoin-b",
     "cln-wallet": "service:wallet-gateway",
     "wallet-driver": "service:wallet-gateway",
+    "keyless-executor": "service:wallet-gateway",
 }
 for service, expected_mode in namespace.items():
     if services[service].get("network_mode") != expected_mode:
@@ -191,6 +194,9 @@ for endpoint in (
     "127.0.0.1:18081=bitcoin-b:28081",
     "127.0.0.1:9091=bitcoin-a:29091",
     "127.0.0.1:9092=bitcoin-b:29092",
+    "127.0.0.1:9191=bitcoin-a:29191",
+    "127.0.0.1:9192=bitcoin-b:29192",
+    "127.0.0.1:3002=bitcoin-a:23002",
     "127.0.0.1:18443=bitcoin-a:28443",
     "127.0.0.1:18444=bitcoin-b:28443",
 ):
@@ -200,6 +206,22 @@ if "0.0.0.0:28443=127.0.0.1:18443" not in services["provider-a-egress"].get("com
     raise SystemExit("wallet bitcoind access bypasses the provider-A namespace egress")
 if "0.0.0.0:28443=127.0.0.1:18443" not in services["provider-b-egress"].get("command", []):
     raise SystemExit("wallet bitcoind access bypasses the provider-B namespace egress")
+keyless = services["keyless-executor"]
+keyless_environment = keyless.get("environment", {})
+if set(keyless_environment) != {
+    "IMMORTAL_LAB_KEYLESS_REQUEST_FILE", "IMMORTAL_LAB_KEYLESS_RESULT_FILE"
+}:
+    raise SystemExit("keyless executor environment gained another input")
+encoded_keyless = json.dumps(keyless.get("volumes", []), sort_keys=True).lower()
+for forbidden in ("wallet", "seed", "rpc", "macaroon", "state", "rail"):
+    if forbidden in encoded_keyless:
+        raise SystemExit(f"keyless executor gained forbidden mount term {forbidden}")
+if "/keyless" not in encoded_keyless or keyless.get("command") != ["doomsday-keyless-executor"]:
+    raise SystemExit("keyless executor does not expose its exact bounded command volume")
+if services["esplora-broadcast"].get("entrypoint") != [
+    "python3", "/usr/local/libexec/immortal-lab-esplora-broadcast"
+]:
+    raise SystemExit("Esplora-compatible broadcaster has another entrypoint")
 if document.get("networks", {}).get("adversarial", {}).get("internal") is not True:
     raise SystemExit("adversarial bridge is not internal")
 PY
