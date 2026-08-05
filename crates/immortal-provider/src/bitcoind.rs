@@ -277,7 +277,14 @@ impl BitcoindClient {
         )
         .await
         .map_err(|_| BitcoindError::TimedOut("response read"))??;
-        decode_rpc_response(&response, request_id)
+        match response.status {
+            200 => decode_rpc_response(&response.body, request_id),
+            500 => match decode_rpc_response(&response.body, request_id) {
+                Err(error @ BitcoindError::Rpc { .. }) => Err(error),
+                Ok(_) | Err(_) => Err(BitcoindError::HttpStatus(response.status)),
+            },
+            _ => Err(BitcoindError::HttpStatus(response.status)),
+        }
     }
 
     pub async fn chain_tip(&self, request_id: &RpcRequestId) -> Result<ChainTip, BitcoindError> {
@@ -549,10 +556,15 @@ async fn connect_first(addresses: &[SocketAddr]) -> Result<TcpStream, BitcoindEr
     Err(BitcoindError::ConnectionFailed)
 }
 
+struct HttpResponse {
+    status: u16,
+    body: Vec<u8>,
+}
+
 async fn read_http_response(
     stream: &mut TcpStream,
     limits: BitcoindLimits,
-) -> Result<Vec<u8>, BitcoindError> {
+) -> Result<HttpResponse, BitcoindError> {
     let mut bytes = Vec::new();
     let header_end = loop {
         let mut chunk = [0_u8; 4096];
@@ -632,10 +644,10 @@ async fn read_http_response(
             .await
             .map_err(|_| BitcoindError::Protocol("truncated response body"))?;
     }
-    if status != 200 {
-        return Err(BitcoindError::HttpStatus(status));
-    }
-    Ok(bytes[body_start..].to_vec())
+    Ok(HttpResponse {
+        status,
+        body: bytes[body_start..].to_vec(),
+    })
 }
 
 fn parse_status(status_line: &str) -> Result<u16, BitcoindError> {

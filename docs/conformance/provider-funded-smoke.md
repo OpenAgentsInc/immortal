@@ -108,6 +108,17 @@ from the persisted engine snapshot. This records local disposable-regtest
 conformance. It is not a clean-Debian installation, live-network, or
 deployment claim; issue #19 owns that evidence.
 
+The combined checkpoint-recovery packet repeated that same process gate on
+macOS 26.4 arm64 on 2026-08-05. The first run exposed that Bitcoin Core sends
+JSON-RPC error `-5` in a bounded HTTP 500 response; the rail client now decodes
+that response before the recovery policy decides whether a first broadcast is
+safe. The next run caught a custody-name tripwire on boolean terminal metadata;
+the fixture now records `lightning_payment_succeeded=false` without placing a
+custody-bearing member name in the checkpoint. After both fixes, the forced
+replacement run completed all three journeys and the independent durable
+evidence checks. This remains local-machine evidence, not the clean macOS or
+Debian execution required to close #32.
+
 ## Pinned rail software
 
 The test images support Linux `amd64` and `arm64`, including Docker Desktop on

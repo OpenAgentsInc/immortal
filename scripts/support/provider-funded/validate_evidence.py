@@ -52,7 +52,7 @@ EXPECTED_JOURNEYS = {
         "lightning_owner": "provider",
         "lightning_kind": "hold",
         "lightning_terminal_state": "cancelled",
-        "preimage_released": False,
+        "lightning_payment_succeeded": False,
     },
 }
 EXPECTED_DURABLE_STATE = {
@@ -430,8 +430,8 @@ def validate(arguments):
             "payment_hash",
             "result",
         }
-        if "preimage_released" in journey_manifest:
-            expected_fields.add("preimage_released")
+        if "lightning_payment_succeeded" in journey_manifest:
+            expected_fields.add("lightning_payment_succeeded")
         journey = journeys[journey_name]
         require_exact_keys(journey, expected_fields, f"{journey_name} evidence")
         for field_name in ("order_id", "lockup_txid", terminal_field, "payment_hash"):
@@ -444,7 +444,10 @@ def validate(arguments):
             raise EvidenceError(f"{journey_name} lockup output index is invalid")
         if journey["result"] != journey_manifest["result"]:
             raise EvidenceError(f"{journey_name} has the wrong terminal result")
-        if "preimage_released" in journey_manifest and journey["preimage_released"] is not False:
+        if (
+            "lightning_payment_succeeded" in journey_manifest
+            and journey["lightning_payment_succeeded"] is not False
+        ):
             raise EvidenceError("the refund journey released its preimage")
         if journey["order_id"] in seen_order_ids:
             raise EvidenceError("journeys reused an order ID")

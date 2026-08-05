@@ -69,7 +69,7 @@
       "lightning_owner": "provider",
       "lightning_kind": "hold",
       "lightning_terminal_state": "cancelled",
-      "preimage_released": false
+      "lightning_payment_succeeded": false
     }
   }
 }

@@ -104,6 +104,18 @@ async fn bitcoind_rejects_wrong_id_rpc_errors_truncation_and_ambiguous_framing()
             BitcoindError::Rpc { code: -5 },
         ),
         (
+            http_response(
+                500,
+                &json!({
+                    "result":null,
+                    "error":{"code":-5,"message":"top-secret raw transaction"},
+                    "id":"effect:test:1"
+                })
+                .to_string(),
+            ),
+            BitcoindError::Rpc { code: -5 },
+        ),
+        (
             b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\n{".to_vec(),
             BitcoindError::Protocol("truncated response body"),
         ),

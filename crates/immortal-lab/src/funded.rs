@@ -1179,7 +1179,7 @@ fn continue_reverse_after_funding_effect(
             "refund_txid":refund_txid,
             "payment_hash":payment_hash,
             "result":"refunded",
-            "preimage_released":false
+            "lightning_payment_succeeded":false
         });
         session.persist_terminal("refunded", result.clone())?;
         return Ok(result);
