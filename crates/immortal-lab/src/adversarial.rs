@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use immortal_client::mkt_swp_client::provider_support;
 use serde_json::{Map, Value, json};
 
-use crate::funded::{self, FundedJourney};
+use crate::funded::{self, CooperativeJourney, FundedJourney};
 
 const MANIFEST: &str = include_str!("../../../tests/fixtures/lab/adversarial-v1.json");
 const MANIFEST_SCHEMA: &str = "openagents.immortal.adversarial-lab.v1";
@@ -56,6 +56,10 @@ enum ProofPlan {
         member: &'static str,
     },
     RbfConflict,
+    Cooperative {
+        provider_index: usize,
+        journey: CooperativeJourney,
+    },
     Unsupported {
         reason: &'static str,
     },
@@ -278,6 +282,13 @@ fn execute_proof(selected: &SelectedCase) -> Result<Value, String> {
                 Some("rbf_conflict"),
             )?;
             rbf_conflict_proof(&result)
+        }
+        ProofPlan::Cooperative {
+            provider_index,
+            journey,
+        } => {
+            let result = funded::run_adversarial_cooperative_journey(provider_index, journey)?;
+            cooperative_proof(&result, provider_index, journey)
         }
         ProofPlan::Unsupported { reason } => Err(format!(
             "unsupported adversarial proof for {}: {reason}",
@@ -549,6 +560,103 @@ fn rbf_conflict_proof(result: &Value) -> Result<Value, String> {
             "external_settlement_effects":0,
         }
     }))
+}
+
+fn cooperative_proof(
+    result: &Value,
+    provider_index: usize,
+    journey: CooperativeJourney,
+) -> Result<Value, String> {
+    provider_support::reject_custody_material(result)
+        .map_err(|error| format!("cooperative result contains custody material: {error}"))?;
+    if provider_index > 1
+        || result.get("step").and_then(Value::as_str) != Some(journey.name())
+        || result.pointer("/journey/result").and_then(Value::as_str) != Some("claimed")
+        || result
+            .pointer("/journey/witness/exact_funding_outpoint")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || result
+            .pointer("/journey/witness/both_bitcoind_nodes_agree")
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
+        return Err("cooperative journey lacks exact terminal chain proof".to_owned());
+    }
+    let expected_path = if journey == CooperativeJourney::Complete {
+        "key_path"
+    } else {
+        "script_claim"
+    };
+    let expected_vsize = if journey == CooperativeJourney::Complete {
+        111
+    } else {
+        155
+    };
+    if result
+        .pointer("/journey/witness/path")
+        .and_then(Value::as_str)
+        != Some(expected_path)
+        || result
+            .pointer("/journey/witness/virtual_size")
+            .and_then(Value::as_u64)
+            != Some(expected_vsize)
+    {
+        return Err("cooperative journey used another witness footprint".to_owned());
+    }
+    if journey == CooperativeJourney::Complete {
+        if result
+            .pointer("/journey/cooperative_status_count")
+            .and_then(Value::as_u64)
+            != Some(7)
+            || result
+                .pointer("/journey/witness/witness_item_count")
+                .and_then(Value::as_u64)
+                != Some(1)
+            || result.pointer("/journey/witness/witness_item_lengths") != Some(&json!([64]))
+        {
+            return Err("cooperative key-path transcript or witness is incomplete".to_owned());
+        }
+    } else if result
+        .pointer("/journey/provider_abort_count")
+        .and_then(Value::as_u64)
+        != Some(1)
+        || result
+            .pointer("/journey/provider_partial_count")
+            .and_then(Value::as_u64)
+            != Some(0)
+        || result
+            .pointer("/journey/provider_final_count")
+            .and_then(Value::as_u64)
+            != Some(0)
+        || result
+            .pointer("/journey/witness/witness_item_count")
+            .and_then(Value::as_u64)
+            != Some(4)
+        || result
+            .pointer("/journey/witness/exact_contract_leaf_and_control")
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
+        return Err("cooperative fallback transcript or witness is incomplete".to_owned());
+    }
+    let proof = json!({
+        "proof_class":"funded_cooperative_process",
+        "provider_index":provider_index,
+        "provider_pubkey":required_hash(result, "/provider_pubkey", "cooperative provider pubkey")?,
+        "order_id":required_hash(result, "/journey/order_id", "cooperative order ID")?,
+        "lockup_txid":required_hash(result, "/journey/lockup_txid", "cooperative lockup txid")?,
+        "lockup_vout":0,
+        "claim_txid":required_hash(result, "/journey/claim_txid", "cooperative claim txid")?,
+        "payment_hash":required_hash(result, "/journey/payment_hash", "cooperative payment hash")?,
+        "cooperative_status_ids":result.pointer("/journey/cooperative_status_ids").cloned().ok_or_else(|| "cooperative Status IDs are absent".to_owned())?,
+        "cooperative_status_count":result.pointer("/journey/cooperative_status_count").cloned().ok_or_else(|| "cooperative Status count is absent".to_owned())?,
+        "witness":result.pointer("/journey/witness").cloned().ok_or_else(|| "cooperative witness proof is absent".to_owned())?,
+        "effect_states":result.pointer("/journey/effect_states").cloned().ok_or_else(|| "cooperative effect states are absent".to_owned())?,
+        "external_control":result.pointer("/journey/external_control").cloned().unwrap_or(Value::Null),
+        "outcome":if journey == CooperativeJourney::Complete { "completed_key_path" } else { "completed_script_path" },
+    });
+    Ok(proof)
 }
 
 fn topology_proof(result: &Value) -> Result<Value, String> {
@@ -842,11 +950,21 @@ fn proof_plan(case_id: &str) -> ProofPlan {
         | "doomsday-keyless-esplora-broadcast" => ProofPlan::Unsupported {
             reason: "the direct-counterparty and keyless doomsday executors are not implemented",
         },
-        "musig2-submarine-provider-a"
-        | "musig2-submarine-provider-b"
-        | "musig2-abort-script-path"
-        | "musig2-crash-cut-recovery" => ProofPlan::Unsupported {
-            reason: "the funded-process MuSig2 activation gate is not implemented",
+        "musig2-submarine-provider-a" => ProofPlan::Cooperative {
+            provider_index: 0,
+            journey: CooperativeJourney::Complete,
+        },
+        "musig2-submarine-provider-b" => ProofPlan::Cooperative {
+            provider_index: 1,
+            journey: CooperativeJourney::Complete,
+        },
+        "musig2-abort-script-path" => ProofPlan::Cooperative {
+            provider_index: 0,
+            journey: CooperativeJourney::AbortAfterProviderNonce,
+        },
+        "musig2-crash-cut-recovery" => ProofPlan::Cooperative {
+            provider_index: 0,
+            journey: CooperativeJourney::CrashCutRecovery,
         },
         _ => ProofPlan::Unsupported {
             reason: "the manifest case has no executable proof plan",
@@ -989,7 +1107,7 @@ mod tests {
             .keys()
             .filter(|case_id| !matches!(proof_plan(case_id), ProofPlan::Unsupported { .. }))
             .count();
-        assert_eq!(supported, 26);
+        assert_eq!(supported, 30);
         for case_id in cases.keys() {
             if let ProofPlan::Unsupported { reason } = proof_plan(case_id) {
                 assert!(

@@ -1708,6 +1708,20 @@ fn exit_commitment_excludes_only_circular_contract_bindings() {
 }
 
 #[test]
+fn provider_exit_seed_commitment_matches_the_accepted_session_canonical_package() {
+    let fixture = fixture();
+    let session = build_session_with_options(
+        &fixture,
+        SwapType::Submarine,
+        BuildOptions {
+            provider_cooperative_exit: true,
+            ..BuildOptions::default()
+        },
+    );
+    assert_eq!(session.exit_packages().len(), 2);
+}
+
+#[test]
 fn reverse_and_chain_requester_flows_authorize_and_plan_recovery() {
     let fixture = fixture();
     for swap_type in [SwapType::Reverse, SwapType::Chain] {
@@ -4452,6 +4466,7 @@ struct BuildOptions<'a> {
     contract_selection: Option<&'a Value>,
     null_funding_transaction_id: bool,
     funding_resolution: Option<FundingResolutionMutation>,
+    provider_cooperative_exit: bool,
 }
 
 impl Default for BuildOptions<'_> {
@@ -4466,6 +4481,7 @@ impl Default for BuildOptions<'_> {
             contract_selection: None,
             null_funding_transaction_id: false,
             funding_resolution: None,
+            provider_cooperative_exit: false,
         }
     }
 }
@@ -4554,6 +4570,9 @@ fn try_build_session_with_options(
     let setup = Setup::new(fixture);
     let factory = SwapRecordFactory::new(setup.config.clone()).unwrap();
     let mut terms = base_terms(fixture, swap_type);
+    if options.provider_cooperative_exit {
+        enable_provider_cooperative_exit(fixture, &mut terms);
+    }
     if options
         .funding_resolution
         .is_some_and(|mutation| mutation != FundingResolutionMutation::WrongLeg)
@@ -4637,7 +4656,7 @@ fn try_build_session_with_options(
             .unwrap(),
         &setup.requester,
     );
-    let package_seeds = flow_exit_specs(swap_type)
+    let mut package_seeds = flow_exit_specs(swap_type)
         .iter()
         .map(|spec| {
             let mode = options.exit_mode.unwrap_or(spec.mode);
@@ -4660,6 +4679,9 @@ fn try_build_session_with_options(
         })
         .collect::<Vec<_>>();
     let mut contract = base_terms(fixture, swap_type);
+    if options.provider_cooperative_exit {
+        enable_provider_cooperative_exit(fixture, &mut contract);
+    }
     if let Some(mutation) = options.funding_resolution {
         mutate_contract_funding_resolution(&mut contract, mutation);
     }
@@ -4712,8 +4734,25 @@ fn try_build_session_with_options(
             .iter()
             .map(|spec| json!({"role":format!("chain_{}", spec.path),"leg_id":spec.leg_id})),
     );
+    if options.provider_cooperative_exit {
+        effect_bindings.extend([
+            json!({"role":"cooperative_sign","leg_id":"source"}),
+            json!({"role":"chain_claim","leg_id":"source"}),
+        ]);
+    }
     object.insert("effect_bindings".into(), Value::Array(effect_bindings));
-    let commitments = flow_exit_specs(swap_type)
+    if options.provider_cooperative_exit {
+        package_seeds.push(
+            provider_support::build_provider_submarine_claim_exit_package_seed(
+                &setup.config,
+                &order.id,
+                &quote.id,
+                &Value::Object(object.clone()),
+            )
+            .expect("cooperative test must construct the canonical provider seed"),
+        );
+    }
+    let mut commitments = flow_exit_specs(swap_type)
         .iter()
         .zip(&package_seeds)
         .map(|(spec, package)| {
@@ -4725,7 +4764,21 @@ fn try_build_session_with_options(
                 "package_sha256":package.commitment_sha256().unwrap()
             })
         })
-        .collect();
+        .collect::<Vec<_>>();
+    if options.provider_cooperative_exit {
+        let provider_seed = package_seeds
+            .last()
+            .expect("cooperative test must contain the canonical provider seed");
+        commitments.push(json!({
+            "participant_role":"provider",
+            "leg_id":"source",
+            "path":"claim",
+            "package_mode":"external_signer",
+            "package_sha256":provider_seed
+                .commitment_sha256()
+                .expect("cooperative provider seed must have a canonical commitment")
+        }));
+    }
     object.insert("exit_package_commitments".into(), Value::Array(commitments));
     let reservation_commitment = json!({
         "session_id":setup.config.session_id,
@@ -4785,7 +4838,7 @@ fn try_build_session_with_options(
         .find(|tag| tag.name() == Some("x"))
         .and_then(|tag| tag.value())
         .unwrap();
-    let exit_packages = if options.include_exit {
+    let mut exit_packages = if options.include_exit {
         flow_exit_specs(swap_type)
             .iter()
             .map(|spec| {
@@ -4813,11 +4866,87 @@ fn try_build_session_with_options(
     } else {
         Vec::new()
     };
-    SwapSession::from_signed_records(
-        setup.config,
-        vec![rfq, quote, order, requester_contract, provider_contract],
-        exit_packages,
-    )
+    let records = vec![rfq, quote, order, requester_contract, provider_contract];
+    if options.provider_cooperative_exit {
+        let canonical =
+            provider_support::build_provider_submarine_claim_exit_package(&setup.config, &records)
+                .expect("accepted cooperative session must construct the provider package");
+        assert_eq!(
+            package_seeds
+                .last()
+                .expect("cooperative test must retain its provider seed")
+                .commitment_sha256()
+                .expect("cooperative provider seed must have a canonical commitment"),
+            canonical
+                .commitment_sha256()
+                .expect("accepted provider package must have a canonical commitment"),
+            "pre-contract provider seed and accepted-session canonical package must commit identically"
+        );
+        exit_packages.push(canonical);
+    }
+    SwapSession::from_signed_records(setup.config, records, exit_packages)
+}
+
+fn enable_provider_cooperative_exit(fixture: &Value, terms: &mut Value) {
+    let payment_hash = flow_payment_hash(fixture, SwapType::Submarine);
+    let claim_material = exit_material(
+        &payment_hash,
+        ExitSpec {
+            leg_id: "source",
+            path: "claim",
+            condition: "hashlock",
+            mode: "external_signer",
+        },
+        bitcoin_leg_amount(SwapType::Submarine, "source"),
+    );
+    terms["musig2_execution"] = Value::Bool(true);
+    terms["effect_policy"] = json!({
+        "effects":[{
+            "actor":"provider",
+            "effect_role":"cooperative_sign",
+            "leg_id":"source"
+        }],
+        "id_scheme":"openagents.mkt-swp.v1",
+        "order_event_id_required":true,
+        "replay":"idempotent_exact_bytes"
+    });
+    let verifier = terms["verifier_inputs"]
+        .as_array_mut()
+        .expect("cooperative test terms must contain verifier inputs")
+        .iter_mut()
+        .find(|verifier| verifier["leg_id"] == "source")
+        .and_then(Value::as_object_mut)
+        .expect("cooperative test terms must contain the source verifier");
+    verifier.insert("claim_script".into(), json!(claim_material.script));
+    verifier.insert(
+        "taproot_claim_control_block".into(),
+        json!(claim_material.control_block),
+    );
+    verifier.insert(
+        "provider_exit_destination_script_pubkey".into(),
+        json!(format!("5120{}", claim_material.output_key)),
+    );
+    verifier.insert("musig2_execution".into(), Value::Bool(true));
+    verifier.insert(
+        "sighash_policy".into(),
+        json!("default_key_path_with_script_fallback"),
+    );
+    verifier.insert("chain_tip_height".into(), json!("100"));
+    verifier.insert(
+        "provider_exit_signer_ref".into(),
+        json!("immortal-provider:source:claim"),
+    );
+    verifier.insert(
+        "provider_exit_policy".into(),
+        json!({
+            "earliest_broadcast_height":"100",
+            "latest_safe_broadcast_height":"120",
+            "target_blocks":2,
+            "maximum_fee":flow_amounts(SwapType::Submarine).4,
+            "bump_mode":"cpfp"
+        }),
+    );
+    refresh_leg_verifier_digest(terms, "source");
 }
 
 fn base_terms(fixture: &Value, swap_type: SwapType) -> Value {

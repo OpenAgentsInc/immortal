@@ -2890,6 +2890,17 @@ pub mod provider_support {
         super::build_provider_submarine_claim_exit_package(config, records)
     }
 
+    pub fn build_provider_submarine_claim_exit_package_seed(
+        config: &SwapClientConfig,
+        order_id: &str,
+        quote_id: &str,
+        contract: &Value,
+    ) -> Result<ExitPackage, SwapClientError> {
+        super::build_provider_submarine_claim_exit_package_seed(
+            config, order_id, quote_id, contract,
+        )
+    }
+
     pub fn validate_provider_submarine_claim_exit_package(
         config: &SwapClientConfig,
         records: &[Event],
@@ -10949,13 +10960,66 @@ fn build_provider_submarine_claim_exit_package(
 fn build_provider_submarine_claim_exit_package_for_bound(
     bound: &BoundSession<'_>,
 ) -> Result<ExitPackage, SwapClientError> {
-    if bound.swap_type != SwapType::Submarine {
+    build_provider_submarine_claim_exit_package_from_terms(
+        &bound.order.id,
+        &bound.quote.id,
+        &bound.contract_sha256,
+        bound.contract_ids(),
+        &bound.payment_hash,
+        &bound.contract,
+    )
+}
+
+fn build_provider_submarine_claim_exit_package_seed(
+    config: &SwapClientConfig,
+    order_id: &str,
+    quote_id: &str,
+    contract: &Value,
+) -> Result<ExitPackage, SwapClientError> {
+    config.validate()?;
+    require_lower_hex_32(order_id, "provider claim Order ID")?;
+    require_lower_hex_32(quote_id, "provider claim Quote ID")?;
+    let contract = object(contract, "provider claim Swap Contract terms")?;
+    if contract.get("order_id").and_then(Value::as_str) != Some(order_id)
+        || contract.get("quote_id").and_then(Value::as_str) != Some(quote_id)
+    {
+        return Err(SwapClientError::new(
+            "swp_exit_package_mismatch",
+            "provider claim seed IDs differ from the Swap Contract terms",
+        ));
+    }
+    let payment_hash = require_string(contract, "payment_hash", None, "swp_exit_package_mismatch")?;
+    let placeholder_contract_sha256 = "00".repeat(32);
+    let placeholder_requester_contract_id = "01".repeat(32);
+    let placeholder_provider_contract_id = "02".repeat(32);
+    build_provider_submarine_claim_exit_package_from_terms(
+        order_id,
+        quote_id,
+        &placeholder_contract_sha256,
+        [
+            &placeholder_requester_contract_id,
+            &placeholder_provider_contract_id,
+        ],
+        payment_hash,
+        &Value::Object(contract.clone()),
+    )
+}
+
+fn build_provider_submarine_claim_exit_package_from_terms(
+    order_id: &str,
+    quote_id: &str,
+    contract_sha256: &str,
+    contract_ids: [&str; 2],
+    payment_hash: &str,
+    contract: &Value,
+) -> Result<ExitPackage, SwapClientError> {
+    let contract = object(contract, "Swap Contract")?;
+    if contract.get("swap_type").and_then(Value::as_str) != Some("submarine") {
         return Err(SwapClientError::new(
             "swp_exit_package_mismatch",
             "provider cooperative claim package requires a submarine swap",
         ));
     }
-    let contract = object(&bound.contract, "Swap Contract")?;
     if contract.get("musig2_execution").and_then(Value::as_bool) != Some(true) {
         return Err(SwapClientError::new(
             "swp_exit_package_mismatch",
@@ -11129,10 +11193,10 @@ fn build_provider_submarine_claim_exit_package_for_bound(
             "provider claim signer reference differs from the supported executable path",
         ));
     }
-    let effect_id = effect_id(&bound.order.id, "chain_claim", leg_id)?;
+    let effect_id = effect_id(order_id, "chain_claim", leg_id)?;
     let package = ExitPackage::parse(json!({
         "asset_id":leg.get("asset_id").cloned().ok_or_else(|| SwapClientError::new("swp_exit_package_mismatch", "provider claim source leg has no asset ID"))?,
-        "contract_sha256":bound.contract_sha256,
+        "contract_sha256":contract_sha256,
         "effect_id":effect_id,
         "exit":{
             "destination_script_pubkey":lower_hex(&destination_script),
@@ -11164,18 +11228,18 @@ fn build_provider_submarine_claim_exit_package_for_bound(
         },
         "leg_id":leg_id,
         "network_id":leg.get("network_id").cloned().ok_or_else(|| SwapClientError::new("swp_exit_package_mismatch", "provider claim source leg has no network ID"))?,
-        "order_id":bound.order.id,
+        "order_id":order_id,
         "participant_role":"provider",
         "profile":MKT_SWP_PROFILE_ID,
         "profile_version":MKT_SWP_PROFILE_VERSION,
         "schema":EXIT_SCHEMA,
         "secret_commitments":{
-            "payment_hash":bound.payment_hash,
+            "payment_hash":payment_hash,
             "preimage_recovery_ref":null,
         },
-        "swap_contract_ids":bound.contract_ids(),
+        "swap_contract_ids":contract_ids,
         "verification":{
-            "quote_id":bound.quote.id,
+            "quote_id":quote_id,
             "swap_tree_sha256":require_string(verifier, "swap_tree_sha256", None, "swp_exit_package_mismatch")?,
             "taproot_control_block":require_string(verifier, "taproot_claim_control_block", None, "swp_exit_package_mismatch")?,
             "taproot_script":require_string(verifier, "claim_script", None, "swp_exit_package_mismatch")?,

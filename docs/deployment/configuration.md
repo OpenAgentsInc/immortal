@@ -212,6 +212,7 @@ the contract artifact.
 | --- | --- | --- |
 | `IMMORTAL_PROVIDER_LIGHTNING_RAIL` | `cln` | Selected internal Lightning rail: `cln` or, when built with `--features lnd`, `lnd`. Selecting unavailable or incomplete rail configuration fails startup. |
 | `IMMORTAL_PROVIDER_LAB_PROFILE` | unset | Lab-only timeout selector. The sole value is `regtest_adversarial`, which is rejected unless the Bitcoin network is `regtest`; it fixes Quote expiry at 3 seconds and hold-invoice expiry at 30 seconds. It does not change production defaults. |
+| `IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING` | unset | Lab-only cooperative-signing gate. The sole value is `true`; it is rejected unless the Bitcoin network is `regtest` and `IMMORTAL_PROVIDER_LAB_PROFILE=regtest_adversarial`. The adversarial runner supplies it only for its four MuSig2 process cases. It does not enable a provider-contract or NIP-11 capability. |
 | `IMMORTAL_PROVIDER_HEALTH_BIND` | `127.0.0.1:9091` | Private or loopback health/metrics listener. Public addresses fail startup. |
 | `IMMORTAL_PROVIDER_DIRECT_RECOVERY_BIND` | disabled | Private or loopback recovery-only listener. It accepts bounded NIP-59 gift wraps for one already-durable session. The exact durable requester RFQ and both Swap Contracts must already exist; the listener cannot discover, quote, or open a session. |
 | `IMMORTAL_PROVIDER_ALERT_URL` | disabled | Bounded plaintext HTTP URL on a private numeric or loopback address. HTTPS is outside the v1 dependency profile. |

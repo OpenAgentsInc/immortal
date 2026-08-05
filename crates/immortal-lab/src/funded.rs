@@ -10,7 +10,8 @@ use std::{
 };
 
 use immortal_client::mkt_swp_client::{
-    AwaitingVerification, Cancellation, ChainRecoveryState, DeliveryProvenance, ExitPackage,
+    AwaitingVerification, Cancellation, ChainRecoveryState, CooperativeSigningAction,
+    CooperativeSigningContext, CooperativeSigningMessage, DeliveryProvenance, ExitPackage,
     ExitSigningOutcome, ExternalEffectRequest, FundingAction, FundingAuthorized,
     FundingVerificationInput, InvoiceVerificationInput, LightningProgressState,
     LightningReadinessState, LightningRecoveryState, LocalBitcoinObservation,
@@ -35,7 +36,10 @@ use immortal_provider::{
     },
     cln::{ClnClient, ClnEndpoint, ClnLimits, ClnRequestId, Millisatoshi, PaymentResult},
     funding::{FundingInput, FundingRequest, SignedFundingTransaction, build_funding_transaction},
-    settlement::{ClaimPreimage, SettlementBridge, SettlementTemplate},
+    settlement::{
+        ClaimPreimage, CooperativeSettlementTemplate, CooperativeSigningRound, SettlementBridge,
+        SettlementTemplate,
+    },
     wallet::{BitcoinNetwork, ProviderWallet, WalletPath},
 };
 use serde_json::{Map, Value, json};
@@ -75,6 +79,23 @@ pub enum FundedJourney {
     SubmarineRefund,
     ReverseClaim,
     ReverseRefund,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CooperativeJourney {
+    Complete,
+    AbortAfterProviderNonce,
+    CrashCutRecovery,
+}
+
+impl CooperativeJourney {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Complete => "cooperative",
+            Self::AbortAfterProviderNonce => "cooperative_abort",
+            Self::CrashCutRecovery => "cooperative_crash_cut",
+        }
+    }
 }
 
 impl FundedJourney {
@@ -138,7 +159,7 @@ struct PendingSession {
     order: Event,
     order_observed_at: u64,
     contract: Value,
-    exit_package_seed: ExitPackage,
+    exit_package_seeds: Vec<ExitPackage>,
     requester_funding: Option<SignedFundingTransaction>,
     journey_name: String,
     control: StepControl,
@@ -193,6 +214,7 @@ enum HarnessInjection {
     StatusGap,
     StatusFork,
     WrongClaimKey,
+    CooperativeCrashCut,
 }
 
 impl HarnessInjection {
@@ -212,6 +234,7 @@ impl HarnessInjection {
             "status_gap" => Ok(Self::StatusGap),
             "status_fork" => Ok(Self::StatusFork),
             "wrong_claim_key" => Ok(Self::WrongClaimKey),
+            "cooperative_crash_cut" => Ok(Self::CooperativeCrashCut),
             _ => Err("IMMORTAL_LAB_INJECTION is unsupported".to_owned()),
         }
     }
@@ -232,6 +255,7 @@ impl HarnessInjection {
             Self::StatusGap => "status_gap",
             Self::StatusFork => "status_fork",
             Self::WrongClaimKey => "wrong_claim_key",
+            Self::CooperativeCrashCut => "cooperative_crash_cut",
         }
     }
 
@@ -244,6 +268,7 @@ impl HarnessInjection {
                 | Self::ProviderNoncooperative
                 | Self::FundingReorg
                 | Self::ClaimReorg
+                | Self::CooperativeCrashCut
         )
     }
 }
@@ -457,6 +482,9 @@ fn validate_injection_acknowledgement(
         | HarnessInjection::WalletCrash => {
             validate_process_replacement_evidence(evidence)?;
         }
+        HarnessInjection::CooperativeCrashCut => {
+            validate_cooperative_crash_evidence(evidence)?;
+        }
         HarnessInjection::ProviderNoncooperative => {
             validate_process_stopped_evidence(evidence)?;
         }
@@ -518,6 +546,38 @@ fn validate_process_replacement_evidence(evidence: &Map<String, Value>) -> Resul
         || before_pid == after_pid
     {
         return Err("injection evidence does not prove one bounded process replacement".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_cooperative_crash_evidence(evidence: &Map<String, Value>) -> Result<(), String> {
+    if evidence.len() != 5
+        || evidence.keys().any(|name| {
+            !matches!(
+                name.as_str(),
+                "target" | "before_pid" | "after_pid" | "transition" | "state_boundary_unchanged"
+            )
+        })
+        || !matches!(
+            evidence.get("target").and_then(Value::as_str),
+            Some("provider-a" | "provider-b")
+        )
+        || evidence.get("transition").and_then(Value::as_str)
+            != Some("process_replaced_same_database_and_wallet_file")
+        || evidence
+            .get("state_boundary_unchanged")
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
+        return Err("cooperative crash evidence has another shape".to_owned());
+    }
+    let before = evidence.get("before_pid").and_then(Value::as_u64);
+    let after = evidence.get("after_pid").and_then(Value::as_u64);
+    if before.is_none_or(|pid| pid == 0 || pid > i32::MAX as u64)
+        || after.is_none_or(|pid| pid == 0 || pid > i32::MAX as u64)
+        || before == after
+    {
+        return Err("cooperative crash did not replace one provider process".to_owned());
     }
     Ok(())
 }
@@ -1240,6 +1300,37 @@ pub fn run_adversarial_double_reservation() -> Result<Value, String> {
             "overlapping_signed_sessions":true,
             "daemon_backed_hard_reservation_effects":1,
         }
+    }))
+}
+
+pub fn run_adversarial_cooperative_journey(
+    provider_index: usize,
+    journey: CooperativeJourney,
+) -> Result<Value, String> {
+    let injection = (journey == CooperativeJourney::CrashCutRecovery)
+        .then_some(HarnessInjection::CooperativeCrashCut);
+    let runtime =
+        Runtime::new().map_err(|error| format!("could not start lab runtime: {error}"))?;
+    let environment = SmokeEnvironment::load_topology_selected(provider_index, injection)?;
+    verify_health(&environment.health_url)?;
+    let provider_pubkey = discover_provider(
+        &environment.relay_url,
+        &environment.requester,
+        JOURNEY_TIMEOUT,
+    )?;
+    let client_input = fund_client_wallet(&runtime, &environment)?;
+    let proof = drive_cooperative_submarine(
+        &runtime,
+        &environment,
+        &provider_pubkey,
+        client_input,
+        journey,
+    )?;
+    verify_health(&environment.health_url)?;
+    Ok(json!({
+        "step":journey.name(),
+        "provider_pubkey":provider_pubkey,
+        "journey":proof,
     }))
 }
 
@@ -1995,6 +2086,726 @@ fn drive_submarine(
         Some(&funding.txid),
         &invoice.payment_hash,
     )
+}
+
+fn drive_cooperative_submarine(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    client_input: FundingInput,
+    journey: CooperativeJourney,
+) -> Result<Value, String> {
+    let invoice = runtime
+        .block_on(
+            environment.peer_cln.invoice(
+                &cln_id(&format!("{}-invoice", journey.name()))?,
+                Millisatoshi::from_satoshis(OUTPUT_AMOUNT_SAT)
+                    .map_err(|error| format!("cooperative invoice amount is invalid: {error}"))?,
+                &format!("immortal-funded-{}", journey.name()),
+                "Immortal adversarial cooperative submarine",
+                86_400,
+            ),
+        )
+        .map_err(|error| format!("could not create cooperative invoice: {error}"))?;
+    let refund_path = WalletPath::new(2, false, 0)
+        .map_err(|error| format!("cooperative refund path is invalid: {error}"))?;
+    let requester_key = environment
+        .wallet
+        .derive_address(refund_path)
+        .map_err(|error| format!("could not derive cooperative requester key: {error}"))?
+        .internal_key;
+    let exit_destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 10)
+                .map_err(|error| format!("cooperative exit path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive cooperative exit destination: {error}"))?;
+    let mut session = negotiate(
+        environment,
+        provider_pubkey,
+        NegotiationInput {
+            journey_name: journey.name(),
+            swap_type: "submarine",
+            payment_hash: &invoice.payment_hash,
+            invoice: Some(&invoice.bolt11),
+            requester_key,
+            requester_funding_input: Some(&client_input),
+            exit_destination_script_pubkey: &exit_destination.script_pubkey,
+        },
+    )?;
+    if session
+        .contract
+        .get("musig2_execution")
+        .and_then(Value::as_bool)
+        != Some(true)
+        || session.verifier.exit_packages().len() != 2
+    {
+        return Err("adversarial provider did not bind two cooperative exits".to_owned());
+    }
+    session.wait_provider_state("accepted")?;
+    session.wait_provider_state("lock_terms_ready")?;
+    let funding = session
+        .requester_funding
+        .take()
+        .ok_or_else(|| "cooperative session has no contract-bound funding".to_owned())?;
+    let authorized = verify_submarine_before_fund(&session, &invoice.bolt11, &funding)?;
+    session.set_authorized_verifier(authorized)?;
+    session.publish_requester_status("requester_verification_passed", Map::new())?;
+    session.persist_authorized_details(
+        "funding_execution_ready",
+        true,
+        json!({"external_identifier":funding.txid}),
+    )?;
+    let lockup_txid = broadcast_bitcoin_once(
+        runtime,
+        &environment.bitcoind,
+        "cooperative-funding",
+        &funding.raw_transaction,
+        &funding.txid,
+    )?;
+    session.record_funding_effect(
+        lockup_txid.clone(),
+        sha256(funding.raw_transaction.as_bytes()),
+    )?;
+    session.publish_requester_status(
+        "requester_funding_broadcast",
+        Map::from_iter([
+            ("transaction_id".to_owned(), json!(lockup_txid.clone())),
+            ("output_index".to_owned(), json!(0)),
+        ]),
+    )?;
+    mine_blocks(runtime, &environment.bitcoind, 1, "cooperative-funding")?;
+    session.wait_provider_state("funding_observed")?;
+    session.wait_provider_state("funding_final")?;
+    session.wait_provider_state("lightning_payment_pending")?;
+    session.wait_provider_state("lightning_paid")?;
+
+    let (provider_commitment_event, provider_commitment) =
+        session.wait_provider_cooperative_action(CooperativeSigningAction::NonceCommitment)?;
+    let context = provider_commitment.context.clone();
+    let current_height = chain_height(runtime, &environment.bitcoind, "cooperative-round")?;
+    let mut requester_round = begin_requester_cooperative_round(
+        environment,
+        &session,
+        refund_path,
+        &context,
+        current_height,
+    )?;
+    let provider_commitment_bytes = decode_fixed_hex::<32>(
+        provider_commitment
+            .nonce_commitment
+            .as_deref()
+            .ok_or_else(|| "provider commitment Status has no commitment".to_owned())?,
+        "provider nonce commitment",
+    )?;
+    requester_round
+        .register_counterparty_nonce_commitment(provider_commitment_bytes, current_height)
+        .map_err(|error| format!("requester rejected provider nonce commitment: {error}"))?;
+    let requester_commitment = CooperativeSigningMessage::nonce_commitment(
+        context.clone(),
+        ParticipantRole::Requester,
+        requester_round.nonce_commitment(),
+    )
+    .map_err(|error| format!("could not compose requester nonce commitment: {error}"))?;
+    let requester_commitment_event =
+        session.publish_requester_cooperative_status(requester_commitment)?;
+    let (provider_nonce_event, provider_nonce) =
+        session.wait_provider_cooperative_action(CooperativeSigningAction::PublicNonce)?;
+
+    if journey == CooperativeJourney::CrashCutRecovery {
+        session.persist_authorized_details(
+            "provider_public_nonce_persisted",
+            true,
+            json!({"status_id":provider_nonce_event.id}),
+        )?;
+        requester_round.abort();
+        let (provider_abort_event, _) =
+            session.wait_provider_cooperative_action(CooperativeSigningAction::Aborted)?;
+        return finish_cooperative_fallback(
+            runtime,
+            environment,
+            session,
+            &lockup_txid,
+            &invoice.payment_hash,
+            [
+                provider_commitment_event,
+                requester_commitment_event,
+                provider_nonce_event,
+                provider_abort_event,
+            ],
+            true,
+        );
+    }
+
+    if journey == CooperativeJourney::AbortAfterProviderNonce {
+        requester_round.abort();
+        let requester_abort = CooperativeSigningMessage::aborted(
+            context,
+            ParticipantRole::Requester,
+            "wallet_refused",
+        )
+        .map_err(|error| format!("could not compose requester cooperative abort: {error}"))?;
+        let requester_abort_event =
+            session.publish_requester_cooperative_status(requester_abort)?;
+        let (provider_abort_event, _) =
+            session.wait_provider_cooperative_action(CooperativeSigningAction::Aborted)?;
+        return finish_cooperative_fallback_with_requester_abort(
+            runtime,
+            environment,
+            session,
+            &lockup_txid,
+            &invoice.payment_hash,
+            [
+                provider_commitment_event,
+                requester_commitment_event,
+                provider_nonce_event,
+                requester_abort_event,
+                provider_abort_event,
+            ],
+        );
+    }
+
+    let provider_public_nonce = decode_fixed_hex::<66>(
+        provider_nonce
+            .public_nonce
+            .as_deref()
+            .ok_or_else(|| "provider public-nonce Status has no nonce".to_owned())?,
+        "provider public nonce",
+    )?;
+    let requester_public_nonce = requester_round
+        .reveal_public_nonce(current_height)
+        .map_err(|error| format!("requester could not reveal public nonce: {error}"))?;
+    let requester_nonce = CooperativeSigningMessage::public_nonce(
+        context.clone(),
+        ParticipantRole::Requester,
+        requester_public_nonce,
+    )
+    .map_err(|error| format!("could not compose requester public nonce: {error}"))?;
+    let requester_nonce_event = session.publish_requester_cooperative_status(requester_nonce)?;
+    let (provider_partial_event, provider_partial) =
+        session.wait_provider_cooperative_action(CooperativeSigningAction::PartialSignature)?;
+    let public_nonces = [requester_public_nonce, provider_public_nonce];
+    let requester_partial = SettlementBridge::new(&environment.wallet)
+        .sign_cooperative_partial(&mut requester_round, current_height, &public_nonces)
+        .map_err(|error| format!("requester cooperative partial failed: {error}"))?;
+    let requester_partial_message = CooperativeSigningMessage::partial_signature(
+        context,
+        ParticipantRole::Requester,
+        public_nonces,
+        requester_partial,
+    )
+    .map_err(|error| format!("could not compose requester partial signature: {error}"))?;
+    let requester_partial_event =
+        session.publish_requester_cooperative_status(requester_partial_message)?;
+    let (provider_final_event, provider_final) =
+        session.wait_provider_cooperative_action(CooperativeSigningAction::FinalSignature)?;
+    let provider_partial_bytes = decode_fixed_hex::<32>(
+        provider_partial
+            .partial_signature
+            .as_deref()
+            .ok_or_else(|| "provider partial Status has no partial".to_owned())?,
+        "provider partial signature",
+    )?;
+    if provider_final
+        .partial_signatures
+        .as_deref()
+        .and_then(|values| values.get(1))
+        .map(String::as_str)
+        != Some(lower_hex(&provider_partial_bytes).as_str())
+    {
+        return Err("provider final Status changed its partial signature".to_owned());
+    }
+    let claim_pending = session.wait_provider_state("provider_claim_pending")?;
+    let claim_txid = status_transaction_id(&claim_pending)?;
+    let peer_bitcoind = load_adversarial_bitcoind("B")?;
+    wait_for_exact_transaction_on_both_nodes(
+        runtime,
+        [&environment.bitcoind, &peer_bitcoind],
+        &claim_txid,
+        "cooperative-key-path",
+    )?;
+    mine_blocks(
+        runtime,
+        &environment.bitcoind,
+        environment.terminal_confirmations,
+        "cooperative-key-path",
+    )?;
+    session.wait_provider_state("provider_claimed")?;
+    session.wait_provider_state("completed")?;
+    session.wait_provider_close(
+        "completed",
+        TerminalRailCheck {
+            runtime,
+            environment,
+            bitcoin_settlement_txid: &claim_txid,
+            lightning: LightningTerminalCheck::IncomingInvoice {
+                payment_hash: &invoice.payment_hash,
+            },
+        },
+    )?;
+    let witness = inspect_cooperative_settlement(
+        runtime,
+        environment,
+        &session.contract,
+        &lockup_txid,
+        &claim_txid,
+        CooperativeWitnessPath::KeyPath,
+    )?;
+    let status_ids = [
+        provider_commitment_event.id,
+        requester_commitment_event.id,
+        provider_nonce_event.id,
+        requester_nonce_event.id,
+        provider_partial_event.id,
+        requester_partial_event.id,
+        provider_final_event.id,
+    ];
+    let result = json!({
+        "order_id":session.order.id,
+        "lockup_txid":lockup_txid,
+        "lockup_vout":0,
+        "claim_txid":claim_txid,
+        "payment_hash":invoice.payment_hash,
+        "cooperative_status_ids":status_ids,
+        "cooperative_status_count":7,
+        "provider_final_signature_bytes":64,
+        "witness":witness,
+        "effect_states":{"cooperative_sign":"applied","chain_claim":"applied"},
+        "result":"claimed",
+    });
+    session.persist_terminal("completed", result.clone())?;
+    Ok(result)
+}
+
+fn begin_requester_cooperative_round(
+    environment: &SmokeEnvironment,
+    session: &SessionContext,
+    wallet_path: WalletPath,
+    context: &CooperativeSigningContext,
+    current_height: u32,
+) -> Result<CooperativeSigningRound, String> {
+    let package = session
+        .verifier
+        .exit_packages()
+        .iter()
+        .find(|package| {
+            package
+                .document()
+                .get("participant_role")
+                .and_then(Value::as_str)
+                == Some("requester")
+        })
+        .ok_or_else(|| "cooperative requester exit package is absent".to_owned())?;
+    let transaction = Transaction::parse(&decode_hex(&context.unsigned_transaction)?)
+        .map_err(|error| format!("cooperative unsigned transaction is invalid: {error}"))?;
+    let input = transaction
+        .inputs
+        .first()
+        .ok_or_else(|| "cooperative transaction has no input".to_owned())?;
+    let output = transaction
+        .outputs
+        .first()
+        .ok_or_else(|| "cooperative transaction has no output".to_owned())?;
+    if transaction.inputs.len() != 1 || transaction.outputs.len() != 1 || context.input_index != 0 {
+        return Err(
+            "cooperative transaction is not the pinned one-input one-output shape".to_owned(),
+        );
+    }
+    let prevout = context
+        .prevouts
+        .first()
+        .ok_or_else(|| "cooperative context has no prevout".to_owned())?;
+    let document = package.document();
+    let exit = document
+        .get("exit")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "requester exit package has no exit object".to_owned())?;
+    let verification = document
+        .get("verification")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "requester exit package has no verification object".to_owned())?;
+    let fee_policy = exit
+        .get("fee_policy")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "requester exit package has no fee policy".to_owned())?;
+    let participant_keys = context
+        .participant_keys
+        .iter()
+        .map(|key| decode_fixed_hex::<33>(key, "cooperative participant key"))
+        .collect::<Result<Vec<_>, _>>()?
+        .try_into()
+        .map_err(|_| "cooperative context does not contain two participant keys".to_owned())?;
+    let verifier = verifier_for_leg(&session.contract, "source")?;
+    let template = CooperativeSettlementTemplate {
+        settlement: SettlementTemplate {
+            wallet_path,
+            previous_txid_wire: input.previous_txid,
+            previous_output: input.previous_output,
+            prevout_value_sat: canonical_u64(&prevout.amount)?,
+            prevout_script_pubkey: decode_hex(&prevout.script_pubkey)?,
+            destination_value_sat: output.value_sat,
+            destination_script_pubkey: output.script_pubkey.clone(),
+            transaction_version: transaction.version,
+            input_sequence: input.sequence,
+            lock_time: transaction.lock_time,
+            taproot_script: decode_hex(required_string(verification, "taproot_script")?)?,
+            taproot_control_block: decode_hex(required_string(
+                verification,
+                "taproot_control_block",
+            )?)?,
+            maximum_fee_sat: canonical_u64(required_string(fee_policy, "maximum_fee")?)?,
+            maximum_fee_rate_sat_per_vbyte: 10_000,
+            maximum_weight: 1_600,
+            dust_relay_fee_sat_per_kilobyte: 3_000,
+        },
+        cooperative_wallet_path: wallet_path,
+        participant_keys,
+        provider_index: 0,
+        taproot_merkle_root: decode_fixed_hex::<32>(
+            required_string(verifier, "taproot_merkle_root")?,
+            "cooperative Taproot merkle root",
+        )?,
+        transcript_digest: decode_fixed_hex::<32>(
+            &context
+                .sha256()
+                .map_err(|error| format!("cooperative context digest failed: {error}"))?,
+            "cooperative context digest",
+        )?,
+        latest_safe_height: context
+            .latest_safe_height
+            .parse::<u32>()
+            .map_err(|_| "cooperative latest safe height is invalid".to_owned())?,
+    };
+    let round = SettlementBridge::new(&environment.wallet)
+        .begin_cooperative(&template, current_height)
+        .map_err(|error| format!("could not begin requester cooperative round: {error}"))?;
+    if lower_hex(&round.aggregate_key()) != context.aggregate_key
+        || lower_hex(&round.signature_hash()) != context.signature_hash
+        || lower_hex(
+            &round
+                .unsigned_transaction()
+                .map_err(|error| format!("requester cooperative transaction failed: {error}"))?,
+        ) != context.unsigned_transaction
+    {
+        return Err("requester cooperative round differs from provider context".to_owned());
+    }
+    Ok(round)
+}
+
+fn finish_cooperative_fallback(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    session: SessionContext,
+    lockup_txid: &str,
+    payment_hash: &str,
+    statuses: [Event; 4],
+    crash_cut: bool,
+) -> Result<Value, String> {
+    finish_cooperative_fallback_common(
+        runtime,
+        environment,
+        session,
+        lockup_txid,
+        payment_hash,
+        statuses.into_iter().collect(),
+        crash_cut,
+    )
+}
+
+fn finish_cooperative_fallback_with_requester_abort(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    session: SessionContext,
+    lockup_txid: &str,
+    payment_hash: &str,
+    statuses: [Event; 5],
+) -> Result<Value, String> {
+    finish_cooperative_fallback_common(
+        runtime,
+        environment,
+        session,
+        lockup_txid,
+        payment_hash,
+        statuses.into_iter().collect(),
+        false,
+    )
+}
+
+fn finish_cooperative_fallback_common(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    mut session: SessionContext,
+    lockup_txid: &str,
+    payment_hash: &str,
+    statuses: Vec<Event>,
+    crash_cut: bool,
+) -> Result<Value, String> {
+    let provider_messages = session
+        .verifier
+        .signed_records()
+        .iter()
+        .filter(|event| event.pubkey == session.provider_pubkey)
+        .filter_map(|event| {
+            provider_support::cooperative_signing_message(event, ParticipantRole::Provider)
+                .ok()
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    let requester_messages = session
+        .verifier
+        .signed_records()
+        .iter()
+        .filter(|event| event.pubkey == session.requester.pubkey())
+        .filter_map(|event| {
+            provider_support::cooperative_signing_message(event, ParticipantRole::Requester)
+                .ok()
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    if provider_messages
+        .iter()
+        .filter(|message| message.action == CooperativeSigningAction::Aborted)
+        .count()
+        != 1
+        || provider_messages
+            .iter()
+            .filter(|message| message.action == CooperativeSigningAction::PublicNonce)
+            .count()
+            != 1
+        || provider_messages.iter().any(|message| {
+            matches!(
+                message.action,
+                CooperativeSigningAction::PartialSignature
+                    | CooperativeSigningAction::FinalSignature
+            )
+        })
+        || requester_messages
+            .iter()
+            .any(|message| message.action == CooperativeSigningAction::PublicNonce)
+        || requester_messages
+            .iter()
+            .filter(|message| message.action == CooperativeSigningAction::Aborted)
+            .count()
+            != usize::from(!crash_cut)
+    {
+        return Err("cooperative fallback transcript has another terminal shape".to_owned());
+    }
+    let claim_pending = session.wait_provider_state("provider_claim_pending")?;
+    let claim_txid = status_transaction_id(&claim_pending)?;
+    let peer_bitcoind = load_adversarial_bitcoind("B")?;
+    wait_for_exact_transaction_on_both_nodes(
+        runtime,
+        [&environment.bitcoind, &peer_bitcoind],
+        &claim_txid,
+        "cooperative-script-fallback",
+    )?;
+    mine_blocks(
+        runtime,
+        &environment.bitcoind,
+        environment.terminal_confirmations,
+        "cooperative-script-fallback",
+    )?;
+    session.wait_provider_state("provider_claimed")?;
+    session.wait_provider_state("completed")?;
+    session.wait_provider_close(
+        "completed",
+        TerminalRailCheck {
+            runtime,
+            environment,
+            bitcoin_settlement_txid: &claim_txid,
+            lightning: LightningTerminalCheck::IncomingInvoice { payment_hash },
+        },
+    )?;
+    let witness = inspect_cooperative_settlement(
+        runtime,
+        environment,
+        &session.contract,
+        lockup_txid,
+        &claim_txid,
+        CooperativeWitnessPath::ScriptClaim,
+    )?;
+    let external_control = if crash_cut {
+        Some(
+            load_funded_injection_proof(&environment.control.paths)?
+                .ok_or_else(|| "cooperative crash has no process proof".to_owned())?,
+        )
+    } else {
+        None
+    };
+    let result = json!({
+        "order_id":session.order.id,
+        "lockup_txid":lockup_txid,
+        "lockup_vout":0,
+        "claim_txid":claim_txid,
+        "payment_hash":payment_hash,
+        "cooperative_status_ids":statuses.into_iter().map(|event| event.id).collect::<Vec<_>>(),
+        "cooperative_status_count":if crash_cut { 4 } else { 5 },
+        "provider_abort_count":1,
+        "provider_public_nonce_count":1,
+        "provider_partial_count":0,
+        "provider_final_count":0,
+        "requester_public_nonce_count":0,
+        "requester_abort_count":usize::from(!crash_cut),
+        "witness":witness,
+        "effect_states":{"cooperative_sign":"applied","chain_claim":"applied"},
+        "external_control":external_control,
+        "result":"claimed",
+    });
+    session.persist_terminal("completed", result.clone())?;
+    Ok(result)
+}
+
+#[derive(Clone, Copy)]
+enum CooperativeWitnessPath {
+    KeyPath,
+    ScriptClaim,
+}
+
+fn inspect_cooperative_settlement(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    contract: &Value,
+    funding_txid: &str,
+    settlement_txid: &str,
+    path: CooperativeWitnessPath,
+) -> Result<Value, String> {
+    let peer = adversarial_peer_bitcoind()?;
+    let primary = runtime
+        .block_on(environment.bitcoind.raw_transaction(
+            &rpc_id("cooperative-primary-transaction")?,
+            settlement_txid,
+            true,
+        ))
+        .map_err(|error| format!("could not read cooperative transaction from node A: {error}"))?;
+    let secondary = runtime
+        .block_on(peer.raw_transaction(
+            &rpc_id("cooperative-secondary-transaction")?,
+            settlement_txid,
+            true,
+        ))
+        .map_err(|error| format!("could not read cooperative transaction from node B: {error}"))?;
+    let primary_object = primary
+        .as_object()
+        .ok_or_else(|| "node A cooperative transaction response is not an object".to_owned())?;
+    let secondary_object = secondary
+        .as_object()
+        .ok_or_else(|| "node B cooperative transaction response is not an object".to_owned())?;
+    let primary_hex = required_string(primary_object, "hex")?;
+    if secondary_object.get("hex").and_then(Value::as_str) != Some(primary_hex)
+        || primary_object.get("txid").and_then(Value::as_str) != Some(settlement_txid)
+        || secondary_object.get("txid").and_then(Value::as_str) != Some(settlement_txid)
+        || primary_object.get("confirmations").and_then(Value::as_u64)
+            < Some(environment.terminal_confirmations)
+        || secondary_object
+            .get("confirmations")
+            .and_then(Value::as_u64)
+            < Some(environment.terminal_confirmations)
+    {
+        return Err("two bitcoind nodes disagree on cooperative settlement".to_owned());
+    }
+    let transaction = Transaction::parse(&decode_hex(primary_hex)?)
+        .map_err(|error| format!("cooperative settlement transaction is invalid: {error}"))?;
+    let input = transaction
+        .inputs
+        .first()
+        .ok_or_else(|| "cooperative settlement has no input".to_owned())?;
+    if transaction.inputs.len() != 1
+        || transaction.outputs.len() != 1
+        || input.previous_txid != display_txid_wire(funding_txid)?
+        || input.previous_output != 0
+    {
+        return Err("cooperative settlement does not spend the exact lockup outpoint".to_owned());
+    }
+    let virtual_size = transaction
+        .virtual_size()
+        .map_err(|error| format!("cooperative settlement vsize failed: {error}"))?;
+    match path {
+        CooperativeWitnessPath::KeyPath => {
+            if input.witness.len() != 1
+                || input.witness.first().is_none_or(|item| item.len() != 64)
+                || virtual_size != 111
+            {
+                return Err(
+                    "cooperative key-path witness differs from the 111-vB fixture".to_owned(),
+                );
+            }
+            Ok(json!({
+                "path":"key_path",
+                "input_count":1,
+                "output_count":1,
+                "witness_item_count":1,
+                "witness_item_lengths":[64],
+                "script_item_count":0,
+                "control_block_item_count":0,
+                "virtual_size":111,
+                "exact_funding_outpoint":true,
+                "both_bitcoind_nodes_agree":true,
+            }))
+        }
+        CooperativeWitnessPath::ScriptClaim => {
+            let verifier = verifier_for_leg(contract, "source")?;
+            let script = decode_hex(required_string(verifier, "claim_script")?)?;
+            let control = decode_hex(required_string(verifier, "taproot_claim_control_block")?)?;
+            if input.witness.len() != 4
+                || input.witness.get(2) != Some(&script)
+                || input.witness.get(3) != Some(&control)
+                || virtual_size != 155
+            {
+                return Err(
+                    "cooperative fallback witness differs from the exact claim leaf".to_owned(),
+                );
+            }
+            Ok(json!({
+                "path":"script_claim",
+                "input_count":1,
+                "output_count":1,
+                "witness_item_count":4,
+                "witness_item_lengths":input.witness.iter().map(Vec::len).collect::<Vec<_>>(),
+                "taproot_script_bytes":script.len(),
+                "control_block_bytes":control.len(),
+                "exact_contract_leaf_and_control":true,
+                "virtual_size":155,
+                "exact_funding_outpoint":true,
+                "both_bitcoind_nodes_agree":true,
+            }))
+        }
+    }
+}
+
+fn adversarial_peer_bitcoind() -> Result<BitcoindClient, String> {
+    let port = required_environment("IMMORTAL_LAB_ADVERSARIAL_BITCOIND_B_PORT")?
+        .parse::<u16>()
+        .map_err(|_| "adversarial Bitcoin B port is invalid".to_owned())?;
+    let endpoint = BitcoindEndpoint::new(
+        required_environment("IMMORTAL_LAB_ADVERSARIAL_BITCOIND_B_HOST")?,
+        port,
+    )
+    .map_err(|error| format!("adversarial Bitcoin B endpoint is invalid: {error}"))?;
+    let auth = BitcoindAuth::new(
+        required_environment("IMMORTAL_LAB_ADVERSARIAL_BITCOIND_B_RPC_USER")?,
+        required_environment("IMMORTAL_LAB_ADVERSARIAL_BITCOIND_B_RPC_PASSWORD")?,
+    )
+    .map_err(|error| format!("adversarial Bitcoin B authentication is invalid: {error}"))?;
+    BitcoindClient::new(endpoint, auth, BitcoindLimits::default())
+        .map_err(|error| format!("could not initialize adversarial Bitcoin B client: {error}"))
+}
+
+fn cooperative_action_name(action: CooperativeSigningAction) -> &'static str {
+    match action {
+        CooperativeSigningAction::NonceCommitment => "nonce_commitment",
+        CooperativeSigningAction::PublicNonce => "public_nonce",
+        CooperativeSigningAction::PartialSignature => "partial_signature",
+        CooperativeSigningAction::FinalSignature => "final_signature",
+        CooperativeSigningAction::Aborted => "aborted",
+    }
+}
+
+fn decode_fixed_hex<const SIZE: usize>(value: &str, label: &str) -> Result<[u8; SIZE], String> {
+    let decoded = decode_hex(value)?;
+    decoded
+        .try_into()
+        .map_err(|_| format!("{label} is not {SIZE} bytes"))
 }
 
 fn drive_submarine_refund(
@@ -3355,7 +4166,8 @@ fn prepare_quote_with_terms(
         &session_id,
         JOURNEY_TIMEOUT,
         |event| event.kind == MKT_QUOTE_KIND,
-    )?;
+    )
+    .map_err(|error| format!("provider Quote wait failed: {error}"))?;
     let quote_observed_at = received_quote.delivery.observed_at();
     let quote = received_quote.event;
     deliveries.push(received_quote.delivery);
@@ -3493,7 +4305,8 @@ fn prepare_order(
         None if input.swap_type == "reverse" => None,
         _ => return Err("funded smoke requester funding input has the wrong shape".to_owned()),
     };
-    let exit_package_seed = bind_requester_exit_package(
+    let exit_package_seeds = bind_requester_exit_packages(
+        &config,
         &mut contract,
         input.swap_type,
         &order.id,
@@ -3513,7 +4326,7 @@ fn prepare_order(
         order,
         order_observed_at,
         contract,
-        exit_package_seed,
+        exit_package_seeds,
         requester_funding,
         journey_name,
         control,
@@ -3534,7 +4347,7 @@ fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, Strin
         order,
         order_observed_at,
         contract,
-        exit_package_seed,
+        exit_package_seeds,
         requester_funding,
         journey_name,
         control,
@@ -3581,7 +4394,8 @@ fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, Strin
         &session_id,
         JOURNEY_TIMEOUT,
         |event| event.kind == MKT_SWP_SWAP_CONTRACT_KIND && event.pubkey == provider_pubkey,
-    )?;
+    )
+    .map_err(|error| format!("provider Swap Contract wait failed: {error}"))?;
     let provider_contract = received_provider_contract.event;
     deliveries.push(received_provider_contract.delivery);
     if record_profile(&provider_contract)?.get("contract") != Some(&contract) {
@@ -3594,13 +4408,49 @@ fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, Strin
     if exact_tag_value(&provider_contract, "x")? != requester_contract_sha256 {
         return Err("provider contract digest differs from requester contract digest".to_owned());
     }
-    let exit_package = finalize_requester_exit_package(
-        &exit_package_seed,
-        [&requester_contract.id, &provider_contract.id],
-        requester_contract_sha256,
-    )?;
-    records.push(provider_contract);
-    let verifier = SwapSession::from_signed_records(config, records, vec![exit_package])
+    records.push(provider_contract.clone());
+    let exit_packages = exit_package_seeds
+        .iter()
+        .map(|seed| {
+            finalize_exit_package(
+                seed,
+                [&requester_contract.id, &provider_contract.id],
+                requester_contract_sha256,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(provider_seed) = exit_package_seeds.iter().find(|package| {
+        package
+            .document()
+            .get("participant_role")
+            .and_then(Value::as_str)
+            == Some("provider")
+    }) {
+        let canonical =
+            provider_support::build_provider_submarine_claim_exit_package(&config, &records)
+                .map_err(|error| {
+                    format!("could not rebuild accepted provider exit package: {error}")
+                })?;
+        if provider_seed
+            .commitment_sha256()
+            .map_err(|error| format!("could not commit provider exit seed: {error}"))?
+            != canonical
+                .commitment_sha256()
+                .map_err(|error| format!("could not commit accepted provider exit: {error}"))?
+        {
+            return Err(
+                "provider exit seed commitment differs from the accepted-session canonical package"
+                    .to_owned(),
+            );
+        }
+        if !exit_packages.iter().any(|package| package == &canonical) {
+            return Err(
+                "finalized provider exit differs from the accepted-session canonical package"
+                    .to_owned(),
+            );
+        }
+    }
+    let verifier = SwapSession::from_signed_records(config, records, exit_packages)
         .map_err(|error| format!("funded verifier rejected negotiated session: {error}"))?;
     let mut session = SessionContext {
         relay_url,
@@ -3677,7 +4527,8 @@ impl SessionContext {
                 | HarnessInjection::WalletCrash
                 | HarnessInjection::FundingReorg
                 | HarnessInjection::ClaimReorg
-                | HarnessInjection::RbfConflict,
+                | HarnessInjection::RbfConflict
+                | HarnessInjection::CooperativeCrashCut,
             )
             | None => Ok(()),
         }
@@ -3942,11 +4793,65 @@ impl SessionContext {
                         .as_deref()
                         == Some(expected)
             },
-        )?;
+        )
+        .map_err(|error| format!("provider {expected} Status wait failed: {error}"))?;
         let event = received.event;
         self.deliveries.push(received.delivery);
         self.ingest_synchronized(event.clone(), &format!("provider {expected}"))?;
         Ok(event)
+    }
+
+    fn wait_provider_cooperative_action(
+        &mut self,
+        expected: CooperativeSigningAction,
+    ) -> Result<(Event, CooperativeSigningMessage), String> {
+        if let Some((event, message)) = self.verifier.signed_records().iter().find_map(|event| {
+            if event.kind != MKT_STATUS_KIND || event.pubkey != self.provider_pubkey {
+                return None;
+            }
+            provider_support::cooperative_signing_message(event, ParticipantRole::Provider)
+                .ok()
+                .flatten()
+                .filter(|message| message.action == expected)
+                .map(|message| (event.clone(), message))
+        }) {
+            return Ok((event, message));
+        }
+        let session_id = self.verifier.config().session_id.clone();
+        let received = receive_matching_private(
+            &mut self.reader,
+            &self.requester,
+            &session_id,
+            JOURNEY_TIMEOUT,
+            |event| {
+                event.kind == MKT_STATUS_KIND
+                    && event.pubkey == self.provider_pubkey
+                    && provider_support::cooperative_signing_message(
+                        event,
+                        ParticipantRole::Provider,
+                    )
+                    .ok()
+                    .flatten()
+                    .is_some_and(|message| message.action == expected)
+            },
+        )
+        .map_err(|error| {
+            format!(
+                "provider cooperative {} Status wait failed: {error}",
+                cooperative_action_name(expected)
+            )
+        })?;
+        let event = received.event;
+        self.deliveries.push(received.delivery);
+        self.ingest_synchronized(
+            event.clone(),
+            &format!("provider cooperative {}", cooperative_action_name(expected)),
+        )?;
+        let message =
+            provider_support::cooperative_signing_message(&event, ParticipantRole::Provider)
+                .map_err(|error| format!("provider cooperative Status is invalid: {error}"))?
+                .ok_or_else(|| "provider cooperative Status has no message".to_owned())?;
+        Ok((event, message))
     }
 
     fn wait_provider_close(
@@ -4068,6 +4973,60 @@ impl SessionContext {
         let delivery = SignedRecordDelivery::from_locally_signed(raw_event.clone(), unix_now()?)
             .map_err(|error| format!("could not retain requester Status provenance: {error}"))?;
         self.ingest_synchronized(event.clone(), &format!("requester {state}"))?;
+        self.deliveries.push(delivery);
+        self.persist_snapshot()?;
+        publish_private(
+            &mut self.publisher,
+            &raw_event,
+            &self.requester,
+            &self.provider_pubkey,
+        )?;
+        self.requester_status = Some((sequence, event.id.clone()));
+        Ok(event)
+    }
+
+    fn publish_requester_cooperative_status(
+        &mut self,
+        message: CooperativeSigningMessage,
+    ) -> Result<Event, String> {
+        let action = cooperative_action_name(message.action);
+        let (sequence, previous) = match &self.requester_status {
+            Some((sequence, previous)) => (
+                sequence
+                    .checked_add(1)
+                    .ok_or_else(|| "requester Status sequence overflowed".to_owned())?,
+                Some(previous.as_str()),
+            ),
+            None => (0, None),
+        };
+        let (event, raw_event) = sign_request(
+            self.factory
+                .cooperative_status(
+                    ParticipantRole::Requester,
+                    next_created_at(&self.verifier)?,
+                    &digest(&format!(
+                        "requester-cooperative:{action}:{}",
+                        self.verifier.config().session_id
+                    )),
+                    &self.order.id,
+                    StatusState {
+                        sequence,
+                        previous,
+                        base_state: "executing",
+                        swp_state: "cooperative_signing_pending",
+                    },
+                    message,
+                )
+                .map_err(|error| {
+                    format!("could not construct requester cooperative {action}: {error}")
+                })?,
+            &self.requester,
+        )?;
+        let delivery = SignedRecordDelivery::from_locally_signed(raw_event.clone(), unix_now()?)
+            .map_err(|error| {
+                format!("could not retain requester cooperative {action} provenance: {error}")
+            })?;
+        self.ingest_synchronized(event.clone(), &format!("requester cooperative {action}"))?;
         self.deliveries.push(delivery);
         self.persist_snapshot()?;
         publish_private(
@@ -4449,18 +5408,36 @@ fn bind_requester_funding(
     Ok(funding)
 }
 
-fn bind_requester_exit_package(
+fn bind_requester_exit_packages(
+    config: &SwapClientConfig,
     contract: &mut Value,
     swap_type: &str,
     order_id: &str,
     quote_id: &str,
     destination_script_pubkey: &[u8],
-) -> Result<ExitPackage, String> {
+) -> Result<Vec<ExitPackage>, String> {
     let (leg_id, path, funding_role, funding_leg_id) = match swap_type {
         "submarine" => ("source", "refund", "chain_fund", "source"),
         "reverse" => ("destination", "claim", "invoice_pay", "lightning"),
         _ => return Err("funded smoke cannot bind exits for this swap type".to_owned()),
     };
+    let cooperative = swap_type == "submarine"
+        && contract.get("musig2_execution").and_then(Value::as_bool) == Some(true);
+    {
+        let root = contract
+            .as_object_mut()
+            .ok_or_else(|| "funded contract is not an object".to_owned())?;
+        let bindings = root
+            .get_mut("effect_bindings")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| "funded contract has no mutable effect bindings".to_owned())?;
+        upsert_effect_binding(bindings, funding_role, funding_leg_id);
+        upsert_effect_binding(bindings, &format!("chain_{path}"), leg_id);
+        if cooperative {
+            upsert_effect_binding(bindings, "cooperative_sign", "source");
+            upsert_effect_binding(bindings, "chain_claim", "source");
+        }
+    }
     let document = requester_exit_document(
         contract,
         order_id,
@@ -4469,32 +5446,87 @@ fn bind_requester_exit_package(
         path,
         destination_script_pubkey,
     )?;
-    let package = ExitPackage::parse(document)
+    let requester_package = ExitPackage::parse(document)
         .map_err(|error| format!("dynamic requester exit package is invalid: {error}"))?;
-    let package_sha256 = package
+    let requester_package_sha256 = requester_package
         .commitment_sha256()
         .map_err(|error| format!("could not commit requester exit package: {error}"))?;
+    let provider_package = cooperative
+        .then(|| {
+            provider_support::build_provider_submarine_claim_exit_package_seed(
+                config, order_id, quote_id, contract,
+            )
+            .map_err(|error| {
+                format!("could not build canonical provider exit package seed: {error}")
+            })
+        })
+        .transpose()?;
+    let provider_package_sha256 = provider_package
+        .as_ref()
+        .map(ExitPackage::commitment_sha256)
+        .transpose()
+        .map_err(|error| format!("could not commit provider exit package: {error}"))?;
     let root = contract
         .as_object_mut()
         .ok_or_else(|| "funded contract is not an object".to_owned())?;
-    root.insert(
-        "effect_bindings".to_owned(),
-        json!([
-            {"role":funding_role,"leg_id":funding_leg_id},
-            {"role":format!("chain_{path}"),"leg_id":leg_id}
-        ]),
+    let commitments = root
+        .get_mut("exit_package_commitments")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "funded contract has no mutable exit commitments".to_owned())?;
+    upsert_exit_commitment(
+        commitments,
+        "requester",
+        leg_id,
+        path,
+        "wallet_sign",
+        &requester_package_sha256,
     );
-    root.insert(
-        "exit_package_commitments".to_owned(),
-        json!([{
-            "participant_role":"requester",
-            "leg_id":leg_id,
-            "path":path,
-            "package_mode":"wallet_sign",
-            "package_sha256":package_sha256
-        }]),
-    );
-    Ok(package)
+    if let Some(provider_digest) = provider_package_sha256.as_deref() {
+        upsert_exit_commitment(
+            commitments,
+            "provider",
+            "source",
+            "claim",
+            "external_signer",
+            provider_digest,
+        );
+    }
+    let mut packages = vec![requester_package];
+    if let Some(provider_package) = provider_package {
+        packages.push(provider_package);
+    }
+    Ok(packages)
+}
+
+fn upsert_effect_binding(bindings: &mut Vec<Value>, role: &str, leg_id: &str) {
+    if !bindings.iter().any(|binding| {
+        binding.get("role").and_then(Value::as_str) == Some(role)
+            && binding.get("leg_id").and_then(Value::as_str) == Some(leg_id)
+    }) {
+        bindings.push(json!({"role":role,"leg_id":leg_id}));
+    }
+}
+
+fn upsert_exit_commitment(
+    commitments: &mut Vec<Value>,
+    participant_role: &str,
+    leg_id: &str,
+    path: &str,
+    package_mode: &str,
+    package_sha256: &str,
+) {
+    commitments.retain(|commitment| {
+        commitment.get("participant_role").and_then(Value::as_str) != Some(participant_role)
+            || commitment.get("leg_id").and_then(Value::as_str) != Some(leg_id)
+            || commitment.get("path").and_then(Value::as_str) != Some(path)
+    });
+    commitments.push(json!({
+        "participant_role":participant_role,
+        "leg_id":leg_id,
+        "path":path,
+        "package_mode":package_mode,
+        "package_sha256":package_sha256,
+    }));
 }
 
 fn requester_exit_document(
@@ -4634,7 +5666,7 @@ fn requester_exit_document(
     }))
 }
 
-fn finalize_requester_exit_package(
+fn finalize_exit_package(
     seed: &ExitPackage,
     contract_ids: [&String; 2],
     contract_sha256: &str,
@@ -4642,8 +5674,7 @@ fn finalize_requester_exit_package(
     let mut document = seed.document().clone();
     document["swap_contract_ids"] = json!(contract_ids);
     document["contract_sha256"] = Value::String(contract_sha256.to_owned());
-    ExitPackage::parse(document)
-        .map_err(|error| format!("bound requester exit package is invalid: {error}"))
+    ExitPackage::parse(document).map_err(|error| format!("bound exit package is invalid: {error}"))
 }
 
 fn verify_submarine_before_fund(
@@ -5085,6 +6116,64 @@ fn load_adversarial_bitcoind(suffix: &str) -> Result<BitcoindClient, String> {
     .map_err(|error| format!("adversarial bitcoind credentials are invalid: {error}"))?;
     BitcoindClient::new(endpoint, auth, BitcoindLimits::default())
         .map_err(|error| format!("could not initialize adversarial bitcoind client: {error}"))
+}
+
+fn wait_for_exact_transaction_on_both_nodes(
+    runtime: &Runtime,
+    nodes: [&BitcoindClient; 2],
+    transaction_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + JOURNEY_TIMEOUT;
+    loop {
+        let mut transactions = Vec::with_capacity(nodes.len());
+        for (index, node) in nodes.iter().enumerate() {
+            match runtime.block_on(node.raw_transaction(
+                &rpc_id(&format!("{label}-propagation-{index}"))?,
+                transaction_id,
+                false,
+            )) {
+                Ok(Value::String(raw)) => transactions.push(raw),
+                Ok(_) => {
+                    return Err(format!(
+                        "Bitcoin node {index} returned another transaction shape during propagation"
+                    ));
+                }
+                Err(BitcoindError::Rpc { code: -5 }) if Instant::now() < deadline => break,
+                Err(error) => {
+                    return Err(format!(
+                        "Bitcoin node {index} did not receive the cooperative transaction: {error}"
+                    ));
+                }
+            }
+        }
+        if let [first, second] = transactions.as_slice() {
+            if first != second {
+                return Err(
+                    "Bitcoin nodes received different cooperative transaction bytes".to_owned(),
+                );
+            }
+            let transaction = Transaction::parse(&decode_hex(first)?).map_err(|error| {
+                format!("propagated cooperative transaction is invalid: {error}")
+            })?;
+            if lower_hex(
+                &transaction
+                    .txid()
+                    .map_err(|error| format!("cooperative transaction txid failed: {error}"))?,
+            ) != transaction_id
+            {
+                return Err("propagated cooperative transaction has another txid".to_owned());
+            }
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(
+                "cooperative transaction did not propagate to both Bitcoin nodes before mining"
+                    .to_owned(),
+            );
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
 }
 
 fn verify_refund_spend_on_both_nodes(

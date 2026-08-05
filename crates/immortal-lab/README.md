@@ -110,6 +110,26 @@ wallet's still-authenticated relay sockets. Provider recovery restores a
 durable terminal reservation release before replaying its matching signed
 Close, and fails closed if PostgreSQL does not contain that exact release.
 
+The cooperative process cases use the same disposable adversarial runner:
+
+```sh
+scripts/test-lab-adversarial.sh --case musig2-submarine-provider-a
+scripts/test-lab-adversarial.sh --case musig2-submarine-provider-b
+scripts/test-lab-adversarial.sh --case musig2-abort-script-path
+scripts/test-lab-adversarial.sh --case musig2-crash-cut-recovery
+```
+
+Only those four case IDs supply the exact regtest lab cooperative-signing
+gate. The completion cases require the signed provider commitment, requester
+commitment, provider nonce, requester nonce, provider partial, requester
+partial, and provider final order before inspecting the 111-vB key-path
+spend. The abort case stops after the provider nonce, obtains both signed
+abort records, and verifies the 155-vB script claim. The crash case waits for
+the provider's persisted-public-nonce checkpoint, sends SIGKILL, replaces the
+process over the same database and wallet-seed file, then requires one
+provider abort, no recreated nonce or partial/final signature, and the same
+script claim. Retained records contain only normalized public evidence.
+
 ## Safety rails
 
 - Only `ws://` loopback relay URLs are accepted (same refusal as

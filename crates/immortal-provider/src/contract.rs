@@ -939,6 +939,7 @@ fn environment_contract() -> Value {
             &["mainnet", "testnet", "signet", "regtest"]
         ),
         lab_profile_environment(),
+        lab_cooperative_signing_environment(),
         env_string(
             "IMMORTAL_PROVIDER_BITCOIND_HOST",
             &["funded"],
@@ -1258,6 +1259,22 @@ fn lab_profile_environment() -> Value {
     value["required_network"] = Value::String("regtest".to_owned());
     value["quote_expiry_seconds"] = json!(3);
     value["hold_invoice_expiry_seconds"] = json!(30);
+    value
+}
+
+fn lab_cooperative_signing_environment() -> Value {
+    let mut value = optional_environment(
+        env_choice(
+            "IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING",
+            &["funded"],
+            &["true"],
+        ),
+        &["funded"],
+        false,
+    );
+    value["required_network"] = Value::String("regtest".to_owned());
+    value["required_lab_profile"] = Value::String("regtest_adversarial".to_owned());
+    value["lab_only"] = Value::Bool(true);
     value
 }
 

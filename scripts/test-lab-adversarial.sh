@@ -127,7 +127,7 @@ run_case() (
   local case_id="$1" group="$2" expected="$3" selected_provider="$4"
   local private_root project_name provider_image_ref current_phase compose_ready infrastructure_proven
   local maximum_seconds case_deadline failure_reason record_path
-  local external_injection external_checkpoint external_target
+  local external_injection external_checkpoint external_target cooperative_signing
   local wallet_driver_container_name
   private_root="$(mktemp -d "${TMPDIR:-/tmp}/immortal-adversarial-case.XXXXXX")"
   project_name="immortal-18-$(printf '%s' "${case_id}" | cut -c1-24)-$(random_hex 5)"
@@ -140,6 +140,7 @@ run_case() (
   external_injection=""
   external_checkpoint=""
   external_target=""
+  cooperative_signing=false
   case "${case_id}" in
     relay-a-partition)
       external_injection=relay_loss
@@ -180,6 +181,16 @@ run_case() (
       external_injection=claim_reorg
       external_checkpoint=submarine:claim_reorg_control
       external_target=provider-a
+      ;;
+    musig2-crash-cut-recovery)
+      external_injection=cooperative_crash_cut
+      external_checkpoint=cooperative_crash_cut:provider_public_nonce_persisted
+      external_target=provider-a
+      ;;
+  esac
+  case "${case_id}" in
+    musig2-submarine-provider-a|musig2-submarine-provider-b|musig2-abort-script-path|musig2-crash-cut-recovery)
+      cooperative_signing=true
       ;;
   esac
   maximum_seconds="$(python3 - "${fixture}" <<'PY'
@@ -481,6 +492,25 @@ PY
     printf '%s\n' "${wallet_driver_container_name}"
   }
 
+  provider_state_boundary_digest() {
+    local service="$1" container
+    container="$(compose ps --quiet "${service}")"
+    test -n "${container}"
+    docker inspect "${container}" | python3 -c '
+import hashlib, json, sys
+container = json.load(sys.stdin)[0]
+database = next(
+    value for value in container["Config"]["Env"]
+    if value.startswith("IMMORTAL_PROVIDER_DATABASE_URL=")
+)
+wallet = next(
+    mount["Source"] for mount in container["Mounts"]
+    if mount["Destination"].endswith("wallet-seed")
+)
+print(hashlib.sha256((database + "\0" + wallet).encode()).hexdigest())
+'
+  }
+
   wait_for_injection_request() {
     local request_file="$1"
     for _ in $(seq 1 600); do
@@ -646,6 +676,7 @@ PY
     local request_file acknowledgement_file request_metadata request_run_id request_sha256
     local before_pid after_pid target_suffix target_port target_provider target_container
     local restored transition
+    local before_state_boundary after_state_boundary state_boundary_unchanged
     request_file="${private_root}/state/funded-injection.json"
     acknowledgement_file="${private_root}/state/funded-continue"
     wait_for_injection_request "${request_file}"
@@ -703,6 +734,7 @@ PY
 
     restored=true
     transition=process_replaced_and_ready
+    state_boundary_unchanged=false
     after_pid=""
     case "${external_injection}" in
       relay_loss)
@@ -768,6 +800,26 @@ PY
         target_container="$(wallet_driver_container)"
         after_pid="$(docker inspect --format '{{.State.Pid}}' "${target_container}")"
         ;;
+      cooperative_crash_cut)
+        current_phase="${external_target}-cooperative-crash-cut"
+        before_state_boundary="$(provider_state_boundary_digest "${external_target}")"
+        compose kill "${external_target}" >/dev/null
+        if compose ps --services --status running | grep -Fx "${external_target}" >/dev/null; then
+          echo "test-lab-adversarial: ${case_id}: provider remained running after SIGKILL" >&2
+          return 1
+        fi
+        compose up --detach "${external_target}" >/dev/null
+        target_suffix="${external_target#provider-}"
+        target_port=9091
+        if test "${target_suffix}" = b; then
+          target_port=9092
+        fi
+        wait_for "restored ${external_target}" provider_ready "${target_suffix}" "${target_port}"
+        after_state_boundary="$(provider_state_boundary_digest "${external_target}")"
+        test "${before_state_boundary}" = "${after_state_boundary}"
+        transition=process_replaced_same_database_and_wallet_file
+        state_boundary_unchanged=true
+        ;;
       provider_noncooperative)
         before_pid="$(container_pid "${external_target}")"
         [[ "${before_pid}" =~ ^[1-9][0-9]*$ ]]
@@ -797,7 +849,7 @@ PY
     python3 - "${request_file}" "${acknowledgement_file}" "${request_run_id}" \
       "${request_sha256}" "${external_injection}" "${external_checkpoint}" \
       "${external_target}" "${before_pid}" "${after_pid}" "${restored}" \
-      "${transition}" <<'PY'
+      "${transition}" "${state_boundary_unchanged}" <<'PY'
 import hashlib
 import json
 import os
@@ -831,6 +883,8 @@ acknowledgement = {
 }
 if sys.argv[9]:
     acknowledgement["evidence"]["after_pid"] = int(sys.argv[9])
+if sys.argv[12] == "true":
+    acknowledgement["evidence"]["state_boundary_unchanged"] = True
 output = json.dumps(acknowledgement, separators=(",", ":")).encode()
 temporary = acknowledgement_path.with_name(acknowledgement_path.name + ".tmp")
 descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -1011,6 +1065,9 @@ IMMORTAL_PROVIDER_QUOTE_MAX_SAT=1000000
 IMMORTAL_PROVIDER_RESERVATION_TIER=hard
 IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM=2900
 EOF
+    if test "${cooperative_signing}" = true; then
+      printf '%s\n' 'IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING=true' >>"${path}"
+    fi
   }
   write_provider_env "${private_root}/provider-a.env" a "${provider_a_password}" 18080 \
     "${provider_a_identity}" "${bitcoin_a_user}" "${bitcoin_a_password}" \

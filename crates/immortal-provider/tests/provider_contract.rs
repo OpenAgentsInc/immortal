@@ -238,6 +238,19 @@ fn provider_contract_distinguishes_required_and_optional_environment() {
     assert_eq!(lab_profile["hold_invoice_expiry_seconds"], 30);
     assert_eq!(lab_profile["defaulted"], false);
 
+    let lab_cooperative_signing = variables
+        .iter()
+        .find(|variable| variable["name"] == "IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING")
+        .expect("provider contract must export the lab-only cooperative signing gate");
+    assert_eq!(lab_cooperative_signing["choices"], json!(["true"]));
+    assert_eq!(lab_cooperative_signing["required_network"], "regtest");
+    assert_eq!(
+        lab_cooperative_signing["required_lab_profile"],
+        "regtest_adversarial"
+    );
+    assert_eq!(lab_cooperative_signing["lab_only"], true);
+    assert_eq!(lab_cooperative_signing["defaulted"], false);
+
     let cln = variables
         .iter()
         .find(|variable| variable["name"] == "IMMORTAL_PROVIDER_CLN_RPC_PATH")

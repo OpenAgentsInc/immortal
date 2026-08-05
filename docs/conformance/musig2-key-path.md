@@ -49,9 +49,24 @@ reads are covered across Postgres restart. The production constructor still
 sets the process gate to false, and the exported `musig2_key_path` and
 `musig2_key_path_signer` flags remain false.
 
-Activation still requires #18 evidence from two independently keyed provider
-processes for cooperative completion and mid-transcript abort to script-path
-claim. Reverse cooperative settlement remains disabled until the protocol
-binds preimage release for settling the held Lightning invoice; a key-path
-spend alone does not disclose that preimage. Public replacement claims remain
-gated on live deployment evidence.
+The #18 cooperative subgate runs only when all three exact process conditions
+hold: `IMMORTAL_PROVIDER_BITCOIN_NETWORK=regtest`,
+`IMMORTAL_PROVIDER_LAB_PROFILE=regtest_adversarial`, and
+`IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING=true`. The adversarial runner sets
+them only for four cases: submarine settlement through provider A, the same
+settlement through provider B, bilateral abort after the provider public
+nonce, and SIGKILL recovery after that nonce is durably visible. Each case
+uses independently keyed provider processes, databases, seed mounts, Bitcoin
+namespaces, and relays. The completion cases pin a 64-byte, one-item key-path
+witness at 111 vB. Both fallback cases pin the exact four-item claim witness
+at 155 vB; restart changes the provider PID while retaining the database and
+wallet-file boundary, emits one abort, and never recreates a nonce or emits a
+partial or final signature.
+
+These four local cases do not advertise a public capability. The exported
+`musig2_key_path`, `musig2_key_path_signer`, and NIP-11 flags remain false
+until the complete #18 conformance packet passes under its active
+configuration. Reverse cooperative settlement remains disabled until the
+protocol binds preimage release for settling the held Lightning invoice; a
+key-path spend alone does not disclose that preimage. Public replacement
+claims remain gated on live deployment evidence.

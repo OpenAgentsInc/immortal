@@ -92,6 +92,7 @@ pub struct FundedProviderConfig {
     pub reorg_safety_blocks: u32,
     pub pricing: PricingConfig,
     pub hold_invoice_expiry_seconds: u32,
+    pub cooperative_signing: bool,
     pub boltz: Option<BoltzConfig>,
 }
 
@@ -117,6 +118,7 @@ impl fmt::Debug for FundedProviderConfig {
                 "hold_invoice_expiry_seconds",
                 &self.hold_invoice_expiry_seconds,
             )
+            .field("cooperative_signing", &self.cooperative_signing)
             .field("boltz", &self.boltz)
             .finish()
     }
@@ -132,6 +134,7 @@ impl FundedProviderConfig {
             .map_err(|_| ConfigError::Invalid("IMMORTAL_PROVIDER_RELAY_URL"))?;
         let network = parse_network(&required("IMMORTAL_PROVIDER_BITCOIN_NETWORK")?)?;
         let lab_timeout_profile = lab_timeout_profile_from_lookup(network, optional)?;
+        let cooperative_signing = cooperative_signing_from_lookup(lab_timeout_profile, optional)?;
 
         let bitcoind_host = required("IMMORTAL_PROVIDER_BITCOIND_HOST")?;
         let bitcoind_port = parse_number::<u16>(
@@ -221,6 +224,7 @@ impl FundedProviderConfig {
             reorg_safety_blocks,
             pricing,
             hold_invoice_expiry_seconds,
+            cooperative_signing,
             boltz,
         })
     }
@@ -228,6 +232,21 @@ impl FundedProviderConfig {
     pub fn database_url(&self) -> &str {
         &self.database_url.0
     }
+}
+
+fn cooperative_signing_from_lookup(
+    profile: Option<LabTimeoutProfile>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<bool, ConfigError> {
+    let Some(value) = lookup("IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING") else {
+        return Ok(false);
+    };
+    if value != "true" || profile.is_none() {
+        return Err(ConfigError::Invalid(
+            "IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING",
+        ));
+    }
+    Ok(true)
 }
 
 fn direct_recovery_bind_from_lookup(
@@ -486,6 +505,7 @@ mod tests {
             Ok(None)
         );
         assert_eq!(PRODUCTION_HOLD_INVOICE_EXPIRY_SECONDS, 604_800);
+        assert_eq!(cooperative_signing_from_lookup(None, |_| None), Ok(false));
         let pricing = PricingConfig::from_lookup(|_| None).expect("default pricing validates");
         assert_eq!(pricing.quote_expiry_seconds, 300);
         assert!(
@@ -496,6 +516,53 @@ mod tests {
             .validate()
             .is_ok()
         );
+    }
+
+    #[test]
+    fn cooperative_signing_requires_the_explicit_validated_regtest_lab_gate() {
+        let profile = lab_timeout_profile_from_lookup(BitcoinNetwork::Regtest, |name| {
+            (name == "IMMORTAL_PROVIDER_LAB_PROFILE").then(|| "regtest_adversarial".to_owned())
+        })
+        .expect("regtest profile validates");
+        assert_eq!(
+            cooperative_signing_from_lookup(profile, |_| None),
+            Ok(false)
+        );
+        assert_eq!(
+            cooperative_signing_from_lookup(profile, |name| {
+                (name == "IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING").then(|| "true".to_owned())
+            }),
+            Ok(true)
+        );
+        assert_eq!(
+            cooperative_signing_from_lookup(None, |name| {
+                (name == "IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING").then(|| "true".to_owned())
+            }),
+            Err(ConfigError::Invalid(
+                "IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING"
+            ))
+        );
+        assert_eq!(
+            cooperative_signing_from_lookup(profile, |name| {
+                (name == "IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING").then(|| "false".to_owned())
+            }),
+            Err(ConfigError::Invalid(
+                "IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING"
+            ))
+        );
+        for network in [
+            BitcoinNetwork::Mainnet,
+            BitcoinNetwork::Testnet,
+            BitcoinNetwork::Signet,
+        ] {
+            assert!(
+                lab_timeout_profile_from_lookup(network, |name| {
+                    (name == "IMMORTAL_PROVIDER_LAB_PROFILE")
+                        .then(|| "regtest_adversarial".to_owned())
+                })
+                .is_err()
+            );
+        }
     }
 
     #[test]

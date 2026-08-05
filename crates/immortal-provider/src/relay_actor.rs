@@ -580,7 +580,18 @@ impl<M: ProviderMode> RelayActor<M> {
                 }
                 continue;
             }
-            self.observe_record(session_id, &record, RecordOrigin::Recovery)?;
+            self.mode
+                .observe_durable_signed_session_record(
+                    &session_actor.session,
+                    &record,
+                    RecordOrigin::Recovery,
+                    provider_authored,
+                )
+                .map_err(|error| {
+                    format!(
+                        "provider could not durably observe recovered session {session_id} record: {error}"
+                    )
+                })?;
             closed |= provider_authored_close(&record, &provider_pubkey);
         }
         if closed {
@@ -1641,6 +1652,8 @@ mod tests {
         has_prior_records: bool,
         reservation_confirmation: Option<ReservationConfirmation>,
         prune_stalled: bool,
+        record_observations: usize,
+        session_observations: usize,
     }
 
     impl ProviderMode for RecoveryMode {
@@ -1763,7 +1776,24 @@ mod tests {
             _origin: RecordOrigin,
             _provider_authored: bool,
         ) -> Result<(), String> {
+            self.record_observations = self.record_observations.saturating_add(1);
             Ok(())
+        }
+
+        fn observe_durable_signed_session_record(
+            &mut self,
+            session: &ProviderSession,
+            record: &Event,
+            origin: RecordOrigin,
+            provider_authored: bool,
+        ) -> Result<(), String> {
+            self.session_observations = self.session_observations.saturating_add(1);
+            self.observe_durable_signed_record(
+                &session.config().session_id,
+                record,
+                origin,
+                provider_authored,
+            )
         }
 
         fn next_after_contract_or_status(
@@ -1791,6 +1821,8 @@ mod tests {
                 has_prior_records: false,
                 reservation_confirmation: None,
                 prune_stalled: false,
+                record_observations: 0,
+                session_observations: 0,
             },
             direct_recovery: None,
         };
@@ -1813,6 +1845,8 @@ mod tests {
                 has_prior_records: true,
                 reservation_confirmation: None,
                 prune_stalled: false,
+                record_observations: 0,
+                session_observations: 0,
             },
             direct_recovery: None,
         };
@@ -1869,6 +1903,8 @@ mod tests {
                 has_prior_records: true,
                 reservation_confirmation: None,
                 prune_stalled: false,
+                record_observations: 0,
+                session_observations: 0,
             },
             direct_recovery: None,
         };
@@ -1877,6 +1913,38 @@ mod tests {
             .bootstrap_durable()
             .expect("durable bootstrap must not require relay I/O");
         assert_eq!(actor.sessions.len(), 1);
+        assert_eq!(actor.mode.record_observations, 1);
+        assert_eq!(actor.mode.session_observations, 1);
+    }
+
+    #[test]
+    fn sessionless_observation_uses_only_the_durable_record_hook() {
+        let provider = MarketSigner::from_secret_bytes([79; 32]).expect("provider signer");
+        let offering_address = format!("39601:{}:recovery-test", provider.pubkey());
+        let event = provider.sign(100, MKT_STATUS_KIND, Vec::new(), "{}".to_owned());
+        let mut actor = RelayActor {
+            relay_url: "ws://127.0.0.1:1".to_owned(),
+            signer: provider,
+            offering_address,
+            sessions: BTreeMap::new(),
+            mode: RecoveryMode {
+                records: Vec::new(),
+                session_records: Vec::new(),
+                has_prior_records: false,
+                reservation_confirmation: None,
+                prune_stalled: false,
+                record_observations: 0,
+                session_observations: 0,
+            },
+            direct_recovery: None,
+        };
+
+        actor
+            .observe_record(&"ca".repeat(32), &event, RecordOrigin::Live)
+            .expect("sessionless observation");
+
+        assert_eq!(actor.mode.record_observations, 1);
+        assert_eq!(actor.mode.session_observations, 0);
     }
 
     #[test]
@@ -1941,6 +2009,8 @@ mod tests {
                 has_prior_records: false,
                 reservation_confirmation: None,
                 prune_stalled: false,
+                record_observations: 0,
+                session_observations: 0,
             },
             direct_recovery: None,
         };
@@ -2055,6 +2125,8 @@ mod tests {
                 has_prior_records: true,
                 reservation_confirmation: None,
                 prune_stalled: false,
+                record_observations: 0,
+                session_observations: 0,
             },
             direct_recovery: None,
         };
@@ -2195,6 +2267,8 @@ mod tests {
                 has_prior_records: true,
                 reservation_confirmation: None,
                 prune_stalled: false,
+                record_observations: 0,
+                session_observations: 0,
             },
             direct_recovery: None,
         };
@@ -2217,6 +2291,8 @@ mod tests {
                 has_prior_records: true,
                 reservation_confirmation: None,
                 prune_stalled: true,
+                record_observations: 0,
+                session_observations: 0,
             },
             direct_recovery: None,
         };
@@ -2239,6 +2315,8 @@ mod tests {
                 has_prior_records: false,
                 reservation_confirmation: None,
                 prune_stalled: false,
+                record_observations: 0,
+                session_observations: 0,
             },
             direct_recovery: None,
         };
@@ -2280,6 +2358,8 @@ mod tests {
                 has_prior_records: false,
                 reservation_confirmation: None,
                 prune_stalled: false,
+                record_observations: 0,
+                session_observations: 0,
             },
             direct_recovery: None,
         };
@@ -2415,6 +2495,8 @@ mod tests {
                 has_prior_records: true,
                 reservation_confirmation,
                 prune_stalled: false,
+                record_observations: 0,
+                session_observations: 0,
             },
             direct_recovery: None,
         };

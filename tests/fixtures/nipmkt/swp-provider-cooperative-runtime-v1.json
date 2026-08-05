@@ -2,6 +2,8 @@
   "schema": "openagents.mkt-swp.provider-cooperative-runtime-fixtures.v1",
   "process_gate": {
     "production_enabled": false,
+    "activation": "IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING=true with IMMORTAL_PROVIDER_LAB_PROFILE=regtest_adversarial and IMMORTAL_PROVIDER_BITCOIN_NETWORK=regtest",
+    "reverse_enabled": false,
     "provider_contract_advertisement": false,
     "nip11_affected": false,
     "lab_evidence_required": "issue-18-two-provider-process-cooperative-and-mid-transcript-abort"

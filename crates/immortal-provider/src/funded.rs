@@ -140,6 +140,7 @@ async fn run_async() -> Result<(), FundedError> {
     let reorg_safety_blocks = config.reorg_safety_blocks;
     let pricing = config.pricing;
     let hold_invoice_expiry_seconds = config.hold_invoice_expiry_seconds;
+    let cooperative_signing = config.cooperative_signing;
     let boltz_pricing = pricing.clone();
     let boltz_config = config.boltz;
     let wallet = config.wallet;
@@ -151,7 +152,7 @@ async fn run_async() -> Result<(), FundedError> {
         mode_lightning,
         FundedModePolicy {
             network,
-            cooperative_signing: false,
+            cooperative_signing,
             minimum_confirmations,
             reorg_safety_blocks,
             pricing,
