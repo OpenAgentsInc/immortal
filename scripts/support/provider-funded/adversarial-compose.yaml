@@ -1,0 +1,359 @@
+services:
+  bitcoin-a:
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.bitcoin
+    command: ["-conf=/run/immortal-private/bitcoin-a.conf", "-datadir=/var/lib/bitcoin"]
+    restart: "no"
+    volumes:
+      - bitcoin-a-data:/var/lib/bitcoin
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/bitcoin-a.conf
+        target: /run/immortal-private/bitcoin-a.conf
+        read_only: true
+    networks:
+      - adversarial
+
+  bitcoin-b:
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.bitcoin
+    command: ["-conf=/run/immortal-private/bitcoin-b.conf", "-datadir=/var/lib/bitcoin"]
+    restart: "no"
+    volumes:
+      - bitcoin-b-data:/var/lib/bitcoin
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/bitcoin-b.conf
+        target: /run/immortal-private/bitcoin-b.conf
+        read_only: true
+    networks:
+      - adversarial
+
+  relay-a-postgres:
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: immortal_relay
+      POSTGRES_USER: immortal_relay
+      POSTGRES_PASSWORD_FILE: /run/immortal-private/relay-a-postgres-password
+    restart: "no"
+    volumes:
+      - relay-a-postgres-data:/var/lib/postgresql/data
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/relay-a-postgres-password
+        target: /run/immortal-private/relay-a-postgres-password
+        read_only: true
+    networks:
+      - adversarial
+
+  relay-b-postgres:
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: immortal_relay
+      POSTGRES_USER: immortal_relay
+      POSTGRES_PASSWORD_FILE: /run/immortal-private/relay-b-postgres-password
+    restart: "no"
+    volumes:
+      - relay-b-postgres-data:/var/lib/postgresql/data
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/relay-b-postgres-password
+        target: /run/immortal-private/relay-b-postgres-password
+        read_only: true
+    networks:
+      - adversarial
+
+  provider-a-postgres:
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: immortal_provider
+      POSTGRES_USER: immortal_provider
+      POSTGRES_PASSWORD_FILE: /run/immortal-private/provider-a-postgres-password
+    restart: "no"
+    volumes:
+      - provider-a-postgres-data:/var/lib/postgresql/data
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/provider-a-postgres-password
+        target: /run/immortal-private/provider-a-postgres-password
+        read_only: true
+    networks:
+      - adversarial
+
+  provider-b-postgres:
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: immortal_provider
+      POSTGRES_USER: immortal_provider
+      POSTGRES_PASSWORD_FILE: /run/immortal-private/provider-b-postgres-password
+    restart: "no"
+    volumes:
+      - provider-b-postgres-data:/var/lib/postgresql/data
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/provider-b-postgres-password
+        target: /run/immortal-private/provider-b-postgres-password
+        read_only: true
+    networks:
+      - adversarial
+
+  relay-a:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    env_file:
+      - ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/relay-a.env
+    depends_on:
+      - bitcoin-a
+      - relay-a-postgres
+    network_mode: service:bitcoin-a
+    restart: "no"
+
+  relay-b:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    env_file:
+      - ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/relay-b.env
+    depends_on:
+      - bitcoin-b
+      - relay-b-postgres
+    network_mode: service:bitcoin-b
+    restart: "no"
+
+  cln-provider-a:
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.cln-hold-adversarial
+    command: ["--conf=/run/immortal-private/cln-provider-a.conf"]
+    depends_on:
+      - bitcoin-a
+    network_mode: service:bitcoin-a
+    restart: "no"
+    volumes:
+      - cln-provider-a-data:/root/.lightning
+      - cln-provider-a-rpc:/rail-rpc
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/cln-provider-a.conf
+        target: /run/immortal-private/cln-provider-a.conf
+        read_only: true
+
+  cln-provider-b:
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.cln-hold-adversarial
+    command: ["--conf=/run/immortal-private/cln-provider-b.conf"]
+    depends_on:
+      - bitcoin-b
+    network_mode: service:bitcoin-b
+    restart: "no"
+    volumes:
+      - cln-provider-b-data:/root/.lightning
+      - cln-provider-b-rpc:/rail-rpc
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/cln-provider-b.conf
+        target: /run/immortal-private/cln-provider-b.conf
+        read_only: true
+
+  cln-wallet:
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.cln-hold
+    command: ["--conf=/run/immortal-private/cln-wallet.conf"]
+    depends_on:
+      - bitcoin-a
+      - wallet-gateway
+    network_mode: service:wallet-gateway
+    restart: "no"
+    volumes:
+      - cln-wallet-data:/root/.lightning
+      - cln-wallet-rpc:/rail-rpc
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/cln-wallet.conf
+        target: /run/immortal-private/cln-wallet.conf
+        read_only: true
+
+  alert-sink-a:
+    build:
+      context: .
+      dockerfile: Dockerfile.support
+    environment:
+      IMMORTAL_PROVIDER_SMOKE_ALERT_FILE: /evidence/provider-a-alert.json
+    depends_on:
+      - bitcoin-a
+    network_mode: service:bitcoin-a
+    restart: "no"
+    volumes:
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/evidence
+        target: /evidence
+
+  alert-sink-b:
+    build:
+      context: .
+      dockerfile: Dockerfile.support
+    environment:
+      IMMORTAL_PROVIDER_SMOKE_ALERT_FILE: /evidence/provider-b-alert.json
+    depends_on:
+      - bitcoin-b
+    network_mode: service:bitcoin-b
+    restart: "no"
+    volumes:
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/evidence
+        target: /evidence
+
+  provider-a:
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.provider
+      target: provider
+    command: ["run"]
+    env_file:
+      - ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/provider-a.env
+    depends_on:
+      - alert-sink-a
+      - bitcoin-a
+      - cln-provider-a
+      - provider-a-postgres
+      - relay-a
+    network_mode: service:bitcoin-a
+    restart: "no"
+    volumes:
+      - type: volume
+        source: cln-provider-a-rpc
+        target: /rail/cln-provider-a
+        read_only: true
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/provider-a-wallet-seed
+        target: /run/immortal-private/provider-a-wallet-seed
+        read_only: true
+
+  provider-b:
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.provider
+      target: provider
+    command: ["run"]
+    env_file:
+      - ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/provider-b.env
+    depends_on:
+      - alert-sink-b
+      - bitcoin-b
+      - cln-provider-b
+      - provider-b-postgres
+      - relay-b
+    network_mode: service:bitcoin-b
+    restart: "no"
+    volumes:
+      - type: volume
+        source: cln-provider-b-rpc
+        target: /rail/cln-provider-b
+        read_only: true
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/provider-b-wallet-seed
+        target: /run/immortal-private/provider-b-wallet-seed
+        read_only: true
+
+  provider-a-egress:
+    build:
+      context: .
+      dockerfile: Dockerfile.forwarder
+    command:
+      - --rule
+      - 0.0.0.0:28080=127.0.0.1:18080
+      - --rule
+      - 0.0.0.0:29091=127.0.0.1:9091
+      - --rule
+      - 0.0.0.0:28443=127.0.0.1:18443
+    depends_on:
+      - provider-a
+      - relay-a
+    network_mode: service:bitcoin-a
+    restart: "no"
+
+  provider-b-egress:
+    build:
+      context: .
+      dockerfile: Dockerfile.forwarder
+    command:
+      - --rule
+      - 0.0.0.0:28081=127.0.0.1:18081
+      - --rule
+      - 0.0.0.0:29092=127.0.0.1:9092
+      - --rule
+      - 0.0.0.0:28443=127.0.0.1:18443
+    depends_on:
+      - provider-b
+      - relay-b
+    network_mode: service:bitcoin-b
+    restart: "no"
+
+  wallet-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.forwarder
+    command:
+      - --rule
+      - 127.0.0.1:18080=bitcoin-a:28080
+      - --rule
+      - 127.0.0.1:18081=bitcoin-b:28081
+      - --rule
+      - 127.0.0.1:9091=bitcoin-a:29091
+      - --rule
+      - 127.0.0.1:9092=bitcoin-b:29092
+      - --rule
+      - 127.0.0.1:18443=bitcoin-a:28443
+      - --rule
+      - 127.0.0.1:18444=bitcoin-b:28443
+    depends_on:
+      - bitcoin-a
+      - bitcoin-b
+    restart: "no"
+    networks:
+      - adversarial
+
+  wallet-driver:
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.provider
+      target: driver
+    command: ["adversarial-case"]
+    env_file:
+      - ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/wallet-driver.env
+    depends_on:
+      - cln-wallet
+      - provider-a
+      - provider-b
+      - wallet-gateway
+    network_mode: service:wallet-gateway
+    restart: "no"
+    volumes:
+      - type: volume
+        source: cln-wallet-rpc
+        target: /rail/cln-wallet
+        read_only: true
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/client-wallet-seed
+        target: /run/immortal-private/client-wallet-seed
+        read_only: true
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/evidence
+        target: /evidence
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/state
+        target: /state
+
+networks:
+  adversarial:
+    internal: true
+
+volumes:
+  bitcoin-a-data:
+  bitcoin-b-data:
+  cln-provider-a-data:
+  cln-provider-a-rpc:
+  cln-provider-b-data:
+  cln-provider-b-rpc:
+  cln-wallet-data:
+  cln-wallet-rpc:
+  provider-a-postgres-data:
+  provider-b-postgres-data:
+  relay-a-postgres-data:
+  relay-b-postgres-data:
