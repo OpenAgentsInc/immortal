@@ -215,4 +215,3 @@ if ! rmdir "${controller_directory}"; then
 fi
 controller_directory=""
 mv "${receipt_pending_path}" "${receipt_path}"
-echo "run-debian-provider-funded: wrote ${receipt_relative_path}"
