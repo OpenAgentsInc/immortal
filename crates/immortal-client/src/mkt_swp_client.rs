@@ -18,8 +18,8 @@ use crate::{
     domain::{
         Event, MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_ENVELOPE_SCHEMA, MKT_ORDER_KIND,
         MKT_QUOTE_KIND, MKT_RFQ_KIND, MKT_STATUS_KIND, MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION,
-        MKT_SWP_SWAP_CONTRACT_KIND, MktProfileSupport, Tag, parse_json_without_duplicate_members,
-        validate_mkt_private_raw, validate_mkt_swp_evidence_reference,
+        MKT_SWP_SWAP_CONTRACT_KIND, MktProfileSupport, Tag, validate_mkt_private_raw,
+        validate_mkt_swp_evidence_reference,
     },
     mkt_swp_verify::{
         BitcoinNetwork, Musig2Tweak, ScriptInstruction, Timelock, Transaction, TransactionOutput,
@@ -121,7 +121,6 @@ pub struct RequesterOrderInput<'a> {
     pub quote: &'a Event,
     pub created_at: u64,
     pub observed_at: u64,
-    pub price_feed: Option<&'a PriceFeedVerificationInput>,
     pub distinct: &'a str,
     pub selection: Option<Map<String, Value>>,
 }
@@ -179,39 +178,38 @@ pub struct SignedRecordDelivery {
 }
 
 impl SignedRecordDelivery {
-    pub fn from_locally_signed(event: &Event, observed_at: u64) -> Result<Self, SwapClientError> {
+    pub fn from_locally_signed(
+        raw_signed_event: Vec<u8>,
+        observed_at: u64,
+    ) -> Result<Self, SwapClientError> {
         Self::from_unwrapped(
-            event,
-            serde_json::to_vec(event).map_err(|error| {
-                SwapClientError::new(
-                    "swp_unresolved_loss",
-                    format!("locally signed record cannot be archived: {error}"),
-                )
-            })?,
+            raw_signed_event,
             observed_at,
             DeliveryProvenance::LocallySigned,
         )
     }
 
     pub fn from_direct(
-        event: &Event,
         raw_signed_event: Vec<u8>,
         observed_at: u64,
     ) -> Result<Self, SwapClientError> {
-        Self::from_unwrapped(
-            event,
-            raw_signed_event,
-            observed_at,
-            DeliveryProvenance::Direct,
-        )
+        Self::from_unwrapped(raw_signed_event, observed_at, DeliveryProvenance::Direct)
     }
 
     fn from_unwrapped(
-        event: &Event,
         raw_signed_event: Vec<u8>,
         observed_at: u64,
         provenance: DeliveryProvenance,
     ) -> Result<Self, SwapClientError> {
+        let event = validate_mkt_private_raw(&raw_signed_event, &swp_profile_support())
+            .map_err(|error| {
+                SwapClientError::new(
+                    "swp_unresolved_loss",
+                    format!("signed-record delivery bytes violate MKT-SWP: {error}"),
+                )
+            })?
+            .event()
+            .clone();
         let evidence = Self {
             event_id: event.id.clone(),
             raw_signed_event,
@@ -221,30 +219,31 @@ impl SignedRecordDelivery {
             observed_at,
             provenance,
         };
-        evidence.validate(event)?;
+        evidence.validate(&event)?;
         Ok(evidence)
     }
 
     pub fn from_delivered(
-        wrap: &Event,
         delivered: &crate::market::DeliveredMktRecord,
         observed_at: u64,
     ) -> Result<Self, SwapClientError> {
+        let raw_wrap_event = delivered.raw_wrap_event().ok_or_else(|| {
+            SwapClientError::new(
+                "swp_unresolved_loss",
+                "gift-wrap delivery did not originate from exact outer bytes",
+            )
+        })?;
+        let record = delivered.record();
         let evidence = Self {
-            event_id: delivered.record.event.id.clone(),
-            raw_signed_event: delivered.record.raw_signed_event.clone(),
-            raw_wrap_event: Some(serde_json::to_vec(wrap).map_err(|error| {
-                SwapClientError::new(
-                    "swp_unresolved_loss",
-                    format!("gift-wrap record cannot be archived: {error}"),
-                )
-            })?),
-            wrap_event_id: Some(delivered.wrap_event_id.clone()),
-            sender_pubkey: delivered.sender.clone(),
+            event_id: record.event().id.clone(),
+            raw_signed_event: record.raw_signed_event().to_vec(),
+            raw_wrap_event: Some(raw_wrap_event.to_vec()),
+            wrap_event_id: Some(delivered.wrap_event_id().to_owned()),
+            sender_pubkey: delivered.sender().to_owned(),
             observed_at,
             provenance: DeliveryProvenance::GiftWrap,
         };
-        evidence.validate(&delivered.record.event)?;
+        evidence.validate(record.event())?;
         Ok(evidence)
     }
 
@@ -282,7 +281,8 @@ impl SignedRecordDelivery {
                     format!("signed-record delivery bytes violate MKT-SWP: {error}"),
                 )
             })?
-            .event;
+            .event()
+            .clone();
         if &decoded != event || self.event_id != event.id {
             return Err(SwapClientError::new(
                 "swp_idempotency_conflict",
@@ -369,27 +369,6 @@ pub struct RequesterPriceFeedView {
     pub max_age_seconds: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PriceFeedVerificationInput {
-    pub request_url: String,
-    pub response_url: String,
-    pub redirect_count: u32,
-    pub raw_response: Vec<u8>,
-    pub observed_at: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PriceFeedVerificationReceipt {
-    pub url: String,
-    pub value_pointer: String,
-    pub observed_value: String,
-    pub response_sha256: String,
-    pub observed_at: u64,
-    pub quote_output_amount: String,
-}
-
 impl RequesterPriceFeedView {
     pub fn from_pinned_terms(value: &Value) -> Result<Option<Self>, SwapClientError> {
         if value.is_null() {
@@ -440,114 +419,6 @@ impl RequesterPriceFeedView {
             observed_at,
             max_age_seconds,
         }))
-    }
-
-    pub fn verify(
-        &self,
-        input: &PriceFeedVerificationInput,
-        quote: &RequesterQuoteView,
-    ) -> Result<PriceFeedVerificationReceipt, SwapClientError> {
-        validate_price_feed_url(&self.url)?;
-        validate_json_pointer(&self.value_pointer)?;
-        canonical_decimal_string(&self.observed_value, "price-feed observed value")?;
-        if input.request_url != self.url
-            || input.response_url != self.url
-            || input.redirect_count != 0
-        {
-            return Err(SwapClientError::new(
-                "swp_price_feed_invalid",
-                "price-feed request changed the exact URL or followed a redirect",
-            ));
-        }
-        if input.raw_response.is_empty() || input.raw_response.len() > MAX_WIRE_EVENT_BYTES {
-            return Err(SwapClientError::new(
-                "swp_price_feed_invalid",
-                "price-feed response is empty or exceeds its bound",
-            ));
-        }
-        let response_sha256 = lower_hex(&Sha256::digest(&input.raw_response));
-        if response_sha256 != self.response_sha256 {
-            return Err(SwapClientError::new(
-                "swp_price_feed_invalid",
-                "price-feed response bytes differ from the Quote digest",
-            ));
-        }
-        if input.observed_at < self.observed_at
-            || input.observed_at.saturating_sub(self.observed_at) > self.max_age_seconds
-        {
-            return Err(SwapClientError::new(
-                "swp_price_feed_stale",
-                "price-feed observation exceeds the Quote's maximum age",
-            ));
-        }
-        let response_text = std::str::from_utf8(&input.raw_response).map_err(|_| {
-            SwapClientError::new(
-                "swp_price_feed_invalid",
-                "price-feed response is not UTF-8 JSON",
-            )
-        })?;
-        let response = parse_json_without_duplicate_members(response_text, "price-feed response")
-            .map_err(|error| SwapClientError::new("swp_price_feed_invalid", error))?;
-        let extracted = response.pointer(&self.value_pointer).ok_or_else(|| {
-            SwapClientError::new(
-                "swp_price_feed_invalid",
-                "price-feed pointer does not resolve in the exact response",
-            )
-        })?;
-        if extracted.as_str() != Some(self.observed_value.as_str()) {
-            return Err(SwapClientError::new(
-                "swp_price_feed_invalid",
-                "price-feed pointer value differs from the Quote observation",
-            ));
-        }
-        let amount_terms = Map::from_iter([
-            (
-                "input_amount".to_owned(),
-                Value::String(quote.input_amount.clone()),
-            ),
-            (
-                "output_amount".to_owned(),
-                Value::String(quote.output_amount.clone()),
-            ),
-            (
-                "fee_bps".to_owned(),
-                Value::String(quote.fees.fee_bps.clone()),
-            ),
-            (
-                "provider_fee".to_owned(),
-                Value::String(quote.fees.provider_fee.clone()),
-            ),
-            (
-                "miner_fee_budget".to_owned(),
-                Value::String(quote.fees.miner_fee_budget.clone()),
-            ),
-            (
-                "lightning_routing_fee_budget".to_owned(),
-                Value::String(quote.fees.lightning_routing_fee_budget.clone()),
-            ),
-            ("rounding".to_owned(), Value::String(quote.rounding.clone())),
-            (
-                "amount_equation".to_owned(),
-                Value::String(quote.amount_equation.clone()),
-            ),
-        ]);
-        verify_amount_equation(&amount_terms).map_err(|error| {
-            SwapClientError::new(
-                "swp_price_feed_invalid",
-                format!(
-                    "quoted feed calculation does not reproduce: {}",
-                    error.detail
-                ),
-            )
-        })?;
-        Ok(PriceFeedVerificationReceipt {
-            url: self.url.clone(),
-            value_pointer: self.value_pointer.clone(),
-            observed_value: self.observed_value.clone(),
-            response_sha256,
-            observed_at: input.observed_at,
-            quote_output_amount: quote.output_amount.clone(),
-        })
     }
 }
 
@@ -626,11 +497,12 @@ pub enum RequesterTerminalState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequesterTerminalView {
-    pub state: RequesterTerminalState,
+    pub claimed_state: RequesterTerminalState,
     pub canonical_close_id: Option<String>,
     pub close_event_ids: Vec<String>,
     pub principal_unresolved: Option<String>,
     pub loss_accounting_complete: bool,
+    pub local_effects_verified: bool,
     pub watch_terminal: bool,
 }
 
@@ -1499,23 +1371,11 @@ impl SwapRecordFactory {
         let quote_profile = validate_requester_quote(&self.config, input.rfq, input.quote)?;
         validate_quote_observation(&quote_profile, input.quote, input.observed_at)?;
         let quote_view = requester_quote_view(input.rfq, input.quote, &quote_profile)?;
-        match (&quote_view.price_feed, input.price_feed) {
-            (Some(feed), Some(input)) => {
-                feed.verify(input, &quote_view)?;
-            }
-            (Some(_), None) => {
-                return Err(SwapClientError::new(
-                    "swp_price_feed_invalid",
-                    "requester must verify the pinned feed before Order",
-                ));
-            }
-            (None, Some(_)) => {
-                return Err(SwapClientError::new(
-                    "swp_price_feed_invalid",
-                    "requester supplied feed evidence for a Quote without a feed",
-                ));
-            }
-            (None, None) => {}
+        if quote_view.price_feed.is_some() {
+            return Err(SwapClientError::new(
+                "swp_price_feed_unsupported",
+                "pinned-feed Quote execution is unavailable until its deterministic amount formula is specified",
+            ));
         }
         let mut order_profile = Map::from_iter([(
             "accepted_quote_id".to_owned(),
@@ -1900,6 +1760,35 @@ impl RequesterSessionView {
         records: &[Event],
         deliveries: Vec<SignedRecordDelivery>,
     ) -> Result<Self, SwapClientError> {
+        Self::from_signed_records_internal(config, records, deliveries, None)
+    }
+
+    pub fn from_signed_records_with_effects(
+        config: &SwapClientConfig,
+        records: &[Event],
+        deliveries: Vec<SignedRecordDelivery>,
+        external_effects: Vec<ExternalEffectResult>,
+    ) -> Result<Self, SwapClientError> {
+        let mut effects = BTreeMap::new();
+        for effect in external_effects {
+            validate_effect(&effect)?;
+            let effect_id = effect.effect_id.clone();
+            if effects.insert(effect_id, effect).is_some() {
+                return Err(SwapClientError::new(
+                    "swp_external_effect_conflict",
+                    "requester terminal view has duplicate external effect IDs",
+                ));
+            }
+        }
+        Self::from_signed_records_internal(config, records, deliveries, Some(&effects))
+    }
+
+    fn from_signed_records_internal(
+        config: &SwapClientConfig,
+        records: &[Event],
+        deliveries: Vec<SignedRecordDelivery>,
+        external_effects: Option<&BTreeMap<String, ExternalEffectResult>>,
+    ) -> Result<Self, SwapClientError> {
         config.validate()?;
         if records.len() < 2 || records.len() > MAX_SIGNED_RECORDS {
             return Err(SwapClientError::new(
@@ -2011,7 +1900,10 @@ impl RequesterSessionView {
                 ));
             }
         };
-        let terminal = requester_terminal_view(records, &status)?;
+        if let Some(external_effects) = external_effects {
+            validate_lifecycle(config, records, external_effects)?;
+        }
+        let terminal = requester_terminal_view(records, external_effects)?;
         if terminal.watch_terminal {
             if !matches!(state, RequesterVerificationState::ContractTermsVerified) {
                 return Err(SwapClientError::new(
@@ -2026,7 +1918,7 @@ impl RequesterSessionView {
             .iter()
             .map(|event| requester_timeline_entry(config, event, &conflicting_timeline_ids))
             .collect::<Result<Vec<_>, _>>()?;
-        timeline.sort_by_key(timeline_sort_key);
+        sort_requester_timeline(&mut timeline)?;
         Ok(Self {
             schema: REQUESTER_SESSION_VIEW_SCHEMA.to_owned(),
             session_id: config.session_id.clone(),
@@ -4538,6 +4430,10 @@ impl<State> SwapSession<State> {
         &self.exit_packages
     }
 
+    pub fn external_effect_results(&self) -> Vec<ExternalEffectResult> {
+        self.external_effects.values().cloned().collect()
+    }
+
     pub fn status_projection(&self) -> Result<StatusProjection, SwapClientError> {
         StatusProjection::from_records(&self.config, &self.signed_records)
     }
@@ -6591,7 +6487,7 @@ fn validate_composer_record(
             format!("composer input violates MKT-SWP: {error}"),
         )
     })?;
-    if validated.envelope.session_id != config.session_id {
+    if validated.envelope().session_id != config.session_id {
         return Err(SwapClientError::new(
             "swp_contract_terms_mismatch",
             "composer input belongs to another session",
@@ -7088,19 +6984,21 @@ fn requester_timeline_entry(
 
 fn requester_terminal_view(
     records: &[Event],
-    status: &StatusProjection,
+    external_effects: Option<&BTreeMap<String, ExternalEffectResult>>,
 ) -> Result<RequesterTerminalView, SwapClientError> {
-    let closes = records
+    let mut closes = records
         .iter()
         .filter(|event| event.kind == MKT_CLOSE_KIND)
         .collect::<Vec<_>>();
+    closes.sort_by(|left, right| left.id.cmp(&right.id));
     if closes.is_empty() {
         return Ok(RequesterTerminalView {
-            state: RequesterTerminalState::Open,
+            claimed_state: RequesterTerminalState::Open,
             canonical_close_id: None,
             close_event_ids: Vec::new(),
             principal_unresolved: None,
             loss_accounting_complete: false,
+            local_effects_verified: false,
             watch_terminal: false,
         });
     }
@@ -7130,18 +7028,20 @@ fn requester_terminal_view(
             loss.clone(),
         ));
     }
+    claims.sort_by(|left, right| left.0.id.cmp(&right.0.id));
     let first_claim = &claims[0].2;
     if claims.iter().any(|claim| &claim.2 != first_claim) {
         return Ok(RequesterTerminalView {
-            state: RequesterTerminalState::Conflicted,
+            claimed_state: RequesterTerminalState::Conflicted,
             canonical_close_id: None,
             close_event_ids: closes.iter().map(|event| event.id.clone()).collect(),
             principal_unresolved: None,
             loss_accounting_complete: false,
+            local_effects_verified: false,
             watch_terminal: false,
         });
     }
-    let (close, outcome, _, profile, loss) = &claims[0];
+    let (close, outcome, _, _profile, loss) = &claims[0];
     let numeric_fields = [
         "input_committed",
         "input_recovered",
@@ -7168,49 +7068,7 @@ fn requester_terminal_view(
         .get("principal_unresolved")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let zero_unresolved = principal_unresolved
-        .as_deref()
-        .and_then(|value| canonical_amount(value).ok())
-        == Some(0);
-    let has_evidence = loss
-        .get("evidence_refs")
-        .and_then(Value::as_array)
-        .is_some_and(|evidence| !evidence.is_empty());
-    let loss_balanced =
-        loss_accounting_complete && requester_loss_accounting_balances(records, outcome, loss)?;
-    let status_terminal = if matches!(*outcome, "completed" | "refunded") {
-        let status_id = profile.get("status_id").and_then(Value::as_str);
-        status_id.is_some_and(|status_id| {
-            status
-                .last_valid_status
-                .get(&close.pubkey)
-                .map(String::as_str)
-                == Some(status_id)
-                && !status.invalid_claims.contains_key(status_id)
-                && !status.gaps.contains_key(&close.pubkey)
-                && !status.forks.contains_key(&close.pubkey)
-                && records.iter().any(|event| {
-                    event.id == status_id
-                        && event.kind == MKT_STATUS_KIND
-                        && status_state(event)
-                            .ok()
-                            .is_some_and(|state| state == *outcome)
-                })
-        })
-    } else {
-        true
-    };
-    let cancellation_terminal = if *outcome == "cancelled" {
-        effective_cancellation(records).is_ok_and(|effective| {
-            effective.map(|event| event.id.as_str())
-                == profile.get("cancel_id").and_then(Value::as_str)
-        })
-    } else {
-        true
-    };
-    let no_irreversible_signed_effect =
-        signed_history_has_irreversible_effect(records, false).is_ok_and(|found| !found);
-    let state = match *outcome {
+    let claimed_state = match *outcome {
         "completed" => RequesterTerminalState::Completed,
         "refunded" => RequesterTerminalState::Refunded,
         "cancelled" => RequesterTerminalState::Cancelled,
@@ -7226,79 +7084,57 @@ fn requester_terminal_view(
             ));
         }
     };
-    let watch_terminal = match state {
-        RequesterTerminalState::Completed | RequesterTerminalState::Refunded => {
-            loss_balanced && zero_unresolved && status_terminal
+    let watch_terminal = if let Some(external_effects) = external_effects {
+        let contract = records
+            .iter()
+            .find(|event| event.kind == MKT_SWP_SWAP_CONTRACT_KIND)
+            .map(parse_content)
+            .transpose()?
+            .and_then(|content| content.get("mkt_swp").cloned())
+            .and_then(|profile| profile.get("contract").cloned())
+            .ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_unresolved_loss",
+                    "terminal claim has no accepted Swap Contract",
+                )
+            })?;
+        let terminal_at = tag_value(close, "terminal_at")?
+            .parse::<u64>()
+            .map_err(|_| {
+                SwapClientError::new("swp_unresolved_loss", "Close terminal time is invalid")
+            })?;
+        validate_loss_accounting(
+            loss,
+            &contract,
+            outcome,
+            terminal_at,
+            tag_value(close, "session")?,
+            external_effects,
+        )?;
+        match claimed_state {
+            RequesterTerminalState::Completed | RequesterTerminalState::Refunded => {
+                !external_effects.is_empty()
+            }
+            RequesterTerminalState::Failed => false,
+            RequesterTerminalState::Open
+            | RequesterTerminalState::Cancelled
+            | RequesterTerminalState::Rejected
+            | RequesterTerminalState::Expired
+            | RequesterTerminalState::Disputed
+            | RequesterTerminalState::Unresolved
+            | RequesterTerminalState::Conflicted => false,
         }
-        RequesterTerminalState::Cancelled => {
-            loss_balanced && zero_unresolved && cancellation_terminal
-        }
-        RequesterTerminalState::Rejected | RequesterTerminalState::Expired => {
-            loss_balanced && zero_unresolved && no_irreversible_signed_effect
-        }
-        RequesterTerminalState::Failed => loss_balanced && zero_unresolved && has_evidence,
-        RequesterTerminalState::Open
-        | RequesterTerminalState::Disputed
-        | RequesterTerminalState::Unresolved
-        | RequesterTerminalState::Conflicted => false,
+    } else {
+        false
     };
     Ok(RequesterTerminalView {
-        state,
+        claimed_state,
         canonical_close_id: Some(close.id.clone()),
         close_event_ids: closes.iter().map(|event| event.id.clone()).collect(),
         principal_unresolved,
         loss_accounting_complete,
+        local_effects_verified: watch_terminal,
         watch_terminal,
-    })
-}
-
-fn requester_loss_accounting_balances(
-    records: &[Event],
-    outcome: &str,
-    loss: &Map<String, Value>,
-) -> Result<bool, SwapClientError> {
-    let amount = |name: &str| {
-        loss.get(name)
-            .and_then(Value::as_str)
-            .map(canonical_amount)
-            .transpose()
-            .map(|amount| amount.unwrap_or_default())
-    };
-    let committed = amount("input_committed")?;
-    let recovered = amount("input_recovered")?;
-    let output = amount("output_received")?;
-    let provider_fee = amount("provider_fee_paid")?;
-    let miner_fee = amount("miner_fee_paid")?;
-    let lightning_fee = amount("lightning_routing_fee_paid")?;
-    let guarantee = amount("guarantee_recovery_received")?;
-    let unresolved = amount("principal_unresolved")?;
-    let accounted = recovered
-        .checked_add(provider_fee)
-        .and_then(|value| value.checked_add(miner_fee))
-        .and_then(|value| value.checked_add(lightning_fee))
-        .and_then(|value| value.checked_add(guarantee))
-        .and_then(|value| value.checked_add(unresolved));
-    let contract = records
-        .iter()
-        .find(|event| event.kind == MKT_SWP_SWAP_CONTRACT_KIND)
-        .map(parse_content)
-        .transpose()?
-        .and_then(|content| content.get("mkt_swp").cloned())
-        .and_then(|profile| profile.get("contract").cloned());
-    let Some(contract) = contract else {
-        return Ok(false);
-    };
-    let contract = object(&contract, "requester terminal Contract")?;
-    let input_amount = contract_amount(contract, "input_amount")?;
-    let output_amount = contract_amount(contract, "output_amount")?;
-    Ok(match outcome {
-        "completed" => committed == input_amount && output == output_amount && unresolved == 0,
-        "refunded" | "failed" => accounted == Some(committed),
-        "cancelled" | "rejected" | "expired" => {
-            committed == 0 && accounted == Some(0) && output == 0
-        }
-        "disputed" | "unresolved" => false,
-        _ => false,
     })
 }
 
@@ -7307,7 +7143,7 @@ fn requester_timeline_conflicts(
     terminal: &RequesterTerminalView,
 ) -> Result<BTreeMap<String, String>, SwapClientError> {
     let mut conflicts = BTreeMap::new();
-    if terminal.state == RequesterTerminalState::Conflicted {
+    if terminal.claimed_state == RequesterTerminalState::Conflicted {
         for event_id in &terminal.close_event_ids {
             conflicts.insert(event_id.clone(), "conflicting Close claim".to_owned());
         }
@@ -7360,6 +7196,40 @@ fn timeline_sort_key(entry: &RequesterTimelineEntry) -> (u8, u8, u64, String) {
         entry.sequence.unwrap_or_default(),
         entry.event_id.clone(),
     )
+}
+
+fn sort_requester_timeline(
+    timeline: &mut Vec<RequesterTimelineEntry>,
+) -> Result<(), SwapClientError> {
+    let known_ids = timeline
+        .iter()
+        .map(|entry| entry.event_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut remaining = std::mem::take(timeline);
+    let mut emitted = BTreeSet::new();
+    while !remaining.is_empty() {
+        let next = remaining
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry
+                    .causal_event_ids
+                    .iter()
+                    .all(|event_id| !known_ids.contains(event_id) || emitted.contains(event_id))
+            })
+            .min_by_key(|(_, entry)| timeline_sort_key(entry))
+            .map(|(index, _)| index)
+            .ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_idempotency_conflict",
+                    "requester timeline contains a causal reference cycle",
+                )
+            })?;
+        let entry = remaining.remove(next);
+        emitted.insert(entry.event_id.clone());
+        timeline.push(entry);
+    }
+    Ok(())
 }
 
 fn unsigned_event(request: &MktSigningRequest) -> Event {
@@ -8932,7 +8802,7 @@ fn validate_session_material(
                 )
             })?;
         reject_custody_material(&parse_content(event)?)?;
-        if validated.envelope.session_id != config.session_id {
+        if validated.envelope().session_id != config.session_id {
             return Err(SwapClientError::new(
                 "swp_contract_terms_mismatch",
                 "signed record belongs to a different session",
@@ -13668,7 +13538,7 @@ pub mod fixture_replay {
                 "requester_contract_draft",
                 "requester_order",
                 "requester_session_view",
-                "verify_price_feed",
+                "requester_session_view_with_effects",
             ])
         {
             return Err(ReplayFailure::new(
@@ -13676,109 +13546,381 @@ pub mod fixture_replay {
                 "requester API operation set changed without a fixture version",
             ));
         }
-        let projection = fixture
-            .get("price_feed_projection")
-            .ok_or_else(|| ReplayFailure::new(74, "requester feed projection is missing"))?;
-        let feed = RequesterPriceFeedView::from_pinned_terms(projection)
-            .map_err(|error| ReplayFailure::new(75, error.to_string()))?
-            .ok_or_else(|| ReplayFailure::new(76, "requester feed projection is null"))?;
-        let quote_value = fixture
-            .get("submarine_quote")
-            .ok_or_else(|| ReplayFailure::new(77, "requester quote projection is missing"))?;
-        let quote = RequesterQuoteView {
-            rfq_id: "11".repeat(32),
-            quote_id: "12".repeat(32),
-            provider_pubkey: "13".repeat(32),
-            quote_class: "firm".to_owned(),
-            reservation_class: "soft".to_owned(),
-            swap_type: SwapType::Submarine,
-            input_asset_id: "swp:1:bip122:00:btc:chain".to_owned(),
-            output_asset_id: "swp:1:bip122:00:btc:lightning".to_owned(),
-            input_amount: requester_fixture_string(quote_value, "input_amount", 78)?,
-            output_amount: requester_fixture_string(quote_value, "output_amount", 79)?,
-            amount_equation: requester_fixture_string(quote_value, "amount_equation", 80)?,
-            rounding: requester_fixture_string(quote_value, "rounding", 81)?,
-            clock_skew_seconds: requester_fixture_string(quote_value, "clock_skew_seconds", 82)?,
-            expires_at: 900,
-            effective_acceptance_deadline: 900,
-            fees: RequesterFeeView {
-                fee_bps: requester_fixture_string(quote_value, "fee_bps", 83)?,
-                provider_fee: requester_fixture_string(quote_value, "provider_fee", 84)?,
-                miner_fee_budget: requester_fixture_string(quote_value, "miner_fee_budget", 85)?,
-                lightning_routing_fee_budget: requester_fixture_string(
-                    quote_value,
-                    "lightning_routing_fee_budget",
-                    86,
-                )?,
-                maximum_total_fee: requester_fixture_string(quote_value, "maximum_total_fee", 87)?,
-                fee_payer: requester_fixture_string(quote_value, "fee_payer", 88)?,
-            },
-            price_feed: Some(feed.clone()),
-        };
-        let case = fixture
-            .get("cases")
-            .and_then(Value::as_array)
-            .and_then(|cases| cases.first())
-            .ok_or_else(|| ReplayFailure::new(89, "requester API replay case is missing"))?;
-        let input = case
-            .get("input")
-            .ok_or_else(|| ReplayFailure::new(90, "requester API case input is missing"))?;
-        let request_url = requester_fixture_string(input, "request_url", 91)?;
-        let response_url = requester_fixture_string(input, "response_url", 92)?;
-        let raw_response: Vec<u8> = serde_json::from_value(
-            input
-                .get("raw_response")
-                .cloned()
-                .ok_or_else(|| ReplayFailure::new(93, "requester response bytes are missing"))?,
-        )
-        .map_err(|error| ReplayFailure::new(93, format!("requester response bytes: {error}")))?;
-        let verification = PriceFeedVerificationInput {
-            request_url,
-            response_url,
-            redirect_count: input
-                .get("redirect_count")
-                .and_then(Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok())
-                .ok_or_else(|| ReplayFailure::new(94, "requester redirect count is invalid"))?,
-            raw_response,
-            observed_at: input
-                .get("observed_at")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| ReplayFailure::new(95, "requester observation time is invalid"))?,
-        };
-        let receipt = feed
-            .verify(&verification, &quote)
-            .map_err(|error| ReplayFailure::new(96, error.to_string()))?;
-        let expected = case
-            .get("expected")
-            .ok_or_else(|| ReplayFailure::new(97, "requester API expected output is missing"))?;
-        if serde_json::to_value(&receipt).map_err(|error| {
-            ReplayFailure::new(98, format!("requester receipt encoding failed: {error}"))
-        })?["response_sha256"]
-            != expected["response_sha256"]
-            || expected.get("observed_value").and_then(Value::as_str)
-                != Some(receipt.observed_value.as_str())
-            || expected.get("quote_output_amount").and_then(Value::as_str)
-                != Some(receipt.quote_output_amount.as_str())
+        let definitions = fixture
+            .get("$defs")
+            .and_then(Value::as_object)
+            .ok_or_else(|| ReplayFailure::new(74, "requester API definitions are missing"))?;
+        validate_requester_api_schema_shapes(
+            fixture.get("$defs").unwrap_or(&Value::Null),
+            definitions,
+        )?;
+        validate_requester_api_schema_shapes(
+            fixture.get("operations").unwrap_or(&Value::Null),
+            definitions,
+        )?;
+        let source = fixture
+            .get("source_fixture")
+            .and_then(Value::as_object)
+            .ok_or_else(|| ReplayFailure::new(75, "requester API source fixture is missing"))?;
+        if source.get("path").and_then(Value::as_str)
+            != Some("tests/fixtures/nipmkt/swp-full-sessions-v1.json")
+            || source.get("sha256").and_then(Value::as_str)
+                != Some(lower_hex(&Sha256::digest(FULL_SESSION_FIXTURES.as_bytes())).as_str())
         {
             return Err(ReplayFailure::new(
-                99,
-                "requester API byte replay output differs from the fixture",
+                76,
+                "requester API source fixture digest differs from the embedded bytes",
+            ));
+        }
+        let cases = fixture
+            .get("cases")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ReplayFailure::new(77, "requester API cases are missing"))?;
+        let mut positive_operations = BTreeSet::new();
+        let mut negative_operations = BTreeSet::new();
+        let mut case_names = BTreeSet::new();
+        for case in cases {
+            let case = case
+                .as_object()
+                .ok_or_else(|| ReplayFailure::new(77, "requester API case is not an object"))?;
+            let name = case
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ReplayFailure::new(78, "requester API case has no name"))?;
+            if !case_names.insert(name) {
+                return Err(ReplayFailure::new(
+                    79,
+                    "requester API case name is duplicated",
+                ));
+            }
+            let operation = case
+                .get("operation")
+                .and_then(Value::as_str)
+                .filter(|operation| operation_names.contains(operation))
+                .ok_or_else(|| ReplayFailure::new(80, "requester API case operation is invalid"))?;
+            let variant = case
+                .get("variant")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ReplayFailure::new(81, "requester API case variant is missing"))?;
+            match replay_requester_api_case(operation, variant)
+                .map_err(|error| ReplayFailure::new(82, error))?
+            {
+                Ok(output) => {
+                    positive_operations.insert(operation);
+                    let expected = case
+                        .get("expected_sha256")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            ReplayFailure::new(83, "positive requester API case has no digest")
+                        })?;
+                    let encoded = canonical_json(&output)
+                        .map_err(|error| ReplayFailure::new(84, error.to_string()))?;
+                    let actual = lower_hex(&Sha256::digest(encoded));
+                    if actual != expected {
+                        return Err(ReplayFailure::new(
+                            85,
+                            format!(
+                                "requester API case {name} digest is {actual}, expected {expected}"
+                            ),
+                        ));
+                    }
+                }
+                Err(error) => {
+                    negative_operations.insert(operation);
+                    let expected = case
+                        .get("expected_error")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            ReplayFailure::new(86, "negative requester API case has no error")
+                        })?;
+                    if error.code != expected {
+                        return Err(ReplayFailure::new(
+                            87,
+                            format!(
+                                "requester API case {name} returned {}, expected {expected}",
+                                error.code
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        if positive_operations != operation_names || negative_operations != operation_names {
+            return Err(ReplayFailure::new(
+                88,
+                "every requester API operation requires positive and negative replay cases",
             ));
         }
         Ok(())
     }
 
-    fn requester_fixture_string(
+    fn validate_requester_api_schema_shapes(
         value: &Value,
-        name: &str,
-        code: u32,
-    ) -> Result<String, ReplayFailure> {
-        value
-            .get(name)
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .ok_or_else(|| ReplayFailure::new(code, format!("requester fixture has no {name}")))
+        definitions: &serde_json::Map<String, Value>,
+    ) -> Result<(), ReplayFailure> {
+        match value {
+            Value::Object(object) => {
+                if object.get("type").and_then(Value::as_str) == Some("object")
+                    && (object
+                        .get("properties")
+                        .and_then(Value::as_object)
+                        .is_none()
+                        || object.get("additionalProperties").and_then(Value::as_bool)
+                            != Some(false))
+                {
+                    return Err(ReplayFailure::new(
+                        89,
+                        "requester API object schema is generic or open",
+                    ));
+                }
+                if object.get("type").and_then(Value::as_str) == Some("array")
+                    && !object.contains_key("items")
+                {
+                    return Err(ReplayFailure::new(
+                        90,
+                        "requester API array schema has no item schema",
+                    ));
+                }
+                if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+                    let name = reference.strip_prefix("#/$defs/").ok_or_else(|| {
+                        ReplayFailure::new(91, "requester API schema reference is not local")
+                    })?;
+                    if !definitions.contains_key(name) {
+                        return Err(ReplayFailure::new(
+                            92,
+                            "requester API schema reference is unresolved",
+                        ));
+                    }
+                }
+                for child in object.values() {
+                    validate_requester_api_schema_shapes(child, definitions)?;
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    validate_requester_api_schema_shapes(child, definitions)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn replay_requester_api_case(
+        operation: &str,
+        variant: &str,
+    ) -> Result<Result<Value, SwapClientError>, String> {
+        let (session, _) = load_fixture_session("flows", "submarine")?;
+        let records = session.signed_records();
+        let rfq = fixture_record(records, MKT_RFQ_KIND, None)?;
+        let quote = fixture_record(records, MKT_QUOTE_KIND, None)?;
+        let order = fixture_record(records, MKT_ORDER_KIND, None)?;
+        let requester_contract = fixture_record(
+            records,
+            MKT_SWP_SWAP_CONTRACT_KIND,
+            Some(session.config().requester_pubkey.as_str()),
+        )?;
+        let factory =
+            SwapRecordFactory::new(session.config().clone()).map_err(|error| error.to_string())?;
+        let order_distinct = tag_value(order, "d").map_err(|error| error.to_string())?;
+        let order_selection = parse_content(order)
+            .map_err(|error| error.to_string())?
+            .get("mkt_swp")
+            .and_then(|profile| profile.get("selection"))
+            .and_then(Value::as_object)
+            .cloned();
+        let contract_distinct =
+            tag_value(requester_contract, "d").map_err(|error| error.to_string())?;
+        let outcome = match (operation, variant) {
+            ("requester_order", "valid") => factory
+                .requester_order(RequesterOrderInput {
+                    rfq,
+                    quote,
+                    created_at: order.created_at,
+                    observed_at: order.created_at,
+                    distinct: order_distinct,
+                    selection: order_selection,
+                })
+                .and_then(requester_api_json),
+            ("requester_order", "pinned_feed") => {
+                let mut quote_profile =
+                    parse_content(quote).map_err(|error| error.to_string())?["mkt_swp"].clone();
+                quote_profile["terms"]["price_feed"] = json!({
+                    "url":"https://prices.example.test/btc-usd",
+                    "value_pointer":"/data/price",
+                    "observed_value":"6543210",
+                    "response_sha256":"52".repeat(32),
+                    "observed_at":100,
+                    "max_age_seconds":30
+                });
+                let provider = fixture_signer(b"provider")?;
+                let feed_quote = fixture_signed(
+                    factory
+                        .soft_quote(
+                            quote.created_at,
+                            &"79".repeat(32),
+                            &rfq.id,
+                            1_000,
+                            quote_profile,
+                        )
+                        .map_err(|error| error.to_string())?,
+                    &provider,
+                )?;
+                factory
+                    .requester_order(RequesterOrderInput {
+                        rfq,
+                        quote: &feed_quote,
+                        created_at: order.created_at,
+                        observed_at: order.created_at,
+                        distinct: &"7b".repeat(32),
+                        selection: None,
+                    })
+                    .and_then(requester_api_json)
+            }
+            ("requester_contract_draft", "valid") => requester_api_contract_draft(
+                &factory,
+                rfq,
+                quote,
+                order,
+                requester_contract,
+                order.created_at,
+            ),
+            ("requester_contract_draft", "expired_order_receipt") => {
+                requester_api_contract_draft(&factory, rfq, quote, order, requester_contract, 901)
+            }
+            ("requester_contract", "valid") => requester_api_contract_draft(
+                &factory,
+                rfq,
+                quote,
+                order,
+                requester_contract,
+                order.created_at,
+            )
+            .and_then(|draft| {
+                factory.requester_contract(RequesterContractSigningInput {
+                    rfq,
+                    quote,
+                    order,
+                    order_observed_at: order.created_at,
+                    created_at: requester_contract.created_at,
+                    distinct: contract_distinct,
+                    contract: draft,
+                })
+            })
+            .and_then(requester_api_json),
+            ("requester_contract", "custody_material") => requester_api_contract_draft(
+                &factory,
+                rfq,
+                quote,
+                order,
+                requester_contract,
+                order.created_at,
+            )
+            .and_then(|mut draft| {
+                draft["claim_key"] = json!("94".repeat(32));
+                factory.requester_contract(RequesterContractSigningInput {
+                    rfq,
+                    quote,
+                    order,
+                    order_observed_at: order.created_at,
+                    created_at: requester_contract.created_at,
+                    distinct: contract_distinct,
+                    contract: draft,
+                })
+            })
+            .and_then(requester_api_json),
+            ("requester_session_view", "valid") => RequesterSessionView::from_signed_records(
+                session.config(),
+                records,
+                requester_api_deliveries(records)?,
+            )
+            .and_then(requester_api_json),
+            ("requester_session_view", "missing_delivery") => {
+                let mut deliveries = requester_api_deliveries(records)?;
+                deliveries.pop();
+                RequesterSessionView::from_signed_records(session.config(), records, deliveries)
+                    .and_then(requester_api_json)
+            }
+            ("requester_session_view_with_effects", "terminal_verified") => {
+                let terminal = build_terminal_flow("submarine", "completed")?;
+                RequesterSessionView::from_signed_records_with_effects(
+                    terminal.config(),
+                    terminal.signed_records(),
+                    requester_api_deliveries(terminal.signed_records())?,
+                    terminal.external_effect_results(),
+                )
+                .and_then(requester_api_json)
+            }
+            ("requester_session_view_with_effects", "missing_local_effects") => {
+                let terminal = build_terminal_flow("submarine", "completed")?;
+                RequesterSessionView::from_signed_records_with_effects(
+                    terminal.config(),
+                    terminal.signed_records(),
+                    requester_api_deliveries(terminal.signed_records())?,
+                    Vec::new(),
+                )
+                .and_then(requester_api_json)
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported requester API case {operation}.{variant}"
+                ));
+            }
+        };
+        Ok(outcome)
+    }
+
+    fn fixture_record<'a>(
+        records: &'a [Event],
+        kind: u16,
+        pubkey: Option<&str>,
+    ) -> Result<&'a Event, String> {
+        records
+            .iter()
+            .find(|event| event.kind == kind && pubkey.is_none_or(|pubkey| event.pubkey == pubkey))
+            .ok_or_else(|| format!("requester API source fixture has no kind {kind}"))
+    }
+
+    fn requester_api_contract_draft(
+        factory: &SwapRecordFactory,
+        rfq: &Event,
+        quote: &Event,
+        order: &Event,
+        requester_contract: &Event,
+        order_observed_at: u64,
+    ) -> Result<Value, SwapClientError> {
+        let contract = parse_content(requester_contract)?["mkt_swp"]["contract"].clone();
+        let local_inputs = serde_json::from_value(json!({
+            "effect_bindings":contract["effect_bindings"],
+            "exit_package_commitments":contract["exit_package_commitments"]
+        }))
+        .map_err(|error| {
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                format!("requester fixture local inputs are invalid: {error}"),
+            )
+        })?;
+        factory.requester_contract_draft(rfq, quote, order, order_observed_at, local_inputs)
+    }
+
+    fn requester_api_deliveries(records: &[Event]) -> Result<Vec<SignedRecordDelivery>, String> {
+        records
+            .iter()
+            .map(|event| {
+                let raw = serde_json::to_vec(event)
+                    .map_err(|error| format!("requester delivery encoding: {error}"))?;
+                SignedRecordDelivery::from_direct(raw, 100).map_err(|error| error.to_string())
+            })
+            .collect()
+    }
+
+    fn requester_api_json<T: Serialize>(value: T) -> Result<Value, SwapClientError> {
+        serde_json::to_value(value).map_err(|error| {
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                format!("requester API output encoding failed: {error}"),
+            )
+        })
     }
 
     #[doc(hidden)]

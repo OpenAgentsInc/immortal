@@ -440,10 +440,10 @@ fn select_offering(paths: &LabPaths) -> Result<(String, String), String> {
 fn match_quote(wrap: &Event, recipient: &MarketSigner, session_id: &str) -> Option<Event> {
     match unwrap_mkt_record(wrap, recipient, &swp_profiles()) {
         Ok(delivered)
-            if delivered.record.envelope.session_id == session_id
-                && delivered.record.event.kind == MKT_QUOTE_KIND =>
+            if delivered.record().envelope().session_id == session_id
+                && delivered.record().event().kind == MKT_QUOTE_KIND =>
         {
-            Some(delivered.record.event)
+            Some(delivered.record().event().clone())
         }
         Ok(_) => None,
         Err(error) => {

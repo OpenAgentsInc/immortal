@@ -70,13 +70,25 @@ The funded lab stores the receipt archive beside the client snapshot, records
 both artifact paths in every restartable checkpoint, and re-decrypts archived
 gift wraps before restoring the requester view.
 
-When a Quote pins `price_feed`, Order construction requires a host-supplied
-verification input. The operation rejects redirects, substitute response URLs,
-userinfo, fragments, malformed RFC 6901 pointers, duplicate JSON members,
-noncanonical decimal values, stale observations, response-digest changes, and
-an amount calculation that does not reproduce the signed Quote. The versioned
-`swp-requester-api-v1.json` artifact publishes operation schemas and exact-byte
-replay cases; the same replay runs in native tests and the WASM fixture probe.
+The requester projection exposes a signed Quote's `price_feed` pin for
+inspection. Order construction rejects every non-null pin with
+`swp_price_feed_unsupported` until MKT-SWP specifies the deterministic formula
+that maps the pinned observation to the signed amounts. A URL and response
+digest alone are not an amount-verification rule.
+
+The versioned `swp-requester-api-v1.json` artifact publishes exact schemas for
+Order, Contract draft, Contract signing, signed-only session projection, and
+session projection with persisted local external-effect results. Every
+operation has positive and negative cases replayed by both the native and WASM
+fixture probes. The relay contract descriptor names this artifact and version
+so SDK generation does not infer an API from Rust source.
+
+Signed Status and Close records remain counterparty claims. The signed-only
+session operation can project a claimed terminal state, but it keeps
+`watch_terminal` and `local_effects_verified` false and never reports
+`terminal_verified`. The local-effects operation reruns the full lifecycle and
+loss-accounting validators against exact persisted `ExternalEffectResult`
+bindings before those fields can become true.
 
 ## Verify before fund
 

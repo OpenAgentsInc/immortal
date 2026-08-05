@@ -25,7 +25,7 @@ use immortal_core::{
         MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND, MktProfileSupport, Tag,
         validate_mkt_public_event,
     },
-    market::{MarketSigner, WrapMaterial, unwrap_mkt_record, wrap_mkt_record},
+    market::{MarketSigner, WrapMaterial, unwrap_mkt_record_raw, wrap_mkt_record},
     mkt_swp_verify::{Transaction, TransactionInput, TransactionOutput, sha256},
 };
 use immortal_provider::{
@@ -118,6 +118,7 @@ struct SessionContext {
 }
 
 struct PendingSession {
+    relay_url: String,
     reader: RelayClient,
     publisher: RelayClient,
     requester: MarketSigner,
@@ -125,7 +126,9 @@ struct PendingSession {
     factory: SwapRecordFactory,
     config: SwapClientConfig,
     records: Vec<Event>,
+    deliveries: Vec<SignedRecordDelivery>,
     order: Event,
+    order_observed_at: u64,
     contract: Value,
     exit_package_seed: ExitPackage,
     requester_funding: Option<SignedFundingTransaction>,
@@ -1907,7 +1910,7 @@ fn prepare_negotiation(
         &environment.relay_url,
         now,
     )?;
-    let rfq = sign_request(
+    let (rfq, rfq_raw) = sign_request(
         factory
             .rfq(
                 now,
@@ -1920,12 +1923,12 @@ fn prepare_negotiation(
     )?;
     let mut records = vec![rfq.clone()];
     let mut deliveries = vec![
-        SignedRecordDelivery::from_locally_signed(&rfq, now)
+        SignedRecordDelivery::from_locally_signed(rfq_raw.clone(), now)
             .map_err(|error| format!("could not archive funded RFQ provenance: {error}"))?,
     ];
     publish_private(
         &mut publisher,
-        &rfq,
+        &rfq_raw,
         &environment.requester,
         provider_pubkey,
     )?;
@@ -1936,21 +1939,21 @@ fn prepare_negotiation(
         JOURNEY_TIMEOUT,
         |event| event.kind == MKT_QUOTE_KIND,
     )?;
+    let quote_observed_at = received_quote.delivery.observed_at();
     let quote = received_quote.event;
     deliveries.push(received_quote.delivery);
     quote
         .validate_crypto()
         .map_err(|error| format!("funded Quote signature is invalid: {error}"))?;
     records.push(quote.clone());
-    let order_observed_at = next_created_at_records(&records)?;
-    let order = sign_request(
+    let order_created_at = next_created_at_records(&records)?;
+    let (order, order_raw) = sign_request(
         factory
             .requester_order(RequesterOrderInput {
                 rfq: &rfq,
                 quote: &quote,
-                created_at: order_observed_at,
-                observed_at: order_observed_at,
-                price_feed: None,
+                created_at: order_created_at,
+                observed_at: quote_observed_at,
                 distinct: &digest(&format!("order:{session_id}")),
                 selection: None,
             })
@@ -1958,13 +1961,13 @@ fn prepare_negotiation(
         &environment.requester,
     )?;
     records.push(order.clone());
-    deliveries.push(
-        SignedRecordDelivery::from_locally_signed(&order, order_observed_at)
-            .map_err(|error| format!("could not archive funded Order provenance: {error}"))?,
-    );
+    let order_delivery = SignedRecordDelivery::from_locally_signed(order_raw.clone(), unix_now()?)
+        .map_err(|error| format!("could not archive funded Order provenance: {error}"))?;
+    let order_observed_at = order_delivery.observed_at();
+    deliveries.push(order_delivery);
     publish_private(
         &mut publisher,
-        &order,
+        &order_raw,
         &environment.requester,
         provider_pubkey,
     )?;
@@ -1994,6 +1997,7 @@ fn prepare_negotiation(
         input.exit_destination_script_pubkey,
     )?;
     Ok(PendingSession {
+        relay_url: environment.relay_url.clone(),
         reader,
         publisher,
         requester: environment.requester.clone(),
@@ -2001,7 +2005,9 @@ fn prepare_negotiation(
         factory,
         config,
         records,
+        deliveries,
         order,
+        order_observed_at,
         contract,
         exit_package_seed,
         requester_funding,
@@ -2012,6 +2018,7 @@ fn prepare_negotiation(
 
 fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, String> {
     let PendingSession {
+        relay_url,
         mut reader,
         mut publisher,
         requester,
@@ -2019,7 +2026,9 @@ fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, Strin
         factory,
         config,
         mut records,
+        mut deliveries,
         order,
+        order_observed_at,
         contract,
         exit_package_seed,
         requester_funding,
@@ -2037,7 +2046,7 @@ fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, Strin
         .find(|event| event.kind == MKT_QUOTE_KIND)
         .cloned()
         .ok_or_else(|| "prepared funded session has no Quote".to_owned())?;
-    let requester_contract = sign_request(
+    let (requester_contract, requester_contract_raw) = sign_request(
         factory
             .requester_contract(RequesterContractSigningInput {
                 rfq: &rfq,
@@ -2053,12 +2062,12 @@ fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, Strin
     )?;
     records.push(requester_contract.clone());
     deliveries.push(
-        SignedRecordDelivery::from_locally_signed(&requester_contract, unix_now()?)
+        SignedRecordDelivery::from_locally_signed(requester_contract_raw.clone(), unix_now()?)
             .map_err(|error| format!("could not archive requester Contract provenance: {error}"))?,
     );
     publish_private(
         &mut publisher,
-        &requester_contract,
+        &requester_contract_raw,
         &requester,
         &provider_pubkey,
     )?;
@@ -2090,7 +2099,7 @@ fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, Strin
     let verifier = SwapSession::from_signed_records(config, records, vec![exit_package])
         .map_err(|error| format!("funded verifier rejected negotiated session: {error}"))?;
     let mut session = SessionContext {
-        relay_url: environment.relay_url.clone(),
+        relay_url,
         reader,
         publisher,
         requester,
@@ -2441,7 +2450,7 @@ impl SessionContext {
             ),
             None => (0, None),
         };
-        let event = sign_request(
+        let (event, raw_event) = sign_request(
             self.factory
                 .status(
                     ParticipantRole::Requester,
@@ -2462,14 +2471,14 @@ impl SessionContext {
                 .map_err(|error| format!("could not construct requester {state}: {error}"))?,
             &self.requester,
         )?;
-        let delivery = SignedRecordDelivery::from_locally_signed(&event, unix_now()?)
+        let delivery = SignedRecordDelivery::from_locally_signed(raw_event.clone(), unix_now()?)
             .map_err(|error| format!("could not retain requester Status provenance: {error}"))?;
         self.ingest_synchronized(event.clone(), &format!("requester {state}"))?;
         self.deliveries.push(delivery);
         self.persist_snapshot()?;
         publish_private(
             &mut self.publisher,
-            &event,
+            &raw_event,
             &self.requester,
             &self.provider_pubkey,
         )?;
@@ -3653,13 +3662,11 @@ fn drain_history(client: &mut RelayClient, timeout: Duration) -> Result<(), Stri
 
 fn publish_private(
     publisher: &mut RelayClient,
-    event: &Event,
+    raw_signed_event: &[u8],
     sender: &MarketSigner,
     recipient: &str,
 ) -> Result<(), String> {
-    let raw = serde_json::to_vec(event)
-        .map_err(|error| format!("could not serialize private event: {error}"))?;
-    let wrap = wrap_mkt_record(&raw, sender, recipient, random_wrap_material()?)?;
+    let wrap = wrap_mkt_record(raw_signed_event, sender, recipient, random_wrap_material()?)?;
     send_json(&mut publisher.websocket, json!(["EVENT", wrap.event]))?;
     expect_ok(
         &mut publisher.websocket,
@@ -3680,9 +3687,11 @@ where
 {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        let Some(message) = read_json_until(&mut reader.websocket, deadline)? else {
+        let Some(raw_message) = read_text_until(&mut reader.websocket, deadline)? else {
             break;
         };
+        let message: Value = serde_json::from_str(&raw_message)
+            .map_err(|error| format!("relay message is invalid JSON: {error}"))?;
         let Some(value) = message
             .as_array()
             .filter(|fields| fields.first().and_then(Value::as_str) == Some("EVENT"))
@@ -3690,14 +3699,21 @@ where
         else {
             continue;
         };
-        let wrap: Event = serde_json::from_value(value.clone())
-            .map_err(|error| format!("funded subscription payload is not an event: {error}"))?;
-        let delivered = unwrap_mkt_record(&wrap, recipient, &swp_profiles())?;
-        if delivered.record.envelope.session_id == session_id && matches(&delivered.record.event) {
-            let delivery = SignedRecordDelivery::from_delivered(&wrap, &delivered, unix_now()?)
+        if !value.is_object() {
+            return Err("funded subscription payload is not an event".to_owned());
+        }
+        let raw_wrap = relay_array_element_raw(&raw_message, 2)
+            .ok_or_else(|| "could not retain exact funded gift-wrap bytes".to_owned())?
+            .as_bytes()
+            .to_vec();
+        let delivered = unwrap_mkt_record_raw(&raw_wrap, recipient, &swp_profiles())?;
+        if delivered.record().envelope().session_id == session_id
+            && matches(delivered.record().event())
+        {
+            let delivery = SignedRecordDelivery::from_delivered(&delivered, unix_now()?)
                 .map_err(|error| format!("could not retain funded delivery provenance: {error}"))?;
             return Ok(ReceivedPrivate {
-                event: delivered.record.event,
+                event: delivered.record().event().clone(),
                 delivery,
             });
         }
@@ -3741,8 +3757,6 @@ fn restore_funded_deliveries(
         .map_err(|error| format!("funded delivery provenance is invalid: {error}"))?;
         let delivery = match provenance {
             DeliveryProvenance::LocallySigned => {
-                let delivery = SignedRecordDelivery::from_locally_signed(event, observed_at)
-                    .map_err(|error| format!("local delivery restore failed: {error}"))?;
                 let archived_raw: Vec<u8> = serde_json::from_value(
                     entry
                         .get("raw_signed_event")
@@ -3750,8 +3764,10 @@ fn restore_funded_deliveries(
                         .ok_or_else(|| "local delivery has no signed bytes".to_owned())?,
                 )
                 .map_err(|error| format!("local delivery bytes are invalid: {error}"))?;
-                if delivery.raw_signed_event() != archived_raw {
-                    return Err("local delivery bytes changed across restore".to_owned());
+                let delivery = SignedRecordDelivery::from_locally_signed(archived_raw, observed_at)
+                    .map_err(|error| format!("local delivery restore failed: {error}"))?;
+                if delivery.event_id() != event.id {
+                    return Err("local delivery restored another signed record".to_owned());
                 }
                 delivery
             }
@@ -3763,13 +3779,11 @@ fn restore_funded_deliveries(
                         .ok_or_else(|| "gift-wrap delivery has no outer bytes".to_owned())?,
                 )
                 .map_err(|error| format!("gift-wrap delivery bytes are invalid: {error}"))?;
-                let wrap: Event = serde_json::from_slice(&raw_wrap)
-                    .map_err(|error| format!("gift-wrap delivery is not an event: {error}"))?;
-                let delivered = unwrap_mkt_record(&wrap, requester, &swp_profiles())?;
-                if delivered.record.event != *event {
+                let delivered = unwrap_mkt_record_raw(&raw_wrap, requester, &swp_profiles())?;
+                if delivered.record().event() != event {
                     return Err("gift-wrap delivery restored another signed record".to_owned());
                 }
-                SignedRecordDelivery::from_delivered(&wrap, &delivered, observed_at)
+                SignedRecordDelivery::from_delivered(&delivered, observed_at)
                     .map_err(|error| format!("gift-wrap delivery restore failed: {error}"))?
             }
             DeliveryProvenance::Direct => {
@@ -3811,16 +3825,24 @@ fn read_json_until(
     websocket: &mut RelaySocket,
     deadline: Instant,
 ) -> Result<Option<Value>, String> {
+    read_text_until(websocket, deadline)?
+        .map(|text| {
+            serde_json::from_str(&text)
+                .map_err(|error| format!("relay message is invalid JSON: {error}"))
+        })
+        .transpose()
+}
+
+fn read_text_until(
+    websocket: &mut RelaySocket,
+    deadline: Instant,
+) -> Result<Option<String>, String> {
     loop {
         if Instant::now() >= deadline {
             return Ok(None);
         }
         match websocket.read() {
-            Ok(Message::Text(text)) => {
-                return serde_json::from_str(text.as_str())
-                    .map(Some)
-                    .map_err(|error| format!("relay message is invalid JSON: {error}"));
-            }
+            Ok(Message::Text(text)) => return Ok(Some(text.to_string())),
             Ok(Message::Ping(payload)) => websocket
                 .send(Message::Pong(payload))
                 .map_err(|error| format!("could not answer relay ping: {error}"))?,
@@ -3837,6 +3859,36 @@ fn read_json_until(
             Err(error) => return Err(format!("could not read relay message: {error}")),
         }
     }
+}
+
+fn relay_array_element_raw(input: &str, target_index: usize) -> Option<&str> {
+    let bytes = input.as_bytes();
+    let mut offset = bytes.iter().position(|byte| *byte == b'[')? + 1;
+    for index in 0..=target_index {
+        offset += bytes
+            .get(offset..)?
+            .iter()
+            .position(|byte| !byte.is_ascii_whitespace())?;
+        if index > 0 {
+            if *bytes.get(offset)? != b',' {
+                return None;
+            }
+            offset += 1;
+            offset += bytes
+                .get(offset..)?
+                .iter()
+                .position(|byte| !byte.is_ascii_whitespace())?;
+        }
+        let start = offset;
+        let mut values =
+            serde_json::Deserializer::from_str(input.get(start..)?).into_iter::<Value>();
+        values.next()?.ok()?;
+        offset = start.checked_add(values.byte_offset())?;
+        if index == target_index {
+            return input.get(start..offset);
+        }
+    }
+    None
 }
 
 fn loopback_addresses(relay_url: &str) -> Result<Vec<SocketAddr>, String> {
@@ -3869,16 +3921,19 @@ fn is_loopback(address: IpAddr) -> bool {
 fn sign_request(
     request: immortal_client::mkt_swp_client::MktSigningRequest,
     signer: &MarketSigner,
-) -> Result<Event, String> {
+) -> Result<(Event, Vec<u8>), String> {
     let event = signer.sign(
         request.created_at,
         request.kind,
         request.tags.clone(),
         request.content.clone(),
     );
-    request
+    let event = request
         .verify_signed(event)
-        .map_err(|error| format!("request signature failed: {error}"))
+        .map_err(|error| format!("request signature failed: {error}"))?;
+    let raw = serde_json::to_vec(&event)
+        .map_err(|error| format!("could not retain locally signed event bytes: {error}"))?;
+    Ok((event, raw))
 }
 
 fn record_profile(event: &Event) -> Result<Map<String, Value>, String> {
@@ -4246,6 +4301,16 @@ mod tests {
     const CHECKPOINT_FIXTURE: &str =
         include_str!("../../../tests/fixtures/lab/funded-checkpoints-v1.json");
     const MATRIX_FIXTURE: &str = include_str!("../../../tests/fixtures/lab/funded-matrix-v1.json");
+
+    #[test]
+    fn relay_event_extraction_retains_exact_outer_bytes() {
+        let message = r#"[ "EVENT" , "subscription,{id}" , { "id" : "aa", "content" : "},[" } ]"#;
+        assert_eq!(
+            relay_array_element_raw(message, 2),
+            Some(r#"{ "id" : "aa", "content" : "},[" }"#)
+        );
+        assert_eq!(relay_array_element_raw(message, 3), None);
+    }
 
     #[test]
     fn checkpoint_fixture_names_exactly_the_implemented_restart_surface() {

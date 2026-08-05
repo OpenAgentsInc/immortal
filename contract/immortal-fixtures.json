@@ -403,8 +403,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/swp-requester-api-v1.json",
-      "sha256": "74f02b4f1e088cff08680f08ef315293cb4de39f0868278ac71ae4cf625fdb2b",
-      "bytes": 10951,
+      "sha256": "7ccd8c25db2ac505d805e22da2ee5d8535092e7eb2141b845749d99fe3173b17",
+      "bytes": 36782,
       "scope": "client"
     },
     {

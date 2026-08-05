@@ -1333,7 +1333,7 @@ fn validate_session_event(config: &SwapClientConfig, event: &Event) -> Result<()
             format!("provider record violates MKT-SWP: {error}"),
         )
     })?;
-    if validated.envelope.session_id != config.session_id {
+    if validated.envelope().session_id != config.session_id {
         return Err(provider_error(
             "swp_contract_terms_mismatch",
             "provider record belongs to another session",

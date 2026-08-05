@@ -282,9 +282,23 @@ impl std::error::Error for MktValidationError {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MktValidatedPrivateRecord {
-    pub raw_signed_event: Vec<u8>,
-    pub event: Event,
-    pub envelope: MktPrivateEnvelope,
+    raw_signed_event: Vec<u8>,
+    event: Event,
+    envelope: MktPrivateEnvelope,
+}
+
+impl MktValidatedPrivateRecord {
+    pub fn raw_signed_event(&self) -> &[u8] {
+        &self.raw_signed_event
+    }
+
+    pub fn event(&self) -> &Event {
+        &self.event
+    }
+
+    pub fn envelope(&self) -> &MktPrivateEnvelope {
+        &self.envelope
+    }
 }
 
 pub fn validate_mkt_public_event(event: &Event) -> Result<(), String> {

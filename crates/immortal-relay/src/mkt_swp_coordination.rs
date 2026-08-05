@@ -149,8 +149,8 @@ pub fn parse_coordination_wrap(
     let Some(delivered) = unwrap_mkt_record_for_handler(wrap, &recipient, &profiles)? else {
         return Ok(None);
     };
-    let event = delivered.record.event;
-    let envelope = delivered.record.envelope;
+    let event = delivered.record().event().clone();
+    let envelope = delivered.record().envelope().clone();
     let profile = envelope
         .body
         .get("mkt_swp")

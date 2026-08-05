@@ -328,7 +328,7 @@ impl<M: ProviderMode> RelayActor<M> {
                     continue;
                 }
             };
-            insert_recovery_record(&mut records, delivered.record.event)?;
+            insert_recovery_record(&mut records, delivered.record().event().clone())?;
         }
 
         let mut sessions = BTreeMap::<String, Vec<Event>>::new();
@@ -502,7 +502,7 @@ impl<M: ProviderMode> RelayActor<M> {
                 return Ok(());
             }
         };
-        let record = delivered.record.event;
+        let record = delivered.record().event().clone();
         let session_id = session_id(&record)?.to_owned();
         let provider_authored = record.pubkey == self.signer.pubkey();
         if provider_authored && !self.sessions.contains_key(&session_id) {

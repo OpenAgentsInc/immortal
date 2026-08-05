@@ -219,7 +219,7 @@ fn nipmkt_raw_signed_record_bound_is_exact_and_crypto_checked() {
     assert_eq!(raw.len(), maximum_bytes);
     let support = complete_profile_support();
     let validated = validate_mkt_private_raw(&raw, &[support]).unwrap();
-    assert_eq!(validated.raw_signed_event, raw);
+    assert_eq!(validated.raw_signed_event(), raw);
 
     let mut oversized_raw = raw.clone();
     oversized_raw.push(b' ');

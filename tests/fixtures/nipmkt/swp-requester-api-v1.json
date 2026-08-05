@@ -11,7 +11,7 @@
     {
       "name": "requester_contract_draft",
       "input_schema": {"$ref": "#/$defs/requester_contract_draft_input"},
-      "output_schema": {"type": "object"}
+      "output_schema": {"$ref": "#/$defs/swp_contract"}
     },
     {
       "name": "requester_contract",
@@ -24,12 +24,21 @@
       "output_schema": {"$ref": "#/$defs/requester_session_view"}
     },
     {
-      "name": "verify_price_feed",
-      "input_schema": {"$ref": "#/$defs/price_feed_verification_input"},
-      "output_schema": {"$ref": "#/$defs/price_feed_verification_receipt"}
+      "name": "requester_session_view_with_effects",
+      "input_schema": {"$ref": "#/$defs/requester_session_with_effects_input"},
+      "output_schema": {"$ref": "#/$defs/requester_session_view"}
     }
   ],
   "$defs": {
+    "hex32": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "decimal": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
+    "nullable_decimal": {"anyOf": [{"$ref": "#/$defs/decimal"}, {"type": "null"}]},
+    "tag": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {"type": "string", "maxLength": 2048}
+    },
     "nostr_event": {
       "type": "object",
       "required": ["id", "pubkey", "created_at", "kind", "tags", "content", "sig"],
@@ -38,10 +47,7 @@
         "pubkey": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "created_at": {"type": "integer", "minimum": 0},
         "kind": {"type": "integer", "minimum": 0, "maximum": 65535},
-        "tags": {
-          "type": "array",
-          "items": {"type": "array", "items": {"type": "string"}}
-        },
+        "tags": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/tag"}},
         "content": {"type": "string"},
         "sig": {"type": "string", "pattern": "^[0-9a-f]{128}$"}
       },
@@ -54,7 +60,7 @@
         "pubkey": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "created_at": {"type": "integer", "minimum": 0},
         "kind": {"type": "integer", "minimum": 39604, "maximum": 39610},
-        "tags": {"type": "array"},
+        "tags": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/tag"}},
         "content": {"type": "string"},
         "expected_event_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       },
@@ -66,45 +72,26 @@
       "properties": {
         "effect_bindings": {
           "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["role", "leg_id"],
-            "properties": {"role": {"type": "string"}, "leg_id": {"type": "string"}},
-            "additionalProperties": false
-          }
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {"$ref": "#/$defs/effect_binding"}
         },
         "exit_package_commitments": {
           "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["participant_role", "leg_id", "path", "package_mode", "package_sha256"],
-            "properties": {
-              "participant_role": {"const": "requester"},
-              "leg_id": {"type": "string"},
-              "path": {"enum": ["claim", "refund"]},
-              "package_mode": {"enum": ["presigned", "wallet_sign"]},
-              "package_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-            },
-            "additionalProperties": false
-          }
+          "maxItems": 4,
+          "items": {"$ref": "#/$defs/exit_package_commitment"}
         }
       },
       "additionalProperties": false
     },
     "requester_order_input": {
       "type": "object",
-      "required": ["rfq", "quote", "created_at", "observed_at", "price_feed", "distinct", "selection"],
+      "required": ["rfq", "quote", "created_at", "observed_at", "distinct", "selection"],
       "properties": {
         "rfq": {"$ref": "#/$defs/nostr_event"},
         "quote": {"$ref": "#/$defs/nostr_event"},
         "created_at": {"type": "integer", "minimum": 0},
         "observed_at": {"type": "integer", "minimum": 0},
-        "price_feed": {
-          "anyOf": [
-            {"$ref": "#/$defs/price_feed_verification_input"},
-            {"type": "null"}
-          ]
-        },
         "distinct": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "selection": {
           "anyOf": [
@@ -120,8 +107,19 @@
       "properties": {
         "input_amount": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
         "fee_payer": {"type": "string"},
-        "confirmation_policy": {"type": "object"},
+        "confirmation_policy": {"$ref": "#/$defs/selection_confirmation_policy"},
         "public_receipt_consent": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "selection_confirmation_policy": {
+      "type": "object",
+      "properties": {
+        "minimum_confirmations": {"$ref": "#/$defs/decimal"},
+        "reorg_safety_blocks": {"$ref": "#/$defs/decimal"},
+        "zero_confirmation": {"enum": ["forbidden", "allowed"]},
+        "rbf": {"enum": ["reject", "track"]},
+        "replacement": {"enum": ["reject", "track"]}
       },
       "additionalProperties": false
     },
@@ -147,32 +145,314 @@
         "order_observed_at": {"type": "integer", "minimum": 0},
         "created_at": {"type": "integer", "minimum": 0},
         "distinct": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "contract": {"type": "object"}
+        "contract": {"$ref": "#/$defs/swp_contract"}
       },
       "additionalProperties": false
     },
-    "price_feed_verification_input": {
+    "price_feed_pin": {
       "type": "object",
-      "required": ["request_url", "response_url", "redirect_count", "raw_response", "observed_at"],
+      "required": ["url", "value_pointer", "observed_value", "response_sha256", "observed_at", "max_age_seconds"],
       "properties": {
-        "request_url": {"type": "string"},
-        "response_url": {"type": "string"},
-        "redirect_count": {"type": "integer", "minimum": 0},
-        "raw_response": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}},
-        "observed_at": {"type": "integer", "minimum": 0}
-      },
-      "additionalProperties": false
-    },
-    "price_feed_verification_receipt": {
-      "type": "object",
-      "required": ["url", "value_pointer", "observed_value", "response_sha256", "observed_at", "quote_output_amount"],
-      "properties": {
-        "url": {"type": "string"},
-        "value_pointer": {"type": "string"},
-        "observed_value": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
-        "response_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "url": {"type": "string", "pattern": "^https://", "maxLength": 2048},
+        "value_pointer": {"type": "string", "maxLength": 512},
+        "observed_value": {"$ref": "#/$defs/decimal"},
+        "response_sha256": {"$ref": "#/$defs/hex32"},
         "observed_at": {"type": "integer", "minimum": 0},
-        "quote_output_amount": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"}
+        "max_age_seconds": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "effect_binding": {
+      "type": "object",
+      "required": ["role", "leg_id"],
+      "properties": {
+        "role": {"enum": ["chain_fund", "chain_claim", "chain_refund", "invoice_pay"]},
+        "leg_id": {"type": "string", "minLength": 1, "maxLength": 64}
+      },
+      "additionalProperties": false
+    },
+    "exit_package_commitment": {
+      "type": "object",
+      "required": ["participant_role", "leg_id", "path", "package_mode", "package_sha256"],
+      "properties": {
+        "participant_role": {"const": "requester"},
+        "leg_id": {"type": "string", "minLength": 1, "maxLength": 64},
+        "path": {"enum": ["claim", "refund"]},
+        "package_mode": {"enum": ["presigned", "wallet_sign"]},
+        "package_sha256": {"$ref": "#/$defs/hex32"}
+      },
+      "additionalProperties": false
+    },
+    "evidence_authority": {
+      "type": "object",
+      "required": ["adapter_sha256", "mode", "pubkeys"],
+      "properties": {
+        "adapter_sha256": {"$ref": "#/$defs/hex32"},
+        "mode": {"const": "local"},
+        "pubkeys": {"type": "array", "maxItems": 16, "items": {"$ref": "#/$defs/hex32"}}
+      },
+      "additionalProperties": false
+    },
+    "bitcoin_leg": {
+      "type": "object",
+      "required": ["amount", "asset_id", "claim_public_key", "confirmation_policy", "funding_role", "leg_id", "network_id", "payment_hash", "rail", "receiving_role", "refund_condition", "refund_lock_value", "refund_public_key", "script_pubkey", "verifier_digest", "verifier_policy"],
+      "properties": {
+        "amount": {"$ref": "#/$defs/decimal"},
+        "asset_id": {"type": "string", "pattern": "^swp:1:"},
+        "claim_public_key": {"$ref": "#/$defs/hex32"},
+        "confirmation_policy": {"$ref": "#/$defs/bitcoin_leg_confirmation"},
+        "funding_role": {"enum": ["requester", "provider"]},
+        "leg_id": {"enum": ["source", "destination"]},
+        "network_id": {"type": "string", "pattern": "^bip122:[0-9a-f]{32}$"},
+        "payment_hash": {"$ref": "#/$defs/hex32"},
+        "rail": {"const": "bitcoin"},
+        "receiving_role": {"enum": ["requester", "provider"]},
+        "refund_condition": {"enum": ["cltv", "csv"]},
+        "refund_lock_value": {"$ref": "#/$defs/decimal"},
+        "refund_public_key": {"$ref": "#/$defs/hex32"},
+        "script_pubkey": {"type": "string", "pattern": "^[0-9a-f]+$"},
+        "verifier_digest": {"$ref": "#/$defs/hex32"},
+        "verifier_policy": {"const": "mkt-swp-bitcoin-v1"}
+      },
+      "additionalProperties": false
+    },
+    "bitcoin_leg_confirmation": {
+      "type": "object",
+      "required": ["minimum_confirmations", "replacement_policy"],
+      "properties": {
+        "minimum_confirmations": {"$ref": "#/$defs/decimal"},
+        "replacement_policy": {"enum": ["reject", "track"]}
+      },
+      "additionalProperties": false
+    },
+    "lightning_leg": {
+      "type": "object",
+      "required": ["amount", "asset_id", "funding_role", "invoice_expiry_seconds", "invoice_minimum_final_cltv_delta", "invoice_sha256", "leg_id", "network_id", "payment_hash", "rail", "receiving_role", "verifier_digest", "verifier_policy"],
+      "properties": {
+        "amount": {"$ref": "#/$defs/decimal"},
+        "asset_id": {"type": "string", "pattern": "^swp:1:"},
+        "funding_role": {"enum": ["requester", "provider"]},
+        "invoice_expiry_seconds": {"$ref": "#/$defs/decimal"},
+        "invoice_minimum_final_cltv_delta": {"$ref": "#/$defs/decimal"},
+        "invoice_sha256": {"$ref": "#/$defs/hex32"},
+        "leg_id": {"const": "lightning"},
+        "network_id": {"type": "string", "pattern": "^bip122:[0-9a-f]{32}$"},
+        "payment_hash": {"$ref": "#/$defs/hex32"},
+        "rail": {"const": "lightning"},
+        "receiving_role": {"enum": ["requester", "provider"]},
+        "verifier_digest": {"$ref": "#/$defs/hex32"},
+        "verifier_policy": {"const": "mkt-swp-lightning-v1"}
+      },
+      "additionalProperties": false
+    },
+    "taproot_path": {
+      "type": "object",
+      "required": ["condition", "lock_value", "participant_role", "path", "script", "signing_pubkey"],
+      "properties": {
+        "condition": {"enum": ["hashlock", "cltv", "csv"]},
+        "lock_value": {"$ref": "#/$defs/nullable_decimal"},
+        "participant_role": {"enum": ["requester", "provider"]},
+        "path": {"enum": ["claim", "refund"]},
+        "script": {"type": "string", "pattern": "^[0-9a-f]+$"},
+        "signing_pubkey": {"$ref": "#/$defs/hex32"}
+      },
+      "additionalProperties": false
+    },
+    "cooperative_pubkey": {
+      "type": "object",
+      "required": ["participant_role", "public_key"],
+      "properties": {
+        "participant_role": {"enum": ["requester", "provider"]},
+        "public_key": {"type": "string", "pattern": "^(02|03)[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "bitcoin_verifier_input": {
+      "type": "object",
+      "required": ["amount", "cooperative_internal_key", "cooperative_pubkeys", "evidence_authority", "exit_condition", "exit_lock_value", "exit_path", "exit_signing_pubkey", "funding_transaction", "funding_transaction_sha256", "leg_id", "minimum_confirmations", "output_index", "rbf_policy", "reorg_safety_blocks", "replacement_policy", "script_pubkey", "swap_tree_sha256", "taproot_control_block", "taproot_merkle_root", "taproot_output_key", "taproot_script", "taproot_tree", "verifier_policy", "zero_confirmation"],
+      "properties": {
+        "amount": {"$ref": "#/$defs/decimal"},
+        "cooperative_internal_key": {"$ref": "#/$defs/hex32"},
+        "cooperative_pubkeys": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/cooperative_pubkey"}},
+        "evidence_authority": {"$ref": "#/$defs/evidence_authority"},
+        "exit_condition": {"enum": ["hashlock", "cltv", "csv"]},
+        "exit_lock_value": {"$ref": "#/$defs/nullable_decimal"},
+        "exit_path": {"enum": ["claim", "refund"]},
+        "exit_signing_pubkey": {"$ref": "#/$defs/hex32"},
+        "funding_transaction": {"type": "string", "pattern": "^[0-9a-f]+$"},
+        "funding_transaction_sha256": {"$ref": "#/$defs/hex32"},
+        "leg_id": {"enum": ["source", "destination"]},
+        "minimum_confirmations": {"$ref": "#/$defs/decimal"},
+        "output_index": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "rbf_policy": {"enum": ["reject", "track"]},
+        "reorg_safety_blocks": {"$ref": "#/$defs/decimal"},
+        "replacement_policy": {"enum": ["reject", "track"]},
+        "script_pubkey": {"type": "string", "pattern": "^[0-9a-f]+$"},
+        "swap_tree_sha256": {"$ref": "#/$defs/hex32"},
+        "taproot_control_block": {"type": "string", "pattern": "^[0-9a-f]+$"},
+        "taproot_merkle_root": {"$ref": "#/$defs/hex32"},
+        "taproot_output_key": {"$ref": "#/$defs/hex32"},
+        "taproot_script": {"type": "string", "pattern": "^[0-9a-f]+$"},
+        "taproot_tree": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/taproot_path"}},
+        "verifier_policy": {"const": "mkt-swp-bitcoin-v1"},
+        "zero_confirmation": {"enum": ["forbidden", "allowed"]}
+      },
+      "additionalProperties": false
+    },
+    "lightning_verifier_input": {
+      "type": "object",
+      "required": ["evidence_authority", "invoice_amount_msat", "invoice_expiry_seconds", "invoice_minimum_final_cltv_delta", "invoice_network", "invoice_sha256", "leg_id", "verifier_policy"],
+      "properties": {
+        "evidence_authority": {"$ref": "#/$defs/evidence_authority"},
+        "invoice_amount_msat": {"$ref": "#/$defs/decimal"},
+        "invoice_expiry_seconds": {"$ref": "#/$defs/decimal"},
+        "invoice_minimum_final_cltv_delta": {"$ref": "#/$defs/decimal"},
+        "invoice_network": {"enum": ["bitcoin", "testnet", "signet", "regtest"]},
+        "invoice_sha256": {"$ref": "#/$defs/hex32"},
+        "leg_id": {"const": "lightning"},
+        "verifier_policy": {"const": "mkt-swp-lightning-v1"}
+      },
+      "additionalProperties": false
+    },
+    "reservation_commitment": {
+      "type": "object",
+      "required": ["allocation_sequence", "capacity_bucket_id", "capacity_commitment_sha256", "covenant_commitment", "handler_committed_capacity", "profile_timeout_at", "proof_class", "proof_ref_sha256", "proof_strength", "quote_id", "reservation_class", "reservation_expires_at", "reservation_id", "reserved_amount", "reserved_asset_id", "rfq_id", "session_id"],
+      "properties": {
+        "allocation_sequence": {"$ref": "#/$defs/decimal"},
+        "capacity_bucket_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "capacity_commitment_sha256": {"$ref": "#/$defs/hex32"},
+        "covenant_commitment": {"anyOf": [{"$ref": "#/$defs/covenant_commitment"}, {"type": "null"}]},
+        "handler_committed_capacity": {"$ref": "#/$defs/decimal"},
+        "profile_timeout_at": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+        "proof_class": {"enum": ["provider_signed", "handler_accounted", "third_party_guarantee", "lightning_liquidity", "utxo_control", "funded_htlc", "covenant_reserve"]},
+        "proof_ref_sha256": {"$ref": "#/$defs/hex32"},
+        "proof_strength": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "quote_id": {"$ref": "#/$defs/hex32"},
+        "reservation_class": {"enum": ["soft", "hard"]},
+        "reservation_expires_at": {"type": "integer", "minimum": 0},
+        "reservation_id": {"$ref": "#/$defs/hex32"},
+        "reserved_amount": {"$ref": "#/$defs/decimal"},
+        "reserved_asset_id": {"type": "string", "pattern": "^swp:1:"},
+        "rfq_id": {"$ref": "#/$defs/hex32"},
+        "session_id": {"$ref": "#/$defs/hex32"}
+      },
+      "additionalProperties": false
+    },
+    "covenant_commitment": {
+      "type": "object",
+      "required": ["reserve_unit_sha256", "program_sha256", "eligible_fill_sha256", "fee_rule_sha256", "verifier_view_sha256", "minimum_output", "expires_at"],
+      "properties": {
+        "reserve_unit_sha256": {"$ref": "#/$defs/hex32"},
+        "program_sha256": {"$ref": "#/$defs/hex32"},
+        "eligible_fill_sha256": {"$ref": "#/$defs/hex32"},
+        "fee_rule_sha256": {"$ref": "#/$defs/hex32"},
+        "verifier_view_sha256": {"$ref": "#/$defs/hex32"},
+        "minimum_output": {"$ref": "#/$defs/decimal"},
+        "expires_at": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "timeout_ladder": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["swap_type", "current_height", "fund_last", "claim_last", "refund_first", "claim_expected_time", "invoice_expiration_time", "broadcast_safety_blocks", "reorg_safety_blocks", "chain_finality_blocks"],
+          "properties": {
+            "swap_type": {"const": "submarine"}, "current_height": {"type": "integer", "minimum": 0}, "fund_last": {"type": "integer", "minimum": 0}, "claim_last": {"type": "integer", "minimum": 0}, "refund_first": {"type": "integer", "minimum": 0}, "claim_expected_time": {"type": "integer", "minimum": 0}, "invoice_expiration_time": {"type": "integer", "minimum": 0}, "broadcast_safety_blocks": {"type": "integer", "minimum": 1}, "reorg_safety_blocks": {"type": "integer", "minimum": 1}, "chain_finality_blocks": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["swap_type", "current_height", "lock_last", "user_claim_last", "provider_refund_first", "hold_expiry_height", "provider_claim_margin", "lightning_settlement_blocks", "broadcast_safety_blocks", "reorg_safety_blocks", "chain_finality_blocks"],
+          "properties": {
+            "swap_type": {"const": "reverse"}, "current_height": {"type": "integer", "minimum": 0}, "lock_last": {"type": "integer", "minimum": 0}, "user_claim_last": {"type": "integer", "minimum": 0}, "provider_refund_first": {"type": "integer", "minimum": 0}, "hold_expiry_height": {"type": "integer", "minimum": 0}, "provider_claim_margin": {"type": "integer", "minimum": 1}, "lightning_settlement_blocks": {"type": "integer", "minimum": 1}, "broadcast_safety_blocks": {"type": "integer", "minimum": 1}, "reorg_safety_blocks": {"type": "integer", "minimum": 1}, "chain_finality_blocks": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["swap_type", "current_height", "destination_final", "source_refund_time", "destination_refund_time", "both_network_broadcast_margins", "both_network_reorg_margins", "broadcast_safety_blocks", "reorg_safety_blocks", "chain_finality_blocks"],
+          "properties": {
+            "swap_type": {"const": "chain"}, "current_height": {"type": "integer", "minimum": 0}, "destination_final": {"type": "integer", "minimum": 0}, "source_refund_time": {"type": "integer", "minimum": 0}, "destination_refund_time": {"type": "integer", "minimum": 0}, "both_network_broadcast_margins": {"type": "integer", "minimum": 1}, "both_network_reorg_margins": {"type": "integer", "minimum": 1}, "broadcast_safety_blocks": {"type": "integer", "minimum": 1}, "reorg_safety_blocks": {"type": "integer", "minimum": 1}, "chain_finality_blocks": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "swp_contract": {
+      "type": "object",
+      "required": ["amount_equation", "asset_pair", "cancellation", "clock_skew_seconds", "confirmation_policy", "desired_completion_time", "effect_bindings", "evidence_requirements", "evm_leg", "exit_package_commitments", "fee_bps", "fee_payer", "input_amount", "legs", "lightning_routing_fee_budget", "maximum_total_fee", "miner_fee_budget", "order_id", "output_amount", "payment_hash", "price_feed", "provider_fee", "quote_id", "recovery", "reservation_commitment", "rounding", "script_mode", "swap_type", "timeout_ladder", "verifier_inputs"],
+      "properties": {
+        "amount_equation": {"const": "input_minus_provider_and_quoted_fees"},
+        "asset_pair": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "string", "pattern": "^swp:1:"}},
+        "cancellation": {"$ref": "#/$defs/cancellation_policy"},
+        "clock_skew_seconds": {"$ref": "#/$defs/decimal"},
+        "confirmation_policy": {"$ref": "#/$defs/confirmation_policy"},
+        "desired_completion_time": {"type": "integer", "minimum": 1},
+        "effect_bindings": {"type": "array", "minItems": 1, "maxItems": 4, "items": {"$ref": "#/$defs/effect_binding"}},
+        "evidence_requirements": {"$ref": "#/$defs/evidence_requirements"},
+        "evm_leg": {"type": "null"},
+        "exit_package_commitments": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/exit_package_commitment"}},
+        "fee_bps": {"$ref": "#/$defs/decimal"},
+        "fee_payer": {"enum": ["requester", "provider"]},
+        "input_amount": {"$ref": "#/$defs/decimal"},
+        "legs": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"oneOf": [{"$ref": "#/$defs/bitcoin_leg"}, {"$ref": "#/$defs/lightning_leg"}]}},
+        "lightning_routing_fee_budget": {"$ref": "#/$defs/decimal"},
+        "maximum_total_fee": {"$ref": "#/$defs/decimal"},
+        "miner_fee_budget": {"$ref": "#/$defs/decimal"},
+        "order_id": {"$ref": "#/$defs/hex32"},
+        "order_selection": {"$ref": "#/$defs/order_selection"},
+        "output_amount": {"$ref": "#/$defs/decimal"},
+        "payment_hash": {"$ref": "#/$defs/hex32"},
+        "price_feed": {"anyOf": [{"$ref": "#/$defs/price_feed_pin"}, {"type": "null"}]},
+        "provider_fee": {"$ref": "#/$defs/decimal"},
+        "public_receipt_consent": {"type": "boolean"},
+        "quote_id": {"$ref": "#/$defs/hex32"},
+        "recovery": {"$ref": "#/$defs/recovery_policy"},
+        "reservation_commitment": {"$ref": "#/$defs/reservation_commitment"},
+        "rounding": {"const": "floor_output_sats"},
+        "script_mode": {"const": "taproot-musig2-script-exit"},
+        "swap_type": {"enum": ["submarine", "reverse", "chain"]},
+        "timeout_ladder": {"$ref": "#/$defs/timeout_ladder"},
+        "verifier_inputs": {"type": "array", "minItems": 1, "maxItems": 2, "items": {"oneOf": [{"$ref": "#/$defs/bitcoin_verifier_input"}, {"$ref": "#/$defs/lightning_verifier_input"}]}}
+      },
+      "additionalProperties": false
+    },
+    "cancellation_policy": {
+      "type": "object",
+      "required": ["effective_before_external_effect"],
+      "properties": {"effective_before_external_effect": {"const": true}},
+      "additionalProperties": false
+    },
+    "confirmation_policy": {
+      "type": "object",
+      "required": ["minimum_confirmations", "rbf", "reorg_safety_blocks", "replacement", "zero_confirmation"],
+      "properties": {
+        "minimum_confirmations": {"$ref": "#/$defs/decimal"}, "rbf": {"enum": ["reject", "track"]}, "reorg_safety_blocks": {"$ref": "#/$defs/decimal"}, "replacement": {"enum": ["reject", "track"]}, "zero_confirmation": {"enum": ["forbidden", "allowed"]}
+      },
+      "additionalProperties": false
+    },
+    "evidence_requirements": {
+      "type": "object",
+      "required": ["minimum_rung"],
+      "properties": {"minimum_rung": {"enum": ["asserted", "verified", "proven"]}},
+      "additionalProperties": false
+    },
+    "recovery_policy": {
+      "type": "object",
+      "required": ["channel", "exit_policy"],
+      "properties": {
+        "channel": {"const": "direct_or_relay_agnostic"},
+        "exit_policy": {"$ref": "#/$defs/exit_policy"}
+      },
+      "additionalProperties": false
+    },
+    "exit_policy": {
+      "type": "object",
+      "required": ["bump_mode", "earliest_broadcast_height", "latest_safe_broadcast_height", "maximum_fee", "target_blocks"],
+      "properties": {
+        "bump_mode": {"enum": ["cpfp", "wallet"]}, "earliest_broadcast_height": {"$ref": "#/$defs/decimal"}, "latest_safe_broadcast_height": {"$ref": "#/$defs/decimal"}, "maximum_fee": {"$ref": "#/$defs/decimal"}, "target_blocks": {"type": "integer", "minimum": 1}
       },
       "additionalProperties": false
     },
@@ -209,17 +489,87 @@
       },
       "additionalProperties": false
     },
+    "external_effect_result": {
+      "type": "object",
+      "required": ["order_id", "effect_id", "request_sha256", "external_identifier", "result_sha256"],
+      "properties": {
+        "order_id": {"$ref": "#/$defs/hex32"},
+        "effect_id": {"$ref": "#/$defs/hex32"},
+        "request_sha256": {"$ref": "#/$defs/hex32"},
+        "external_identifier": {"type": "string", "minLength": 1, "maxLength": 512},
+        "result_sha256": {"$ref": "#/$defs/hex32"}
+      },
+      "additionalProperties": false
+    },
+    "requester_session_with_effects_input": {
+      "type": "object",
+      "required": ["records", "deliveries", "external_effects"],
+      "properties": {
+        "records": {"type": "array", "minItems": 2, "maxItems": 512, "items": {"$ref": "#/$defs/nostr_event"}},
+        "deliveries": {"type": "array", "minItems": 2, "maxItems": 512, "items": {"$ref": "#/$defs/signed_record_delivery"}},
+        "external_effects": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/external_effect_result"}}
+      },
+      "additionalProperties": false
+    },
     "requester_session_view": {
       "type": "object",
       "required": ["schema", "session_id", "quote", "timeline", "verification", "terminal", "deliveries"],
       "properties": {
         "schema": {"const": "openagents.mkt-swp.requester-session-view.v1"},
         "session_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "quote": {"type": "object"},
-        "timeline": {"type": "array"},
-        "verification": {"type": "object"},
-        "terminal": {"type": "object"},
-        "deliveries": {"type": "array"}
+        "quote": {"$ref": "#/$defs/requester_quote_view"},
+        "timeline": {"type": "array", "minItems": 2, "maxItems": 512, "items": {"$ref": "#/$defs/requester_timeline_entry"}},
+        "verification": {"$ref": "#/$defs/requester_verification_view"},
+        "terminal": {"$ref": "#/$defs/requester_terminal_view"},
+        "deliveries": {"type": "array", "minItems": 2, "maxItems": 512, "items": {"$ref": "#/$defs/signed_record_delivery"}}
+      },
+      "additionalProperties": false
+    },
+    "requester_fee_view": {
+      "type": "object",
+      "required": ["fee_bps", "provider_fee", "miner_fee_budget", "lightning_routing_fee_budget", "maximum_total_fee", "fee_payer"],
+      "properties": {
+        "fee_bps": {"$ref": "#/$defs/decimal"}, "provider_fee": {"$ref": "#/$defs/decimal"}, "miner_fee_budget": {"$ref": "#/$defs/decimal"}, "lightning_routing_fee_budget": {"$ref": "#/$defs/decimal"}, "maximum_total_fee": {"$ref": "#/$defs/decimal"}, "fee_payer": {"enum": ["requester", "provider"]}
+      },
+      "additionalProperties": false
+    },
+    "requester_price_feed_view": {
+      "type": "object",
+      "required": ["url", "value_pointer", "observed_value", "response_sha256", "observed_at", "max_age_seconds"],
+      "properties": {
+        "url": {"type": "string", "pattern": "^https://", "maxLength": 2048}, "value_pointer": {"type": "string", "maxLength": 512}, "observed_value": {"$ref": "#/$defs/decimal"}, "response_sha256": {"$ref": "#/$defs/hex32"}, "observed_at": {"type": "integer", "minimum": 0}, "max_age_seconds": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "requester_quote_view": {
+      "type": "object",
+      "required": ["rfq_id", "quote_id", "provider_pubkey", "quote_class", "reservation_class", "swap_type", "input_asset_id", "output_asset_id", "input_amount", "output_amount", "amount_equation", "rounding", "clock_skew_seconds", "expires_at", "effective_acceptance_deadline", "fees", "price_feed"],
+      "properties": {
+        "rfq_id": {"$ref": "#/$defs/hex32"}, "quote_id": {"$ref": "#/$defs/hex32"}, "provider_pubkey": {"$ref": "#/$defs/hex32"}, "quote_class": {"enum": ["firm", "indicative"]}, "reservation_class": {"enum": ["none", "soft", "hard"]}, "swap_type": {"enum": ["submarine", "reverse", "chain"]}, "input_asset_id": {"type": "string", "pattern": "^swp:1:"}, "output_asset_id": {"type": "string", "pattern": "^swp:1:"}, "input_amount": {"$ref": "#/$defs/decimal"}, "output_amount": {"$ref": "#/$defs/decimal"}, "amount_equation": {"const": "input_minus_provider_and_quoted_fees"}, "rounding": {"const": "floor_output_sats"}, "clock_skew_seconds": {"$ref": "#/$defs/decimal"}, "expires_at": {"type": "integer", "minimum": 0}, "effective_acceptance_deadline": {"type": "integer", "minimum": 0}, "fees": {"$ref": "#/$defs/requester_fee_view"}, "price_feed": {"anyOf": [{"$ref": "#/$defs/requester_price_feed_view"}, {"type": "null"}]}
+      },
+      "additionalProperties": false
+    },
+    "requester_timeline_entry": {
+      "type": "object",
+      "required": ["event_id", "author", "kind", "created_at", "sequence", "state", "causal_event_ids", "conflict"],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/hex32"}, "author": {"enum": ["requester", "provider"]}, "kind": {"enum": ["rfq", "quote", "order", "contract", "status", "cancel", "close"]}, "created_at": {"type": "integer", "minimum": 0}, "sequence": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]}, "state": {"anyOf": [{"type": "string", "maxLength": 128}, {"type": "null"}]}, "causal_event_ids": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/hex32"}}, "conflict": {"anyOf": [{"type": "string", "maxLength": 256}, {"type": "null"}]}
+      },
+      "additionalProperties": false
+    },
+    "requester_verification_view": {
+      "type": "object",
+      "required": ["state", "local_verification_required", "funding_authorized", "status_gaps", "status_forks", "invalid_status_claims"],
+      "properties": {
+        "state": {"enum": ["quote_verified", "order_verified", "awaiting_provider_contract", "contract_terms_verified", "terminal_verified"]}, "local_verification_required": {"type": "boolean"}, "funding_authorized": {"const": false}, "status_gaps": {"type": "array", "maxItems": 512, "items": {"type": "string", "maxLength": 256}}, "status_forks": {"type": "array", "maxItems": 512, "items": {"type": "string", "maxLength": 256}}, "invalid_status_claims": {"type": "array", "maxItems": 512, "items": {"type": "string", "maxLength": 256}}
+      },
+      "additionalProperties": false
+    },
+    "requester_terminal_view": {
+      "type": "object",
+      "required": ["claimed_state", "canonical_close_id", "close_event_ids", "principal_unresolved", "loss_accounting_complete", "local_effects_verified", "watch_terminal"],
+      "properties": {
+        "claimed_state": {"enum": ["open", "completed", "refunded", "cancelled", "rejected", "expired", "failed", "disputed", "unresolved", "conflicted"]}, "canonical_close_id": {"anyOf": [{"$ref": "#/$defs/hex32"}, {"type": "null"}]}, "close_event_ids": {"type": "array", "maxItems": 512, "items": {"$ref": "#/$defs/hex32"}}, "principal_unresolved": {"anyOf": [{"$ref": "#/$defs/decimal"}, {"type": "null"}]}, "loss_accounting_complete": {"type": "boolean"}, "local_effects_verified": {"type": "boolean"}, "watch_terminal": {"type": "boolean"}
       },
       "additionalProperties": false
     }
@@ -248,22 +598,70 @@
     "observed_at": 1700000000,
     "max_age_seconds": 30
   },
+  "source_fixture": {
+    "path": "tests/fixtures/nipmkt/swp-full-sessions-v1.json",
+    "sha256": "28ea72d1ad2c86cdd342cbb29ee43f1141ed0b513dc7a90aa34ba4cc2c094c0a"
+  },
   "cases": [
     {
-      "name": "requester-price-feed-exact-response",
-      "operation": "verify_price_feed",
-      "input": {
-        "request_url": "https://prices.example.test/btc-usd",
-        "response_url": "https://prices.example.test/btc-usd",
-        "redirect_count": 0,
-        "raw_response": [123, 34, 100, 97, 116, 97, 34, 58, 123, 34, 112, 114, 105, 99, 101, 34, 58, 34, 54, 53, 52, 51, 50, 49, 48, 34, 125, 125],
-        "observed_at": 1700000010
-      },
-      "expected": {
-        "observed_value": "6543210",
-        "response_sha256": "528acb0e24c36ad90ae7396ec86999730f0ca46f700b53299cf24754396a18dd",
-        "quote_output_amount": "1000"
-      }
+      "name": "requester-order-valid",
+      "operation": "requester_order",
+      "variant": "valid",
+      "expected_sha256": "29fed0764f0e93900f8f96ae26efa241bf39ef6df0572b523598c3dea6ef3b71"
+    },
+    {
+      "name": "requester-order-pinned-feed-refused",
+      "operation": "requester_order",
+      "variant": "pinned_feed",
+      "expected_error": "swp_price_feed_unsupported"
+    },
+    {
+      "name": "requester-contract-draft-valid",
+      "operation": "requester_contract_draft",
+      "variant": "valid",
+      "expected_sha256": "9b6669ab2d75594982ee55583ac9335170c109fa50c4e028a54129712d6d6189"
+    },
+    {
+      "name": "requester-contract-draft-expired-order-receipt",
+      "operation": "requester_contract_draft",
+      "variant": "expired_order_receipt",
+      "expected_error": "swp_quote_expired"
+    },
+    {
+      "name": "requester-contract-valid",
+      "operation": "requester_contract",
+      "variant": "valid",
+      "expected_sha256": "83122b9cc638bcf46716d91129047abb3feea1871c3d864460e94bd88ef59a0d"
+    },
+    {
+      "name": "requester-contract-custody-material-refused",
+      "operation": "requester_contract",
+      "variant": "custody_material",
+      "expected_error": "swp_secret_material_forbidden"
+    },
+    {
+      "name": "requester-session-view-valid",
+      "operation": "requester_session_view",
+      "variant": "valid",
+      "expected_sha256": "095b51c24f2d7f7c89ac6028b5bb164e9959abcd85c3037aae3609df3e9c90a8"
+    },
+    {
+      "name": "requester-session-view-missing-delivery",
+      "operation": "requester_session_view",
+      "variant": "missing_delivery",
+      "expected_error": "swp_unresolved_loss"
+    },
+    {
+      "name": "requester-session-view-local-effects-terminal",
+      "operation": "requester_session_view_with_effects",
+      "variant": "terminal_verified",
+      "expected_sha256": "e9153ec8088a05f0a0807076308f55187f34ec73c4f952b6830a37df2fb3f0cd"
+    },
+    {
+      "name": "requester-session-view-terminal-missing-local-effects",
+      "operation": "requester_session_view_with_effects",
+      "variant": "missing_local_effects",
+      "expected_error": "swp_unresolved_loss"
     }
   ],
   "laws": {
@@ -272,9 +670,12 @@
     "contract_reuses_trusted_order_acceptance": true,
     "local_verification_required_after_contract": true,
     "contract_terms_do_not_authorize_funding": true,
+    "signed_terminal_claims_do_not_verify_external_effects": true,
+    "terminal_verification_requires_bound_local_effect_results": true,
     "timeline_uses_protocol_structure_not_created_at": true,
     "delivery_preserves_exact_validated_raw_bytes": true,
     "delivery_is_mandatory_per_record": true,
-    "indicative_quote_order_fails_closed": true
+    "indicative_quote_order_fails_closed": true,
+    "pinned_price_feed_execution_fails_closed_until_formula_specified": true
   }
 }

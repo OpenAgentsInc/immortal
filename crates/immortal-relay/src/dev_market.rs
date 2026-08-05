@@ -452,7 +452,7 @@ fn receive_exact(
         ));
     }
     let delivered = unwrap_mkt_record(&event, recipient, profiles)?;
-    if delivered.record.event.id != inner_id {
+    if delivered.record().event().id != inner_id {
         return Err("gift wrap delivered a different private MKT record".to_owned());
     }
     Ok(())

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     domain::{
         Event, MktProfileSupport, MktValidatedPrivateRecord, RelaySigner, Tag, is_mkt_private_kind,
-        validate_mkt_private_raw,
+        parse_json_without_duplicate_members, validate_mkt_private_raw,
     },
     nip44,
 };
@@ -121,9 +121,28 @@ pub struct WrappedMktRecord {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct DeliveredMktRecord {
-    pub wrap_event_id: String,
-    pub sender: String,
-    pub record: MktValidatedPrivateRecord,
+    wrap_event_id: String,
+    sender: String,
+    record: MktValidatedPrivateRecord,
+    raw_wrap_event: Option<Vec<u8>>,
+}
+
+impl DeliveredMktRecord {
+    pub fn wrap_event_id(&self) -> &str {
+        &self.wrap_event_id
+    }
+
+    pub fn sender(&self) -> &str {
+        &self.sender
+    }
+
+    pub fn record(&self) -> &MktValidatedPrivateRecord {
+        &self.record
+    }
+
+    pub fn raw_wrap_event(&self) -> Option<&[u8]> {
+        self.raw_wrap_event.as_deref()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,6 +295,45 @@ pub fn unwrap_mkt_record(
     })
 }
 
+pub fn unwrap_mkt_record_raw(
+    raw_wrap_event: &[u8],
+    recipient: &MarketSigner,
+    supported_profiles: &[MktProfileSupport<'_>],
+) -> Result<DeliveredMktRecord, String> {
+    unwrap_mkt_record_raw_with_callback(
+        raw_wrap_event,
+        recipient.pubkey(),
+        supported_profiles,
+        |request| {
+            let key = recipient.conversation_key(&request.peer_pubkey)?;
+            nip44::decrypt(&request.ciphertext, &key)
+        },
+    )
+}
+
+pub fn unwrap_mkt_record_raw_with_callback<Decrypt>(
+    raw_wrap_event: &[u8],
+    recipient_pubkey: &str,
+    supported_profiles: &[MktProfileSupport<'_>],
+    decrypt: Decrypt,
+) -> Result<DeliveredMktRecord, String>
+where
+    Decrypt: FnMut(&Nip44DecryptRequest) -> Result<String, String>,
+{
+    if raw_wrap_event.is_empty() || raw_wrap_event.len() > 512 * 1024 {
+        return Err("gift wrap bytes are empty or exceed their bound".to_owned());
+    }
+    let raw_text = std::str::from_utf8(raw_wrap_event)
+        .map_err(|_| "gift wrap bytes are not UTF-8".to_owned())?;
+    let value = parse_json_without_duplicate_members(raw_text, "gift wrap event")?;
+    let event: Event = serde_json::from_value(value)
+        .map_err(|error| format!("gift wrap bytes are not an event: {error}"))?;
+    let mut delivered =
+        unwrap_mkt_record_with_callback(&event, recipient_pubkey, supported_profiles, decrypt)?;
+    delivered.raw_wrap_event = Some(raw_wrap_event.to_vec());
+    Ok(delivered)
+}
+
 pub fn unwrap_mkt_record_with_callback<Decrypt>(
     wrap: &Event,
     recipient_pubkey: &str,
@@ -366,9 +424,9 @@ fn validate_rumor_record(
 ) -> Result<DeliveredMktRecord, String> {
     let record = validate_mkt_private_raw(rumor.content.as_bytes(), supported_profiles)
         .map_err(|error| format!("wrapped private MKT record is invalid: {error}"))?;
-    if record.event.pubkey != rumor.pubkey
-        || record.event.kind != rumor.kind
-        || record.event.created_at != rumor.created_at
+    if record.event().pubkey != rumor.pubkey
+        || record.event().kind != rumor.kind
+        || record.event().created_at != rumor.created_at
     {
         return Err("wrapped private MKT record does not match its rumor".to_owned());
     }
@@ -376,6 +434,7 @@ fn validate_rumor_record(
         wrap_event_id: wrap.id.clone(),
         sender: rumor.pubkey,
         record,
+        raw_wrap_event: None,
     })
 }
 
@@ -517,8 +576,8 @@ mod tests {
                 .as_str()
                 .unwrap()
         );
-        assert_eq!(delivered.sender, sender.pubkey());
-        assert_eq!(delivered.record.raw_signed_event, raw);
+        assert_eq!(delivered.sender(), sender.pubkey());
+        assert_eq!(delivered.record().raw_signed_event(), raw);
     }
 
     #[test]
@@ -619,7 +678,7 @@ mod tests {
             wrapped.event.id,
             fixture["external_callback_round_trip"]["outer_event_id"]
         );
-        assert_eq!(delivered.record.raw_signed_event, raw);
+        assert_eq!(delivered.record().raw_signed_event(), raw);
     }
 
     #[test]

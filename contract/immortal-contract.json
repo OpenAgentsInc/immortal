@@ -825,7 +825,9 @@
           "presigned_keyless_esplora_broadcast",
           "explicit_unresolved_loss"
         ],
-        "fixture": "tests/fixtures/nipmkt/swp-client-engine-v1.json"
+        "fixture": "tests/fixtures/nipmkt/swp-client-engine-v1.json",
+        "requester_api_artifact": "tests/fixtures/nipmkt/swp-requester-api-v1.json",
+        "requester_api_version": "openagents.mkt-swp.requester-api-fixture.v1"
       },
       "boltz_facade": {
         "mapping_revision": "openagents.mkt-swp.boltz-released-client.v2",

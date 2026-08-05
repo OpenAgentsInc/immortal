@@ -567,8 +567,10 @@ where
         let wrap: Event = serde_json::from_value(value.clone())
             .map_err(|error| format!("live subscription payload is not an event: {error}"))?;
         let delivered = unwrap_mkt_record(&wrap, recipient, &swp_profiles())?;
-        if delivered.record.envelope.session_id == session_id && matches(&delivered.record.event) {
-            return Ok(delivered.record.event);
+        if delivered.record().envelope().session_id == session_id
+            && matches(delivered.record().event())
+        {
+            return Ok(delivered.record().event().clone());
         }
     }
     Err(format!(

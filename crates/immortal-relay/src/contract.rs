@@ -245,6 +245,8 @@ pub struct MktSwpClientContract {
     pub persistence: &'static str,
     pub recovery: Vec<&'static str>,
     pub fixture: &'static str,
+    pub requester_api_artifact: &'static str,
+    pub requester_api_version: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1253,6 +1255,8 @@ fn mkt_grammar() -> MktGrammar {
                     "explicit_unresolved_loss",
                 ],
                 fixture: "tests/fixtures/nipmkt/swp-client-engine-v1.json",
+                requester_api_artifact: "tests/fixtures/nipmkt/swp-requester-api-v1.json",
+                requester_api_version: "openagents.mkt-swp.requester-api-fixture.v1",
             },
             boltz_facade: BoltzFacadeContract {
                 mapping_revision: BOLTZ_MAPPING_REVISION,
