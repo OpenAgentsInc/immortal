@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod adversarial;
 pub mod cli;
 pub mod funded;
 pub mod relay;

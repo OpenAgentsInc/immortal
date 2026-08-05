@@ -220,7 +220,7 @@ struct StepControl {
 }
 
 impl StepControl {
-    fn load() -> Result<Self, String> {
+    fn load_with_injection(injection_override: Option<HarnessInjection>) -> Result<Self, String> {
         let paths = LabPaths::from_env();
         let run_id = load_or_create_funded_run_id(&paths)?;
         let injection_timeout = std::env::var("IMMORTAL_LAB_INJECTION_TIMEOUT_SECONDS")
@@ -235,11 +235,20 @@ impl StepControl {
         if !(1..=3_600).contains(&injection_timeout) {
             return Err("IMMORTAL_LAB_INJECTION_TIMEOUT_SECONDS is outside 1..=3600".to_owned());
         }
+        let stop_after = std::env::var("IMMORTAL_LAB_STOP_AFTER").ok();
         let inject_at = std::env::var("IMMORTAL_LAB_INJECT_AT").ok();
-        let injection = std::env::var("IMMORTAL_LAB_INJECTION")
+        let environment_injection = std::env::var("IMMORTAL_LAB_INJECTION")
             .ok()
             .map(|value| HarnessInjection::parse(&value))
             .transpose()?;
+        if injection_override.is_some()
+            && (stop_after.is_some() || inject_at.is_some() || environment_injection.is_some())
+        {
+            return Err(
+                "adversarial case injection conflicts with funded harness controls".to_owned(),
+            );
+        }
+        let injection = injection_override.or(environment_injection);
         if injection.is_some_and(HarnessInjection::requires_external_control) && inject_at.is_none()
         {
             return Err("relay_loss and provider_crash require IMMORTAL_LAB_INJECT_AT".to_owned());
@@ -247,7 +256,7 @@ impl StepControl {
         Ok(Self {
             paths,
             run_id,
-            stop_after: std::env::var("IMMORTAL_LAB_STOP_AFTER").ok(),
+            stop_after,
             inject_at,
             injection,
             injection_timeout: Duration::from_secs(injection_timeout),
@@ -844,14 +853,37 @@ pub fn run_funded_journey(journey: FundedJourney) -> Result<Value, String> {
     let runtime =
         Runtime::new().map_err(|error| format!("could not start lab runtime: {error}"))?;
     let environment = SmokeEnvironment::load()?;
+    run_funded_journey_with_environment(&runtime, &environment, journey)
+}
+
+pub fn run_adversarial_funded_journey(
+    provider_index: usize,
+    journey: FundedJourney,
+    injection: Option<&str>,
+) -> Result<Value, String> {
+    let injection = injection.map(HarnessInjection::parse).transpose()?;
+    if injection.is_some_and(HarnessInjection::requires_external_control) {
+        return Err("adversarial funded journey cannot drive an external injection".to_owned());
+    }
+    let runtime =
+        Runtime::new().map_err(|error| format!("could not start lab runtime: {error}"))?;
+    let environment = SmokeEnvironment::load_topology_selected(provider_index, injection)?;
+    run_funded_journey_with_environment(&runtime, &environment, journey)
+}
+
+fn run_funded_journey_with_environment(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    journey: FundedJourney,
+) -> Result<Value, String> {
     verify_health(&environment.health_url)?;
     let provider_pubkey = discover_provider(
         &environment.relay_url,
         &environment.requester,
         JOURNEY_TIMEOUT,
     )?;
-    if let Some(restored) = restore_authorized_session(&environment, journey)? {
-        let result = resume_authorized_journey(&runtime, &environment, journey, restored)?;
+    if let Some(restored) = restore_authorized_session(environment, journey)? {
+        let result = resume_authorized_journey(runtime, environment, journey, restored)?;
         verify_health(&environment.health_url)?;
         return Ok(json!({
             "step": journey.name(),
@@ -862,19 +894,19 @@ pub fn run_funded_journey(journey: FundedJourney) -> Result<Value, String> {
     }
     let result = match journey {
         FundedJourney::Submarine => {
-            let client_input = fund_client_wallet(&runtime, &environment)?;
-            drive_submarine(&runtime, &environment, &provider_pubkey, client_input)?
+            let client_input = fund_client_wallet(runtime, environment)?;
+            drive_submarine(runtime, environment, &provider_pubkey, client_input)?
         }
         FundedJourney::ReverseClaim => drive_reverse(
-            &runtime,
-            &environment,
+            runtime,
+            environment,
             &provider_pubkey,
             FundedJourney::ReverseClaim.name(),
             false,
         )?,
         FundedJourney::ReverseRefund => drive_reverse(
-            &runtime,
-            &environment,
+            runtime,
+            environment,
             &provider_pubkey,
             FundedJourney::ReverseRefund.name(),
             true,
@@ -1379,7 +1411,7 @@ impl SmokeEnvironment {
         let evidence_file = PathBuf::from(required_environment(
             "IMMORTAL_PROVIDER_FUNDED_SMOKE_EVIDENCE_FILE",
         )?);
-        Self::load_for(relay_url, health_url, evidence_file)
+        Self::load_for(relay_url, health_url, evidence_file, None)
     }
 
     fn load_topology() -> Result<[Self; 2], String> {
@@ -1397,17 +1429,47 @@ impl SmokeEnvironment {
             .map_err(|_| "funded topology requires exactly two relay URLs".to_owned())?;
         let [health_a, health_b] = health_urls;
         Ok([
-            Self::load_for(relay_a, health_a, evidence_file.clone())?,
-            Self::load_for(relay_b, health_b, evidence_file)?,
+            Self::load_for(relay_a, health_a, evidence_file.clone(), None)?,
+            Self::load_for(relay_b, health_b, evidence_file, None)?,
         ])
+    }
+
+    fn load_topology_selected(
+        provider_index: usize,
+        injection: Option<HarnessInjection>,
+    ) -> Result<Self, String> {
+        if provider_index > 1 {
+            return Err(
+                "adversarial provider index is outside the two-provider topology".to_owned(),
+            );
+        }
+        let relay_urls = crate::relay::parse_topology_relay_urls(&required_environment(
+            "IMMORTAL_PROVIDER_FUNDED_TOPOLOGY_RELAY_URLS",
+        )?)?;
+        let health_urls = exact_topology_health_urls(&required_environment(
+            "IMMORTAL_PROVIDER_FUNDED_TOPOLOGY_HEALTH_URLS",
+        )?)?;
+        let evidence_file = PathBuf::from(required_environment(
+            "IMMORTAL_PROVIDER_FUNDED_SMOKE_EVIDENCE_FILE",
+        )?);
+        Self::load_for(
+            relay_urls
+                .get(provider_index)
+                .cloned()
+                .ok_or_else(|| "adversarial topology relay is unavailable".to_owned())?,
+            health_urls[provider_index].clone(),
+            evidence_file,
+            injection,
+        )
     }
 
     fn load_for(
         relay_url: String,
         health_url: String,
         evidence_file: PathBuf,
+        injection: Option<HarnessInjection>,
     ) -> Result<Self, String> {
-        let control = StepControl::load()?;
+        let control = StepControl::load_with_injection(injection)?;
         let requester = load_or_create_identity(&LabPaths::from_env())?.signer()?;
         let wallet = ProviderWallet::load(
             required_environment("IMMORTAL_PROVIDER_FUNDED_SMOKE_CLIENT_WALLET_SEED_FILE")?,
@@ -2643,12 +2705,7 @@ impl SessionContext {
     fn apply_pre_fund_injection(&mut self) -> Result<(), String> {
         match self.control.injection {
             Some(HarnessInjection::DuplicateMessage) => {
-                let duplicate = self
-                    .verifier
-                    .signed_records()
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| "cannot inject a duplicate into an empty session".to_owned())?;
+                let duplicate = self.order.clone();
                 if self
                     .verifier
                     .ingest_signed_record(duplicate)
@@ -2659,12 +2716,7 @@ impl SessionContext {
                 Ok(())
             }
             Some(HarnessInjection::ConflictingMessage) => {
-                let mut conflicting = self
-                    .verifier
-                    .signed_records()
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| "cannot inject a conflict into an empty session".to_owned())?;
+                let mut conflicting = self.order.clone();
                 conflicting.content.push(' ');
                 let error = match self.verifier.ingest_signed_record(conflicting) {
                     Ok(_) => return Err("conflicting signed bytes were accepted".to_owned()),

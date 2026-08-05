@@ -21,6 +21,7 @@ COMMANDS:
     funded-smoke        Run fund, claim, and refund; write conformance evidence
     funded-topology     Compare two funded providers, execute rank one, and
                         cancel rank two before any selected funding broadcast
+    adversarial-case    Execute the manifest-selected #18 process proof
     boltz-adapter       Run the process-gated transaction-first adapter callback
     status              Print persisted lab state
     run [--to STEP]     Run through STEP (discover, rfq, quote, verify, fund,
@@ -126,6 +127,7 @@ pub enum Command {
     Refund,
     FundedSmoke,
     FundedTopology,
+    AdversarialCase,
     BoltzAdapter,
     Status,
     Run { to: Step },
@@ -163,6 +165,7 @@ pub fn parse(arguments: &[String]) -> Result<Command, String> {
         "refund" => Command::Refund,
         "funded-smoke" => Command::FundedSmoke,
         "funded-topology" => Command::FundedTopology,
+        "adversarial-case" => Command::AdversarialCase,
         "boltz-adapter" => Command::BoltzAdapter,
         "status" => Command::Status,
         "run" => {
@@ -214,6 +217,10 @@ mod tests {
         assert_eq!(
             parse(&args(&["funded-topology"])),
             Ok(Command::FundedTopology)
+        );
+        assert_eq!(
+            parse(&args(&["adversarial-case"])),
+            Ok(Command::AdversarialCase)
         );
         assert_eq!(parse(&args(&["boltz-adapter"])), Ok(Command::BoltzAdapter));
         assert_eq!(parse(&args(&["status"])), Ok(Command::Status));

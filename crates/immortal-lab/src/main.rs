@@ -1,6 +1,7 @@
 //! Dev-only lab harness binary (immortal#32). Never deployed.
 
 use immortal_lab::{
+    adversarial,
     cli::{self, Command, Step},
     funded::{self, FundedJourney},
     relay::{relay_url_from_env, topology_relay_urls_from_env},
@@ -52,6 +53,7 @@ fn execute(command: Command) -> Result<(), Exit> {
         Command::Refund => emit(funded::run_funded_journey(FundedJourney::ReverseRefund)),
         Command::FundedSmoke => funded::run_funded_smoke().map_err(Exit::Failure),
         Command::FundedTopology => emit(funded::run_funded_topology()),
+        Command::AdversarialCase => emit(adversarial::run_from_env()),
         Command::BoltzAdapter => emit(funded::run_boltz_adapter_session()),
         Command::Run { to } => {
             if to >= Step::Fund {
