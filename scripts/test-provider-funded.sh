@@ -91,6 +91,10 @@ with open(sys.argv[1], encoding="utf-8") as source:
 print(manifest["default_case"]["restart_at"])
 ' "${matrix_manifest_file}")"
 fi
+if ! node --experimental-websocket -e 'if (typeof WebSocket !== "function") process.exit(1)'; then
+  echo "test-provider-funded: Node must expose its built-in WebSocket with --experimental-websocket" >&2
+  exit 1
+fi
 
 control_metadata="$(python3 -c '
 import json, sys
@@ -964,7 +968,7 @@ if ! wait_for "web adapter client-engine preparation" \
 fi
 if ! IMMORTAL_BOLTZ_PROVIDER_PROCESS_URL="${boltz_provider_url}" \
   IMMORTAL_BOLTZ_PROVIDER_PROCESS_STATE_DIR="${private_root}/state" \
-  node --test adapters/boltz-web-app/provider-process.test.mjs; then
+  node --experimental-websocket --test adapters/boltz-web-app/provider-process.test.mjs; then
   kill -TERM "${boltz_driver_process}" >/dev/null 2>&1 || true
   wait "${boltz_driver_process}" >/dev/null 2>&1 || true
   echo "test-provider-funded: adapted web client failed against the provider process" >&2

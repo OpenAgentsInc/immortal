@@ -36,6 +36,10 @@ if test ! -d "${receipt_directory}" || test ! -w "${receipt_directory}"; then
     echo "test-debian-provider-funded: receipt directory is unavailable" >&2
     exit 1
 fi
+if ! grep -Fqx '  node --experimental-websocket --test adapters/boltz-web-app/provider-process.test.mjs; then' scripts/test-provider-funded.sh; then
+    echo "test-debian-provider-funded: funded web adapter must enable Node WebSocket support" >&2
+    exit 1
+fi
 
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 scripts/test-provider-funded.sh

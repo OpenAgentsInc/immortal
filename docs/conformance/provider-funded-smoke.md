@@ -255,7 +255,9 @@ IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL=lnd ./scripts/test-provider-funded.sh
 
 The disposable Debian 13 process gate copies an exact committed tree into a
 fresh Debian environment, installs the build, Docker, curl, Go, and Node tools
-used by the funded smoke and its checked-in client adapters, and writes a
+used by the funded smoke and its checked-in client adapters. Debian 13's Node
+20 runs the browser-adapter probe with its built-in WebSocket explicitly
+enabled through `--experimental-websocket`. The gate writes a
 bounded public receipt only after cleanup. It refuses any worktree changes,
 including untracked source files, and refuses to overwrite a record:
 
