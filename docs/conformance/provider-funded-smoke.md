@@ -270,10 +270,14 @@ The caller supplies Docker only to start a privileged Debian 13 container. The
 gate starts a new Docker daemon with an empty data root inside that container,
 then removes the entire container after the smoke. Its host-mounted receipt
 directory is not the process `TMPDIR`: private runtime state stays in the
-outer container and disappears with it. A failed gate retains only a
-mode-0600, first-200-line outer-console `failure.log`; it retains no private
-runtime directory or result. The receipt records that container boundary
-instead of describing it as an independent VM or live deployment.
+outer container and disappears with it; the funded-smoke process checks those
+physical paths before it writes private state. The raw outer console is held
+only in a separate mode-0700 controller directory. On failure or interruption,
+the wrapper stops its named outer container, removes any result, deletes that
+raw controller log, and retains only a mode-0600 `failure.log` capped at the
+first 64 KiB and 200 lines. It retains no private runtime directory or result.
+The receipt records that container boundary instead of describing it as an
+independent VM or live deployment.
 
 The first command replays the provider runtime fixture through the production
 held-HTLC, deadline, hold-state, and reverse-spend/watch-retirement helpers.

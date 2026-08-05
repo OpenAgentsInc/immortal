@@ -44,6 +44,13 @@ if grep -F -- '--env TMPDIR=' scripts/run-debian-provider-funded.sh >/dev/null; 
     echo "test-debian-provider-funded: receipt mount must not become the private runtime directory" >&2
     exit 1
 fi
+if ! grep -Fqx 'controller_log="${controller_directory}/container.log"' scripts/run-debian-provider-funded.sh \
+    || ! grep -Fqx "            head -c 65536 \"\${controller_log}\" | sed -n '1,200p' >\"\${failure_log}\"" scripts/run-debian-provider-funded.sh \
+    || ! grep -Fqx 'trap cleanup 0' scripts/run-debian-provider-funded.sh \
+    || ! grep -Fqx 'trap handle_signal HUP INT TERM' scripts/run-debian-provider-funded.sh; then
+    echo "test-debian-provider-funded: failure retention must be bounded and signal-cleaned" >&2
+    exit 1
+fi
 
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 scripts/test-provider-funded.sh

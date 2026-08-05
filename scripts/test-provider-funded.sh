@@ -58,6 +58,20 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 umask 077
+if test -n "${IMMORTAL_DEBIAN_PROVIDER_RECEIPT_DIRECTORY:-}"; then
+  if ! test -d "${IMMORTAL_DEBIAN_PROVIDER_RECEIPT_DIRECTORY}"; then
+    echo "test-provider-funded: Debian receipt directory is unavailable" >&2
+    exit 1
+  fi
+  receipt_physical_path="$(cd "${IMMORTAL_DEBIAN_PROVIDER_RECEIPT_DIRECTORY}" && pwd -P)"
+  private_physical_path="$(cd "${private_root}" && pwd -P)"
+  case "${private_physical_path}" in
+    "${receipt_physical_path}"|"${receipt_physical_path}"/*)
+      echo "test-provider-funded: private runtime directory is inside the Debian receipt mount" >&2
+      exit 1
+      ;;
+  esac
+fi
 mkdir -m 0700 "${private_root}/evidence" \
   "${private_root}/evidence/chain" \
   "${private_root}/evidence/lightning" \

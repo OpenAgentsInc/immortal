@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 repository="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 receipt_relative_path=""
@@ -51,10 +52,51 @@ case "$(basename "${receipt_directory}")" in
         exit 1
         ;;
 esac
-container_log="${receipt_directory}/container.log"
+chmod 0700 "${receipt_directory}"
+controller_directory="$(mktemp -d /tmp/immortal-debian-provider-controller.XXXXXX)"
+case "$(basename "${controller_directory}")" in
+    immortal-debian-provider-controller.*) ;;
+    *)
+        echo "run-debian-provider-funded: controller directory is invalid" >&2
+        exit 1
+        ;;
+esac
+chmod 0700 "${controller_directory}"
+controller_log="${controller_directory}/container.log"
 failure_log="${receipt_directory}/failure.log"
+outer_container_name="immortal-debian-provider-$(LC_ALL=C od -An -N 8 -tx1 /dev/urandom | tr -d ' \n')"
+failure_reason="Debian gate failed"
+
+cleanup() {
+    exit_status=$?
+    trap - 0 HUP INT TERM
+    if test "${exit_status}" -ne 0; then
+        docker stop --timeout 15 "${outer_container_name}" >/dev/null 2>&1 || true
+        docker rm --force "${outer_container_name}" >/dev/null 2>&1 || true
+        rm -f "${receipt_directory}/result.json"
+        : >"${failure_log}"
+        if test -f "${controller_log}"; then
+            head -c 65536 "${controller_log}" | sed -n '1,200p' >"${failure_log}"
+        fi
+        chmod 0600 "${failure_log}"
+        sed -n '1,200p' "${failure_log}" >&2
+        echo "run-debian-provider-funded: ${failure_reason}; retained bounded console ${failure_log}" >&2
+    fi
+    rm -f "${controller_log}"
+    rmdir "${controller_directory}" >/dev/null 2>&1 || true
+    exit "${exit_status}"
+}
+
+handle_signal() {
+    failure_reason="Debian gate interrupted"
+    exit 1
+}
+
+trap cleanup 0
+trap handle_signal HUP INT TERM
 
 if ! docker run --rm \
+    --name "${outer_container_name}" \
     --privileged \
     --cpus 4 \
     --memory 6G \
@@ -106,25 +148,16 @@ if ! docker run --rm \
         done
         cd /work
         scripts/test-debian-provider-funded.sh
-    ' >"${container_log}" 2>&1; then
-    sed -n '1,200p' "${container_log}" >"${failure_log}"
-    chmod 0600 "${failure_log}"
-    rm -f "${container_log}" "${receipt_directory}/result.json"
-    sed -n '1,200p' "${failure_log}" >&2
-    echo "run-debian-provider-funded: Debian gate failed; retained bounded console ${failure_log}" >&2
+    ' >"${controller_log}" 2>&1; then
+    failure_reason="Debian gate failed"
     exit 1
 fi
 
 receipt_result="${receipt_directory}/result.json"
 if test ! -f "${receipt_result}"; then
-    sed -n '1,200p' "${container_log}" >"${failure_log}"
-    chmod 0600 "${failure_log}"
-    rm -f "${container_log}"
-    sed -n '1,200p' "${failure_log}" >&2
-    echo "run-debian-provider-funded: the Debian gate produced no receipt; retained bounded console ${failure_log}" >&2
+    failure_reason="Debian gate produced no receipt"
     exit 1
 fi
 mv "${receipt_result}" "${receipt_path}"
-rm -f "${container_log}"
 rmdir "${receipt_directory}"
 echo "run-debian-provider-funded: wrote ${receipt_relative_path}"
