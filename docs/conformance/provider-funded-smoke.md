@@ -254,9 +254,10 @@ IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL=lnd ./scripts/test-provider-funded.sh
 ```
 
 The disposable Debian 13 process gate copies an exact committed tree into a
-fresh Debian environment, installs only the build and Docker client tools the
-funded smoke needs, and writes a bounded public receipt only after cleanup.
-It refuses tracked changes and refuses to overwrite a record:
+fresh Debian environment, installs the build, Docker, curl, Go, and Node tools
+used by the funded smoke and its checked-in client adapters, and writes a
+bounded public receipt only after cleanup. It refuses any worktree changes,
+including untracked source files, and refuses to overwrite a record:
 
 ```sh
 scripts/run-debian-provider-funded.sh \

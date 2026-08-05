@@ -37,8 +37,8 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
     echo "run-debian-provider-funded: start Docker before running the disposable Debian gate" >&2
     exit 1
 fi
-if ! git -C "${repository}" diff --quiet || ! git -C "${repository}" diff --cached --quiet; then
-    echo "run-debian-provider-funded: commit or stash tracked changes before recording evidence" >&2
+if test -n "$(git -C "${repository}" status --porcelain --untracked-files=all)"; then
+    echo "run-debian-provider-funded: commit, stash, or remove changes before recording evidence" >&2
     exit 1
 fi
 
@@ -69,7 +69,12 @@ if ! docker run --rm \
         export DEBIAN_FRONTEND=noninteractive
         apt-get update >/dev/null
         apt-get install -y --no-install-recommends \
-            ca-certificates cargo build-essential python3-minimal docker-cli docker-compose docker.io >/dev/null
+            ca-certificates cargo build-essential curl python3-minimal docker-cli docker-compose docker.io \
+            golang-go nodejs >/dev/null
+        for command_name in cargo curl docker go node; do
+            command -v "${command_name}" >/dev/null
+        done
+        docker compose version >/dev/null
         mkdir /work
         cp /source/Cargo.toml /source/Cargo.lock /source/Dockerfile /source/.dockerignore /work/
         cp -R /source/crates /source/migrations /source/scripts /source/tests /source/adapters /source/nips /work/

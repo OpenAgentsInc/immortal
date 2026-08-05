@@ -48,8 +48,12 @@ finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 IMMORTAL_DEBIAN_PROVIDER_STARTED_AT="${started_at}" \
 IMMORTAL_DEBIAN_PROVIDER_FINISHED_AT="${finished_at}" \
 IMMORTAL_DEBIAN_PROVIDER_ARCHITECTURE="$(uname -m)" \
+IMMORTAL_DEBIAN_PROVIDER_CARGO="$(cargo --version)" \
 IMMORTAL_DEBIAN_PROVIDER_DOCKER_CLIENT="$(docker version --format '{{.Client.Version}}')" \
 IMMORTAL_DEBIAN_PROVIDER_DOCKER_SERVER="$(docker version --format '{{.Server.Version}}')" \
+IMMORTAL_DEBIAN_PROVIDER_GO="$(go version)" \
+IMMORTAL_DEBIAN_PROVIDER_NODE="$(node --version)" \
+IMMORTAL_DEBIAN_PROVIDER_RUSTC="$(rustc --version)" \
 python3 - "${receipt_directory}/result.json" <<'PY'
 import hashlib
 import json
@@ -85,8 +89,12 @@ record = {
     "platform": {
         "operating_system": "Debian 13",
         "architecture": os.environ["IMMORTAL_DEBIAN_PROVIDER_ARCHITECTURE"],
+        "cargo": os.environ["IMMORTAL_DEBIAN_PROVIDER_CARGO"],
         "docker_client": os.environ["IMMORTAL_DEBIAN_PROVIDER_DOCKER_CLIENT"],
         "docker_server": os.environ["IMMORTAL_DEBIAN_PROVIDER_DOCKER_SERVER"],
+        "go": os.environ["IMMORTAL_DEBIAN_PROVIDER_GO"],
+        "node": os.environ["IMMORTAL_DEBIAN_PROVIDER_NODE"],
+        "rustc": os.environ["IMMORTAL_DEBIAN_PROVIDER_RUSTC"],
     },
     "funded_smoke": {
         "journeys": ["submarine", "reverse", "noncooperative_refund"],
