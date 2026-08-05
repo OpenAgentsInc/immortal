@@ -305,7 +305,7 @@ test "${provider_preflight_status}" -ne 0
 grep -Fq 'container runtime cannot read the private root at its exact path' \
   "${provider_output_log}"
 test "$(wc -l <"${provider_command_log}")" -eq 1
-grep -Fq -- "--mount type=bind,src=${provider_private_parent}/immortal-provider-funded-" \
+grep -Fq -- "--mount type=bind,src=${provider_private_parent}/immortal-provider-funded." \
   "${provider_command_log}"
 grep -Fq ',dst=/run/immortal-private,readonly' "${provider_command_log}"
 grep -Fq 'postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193 true' \
