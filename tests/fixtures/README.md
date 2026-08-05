@@ -3,6 +3,11 @@
 These fixtures test the pinned specifications under `nips/`. Each directory
 names the NIP that owns the behavior.
 
+`nipmkt/boltz-facade-v2.json` pins the released-client handoff profile,
+Boltz source revisions, safe route classes, submarine finalize seam, activation
+law, custody boundary, and coverage gate. It contains no provider, wallet,
+rail, invoice, transaction, key, or preimage material.
+
 ## Provenance
 
 - `nip01/events.json` contains the signed `hello world` event and canonical

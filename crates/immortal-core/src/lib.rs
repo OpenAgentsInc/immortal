@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod boltz_compat;
 pub mod domain;
 pub mod market;
 #[cfg(feature = "mkt-swp-verify")]

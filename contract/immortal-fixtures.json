@@ -264,6 +264,12 @@
       "scope": "relay"
     },
     {
+      "path": "tests/fixtures/nipmkt/boltz-facade-v2.json",
+      "sha256": "616be7625c72d32b28c25767e526f8bcb2a8e774f04b5838449297f9cc5fe272",
+      "bytes": 3519,
+      "scope": "relay_and_client"
+    },
+    {
       "path": "tests/fixtures/nipmkt/client-only-cases.json",
       "sha256": "96ef5367ccba2f111137579661948a0402d2d04935636281b04f39b07f4db64e",
       "bytes": 9529,

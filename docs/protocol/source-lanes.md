@@ -730,3 +730,33 @@ This adoption decision keeps the funded Quote and provider contract flags
 `musig2_key_path=false` and `musig2_key_path_signer=false`. Funded-mode actor
 ownership, rail broadcast, and capability advertisement remain gated on the
 #18 process lab, so the actor packet is not a deployment claim.
+
+## M12 Boltz released-client handoff decision (2026-08-05)
+
+Issue #15 allocates no event kind, changes no NIP source, and creates no lane
+precedence exception. Its observable API inventory is derived from the pinned
+Boltz revisions in `docs/inspiration/boltz.md`; Boltz remains an inspiration
+and compatibility source, not a fourth specification lane or dependency.
+
+The workspace/provider decisions are prerequisites. The relay owns only an
+off-by-default, exact-digest route classifier and `307` handoff to an external
+provider process. It does not read compatibility bodies, persist facade
+sessions, link the client/provider crates, proxy provider WebSockets, or
+advertise the surface in NIP-11. Provider-sensitive preimage, signing,
+broadcast, node, and rail operations cross directly from client to provider.
+
+The pinned stock clients cannot satisfy MKT-SWP's submarine pre-funding law by
+changing only their base URL: they construct the funding transaction after
+swap creation and expose no pre-broadcast Contract callback. The adopted
+released profile therefore adds
+`POST /v2/swap/submarine/:id/finalize`, disables cooperative/partial-signature
+helpers, binds the client-constructed transaction in both `kind:39610`
+Contracts, and permits broadcast only after local verification and exit-package
+persistence. The bilateral Contract law is unchanged and the relay acquires no
+wallet authority.
+
+The checked-in coverage ledger counts a redirect as neither `emulated` nor
+dependent-call coverage. The current endpoint result is 0/53 emulated, and
+the client result is unclaimed until the external funded provider serves the
+profile and adapted Go/web builds pass an actual process gate. That gate is a
+prerequisite for #18 replacement scenarios and #19 deployment evidence.

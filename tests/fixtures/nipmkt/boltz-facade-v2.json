@@ -1,0 +1,66 @@
+{
+  "schema": "openagents.mkt-swp.boltz-facade.v2",
+  "mapping_revision": "openagents.mkt-swp.boltz-released-client.v1",
+  "source_pins": {
+    "boltz_backend": "4d131ef8562eea25ab687bcc75a17ce899110b66",
+    "boltz_client": "746f73c5ecbd3621f628f60108a404ef26f0de95",
+    "boltz_web_app": "dd9c2df26db54a2554dc1e628b095ce856c0d9de"
+  },
+  "activation": {
+    "enabled_by_default": false,
+    "requires_exact_conformance_digest": true,
+    "requires_external_provider_base_url": true,
+    "nip11_advertised": false
+  },
+  "custody_boundary": {
+    "relay_reads_request_body": false,
+    "relay_persists_session_state": false,
+    "handoff_status": 307,
+    "provider_is_external_process": true
+  },
+  "released_client_profile": {
+    "name": "bitcoin-lightning-script-path-v1",
+    "stock_url_only_compatible": false,
+    "submarine_requires_finalize_handoff": true,
+    "web_cooperative_disabled": true,
+    "go_partial_signatures_disabled": true,
+    "websocket_provider_url_required": true
+  },
+  "route_cases": [
+    {"method": "GET", "path": "/v2/version", "class": "provider_public"},
+    {"method": "GET", "path": "/v2/swap/submarine", "class": "provider_public"},
+    {"method": "POST", "path": "/v2/swap/submarine", "class": "provider_session"},
+    {"method": "POST", "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/finalize", "class": "submarine_finalize"},
+    {"method": "GET", "path": "/v2/swap/reverse", "class": "provider_public"},
+    {"method": "POST", "path": "/v2/swap/reverse", "class": "provider_session"},
+    {"method": "GET", "path": "/v2/swap/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "class": "provider_public"},
+    {"method": "GET", "path": "/v2/swap/status?ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "class": "provider_public"},
+    {"method": "GET", "path": "/v2/ws", "class": "provider_websocket"},
+    {"method": "GET", "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/preimage", "class": "provider_sensitive"},
+    {"method": "POST", "path": "/v2/swap/reverse/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/claim", "class": "provider_sensitive"},
+    {"method": "POST", "path": "/v2/chain/BTC/transaction", "class": "provider_sensitive"},
+    {"method": "GET", "path": "/v2/chain/BTC/height", "class": "provider_public"},
+    {"method": "GET", "path": "/v2/nodes", "class": "provider_public"},
+    {"method": "POST", "path": "/swapstatus", "class": "provider_public"},
+    {"method": "GET", "path": "/streamswapstatus?id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "class": "provider_public"}
+  ],
+  "rejected_paths": [
+    "/v2/../health",
+    "/v2/%2e%2e/health",
+    "//provider.example/v2/version",
+    "/v2/version#fragment"
+  ],
+  "routes_outside_profile": [
+    {"method": "GET", "path": "/v2/swap/chain"},
+    {"method": "PATCH", "path": "/v2/swap/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/metadata"},
+    {"method": "POST", "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/refund"},
+    {"method": "GET", "path": "/v2/referral"},
+    {"method": "GET", "path": "/v2/commitment/BTC/details"}
+  ],
+  "coverage": {
+    "backend_v2_route_denominator": 53,
+    "relay_emulated_routes": 0,
+    "relay_redirect_routes_are_not_emulation": true,
+    "dependent_call_coverage_claim": "blocked_until_external_provider_process_gate"
+  }
+}

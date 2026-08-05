@@ -69,6 +69,7 @@ for path in sorted(fixture_root.rglob("*.json"), key=lambda item: item.relative_
         or relative.endswith("nipmkt/swp-coordination-v1.json")
         or relative.endswith("nipmkt/swp-profile-v1.json")
         or relative.endswith("nipmkt/swp-verification.json")
+        or relative.endswith("nipmkt/boltz-facade-v2.json")
     ):
         scope = "relay_and_client"
     else:
