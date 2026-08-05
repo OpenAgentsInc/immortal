@@ -200,6 +200,14 @@ absent afterward. This is clean-Debian single-provider smoke evidence. It does
 not prove #18's independent two-bitcoind topology, a live deployment, or a
 public replacement claim.
 
+After the remote-Docker private-root preflight landed, the same gate passed
+again at commit `b066c31985d31543875d4609eb8fa90a7cf58925`. The additive
+receipt is
+`docs/conformance/records/2026-08-05-funded-smoke-debian-private-root-v2.json`.
+It binds the current harness digest to a fresh Debian 13 process and Docker
+daemon, all three journeys, the forced requester replacement, and verified
+zero private-runtime retention.
+
 ## Pinned rail software
 
 The test images support Linux `amd64` and `arm64`, including Docker Desktop on
@@ -290,7 +298,7 @@ including untracked source files, and refuses to overwrite a record:
 
 ```sh
 scripts/run-debian-provider-funded.sh \
-  --receipt docs/conformance/records/2026-08-05-funded-smoke-debian.json
+  --receipt docs/conformance/records/YYYY-MM-DD-funded-smoke-debian-unique.json
 ```
 
 The caller supplies Docker only to start a privileged Debian 13 container. The
@@ -349,9 +357,9 @@ coverage through `scripts/test-lab-provisioning.sh`. On 2026-08-05 the
 container Bitcoin path also created and replaced an opt-in-RBF transaction at
 2 then 4 sat/vB, verified the replacement in the mempool, and removed its
 recorded container, network, and state on macOS 26.4 arm64. The full topology
-does not yet have a recorded clean-machine funded execution. Issue #32 remains
-open until the funded smoke and checkpoint matrix are recorded on clean macOS
-and Debian machines; this document makes no such claim for this packet.
+has separate local records below. Issue #32 requires one exact 20-case matrix
+run plus the single-provider funded restart smoke on clean macOS and Debian
+hosts. The matrix is not required to repeat on both clean hosts.
 
 ## Recovery and failure-control contract
 
