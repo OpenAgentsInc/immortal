@@ -103,7 +103,10 @@ fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
             assert_eq!(EventClass::from_kind(kind), EventClass::Addressable);
             assert_eq!(
                 is_mkt_private_kind(kind),
-                (39_604..=39_610).contains(&kind) || kind == 39_620 || kind == 39_640
+                (39_604..=39_610).contains(&kind)
+                    || kind == 39_620
+                    || kind == 39_640
+                    || kind == 39_650
             );
         }
     }

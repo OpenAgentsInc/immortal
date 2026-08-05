@@ -108,6 +108,18 @@ names the NIP that owns the behavior.
   and fiat verification, price-feed reproduction, solver/appeal admission,
   coordinator-independent recovery, and chargeback loss accounting
   client-only.
+- `nipmkt/lsp-profile-v1.json` pins the relay-observable MKT-LSP v1 adoption
+  at OpenAgents commit `006b35b1f428a2e2a18931ff1546e5a09a8f8961`: Offering
+  node/network/lsps/market/side/channel-type/zero-conf/lease/payment-method/
+  custody/reservation-class grammar, immutable wrapped kind-39650 Service
+  Contracts with the exact causal, digest, signer, and firm-versus-indicative
+  grammar, the closed LSPS0/1/2 source-reference mapping without signature
+  upgrade, the admitted Status states, visible custody-class agreement, and
+  recursive custody-material plus public invoice/SCID refusal. It exports all
+  30 upstream cases while keeping LSPS execution, fee-promise and price-feed
+  reproduction, reservation-proof accounting, funding and replacement
+  verification, preimage-release discipline, unilateral close, recovery, and
+  reorg loss accounting client-only.
 - `nipmkt/swp-client-engine-v1.json` pins the transport-neutral requester
   engine: exact externally signed records, bilateral canonical contract
   binding, distinct submarine/reverse/chain funding and exit topology, Quote

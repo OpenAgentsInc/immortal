@@ -489,3 +489,56 @@ outright. The contract lists `mkt-p2p:1` as `relay_observable_only`, keeps
 executable profiles empty, and advertises `nip-mkt-p2p:1` only under the
 authenticated relay URL gate after the complete local relay-observable
 conformance gate passes.
+
+## M13 MKT-LSP adoption decision (2026-08-04)
+
+Issue #23 adopts the relay-observable subset of MKT-LSP v1 from the
+2026-08-04 lane sync at OpenAgents commit
+`006b35b1f428a2e2a18931ff1546e5a09a8f8961` (MKT.md v0.3 and `MKT-LSP.md`,
+aligned with bLIP-50 LSPS0, bLIP-51 LSPS1, and bLIP-52 LSPS2 at
+`lightning/blips` revision `ca04f374d03001ddbed60ff109da58bd9c390c9a`).
+Before allocating `kind:39650`, fresh copies of the three NIP lanes and the
+kind registry were reviewed again:
+
+| Source | Reviewed revision | Result |
+| --- | --- | --- |
+| Official NIPs | `c53877571f96eb423661fc23c620d629d37b8f19` | No assignment in `39650-39659`; the only `3965x` byte match is inside a NIP-26 signature example. |
+| Block NIPs | `8342dfcc5890b81a269a8ec3db73a8a56f76ce79` | No assignment in `39650-39659`; the only byte match is inside a NIP-OA hex example. |
+| OpenAgents NIPs | `006b35b1f428a2e2a18931ff1546e5a09a8f8961` | MKT.md v0.3 assigns private immutable `39650` to the MKT-LSP Service Contract; `39651-39659` remain reserved and unallocated. All other hits are the profile specification, README, PROPOSED, and NIP90-MIGRATION reservation text. |
+| [`nostr-protocol/registry-of-kinds`](https://github.com/nostr-protocol/registry-of-kinds) `schema.yaml` | `2483e752146d171524dcb10dffd06de2aa271bf3` (current HEAD at review time) | No entry in `39650-39659`; the nearest higher registered kind is `39701`. |
+
+The review found no collision and creates no lane-precedence exception.
+Immortal therefore admits `39650` as a private immutable NIP-59-only kind
+under the same store/gateway rules as `39610` and `39620` (migration 0013).
+Kinds `39651-39659` and all other unadopted profile kinds remain
+unallocated.
+
+The relay validates the MKT-LSP Offering's exact compressed secp256k1
+`lsp_node_id`, collision-resistant registry `network_id` and asset-ID pair
+(bare `BTC`/`sat`/`mainnet` labels rejected), bounded `lsps` revision
+declaration, the explicit channel-purchase/jit-inbound disable law with
+canonical decimal amounts, bounded channel-type identifiers, the
+zero-conf-policy vocabulary, bounded decimal lease bounds, the exact
+`bolt11`/`bolt12`/`onchain` payment-method set, the exact
+`a1-coordinated-hold` custody class, the five-class reservation-proof
+vocabulary, and recursive custody-material plus public
+invoice/payment-hash/SCID/channel-plan refusal on Offerings and receipts. An
+authorized profile consumer can apply the exact Service Contract grammar
+(complementary requester/provider signers, causal Quote/Order/Status
+binding, `x`/`contract_sha256` equality, the closed 11-member contract
+object, no NIP-40 expiration), the closed LSPS0/1/2 source-reference
+mapping, the visible custody-class rule, and the admitted Status-state set
+after decryption. LSPS messages over BOLT8 stay canonical for their own
+execution: the mapping proves only the reference and never upgrades the
+source signature, order, promise, channel, or payment authority.
+
+The 30-case upstream manifest is exported without claiming the client-only
+LSPS-substitution, fee-promise, price-feed, reservation-proof,
+double-reservation, funding-output, replacement, channel-ready-depth,
+preimage-release, prepaid-refund, unilateral-close, recovery, or chain-reorg
+cases as relay enforcement. The channel-purchase and JIT lifecycles execute
+on external Bitcoin/Lightning rails; the relay coordinates, it does not
+operate channels. The contract lists `mkt-lsp:1` as `relay_observable_only`,
+keeps executable profiles empty, and advertises `nip-mkt-lsp:1` only under
+the authenticated relay URL gate after the complete local relay-observable
+conformance gate passes.

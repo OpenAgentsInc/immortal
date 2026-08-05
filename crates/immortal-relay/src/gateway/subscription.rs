@@ -573,6 +573,10 @@ fn event_visible_to_reader(event: &Event, readers: &HashSet<String>) -> bool {
     if event.kind == 39_620 {
         return false;
     }
+    // MKT-LSP Service Contract: private wrapped kind, never bare-visible.
+    if event.kind == 39_650 {
+        return false;
+    }
     match event.kind {
         1_059 => {
             let recipients = event.tag_values("p").collect::<Vec<_>>();
@@ -678,6 +682,9 @@ mod tests {
         let mut p2p_resolution = event('g', 10, 39_620);
         p2p_resolution.tags = vec![crate::domain::Tag::new(vec!["p".into(), recipient.clone()])];
         assert!(!event_visible_to_reader(&p2p_resolution, &readers));
+        let mut lsp_contract = event('h', 10, 39_650);
+        lsp_contract.tags = vec![crate::domain::Tag::new(vec!["p".into(), recipient.clone()])];
+        assert!(!event_visible_to_reader(&lsp_contract, &readers));
 
         let mut valid_wrap = event('b', 10, 1_059);
         valid_wrap.tags = vec![crate::domain::Tag::new(vec!["p".into(), recipient.clone()])];

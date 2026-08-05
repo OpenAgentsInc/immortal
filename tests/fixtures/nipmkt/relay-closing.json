@@ -97,6 +97,8 @@
     {"first": 39630, "last": 39630, "nip01_class": "addressable", "allocation": "public_mkt_pfi"},
     {"first": 39631, "last": 39639, "nip01_class": "addressable", "allocation": "reserved_unallocated"},
     {"first": 39640, "last": 39640, "nip01_class": "addressable", "allocation": "private_mkt_mint"},
-    {"first": 39641, "last": 39699, "nip01_class": "addressable", "allocation": "reserved_unallocated"}
+    {"first": 39641, "last": 39649, "nip01_class": "addressable", "allocation": "reserved_unallocated"},
+    {"first": 39650, "last": 39650, "nip01_class": "addressable", "allocation": "private_mkt_lsp"},
+    {"first": 39651, "last": 39699, "nip01_class": "addressable", "allocation": "reserved_unallocated"}
   ]
 }

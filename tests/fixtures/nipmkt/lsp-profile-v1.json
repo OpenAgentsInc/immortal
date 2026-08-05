@@ -1,0 +1,333 @@
+{
+  "source": {
+    "lane": "openagents",
+    "commit": "006b35b1f428a2e2a18931ff1546e5a09a8f8961",
+    "specification": "nips/openagents/MKT-LSP.md",
+    "profile": "mkt-lsp",
+    "version": 1,
+    "service_contract_kind": 39650,
+    "blips_revision": "ca04f374d03001ddbed60ff109da58bd9c390c9a"
+  },
+  "relay_observable": {
+    "offering": {
+      "kind": 39601,
+      "tags": [
+        ["d", "btc-channel-liquidity"],
+        ["profile", "mkt-lsp", "1"],
+        ["status", "active"],
+        ["provider", "39600:1111111111111111111111111111111111111111111111111111111111111111:provider-one"],
+        ["published_at", "1785859200"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-lsp",
+        "profile_version": 1,
+        "lsp_node_id": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "network_id": "bip122:000000000019d6689c085ae165831e93",
+        "lsps": {
+          "revisions": ["blip-50@ca04f374", "blip-51@ca04f374", "blip-52@ca04f374"],
+          "bolt8_message_id": "37913"
+        },
+        "market": {
+          "base_asset_id": "oa-asset:channel-capacity.bitcoin.sat",
+          "quote_asset_id": "caip19:bip122:000000000019d6689c085ae165831e93/slip44:0"
+        },
+        "sides": {
+          "channel-purchase": { "min": "50000", "max": "100000000" },
+          "jit-inbound": { "min": "0", "max": "0" }
+        },
+        "channel_types": ["anchors-zero-fee-htlc-tx", "static-remote-key"],
+        "zero_conf_policy": "client-policy",
+        "lease_bounds": { "min_blocks": "4320", "max_blocks": "52560" },
+        "payment_methods": ["bolt11", "onchain"],
+        "custody_class": "a1-coordinated-hold",
+        "reservation_proof_classes": [
+          "provider-signed",
+          "funding-output-observed",
+          "covenant-reserve"
+        ]
+      }
+    },
+    "offering_errors": [
+      ["wrong_version", "mkt_lsp_unsupported_version"],
+      ["node_id_invalid", "mkt_lsp_invalid_node"],
+      ["network_label", "mkt_lsp_invalid_market"],
+      ["ticker_asset", "mkt_lsp_invalid_market"],
+      ["unknown_market_member", "mkt_lsp_invalid_market"],
+      ["json_number_amount", "mkt_lsp_invalid_market"],
+      ["disabled_side_min_nonzero", "mkt_lsp_side_disabled"],
+      ["inverted_range", "mkt_lsp_invalid_market"],
+      ["missing_side", "mkt_lsp_invalid_market"],
+      ["lsps_unbounded", "mkt_lsp_lsps_mismatch"],
+      ["channel_types_shape", "MKT-LSP Offering requires 1-16 channel_types"],
+      ["zero_conf_policy_unknown", "MKT-LSP zero_conf_policy is unknown"],
+      ["lease_bounds_shape", "MKT-LSP lease_bounds requires 1-4 block-duration members"],
+      ["lease_bound_not_decimal", "MKT-LSP lease bounds must be decimal strings"],
+      ["payment_method_unknown", "MKT-LSP payment method is unknown"],
+      ["custody_class_unknown", "mkt_lsp_unsupported_version"],
+      ["reservation_class_unknown", "mkt_lsp_reservation_mismatch"],
+      ["public_invoice_member", "mkt_lsp_custody_material_forbidden"],
+      ["public_scid_member", "mkt_lsp_custody_material_forbidden"],
+      ["public_macaroon_member", "mkt_lsp_custody_material_forbidden"],
+      ["public_invoice_value", "mkt_lsp_custody_material_forbidden"]
+    ],
+    "service_contract": {
+      "kind": 39650,
+      "tags": [
+        ["d", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0001"],
+        ["session", "9999999999999999999999999999999999999999999999999999999999999999"],
+        ["profile", "mkt-lsp", "1"],
+        ["e", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "", "quote"],
+        ["e", "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "", "order"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "requester"],
+        ["role", "provider"],
+        ["x", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        ["alt", "MKT-LSP service contract"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-lsp",
+        "profile_version": 1,
+        "session_id": "9999999999999999999999999999999999999999999999999999999999999999",
+        "contract": {
+          "quote_event_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "order_event_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "accepted_status_event_id": null,
+          "service": "lsps1-channel-purchase",
+          "lsps_request_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "lsps_response_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "external_effect_ids_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "reservation_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+          "funding_constraints_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+          "verifier_policy_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+          "recovery_package_sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+        },
+        "contract_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "signer_role": "provider"
+      }
+    },
+    "indicative_contract": {
+      "kind": 39650,
+      "tags": [
+        ["d", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0002"],
+        ["session", "9999999999999999999999999999999999999999999999999999999999999999"],
+        ["profile", "mkt-lsp", "1"],
+        ["e", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "", "quote"],
+        ["e", "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "", "order"],
+        ["e", "abababababababababababababababababababababababababababababababab", "", "status"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "provider"],
+        ["role", "requester"],
+        ["x", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        ["alt", "MKT-LSP service contract"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-lsp",
+        "profile_version": 1,
+        "session_id": "9999999999999999999999999999999999999999999999999999999999999999",
+        "contract": {
+          "quote_event_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "order_event_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "accepted_status_event_id": "abababababababababababababababababababababababababababababababab",
+          "service": "lsps2-jit-inbound",
+          "lsps_request_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "lsps_response_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "external_effect_ids_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+          "reservation_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+          "funding_constraints_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+          "verifier_policy_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+          "recovery_package_sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+        },
+        "contract_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "signer_role": "requester"
+      }
+    },
+    "contract_errors": [
+      ["wrong_profile", "mkt_lsp_unsupported_version"],
+      ["wrong_version", "mkt_lsp_unsupported_version"],
+      ["alt_mismatch", "mkt_lsp_service_contract_mismatch"],
+      ["role_unknown", "mkt_lsp_invalid_contract_signer"],
+      ["two_counterparties", "mkt_lsp_invalid_contract_signer"],
+      ["same_role_counterparty", "mkt_lsp_invalid_contract_signer"],
+      ["self_counterparty", "mkt_lsp_invalid_contract_signer"],
+      ["expiration_tag", "mkt_lsp_service_contract_mismatch"],
+      ["duplicate_quote_ref", "mkt_lsp_service_contract_mismatch"],
+      ["missing_order_ref", "mkt_lsp_service_contract_mismatch"],
+      ["unknown_event_reference", "mkt_lsp_service_contract_mismatch"],
+      ["unknown_content_member", "mkt_lsp_service_contract_mismatch"],
+      ["unknown_contract_member", "mkt_lsp_service_contract_mismatch"],
+      ["service_shape", "mkt_lsp_service_contract_mismatch"],
+      ["signer_role_mismatch", "mkt_lsp_invalid_contract_signer"],
+      ["digest_tag_mismatch", "mkt_lsp_service_contract_mismatch"],
+      ["digest_invalid", "mkt_lsp_service_contract_mismatch"],
+      ["quote_id_mismatch", "mkt_lsp_service_contract_mismatch"],
+      ["firm_with_status_tag", "mkt_lsp_service_contract_mismatch"],
+      ["accepted_status_shape", "mkt_lsp_service_contract_mismatch"],
+      ["custody_material", "mkt_lsp_custody_material_forbidden"]
+    ],
+    "indicative_errors": [
+      ["status_id_mismatch", "mkt_lsp_service_contract_mismatch"],
+      ["null_with_status_tag", "mkt_lsp_service_contract_mismatch"]
+    ],
+    "quote_with_source": {
+      "kind": 39605,
+      "tags": [
+        ["d", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0003"],
+        ["session", "9999999999999999999999999999999999999999999999999999999999999999"],
+        ["profile", "mkt-lsp", "1"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "requester"],
+        ["e", "6666666666666666666666666666666666666666666666666666666666666666", "", "rfq"],
+        ["alt", "MKT-LSP quote"],
+        ["expiration", "1785862800"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-lsp",
+        "profile_version": 1,
+        "session_id": "9999999999999999999999999999999999999999999999999999999999999999",
+        "source": {
+          "protocol": "lsps1",
+          "revision": "blip-51@ca04f374d03001ddbed60ff109da58bd9c390c9a",
+          "method": "lsps1.create_order",
+          "request_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+          "response_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "external_id_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+          "mapping_version": "mkt-lsp-v1"
+        }
+      }
+    },
+    "source_errors": [
+      ["source_not_object", "mkt_lsp_lsps_mismatch"],
+      ["protocol_unknown", "mkt_lsp_lsps_mismatch"],
+      ["mapping_version_unknown", "mkt_lsp_lsps_mismatch"],
+      ["request_digest_invalid", "mkt_lsp_lsps_mismatch"],
+      ["unknown_source_member", "mkt_lsp_lsps_mismatch"],
+      ["method_shape", "mkt_lsp_lsps_mismatch"]
+    ],
+    "status_extension": {
+      "kind": 39607,
+      "tags": [
+        ["d", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0004"],
+        ["session", "9999999999999999999999999999999999999999999999999999999999999999"],
+        ["profile", "mkt-lsp", "1"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "requester"],
+        ["e", "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "", "order"],
+        ["seq", "3"],
+        ["state", "funding-output-observed"],
+        ["alt", "MKT-LSP status"]
+      ],
+      "content": {
+        "schema": "openagents.mkt.v1",
+        "profile": "mkt-lsp",
+        "profile_version": 1,
+        "session_id": "9999999999999999999999999999999999999999999999999999999999999999"
+      }
+    },
+    "status_errors": [
+      ["base_state_not_admitted", "mkt_lsp_invalid_transition"],
+      ["unknown_state", "mkt_lsp_invalid_transition"],
+      ["custody_class_mismatch", "mkt_lsp_unsupported_version"]
+    ],
+    "public_receipt_errors": [
+      ["wrong_version", "mkt_lsp_unsupported_version"],
+      ["invoice_member", "mkt_lsp_custody_material_forbidden"],
+      ["payment_hash_member", "mkt_lsp_custody_material_forbidden"],
+      ["scid_member", "mkt_lsp_custody_material_forbidden"],
+      ["coupon_member", "mkt_lsp_custody_material_forbidden"],
+      ["invoice_value", "mkt_lsp_custody_material_forbidden"]
+    ]
+  },
+  "client_only_requirements": {
+    "relay_enforced": false,
+    "external_authorities": [
+      "lsp_node",
+      "chain_verifier",
+      "lightning_verifier",
+      "reservation_verifier",
+      "payment_rail",
+      "bitcoin_rail",
+      "lightning_rail",
+      "price_feed"
+    ],
+    "case_categories": {
+      "lifecycle_and_funding": [
+        "lsp-positive-lsps1-channel-purchase",
+        "lsp-positive-lsps2-jit",
+        "lsp-negative-channel-ready-before-depth",
+        "lsp-negative-funding-output",
+        "lsp-negative-unadmitted-replacement",
+        "lsp-loss-chain-reorg"
+      ],
+      "reservation_accounting": [
+        "lsp-positive-hard-funding-reserve",
+        "lsp-positive-covenant-reserve",
+        "lsp-negative-hard-provider-signed",
+        "lsp-negative-double-reservation",
+        "lsp-expiry-reservation-only"
+      ],
+      "fees_and_pricing": [
+        "lsp-negative-fee-over-promise",
+        "lsp-negative-substitute-feed"
+      ],
+      "lsps_bridge": [
+        "lsp-negative-lsps-substitution",
+        "lsp-negative-provider-claim-is-verification"
+      ],
+      "recovery_and_exit": [
+        "lsp-positive-unilateral-close",
+        "lsp-negative-client-trusts-lsp",
+        "lsp-negative-prepaid-no-refund",
+        "lsp-recovery-market-coordinator-gone",
+        "lsp-recovery-keyless-exit-executor"
+      ],
+      "replay_and_fork": [
+        "lsp-replay-same-contract",
+        "lsp-replay-contract-conflict",
+        "lsp-fork-status"
+      ],
+      "privacy": ["lsp-privacy-independent-wraps"],
+      "contract_binding": [
+        "lsp-positive-service-contract",
+        "lsp-negative-service-contract-mismatch",
+        "lsp-negative-contract-signer",
+        "lsp-negative-custody-material"
+      ],
+      "market_admission": [
+        "lsp-negative-disabled-side",
+        "lsp-negative-json-number-amount"
+      ]
+    }
+  },
+  "upstream_fixture_manifest": [
+    "lsp-positive-lsps1-channel-purchase",
+    "lsp-positive-lsps2-jit",
+    "lsp-positive-hard-funding-reserve",
+    "lsp-positive-covenant-reserve",
+    "lsp-positive-service-contract",
+    "lsp-positive-unilateral-close",
+    "lsp-negative-disabled-side",
+    "lsp-negative-json-number-amount",
+    "lsp-negative-lsps-substitution",
+    "lsp-negative-fee-over-promise",
+    "lsp-negative-substitute-feed",
+    "lsp-negative-provider-claim-is-verification",
+    "lsp-negative-hard-provider-signed",
+    "lsp-negative-double-reservation",
+    "lsp-negative-funding-output",
+    "lsp-negative-unadmitted-replacement",
+    "lsp-negative-channel-ready-before-depth",
+    "lsp-negative-client-trusts-lsp",
+    "lsp-negative-prepaid-no-refund",
+    "lsp-negative-custody-material",
+    "lsp-negative-service-contract-mismatch",
+    "lsp-negative-contract-signer",
+    "lsp-replay-same-contract",
+    "lsp-replay-contract-conflict",
+    "lsp-fork-status",
+    "lsp-expiry-reservation-only",
+    "lsp-privacy-independent-wraps",
+    "lsp-recovery-market-coordinator-gone",
+    "lsp-recovery-keyless-exit-executor",
+    "lsp-loss-chain-reorg"
+  ]
+}

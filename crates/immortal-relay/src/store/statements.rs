@@ -155,6 +155,7 @@ WHERE ($1::text[] IS NULL OR e.id = ANY($1))
   AND e.ingest_seq <= $9
   AND e.kind NOT BETWEEN 39604 AND 39610
   AND e.kind <> 39620
+  AND e.kind <> 39650
   AND (
       e.kind NOT IN (1059, 24200, 30174, 30175, 30178, 30300, 30350, 30622, 44200)
       OR (
@@ -247,6 +248,7 @@ WHERE ($1::text[] IS NULL OR e.id = ANY($1))
   )
   AND e.kind NOT BETWEEN 39604 AND 39610
   AND e.kind <> 39620
+  AND e.kind <> 39650
   AND (
       e.kind NOT IN (1059, 24200, 30174, 30175, 30178, 30300, 30350, 30622, 44200)
       OR (

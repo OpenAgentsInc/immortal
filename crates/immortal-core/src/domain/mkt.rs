@@ -68,12 +68,53 @@ pub const MKT_P2P_STATUS_EXTENSION_STATES: &[&str] = &[
     "solver-taken",
     "appeal-pending",
 ];
+// MKT-LSP v1 (nips/openagents/MKT-LSP.md) relay-observable adoption.
+pub const MKT_LSP_SERVICE_CONTRACT_KIND: u16 = 39_650;
+pub const MKT_LSP_PROFILE_ID: &str = "mkt-lsp";
+pub const MKT_LSP_PROFILE_VERSION: u64 = 1;
+pub const MKT_LSP_CUSTODY_CLASS: &str = "a1-coordinated-hold";
+pub const MKT_LSP_SERVICE_CONTRACT_ALT: &str = "MKT-LSP service contract";
+pub const MKT_LSP_SOURCE_MAPPING_VERSION: &str = "mkt-lsp-v1";
+pub const MKT_LSP_SOURCE_PROTOCOLS: &[&str] = &["lsps0", "lsps1", "lsps2"];
+pub const MKT_LSP_SIDES: &[&str] = &["channel-purchase", "jit-inbound"];
+pub const MKT_LSP_PAYMENT_METHODS: &[&str] = &["bolt11", "bolt12", "onchain"];
+pub const MKT_LSP_ZERO_CONF_POLICIES: &[&str] = &["unsupported", "client-policy"];
+pub const MKT_LSP_RESERVATION_PROOF_CLASSES: &[&str] = &[
+    "provider-signed",
+    "channel-slot",
+    "funding-input-commitment",
+    "funding-output-observed",
+    "covenant-reserve",
+];
+pub const MKT_LSP_HARD_RESERVATION_PROOF_CLASSES: &[&str] = &[
+    "funding-input-commitment",
+    "funding-output-observed",
+    "covenant-reserve",
+];
+pub const MKT_LSP_STATUS_BASE_STATES: &[&str] = &["accepted", "completed", "refunded", "failed"];
+pub const MKT_LSP_STATUS_EXTENSION_STATES: &[&str] = &[
+    "reservation-held",
+    "fee-parameters-pinned",
+    "jit-route-issued",
+    "service-contract-pending",
+    "service-contract-bound",
+    "payment-required",
+    "payment-observed",
+    "incoming-htlc-observed",
+    "funding-pending",
+    "funding-output-observed",
+    "channel-ready",
+    "jit-forward-committed",
+    "jit-payment-settled",
+    "usable",
+];
 pub const MKT_EXECUTABLE_PROFILES: &[(&str, u64)] = &[];
 pub const MKT_RELAY_PROFILES: &[(&str, u64)] = &[
     (MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION),
     (MKT_PFI_PROFILE_ID, MKT_PFI_PROFILE_VERSION),
     (MKT_MINT_PROFILE_ID, MKT_MINT_PROFILE_VERSION),
     (MKT_P2P_PROFILE_ID, MKT_P2P_PROFILE_VERSION),
+    (MKT_LSP_PROFILE_ID, MKT_LSP_PROFILE_VERSION),
 ];
 pub const MKT_MINT_RAILS: &[&str] = &["cashu", "fedimint"];
 pub const MKT_MINT_CUSTODY_CLASSES: &[(&str, &str)] =
@@ -340,6 +381,20 @@ fn validate_mkt_private_syntax(event: &Event) -> Result<MktPrivateEnvelope, Stri
             ));
         }
     }
+    if event.kind == MKT_LSP_SERVICE_CONTRACT_KIND {
+        if *profile_id != MKT_LSP_PROFILE_ID {
+            return Err(lsp_error(
+                "mkt_lsp_unsupported_version",
+                "kind 39650 requires profile mkt-lsp",
+            ));
+        }
+        if *profile_version != MKT_LSP_PROFILE_VERSION {
+            return Err(lsp_error(
+                "mkt_lsp_unsupported_version",
+                "kind 39650 requires MKT-LSP version 1",
+            ));
+        }
+    }
     let alt = single_value(event, "alt", "private MKT event")?;
     if alt.is_empty() || alt.len() > 128 || alt.chars().any(char::is_control) {
         return Err("private MKT alt must be a nonempty bounded description".to_owned());
@@ -418,6 +473,12 @@ pub fn validate_mkt_private_with_profiles(
         && envelope.profile_version == MKT_P2P_PROFILE_VERSION
     {
         validate_mkt_p2p_visible_private(event, &envelope)
+            .map_err(|detail| validation_error(MktValidationCode::TagGrammar, detail))?;
+    }
+    if envelope.profile_id == MKT_LSP_PROFILE_ID
+        && envelope.profile_version == MKT_LSP_PROFILE_VERSION
+    {
+        validate_mkt_lsp_visible_private(event, &envelope)
             .map_err(|detail| validation_error(MktValidationCode::TagGrammar, detail))?;
     }
     Ok(envelope)
@@ -502,11 +563,13 @@ fn classify_syntax_error(detail: String) -> MktValidationError {
     let code = if detail.starts_with("swp_unsupported_profile")
         || detail.starts_with("mkt_mint_unsupported_profile")
         || detail.contains("kind 39620 requires profile mkt-p2p")
+        || detail.contains("kind 39650 requires profile mkt-lsp")
     {
         MktValidationCode::UnsupportedProfile
     } else if detail.starts_with("swp_unsupported_version")
         || detail.starts_with("mkt_mint_unsupported_version")
         || detail.starts_with("mkt_p2p_unsupported_version")
+        || detail.contains("kind 39650 requires MKT-LSP version 1")
     {
         MktValidationCode::UnsupportedProfileVersion
     } else if detail.contains("exceeds 32768") || detail.contains("serialization failed") {
@@ -549,6 +612,7 @@ pub const fn is_mkt_private_kind(kind: u16) -> bool {
             | MKT_SWP_SWAP_CONTRACT_KIND
             | MKT_P2P_RESOLUTION_KIND
             | MKT_MINT_ROUTE_CONTRACT_KIND
+            | MKT_LSP_SERVICE_CONTRACT_KIND
     )
 }
 
@@ -643,6 +707,14 @@ fn validate_offering(event: &Event) -> Result<(), String> {
             ));
         }
         validate_mkt_p2p_offering(event)?;
+    } else if profiles[0].0 == MKT_LSP_PROFILE_ID {
+        if profiles[0].1 != MKT_LSP_PROFILE_VERSION {
+            return Err(lsp_error(
+                "mkt_lsp_unsupported_version",
+                "only MKT-LSP profile version 1 is relay-observable",
+            ));
+        }
+        validate_mkt_lsp_offering(event)?;
     }
     Ok(())
 }
@@ -735,6 +807,15 @@ fn validate_public_receipt(event: &Event) -> Result<(), String> {
         let content = parse_unique_json(&event.content, "MKT-P2P public receipt content")?;
         reject_p2p_public_private_material(&content)?;
         reject_p2p_public_receipt_material(&content)?;
+    } else if profiles[0].0 == MKT_LSP_PROFILE_ID {
+        if profiles[0].1 != MKT_LSP_PROFILE_VERSION {
+            return Err(lsp_error(
+                "mkt_lsp_unsupported_version",
+                "only MKT-LSP profile version 1 is relay-observable",
+            ));
+        }
+        let content = parse_unique_json(&event.content, "MKT-LSP public receipt content")?;
+        reject_lsp_public_material(&content)?;
     }
     Ok(())
 }
@@ -3854,6 +3935,799 @@ fn p2p_hex(value: &str, subject: &str, code: &str) -> Result<(), String> {
 }
 
 fn p2p_error(code: &str, detail: impl fmt::Display) -> String {
+    format!("{code}: {detail}")
+}
+
+// MKT-LSP v1 relay-observable validation (nips/openagents/MKT-LSP.md).
+// The relay validates only the visible grammar: public Offering and
+// receipt shapes, the wrapped kind-39650 LSP Service Contract, admitted
+// Status states, and the LSPS0/1/2 source-reference mapping. Channel
+// opening, JIT execution, LSP node operations, fee-negotiation
+// settlement, reservation proof evaluation, and recovery stay client or
+// external-rail authority: the relay coordinates, it does not operate
+// channels.
+
+fn validate_mkt_lsp_offering(event: &Event) -> Result<(), String> {
+    let content = parse_unique_json(&event.content, "MKT-LSP Offering content")?;
+    reject_lsp_public_material(&content)?;
+    let body = content
+        .as_object()
+        .ok_or_else(|| "MKT-LSP Offering content must be a JSON object".to_owned())?;
+
+    validate_lsp_node_id(lsp_required_string(
+        body,
+        "lsp_node_id",
+        "mkt_lsp_invalid_node",
+    )?)?;
+    validate_lsp_registry_id(
+        lsp_required_string(body, "network_id", "mkt_lsp_invalid_market")?,
+        "network id",
+    )?;
+    validate_lsp_bounded_declaration(
+        body.get("lsps"),
+        "Offering lsps declaration",
+        "mkt_lsp_lsps_mismatch",
+    )?;
+
+    let market = lsp_object(
+        body.get("market"),
+        "MKT-LSP Offering market",
+        "mkt_lsp_invalid_market",
+    )?;
+    lsp_closed(
+        market,
+        &["base_asset_id", "quote_asset_id"],
+        "MKT-LSP Offering market",
+        "mkt_lsp_invalid_market",
+    )?;
+    for member in ["base_asset_id", "quote_asset_id"] {
+        validate_lsp_registry_id(
+            lsp_required_string(market, member, "mkt_lsp_invalid_market")?,
+            "asset id",
+        )?;
+    }
+
+    let sides = lsp_object(
+        body.get("sides"),
+        "MKT-LSP Offering sides",
+        "mkt_lsp_invalid_market",
+    )?;
+    lsp_closed(
+        sides,
+        MKT_LSP_SIDES,
+        "MKT-LSP Offering sides",
+        "mkt_lsp_invalid_market",
+    )?;
+    for side_name in MKT_LSP_SIDES {
+        let side = lsp_object(
+            sides.get(*side_name),
+            "MKT-LSP Offering side",
+            "mkt_lsp_invalid_market",
+        )?;
+        lsp_closed(
+            side,
+            &["min", "max"],
+            "MKT-LSP Offering side",
+            "mkt_lsp_invalid_market",
+        )?;
+        let minimum = canonical_decimal(
+            lsp_required_string(side, "min", "mkt_lsp_invalid_market")?,
+            false,
+            "MKT-LSP side min",
+        )
+        .map_err(|detail| lsp_error("mkt_lsp_invalid_market", detail))?;
+        let maximum = canonical_decimal(
+            lsp_required_string(side, "max", "mkt_lsp_invalid_market")?,
+            false,
+            "MKT-LSP side max",
+        )
+        .map_err(|detail| lsp_error("mkt_lsp_invalid_market", detail))?;
+        if maximum == 0 {
+            if minimum != 0 {
+                return Err(lsp_error(
+                    "mkt_lsp_side_disabled",
+                    format!("disabled {side_name} side requires min=0 and max=0"),
+                ));
+            }
+        } else if minimum == 0 || minimum > maximum {
+            return Err(lsp_error(
+                "mkt_lsp_invalid_market",
+                format!("enabled {side_name} side requires 0 < min <= max"),
+            ));
+        }
+    }
+
+    let channel_types = body
+        .get("channel_types")
+        .and_then(Value::as_array)
+        .filter(|values| (1..=16).contains(&values.len()))
+        .ok_or_else(|| "MKT-LSP Offering requires 1-16 channel_types".to_owned())?;
+    let mut channel_type_ids = BTreeSet::new();
+    for channel_type in channel_types {
+        let channel_type = channel_type
+            .as_str()
+            .ok_or_else(|| "MKT-LSP channel types must be strings".to_owned())?;
+        validate_identifier(channel_type, "MKT-LSP channel type")?;
+        if !channel_type_ids.insert(channel_type) {
+            return Err("MKT-LSP channel types must be duplicate-free".to_owned());
+        }
+    }
+
+    match body.get("zero_conf_policy") {
+        Some(Value::String(policy)) => {
+            require_enum(
+                policy,
+                MKT_LSP_ZERO_CONF_POLICIES,
+                "MKT-LSP zero_conf_policy",
+            )?;
+        }
+        Some(policy @ Value::Object(_)) => validate_lsp_bounded_declaration(
+            Some(policy),
+            "Offering zero_conf_policy constraints",
+            "mkt_lsp_invalid_market",
+        )?,
+        _ => {
+            return Err(
+                "MKT-LSP zero_conf_policy must be unsupported, client-policy, or exact provider constraints"
+                    .to_owned(),
+            );
+        }
+    }
+
+    let lease_bounds = lsp_object(
+        body.get("lease_bounds"),
+        "MKT-LSP Offering lease_bounds",
+        "mkt_lsp_invalid_market",
+    )?;
+    if lease_bounds.is_empty() || lease_bounds.len() > 4 {
+        return Err("MKT-LSP lease_bounds requires 1-4 block-duration members".to_owned());
+    }
+    for (name, bound) in lease_bounds {
+        lsp_bounded_ascii(
+            name,
+            "lease bound member name",
+            64,
+            "mkt_lsp_invalid_market",
+        )?;
+        canonical_decimal(
+            bound
+                .as_str()
+                .ok_or_else(|| "MKT-LSP lease bounds must be decimal strings".to_owned())?,
+            false,
+            "MKT-LSP lease bound",
+        )?;
+    }
+
+    let methods = body
+        .get("payment_methods")
+        .and_then(Value::as_array)
+        .filter(|values| (1..=MKT_LSP_PAYMENT_METHODS.len()).contains(&values.len()))
+        .ok_or_else(|| "MKT-LSP Offering requires 1-3 payment_methods".to_owned())?;
+    let mut method_ids = BTreeSet::new();
+    for method in methods {
+        let method = method
+            .as_str()
+            .ok_or_else(|| "MKT-LSP payment methods must be strings".to_owned())?;
+        require_enum(method, MKT_LSP_PAYMENT_METHODS, "MKT-LSP payment method")?;
+        if !method_ids.insert(method) {
+            return Err("MKT-LSP payment methods must be duplicate-free".to_owned());
+        }
+    }
+
+    if lsp_required_string(body, "custody_class", "mkt_lsp_unsupported_version")?
+        != MKT_LSP_CUSTODY_CLASS
+    {
+        return Err(lsp_error(
+            "mkt_lsp_unsupported_version",
+            "MKT-LSP v1 supports only custody class a1-coordinated-hold",
+        ));
+    }
+
+    let proof_classes = body
+        .get("reservation_proof_classes")
+        .and_then(Value::as_array)
+        .filter(|values| (1..=MKT_LSP_RESERVATION_PROOF_CLASSES.len()).contains(&values.len()))
+        .ok_or_else(|| {
+            lsp_error(
+                "mkt_lsp_reservation_mismatch",
+                "Offering requires 1-5 reservation_proof_classes",
+            )
+        })?;
+    let mut seen_classes = BTreeSet::new();
+    for class in proof_classes {
+        let class = class.as_str().ok_or_else(|| {
+            lsp_error(
+                "mkt_lsp_reservation_mismatch",
+                "reservation proof classes must be strings",
+            )
+        })?;
+        if !MKT_LSP_RESERVATION_PROOF_CLASSES.contains(&class) {
+            return Err(lsp_error(
+                "mkt_lsp_reservation_mismatch",
+                format!("reservation proof class {class:?} is not admitted"),
+            ));
+        }
+        if !seen_classes.insert(class) {
+            return Err(lsp_error(
+                "mkt_lsp_reservation_mismatch",
+                "reservation proof classes must be duplicate-free",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_lsp_node_id(value: &str) -> Result<(), String> {
+    if value.len() != 66
+        || !(value.starts_with("02") || value.starts_with("03"))
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(lsp_error(
+            "mkt_lsp_invalid_node",
+            "lsp_node_id must be an exact compressed secp256k1 node public key",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_lsp_registry_id(value: &str, subject: &str) -> Result<(), String> {
+    let Some((namespace, reference)) = value.split_once(':') else {
+        return Err(lsp_error(
+            "mkt_lsp_invalid_market",
+            format!("{subject} must be a collision-resistant registry identifier, not a label"),
+        ));
+    };
+    if !(2..=16).contains(&namespace.len())
+        || !namespace
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        || reference.is_empty()
+        || reference.len() > 128
+        || !reference
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && byte != b'"' && byte != b'\\')
+    {
+        return Err(lsp_error(
+            "mkt_lsp_invalid_market",
+            format!("{subject} registry namespace or reference is noncanonical"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_lsp_bounded_declaration(
+    value: Option<&Value>,
+    subject: &str,
+    code: &str,
+) -> Result<(), String> {
+    let declaration = lsp_object(value, subject, code)?;
+    if declaration.is_empty() || declaration.len() > 8 {
+        return Err(lsp_error(
+            code,
+            format!("{subject} requires 1-8 bounded members"),
+        ));
+    }
+    for (name, child) in declaration {
+        lsp_bounded_ascii(name, subject, 64, code)?;
+        match child {
+            Value::String(child) => lsp_bounded_ascii(child, subject, 128, code)?,
+            Value::Array(children) if children.len() <= 16 => {
+                for child in children {
+                    lsp_bounded_ascii(
+                        child.as_str().ok_or_else(|| {
+                            lsp_error(code, format!("{subject} list values must be strings"))
+                        })?,
+                        subject,
+                        128,
+                        code,
+                    )?;
+                }
+            }
+            _ => {
+                return Err(lsp_error(
+                    code,
+                    format!("{subject} members must be bounded strings or string lists"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_mkt_lsp_visible_private(
+    event: &Event,
+    envelope: &MktPrivateEnvelope,
+) -> Result<(), String> {
+    let body = Value::Object(envelope.body.clone());
+    reject_lsp_custody_material(&body)?;
+    validate_lsp_visible_members(&body)?;
+    if event.kind == MKT_STATUS_KIND {
+        for tag in event.tags.iter().filter(|tag| tag.name() == Some("state")) {
+            let state = tag.value().unwrap_or_default();
+            if !MKT_LSP_STATUS_BASE_STATES.contains(&state)
+                && !MKT_LSP_STATUS_EXTENSION_STATES.contains(&state)
+            {
+                return Err(lsp_error(
+                    "mkt_lsp_invalid_transition",
+                    "Status state is not admitted by MKT-LSP version 1",
+                ));
+            }
+        }
+    }
+    if event.kind == MKT_LSP_SERVICE_CONTRACT_KIND {
+        validate_mkt_lsp_service_contract(event, envelope)?;
+    }
+    Ok(())
+}
+
+fn validate_lsp_visible_members(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                match name.as_str() {
+                    "source" => validate_mkt_lsp_source_reference(child)?,
+                    "custody_class" => {
+                        if child.as_str() != Some(MKT_LSP_CUSTODY_CLASS) {
+                            return Err(lsp_error(
+                                "mkt_lsp_unsupported_version",
+                                "MKT-LSP v1 supports only custody class a1-coordinated-hold",
+                            ));
+                        }
+                    }
+                    _ => validate_lsp_visible_members(child)?,
+                }
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                validate_lsp_visible_members(child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn validate_mkt_lsp_source_reference(value: &Value) -> Result<(), String> {
+    let source = lsp_object(
+        Some(value),
+        "MKT-LSP source reference",
+        "mkt_lsp_lsps_mismatch",
+    )?;
+    lsp_closed(
+        source,
+        &[
+            "protocol",
+            "revision",
+            "method",
+            "request_sha256",
+            "response_sha256",
+            "external_id_sha256",
+            "mapping_version",
+        ],
+        "MKT-LSP source reference",
+        "mkt_lsp_lsps_mismatch",
+    )?;
+    let protocol = lsp_required_string(source, "protocol", "mkt_lsp_lsps_mismatch")?;
+    if !MKT_LSP_SOURCE_PROTOCOLS.contains(&protocol) {
+        return Err(lsp_error(
+            "mkt_lsp_lsps_mismatch",
+            "MKT-LSP v1 bridges only lsps0, lsps1, and lsps2 sources",
+        ));
+    }
+    for member in ["revision", "method"] {
+        lsp_bounded_ascii(
+            lsp_required_string(source, member, "mkt_lsp_lsps_mismatch")?,
+            member,
+            128,
+            "mkt_lsp_lsps_mismatch",
+        )?;
+    }
+    for member in ["request_sha256", "response_sha256", "external_id_sha256"] {
+        lsp_hex(
+            lsp_required_string(source, member, "mkt_lsp_lsps_mismatch")?,
+            member,
+            "mkt_lsp_lsps_mismatch",
+        )?;
+    }
+    if lsp_required_string(source, "mapping_version", "mkt_lsp_lsps_mismatch")?
+        != MKT_LSP_SOURCE_MAPPING_VERSION
+    {
+        return Err(lsp_error(
+            "mkt_lsp_lsps_mismatch",
+            "source mapping_version must be mkt-lsp-v1",
+        ));
+    }
+    Ok(())
+}
+
+const MKT_LSP_CONTRACT_DIGEST_MEMBERS: &[&str] = &[
+    "lsps_request_sha256",
+    "lsps_response_sha256",
+    "external_effect_ids_sha256",
+    "reservation_sha256",
+    "funding_constraints_sha256",
+    "verifier_policy_sha256",
+    "recovery_package_sha256",
+];
+
+fn validate_mkt_lsp_service_contract(
+    event: &Event,
+    envelope: &MktPrivateEnvelope,
+) -> Result<(), String> {
+    if event
+        .tags
+        .iter()
+        .any(|tag| tag.name() == Some("expiration"))
+    {
+        return Err(lsp_error(
+            "mkt_lsp_service_contract_mismatch",
+            "Service Contract has no NIP-40 expiration",
+        ));
+    }
+    let counterparties = event
+        .tags
+        .iter()
+        .filter(|tag| tag.name() == Some("p"))
+        .collect::<Vec<_>>();
+    let [counterparty] = counterparties.as_slice() else {
+        return Err(lsp_error(
+            "mkt_lsp_invalid_contract_signer",
+            "Service Contract requires exactly one counterparty",
+        ));
+    };
+    let role = single_value(event, "role", "MKT-LSP Service Contract")?;
+    if !matches!(role, "requester" | "provider") {
+        return Err(lsp_error(
+            "mkt_lsp_invalid_contract_signer",
+            "Service Contract role is invalid",
+        ));
+    }
+    let counterparty = counterparty.as_slice();
+    let counterparty_pubkey = counterparty.get(1).map(String::as_str).unwrap_or_default();
+    let counterparty_role = counterparty.get(3).map(String::as_str).unwrap_or_default();
+    let expected_counterparty_role = if role == "requester" {
+        "provider"
+    } else {
+        "requester"
+    };
+    if counterparty_pubkey == event.pubkey || counterparty_role != expected_counterparty_role {
+        return Err(lsp_error(
+            "mkt_lsp_invalid_contract_signer",
+            "Service Contract requires a distinct counterparty with the complementary role",
+        ));
+    }
+    let alt = single_value(event, "alt", "MKT-LSP Service Contract")?;
+    if alt != MKT_LSP_SERVICE_CONTRACT_ALT {
+        return Err(lsp_error(
+            "mkt_lsp_service_contract_mismatch",
+            "Service Contract alt text is fixed",
+        ));
+    }
+    let digest = single_value(event, "x", "MKT-LSP Service Contract")?;
+    lower_hex_32(digest, "MKT-LSP contract digest")?;
+
+    let mut quote_id = None;
+    let mut order_id = None;
+    let mut status_id = None;
+    for tag in event.tags.iter().filter(|tag| tag.name() == Some("e")) {
+        let values = tag.as_slice();
+        let id = values.get(1).map(String::as_str).unwrap_or_default();
+        let slot = match values.get(3).map(String::as_str) {
+            Some("quote") => &mut quote_id,
+            Some("order") => &mut order_id,
+            Some("status") => &mut status_id,
+            _ => {
+                return Err(lsp_error(
+                    "mkt_lsp_service_contract_mismatch",
+                    "Service Contract has an unsupported event reference",
+                ));
+            }
+        };
+        if slot.replace(id).is_some() {
+            return Err(lsp_error(
+                "mkt_lsp_service_contract_mismatch",
+                "Service Contract has a duplicate causal reference",
+            ));
+        }
+    }
+    let (Some(quote_id), Some(order_id)) = (quote_id, order_id) else {
+        return Err(lsp_error(
+            "mkt_lsp_service_contract_mismatch",
+            "Service Contract requires one Quote and one Order reference",
+        ));
+    };
+
+    lsp_closed(
+        &envelope.body,
+        &[
+            "schema",
+            "profile",
+            "profile_version",
+            "session_id",
+            "contract",
+            "contract_sha256",
+            "signer_role",
+        ],
+        "Service Contract content",
+        "mkt_lsp_service_contract_mismatch",
+    )?;
+    let signer_role = lsp_required_string(
+        &envelope.body,
+        "signer_role",
+        "mkt_lsp_invalid_contract_signer",
+    )?;
+    if signer_role != role {
+        return Err(lsp_error(
+            "mkt_lsp_invalid_contract_signer",
+            "Service Contract tag and content roles differ",
+        ));
+    }
+    let content_digest = lsp_required_string(
+        &envelope.body,
+        "contract_sha256",
+        "mkt_lsp_service_contract_mismatch",
+    )?;
+    if content_digest != digest {
+        return Err(lsp_error(
+            "mkt_lsp_service_contract_mismatch",
+            "Service Contract x tag and contract_sha256 differ",
+        ));
+    }
+    let contract = lsp_object(
+        envelope.body.get("contract"),
+        "MKT-LSP contract",
+        "mkt_lsp_service_contract_mismatch",
+    )?;
+    lsp_closed(
+        contract,
+        &[
+            "quote_event_id",
+            "order_event_id",
+            "accepted_status_event_id",
+            "service",
+            "lsps_request_sha256",
+            "lsps_response_sha256",
+            "external_effect_ids_sha256",
+            "reservation_sha256",
+            "funding_constraints_sha256",
+            "verifier_policy_sha256",
+            "recovery_package_sha256",
+        ],
+        "MKT-LSP contract",
+        "mkt_lsp_service_contract_mismatch",
+    )?;
+    validate_identifier(
+        lsp_required_string(contract, "service", "mkt_lsp_service_contract_mismatch")?,
+        "MKT-LSP contract service",
+    )
+    .map_err(|detail| lsp_error("mkt_lsp_service_contract_mismatch", detail))?;
+    for member in MKT_LSP_CONTRACT_DIGEST_MEMBERS {
+        lsp_hex(
+            lsp_required_string(contract, member, "mkt_lsp_service_contract_mismatch")?,
+            member,
+            "mkt_lsp_service_contract_mismatch",
+        )?;
+    }
+    for (member, expected) in [("quote_event_id", quote_id), ("order_event_id", order_id)] {
+        let value = lsp_required_string(contract, member, "mkt_lsp_service_contract_mismatch")?;
+        lsp_hex(value, member, "mkt_lsp_service_contract_mismatch")?;
+        if value != expected {
+            return Err(lsp_error(
+                "mkt_lsp_service_contract_mismatch",
+                format!("{member} must equal the causal tag"),
+            ));
+        }
+    }
+    match contract.get("accepted_status_event_id") {
+        Some(Value::Null) => {
+            if status_id.is_some() {
+                return Err(lsp_error(
+                    "mkt_lsp_service_contract_mismatch",
+                    "a firm-Quote contract forbids the status reference",
+                ));
+            }
+        }
+        Some(Value::String(value)) => {
+            lsp_hex(
+                value,
+                "accepted_status_event_id",
+                "mkt_lsp_service_contract_mismatch",
+            )?;
+            if status_id != Some(value.as_str()) {
+                return Err(lsp_error(
+                    "mkt_lsp_service_contract_mismatch",
+                    "accepted_status_event_id must equal the status causal tag",
+                ));
+            }
+        }
+        _ => {
+            return Err(lsp_error(
+                "mkt_lsp_service_contract_mismatch",
+                "accepted_status_event_id must be the accepted Status id or null",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn reject_lsp_custody_material(value: &Value) -> Result<(), String> {
+    lsp_material_sweep(value, false)
+}
+
+fn reject_lsp_public_material(value: &Value) -> Result<(), String> {
+    lsp_material_sweep(value, true)
+}
+
+fn lsp_material_sweep(value: &Value, public: bool) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                let normalized = name
+                    .bytes()
+                    .filter(|byte| byte.is_ascii_alphanumeric())
+                    .map(|byte| byte.to_ascii_lowercase() as char)
+                    .collect::<String>();
+                if matches!(
+                    normalized.as_str(),
+                    "seed"
+                        | "walletseed"
+                        | "mnemonic"
+                        | "nwc"
+                        | "nwcstring"
+                        | "nwcuri"
+                        | "macaroon"
+                        | "nodemacaroon"
+                        | "channelbackup"
+                        | "channelbackupsecret"
+                        | "commitmentsecret"
+                        | "commitmentsecrets"
+                        | "spendkey"
+                        | "spendkeys"
+                        | "preimage"
+                        | "preimages"
+                        | "claimprivatekey"
+                        | "refundprivatekey"
+                        | "privatekey"
+                        | "signingnonce"
+                        | "signingnonces"
+                        | "exitpackage"
+                        | "rawexitpackage"
+                        | "coupon"
+                        | "coupons"
+                        | "couponcode"
+                        | "accesstoken"
+                        | "bearertoken"
+                        | "authorization"
+                        | "password"
+                ) {
+                    return Err(lsp_error(
+                        "mkt_lsp_custody_material_forbidden",
+                        format!("market record contains custody member {name:?}"),
+                    ));
+                }
+                if public
+                    && matches!(
+                        normalized.as_str(),
+                        "invoice"
+                            | "invoices"
+                            | "bolt11"
+                            | "bolt12offer"
+                            | "paymentrequest"
+                            | "paymenthash"
+                            | "paymenthashes"
+                            | "scid"
+                            | "scids"
+                            | "routehint"
+                            | "routehints"
+                            | "channelid"
+                            | "channelids"
+                            | "fundingtxid"
+                            | "fundingoutpoint"
+                            | "fundingplan"
+                            | "transactionplan"
+                            | "address"
+                            | "onchainaddress"
+                            | "refundaddress"
+                            | "privateendpoint"
+                            | "privaterelayurl"
+                    )
+                {
+                    return Err(lsp_error(
+                        "mkt_lsp_custody_material_forbidden",
+                        format!("public record contains private member {name:?}"),
+                    ));
+                }
+                lsp_material_sweep(child, public)?;
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                lsp_material_sweep(child, public)?;
+            }
+        }
+        Value::String(value) => {
+            if public && lsp_value_is_invoice_shaped(value) {
+                return Err(lsp_error(
+                    "mkt_lsp_custody_material_forbidden",
+                    "public record contains a Lightning invoice value",
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn lsp_value_is_invoice_shaped(value: &str) -> bool {
+    let lowercase = value.to_ascii_lowercase();
+    lowercase.len() >= 20
+        && ["lnbc", "lntb", "lntbs", "lnbcrt"]
+            .iter()
+            .any(|prefix| lowercase.starts_with(prefix))
+        && lowercase.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+fn lsp_object<'a>(
+    value: Option<&'a Value>,
+    subject: &str,
+    code: &str,
+) -> Result<&'a Map<String, Value>, String> {
+    value
+        .and_then(Value::as_object)
+        .ok_or_else(|| lsp_error(code, format!("{subject} must be an object")))
+}
+
+fn lsp_closed(
+    object: &Map<String, Value>,
+    allowed: &[&str],
+    subject: &str,
+    code: &str,
+) -> Result<(), String> {
+    if let Some(member) = object
+        .keys()
+        .find(|member| !allowed.contains(&member.as_str()))
+    {
+        return Err(lsp_error(
+            code,
+            format!("{subject} contains unknown member {member:?}"),
+        ));
+    }
+    Ok(())
+}
+
+fn lsp_required_string<'a>(
+    object: &'a Map<String, Value>,
+    name: &str,
+    code: &str,
+) -> Result<&'a str, String> {
+    object
+        .get(name)
+        .and_then(Value::as_str)
+        .ok_or_else(|| lsp_error(code, format!("{name} must be a string")))
+}
+
+fn lsp_bounded_ascii(value: &str, subject: &str, maximum: usize, code: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > maximum
+        || !value.is_ascii()
+        || value.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(lsp_error(
+            code,
+            format!("{subject} is invalid or unbounded"),
+        ));
+    }
+    Ok(())
+}
+
+fn lsp_hex(value: &str, subject: &str, code: &str) -> Result<(), String> {
+    lower_hex_32(value, subject).map_err(|detail| lsp_error(code, detail))
+}
+
+fn lsp_error(code: &str, detail: impl fmt::Display) -> String {
     format!("{code}: {detail}")
 }
 

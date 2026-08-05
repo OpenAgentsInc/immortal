@@ -244,6 +244,12 @@
     },
     {
       "lane": "openagents",
+      "identifier": "nip-mkt-lsp:1",
+      "advertisement": "relay_url_and_local_conformance",
+      "status": "relay_observable"
+    },
+    {
+      "lane": "openagents",
       "identifier": "mkt-swp-coordination:1",
       "advertisement": "exact_conformance_digest_and_relay_signer",
       "status": "optional_noncustodial_handler"
@@ -385,6 +391,16 @@
       "lane": "openagents",
       "identifier": "NIP-MKT",
       "name": "mkt_mint_route_contract",
+      "classification": "addressable",
+      "publication": "private_wrapped",
+      "immutability": "exact_signed_coordinate",
+      "enforcement_scope": "client_and_internal_store"
+    },
+    {
+      "kind": 39650,
+      "lane": "openagents",
+      "identifier": "NIP-MKT",
+      "name": "mkt_lsp_service_contract",
       "classification": "addressable",
       "publication": "private_wrapped",
       "immutability": "exact_signed_coordinate",
@@ -549,6 +565,12 @@
       },
       {
         "id": "mkt-p2p",
+        "version": 1,
+        "scope": "relay_observable_only",
+        "advertisement": "relay_url_and_local_conformance"
+      },
+      {
+        "id": "mkt-lsp",
         "version": 1,
         "scope": "relay_observable_only",
         "advertisement": "relay_url_and_local_conformance"
@@ -1027,6 +1049,119 @@
       "external_authority": "escrow_hold_invoice_bond_dispute_payment_and_settlement_verification_not_claimed; no_independent_exit_evaluation_is_client_scope",
       "upstream_fixture_cases": 26
     },
+    "mkt_lsp": {
+      "id": "mkt-lsp",
+      "version": 1,
+      "service_contract_kind": 39650,
+      "scope": "relay_observable_only",
+      "contract_publication": "private_signed_record_nip59_only",
+      "contract_alt": "MKT-LSP service contract",
+      "contract_roles": [
+        "requester",
+        "provider"
+      ],
+      "contract_members": [
+        "quote_event_id",
+        "order_event_id",
+        "accepted_status_event_id",
+        "service",
+        "lsps_request_sha256",
+        "lsps_response_sha256",
+        "external_effect_ids_sha256",
+        "reservation_sha256",
+        "funding_constraints_sha256",
+        "verifier_policy_sha256",
+        "recovery_package_sha256"
+      ],
+      "contract_digest_members": [
+        "lsps_request_sha256",
+        "lsps_response_sha256",
+        "external_effect_ids_sha256",
+        "reservation_sha256",
+        "funding_constraints_sha256",
+        "verifier_policy_sha256",
+        "recovery_package_sha256"
+      ],
+      "registry_asset_id_rule": "namespace:reference registry identifiers only; bare BTC/sat/mainnet labels rejected",
+      "canonical_amount_pattern": "^(0|[1-9][0-9]*)$",
+      "offering_required_members": [
+        "lsp_node_id",
+        "network_id",
+        "lsps",
+        "market",
+        "sides",
+        "channel_types",
+        "zero_conf_policy",
+        "lease_bounds",
+        "payment_methods",
+        "custody_class",
+        "reservation_proof_classes"
+      ],
+      "sides": [
+        "channel-purchase",
+        "jit-inbound"
+      ],
+      "payment_methods": [
+        "bolt11",
+        "bolt12",
+        "onchain"
+      ],
+      "zero_conf_policies": [
+        "unsupported",
+        "client-policy"
+      ],
+      "custody_class": "a1-coordinated-hold",
+      "reservation_proof_classes": [
+        "provider-signed",
+        "channel-slot",
+        "funding-input-commitment",
+        "funding-output-observed",
+        "covenant-reserve"
+      ],
+      "hard_reservation_proof_classes": [
+        "funding-input-commitment",
+        "funding-output-observed",
+        "covenant-reserve"
+      ],
+      "lsps_bridge": "source_reference_mapping_only; lsps_json_rpc_over_bolt8_stays_canonical; no_signature_upgrade",
+      "source_reference_members": [
+        "protocol",
+        "revision",
+        "method",
+        "request_sha256",
+        "response_sha256",
+        "external_id_sha256",
+        "mapping_version"
+      ],
+      "source_protocols": [
+        "lsps0",
+        "lsps1",
+        "lsps2"
+      ],
+      "admitted_status_states": [
+        "accepted",
+        "completed",
+        "refunded",
+        "failed",
+        "reservation-held",
+        "fee-parameters-pinned",
+        "jit-route-issued",
+        "service-contract-pending",
+        "service-contract-bound",
+        "payment-required",
+        "payment-observed",
+        "incoming-htlc-observed",
+        "funding-pending",
+        "funding-output-observed",
+        "channel-ready",
+        "jit-forward-committed",
+        "jit-payment-settled",
+        "usable"
+      ],
+      "public_privacy": "no_invoice_payment_hash_scid_channel_id_address_coupon_token_or_transaction_plan_in_public_records; no_custody_material_anywhere",
+      "external_authority": "channel_open_jit_execution_lsp_node_operation_fee_settlement_reservation_proof_and_price_feed_verification_not_claimed; independent_exit_evaluation_is_client_scope",
+      "upstream_fixture_cases": 30
+    },
     "required_tags": {
       "cancel": [
         "order e",
@@ -1037,6 +1172,18 @@
         "order e",
         "outcome",
         "terminal_at"
+      ],
+      "mkt_lsp_service_contract": [
+        "d",
+        "session",
+        "profile=mkt-lsp:1",
+        "quote e",
+        "order e",
+        "status e when accepted_status_event_id is not null",
+        "complementary counterparty p",
+        "role",
+        "x=contract_sha256",
+        "alt=MKT-LSP service contract"
       ],
       "mkt_mint_route_contract": [
         "d",

@@ -18,6 +18,7 @@ cargo test --locked -p immortal-core --test mkt_swp_profile
 cargo test --locked -p immortal-core --test mkt_pfi_profile
 cargo test --locked -p immortal-core --test mkt_mint_profile
 cargo test --locked -p immortal-core --test mkt_p2p_profile
+cargo test --locked -p immortal-core --test mkt_lsp_profile
 cargo test --locked -p immortal-client --test tbdex_legacy_fixtures
 ./scripts/test-swp-verification.sh
 cargo test --locked -p immortal-relay --test mkt_swp_coordination

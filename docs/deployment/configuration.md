@@ -94,12 +94,12 @@ contract and deliberate NIP-29 subset are in
 `docs/protocol/nip-expansion.md`.
 
 The same authenticated-recipient configuration gates the nonnumeric
-`nip-mkt`, `mkt-swp:1`, `nip-mkt-pfi:1`, `nip-mkt-mint:1`, and
-`nip-mkt-p2p:1` NIP-11 extensions. The profile extensions identify only their
-relay-observable grammar and storage contract; they do not configure a wallet,
-credential verifier, rail adapter, escrow or hold-invoice service, bond
-custody, solver or arbiter, guarantee, dispute authority, or custody
-surface. The separate
+`nip-mkt`, `mkt-swp:1`, `nip-mkt-pfi:1`, `nip-mkt-mint:1`, `nip-mkt-p2p:1`,
+and `nip-mkt-lsp:1` NIP-11 extensions. The profile extensions identify only
+their relay-observable grammar and storage contract; they do not configure a
+wallet, credential verifier, rail adapter, escrow or hold-invoice service,
+bond custody, solver or arbiter, LSP node, channel or JIT execution surface,
+guarantee, dispute authority, or custody surface. The separate
 `mkt-swp-coordination:1` extension appears only when the exact conformance
 digest, relay URL, and relay signer activate the noncustodial handler described
 in `docs/protocol/mkt-swp-coordination.md`.

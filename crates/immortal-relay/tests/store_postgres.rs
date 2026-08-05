@@ -30,13 +30,13 @@ async fn m2_store_contract_against_postgres() {
     let (initial_store, report) = Store::connect_with_report(&database_url).await.unwrap();
     assert_eq!(
         report.applied_versions,
-        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     );
     drop(initial_store);
     seed_pre_gateway_and_swp_rows(&database_url).await;
 
     let (mut store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![9, 10, 12]);
+    assert_eq!(report.applied_versions, vec![9, 10, 12, 13]);
     assert_pre_adoption_rows_are_private_immutable_and_preserved(&database_url).await;
     assert!(store.is_current());
 
@@ -234,6 +234,8 @@ ALTER TABLE mkt_immutable_coordinate
 DELETE FROM schema_migrations WHERE version = 10;
 DELETE FROM mkt_immutable_coordinate WHERE kind = 39620;
 DELETE FROM schema_migrations WHERE version = 12;
+DELETE FROM mkt_immutable_coordinate WHERE kind = 39650;
+DELETE FROM schema_migrations WHERE version = 13;
 "#,
         )
         .await
@@ -275,6 +277,13 @@ INSERT INTO nostr_event (
         39_620,
         vec![Tag::new(vec!["d".into(), "f".repeat(64)])],
         "pre-v12 MKT-P2P searchable marker",
+    );
+    let lsp_contract = signed_event(
+        94,
+        12,
+        39_650,
+        vec![Tag::new(vec!["d".into(), "a".repeat(64)])],
+        "pre-v13 MKT-LSP searchable marker",
     );
     transaction
         .execute(
@@ -340,9 +349,26 @@ INSERT INTO nostr_event (
         )
         .await
         .unwrap();
+    transaction
+        .execute(
+            &insert,
+            &[
+                &lsp_contract.id,
+                &lsp_contract.pubkey,
+                &i64::try_from(lsp_contract.created_at).unwrap(),
+                &39_650_i32,
+                &serde_json::to_string(&lsp_contract.tags).unwrap(),
+                &lsp_contract.content,
+                &lsp_contract.sig,
+                &Some("a".repeat(64)),
+            ],
+        )
+        .await
+        .unwrap();
     for (kind, event, identifier) in [
         (39_610_i32, &swap_contract, "e".repeat(64)),
         (39_620_i32, &p2p_resolution, "f".repeat(64)),
+        (39_650_i32, &lsp_contract, "a".repeat(64)),
     ] {
         transaction
             .execute(
@@ -369,7 +395,7 @@ VALUES ($1, $2, $3, $4, $5)
         .await
         .unwrap()
         .get::<_, i64>(0);
-    assert_eq!(indexed, 4);
+    assert_eq!(indexed, 5);
     transaction.commit().await.unwrap();
 }
 
@@ -383,13 +409,17 @@ async fn assert_pre_adoption_rows_are_private_immutable_and_preserved(database_u
         )
         .await
         .unwrap();
-    assert_eq!(row.get::<_, i64>(0), 4, "migrations preserve all rows");
+    assert_eq!(row.get::<_, i64>(0), 5, "migrations preserve all rows");
     assert_eq!(
         row.get::<_, i64>(1),
-        4,
+        5,
         "migrations recalculate all private search vectors to NULL"
     );
-    for (kind, profile) in [(39_610, "MKT-SWP"), (39_620, "MKT-P2P")] {
+    for (kind, profile) in [
+        (39_610, "MKT-SWP"),
+        (39_620, "MKT-P2P"),
+        (39_650, "MKT-LSP"),
+    ] {
         let immutable = client
             .query_one(
                 "SELECT count(*) FROM mkt_immutable_coordinate WHERE kind = $1",
@@ -639,7 +669,7 @@ fn mkt_pfi_policy_event(secret_byte: u8, created_at: u64, version: &str, country
 }
 
 async fn mkt_immutable_admission(database_url: &str, store: &mut Store) {
-    for (offset, kind) in (39_604..=39_610).chain(std::iter::once(39_620)).enumerate() {
+    for (offset, kind) in (39_604..=39_610).chain([39_620, 39_650]).enumerate() {
         let identifier = format!("{:064x}", offset + 1);
         let first = signed_event(
             20,
@@ -1408,6 +1438,57 @@ fn signed_event(
                 "evidence": []
             },
             "loss": [],
+            "payload": content,
+        })
+        .to_string()
+    } else if kind == 39_650 {
+        let session = format!("{secret_byte:02x}").repeat(32);
+        let digest = "5".repeat(64);
+        tags.extend([
+            Tag::new(vec!["session".into(), session.clone()]),
+            Tag::new(vec!["profile".into(), "mkt-lsp".into(), "1".into()]),
+            Tag::new(vec![
+                "p".into(),
+                "c".repeat(64),
+                String::new(),
+                "provider".into(),
+            ]),
+            Tag::new(vec![
+                "e".into(),
+                "3".repeat(64),
+                String::new(),
+                "quote".into(),
+            ]),
+            Tag::new(vec![
+                "e".into(),
+                "4".repeat(64),
+                String::new(),
+                "order".into(),
+            ]),
+            Tag::new(vec!["x".into(), digest.clone()]),
+            Tag::new(vec!["role".into(), "requester".into()]),
+            Tag::new(vec!["alt".into(), "MKT-LSP service contract".into()]),
+        ]);
+        serde_json::json!({
+            "schema": "openagents.mkt.v1",
+            "profile": "mkt-lsp",
+            "profile_version": 1,
+            "session_id": session,
+            "contract": {
+                "quote_event_id": "3".repeat(64),
+                "order_event_id": "4".repeat(64),
+                "accepted_status_event_id": null,
+                "service": "lsps1-channel-purchase",
+                "lsps_request_sha256": "6".repeat(64),
+                "lsps_response_sha256": "6".repeat(64),
+                "external_effect_ids_sha256": "6".repeat(64),
+                "reservation_sha256": "6".repeat(64),
+                "funding_constraints_sha256": "6".repeat(64),
+                "verifier_policy_sha256": "6".repeat(64),
+                "recovery_package_sha256": "6".repeat(64),
+            },
+            "contract_sha256": digest,
+            "signer_role": "requester",
             "payload": content,
         })
         .to_string()
