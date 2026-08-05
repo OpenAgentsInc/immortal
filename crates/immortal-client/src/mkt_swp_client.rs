@@ -14387,13 +14387,13 @@ pub mod fixture_replay {
                 ));
             }
         }
-        if let Some(values) = object.get("enum")
-            && values.as_array().is_none_or(Vec::is_empty)
-        {
-            return Err(ReplayFailure::new(
-                89,
-                "requester API enum is empty or invalid",
-            ));
+        if let Some(values) = object.get("enum") {
+            if values.as_array().is_none_or(Vec::is_empty) {
+                return Err(ReplayFailure::new(
+                    89,
+                    "requester API enum is empty or invalid",
+                ));
+            }
         }
         if let Some(pattern) = object.get("pattern") {
             let pattern = pattern
@@ -14688,15 +14688,15 @@ pub mod fixture_replay {
             }
             return Ok(());
         }
-        if let Some(expected) = schema.get("const")
-            && value != expected
-        {
-            return Err(format!("{path} differs from its constant"));
+        if let Some(expected) = schema.get("const") {
+            if value != expected {
+                return Err(format!("{path} differs from its constant"));
+            }
         }
-        if let Some(values) = schema.get("enum").and_then(Value::as_array)
-            && !values.contains(value)
-        {
-            return Err(format!("{path} is outside its enumeration"));
+        if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+            if !values.contains(value) {
+                return Err(format!("{path} is outside its enumeration"));
+            }
         }
         match schema.get("type").and_then(Value::as_str) {
             Some("object") => {
@@ -14772,10 +14772,10 @@ pub mod fixture_replay {
                 if length < minimum || length > maximum {
                     return Err(format!("{path} string length is outside its bounds"));
                 }
-                if let Some(pattern) = schema.get("pattern").and_then(Value::as_str)
-                    && !requester_api_pattern_matches(string, pattern)?
-                {
-                    return Err(format!("{path} does not match {pattern}"));
+                if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
+                    if !requester_api_pattern_matches(string, pattern)? {
+                        return Err(format!("{path} does not match {pattern}"));
+                    }
                 }
             }
             Some("integer") => {
