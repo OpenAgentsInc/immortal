@@ -38,7 +38,7 @@ trap cleanup EXIT INT TERM
 umask 077
 
 run_smoke() {
-  "$@" &
+  "$@" </dev/null &
   active_smoke_pid=$!
   local smoke_status
   if wait "${active_smoke_pid}"; then
@@ -213,5 +213,14 @@ while IFS=$'\t' read -r case_id kind value inject_at; do
       ;;
   esac
 done <"${case_file}"
+
+expected_case_count=1
+if test "${selection}" = all; then
+  expected_case_count="${case_count}"
+fi
+if test "${case_index}" -ne "${expected_case_count}"; then
+  echo "test-provider-funded-matrix: executed ${case_index} of ${expected_case_count} selected cases" >&2
+  exit 1
+fi
 
 echo "test-provider-funded-matrix: selected disposable cases passed"
