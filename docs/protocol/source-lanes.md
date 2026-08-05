@@ -715,12 +715,18 @@ final signature, and abort shapes are closed and fixture-pinned. An abort
 selects only the already-verified script path; cooperation never removes or
 delays the unilateral exit beyond its signed safe height.
 
-The provider foundation exposes an ephemeral cooperative signer that derives the exact
-quoted wallet key, verifies the transaction, fee, destination, prevout,
-aggregate key, counterparty nonce commitment, every partial, and the final
-signature before returning broadcast bytes. Its database and public effect
-records receive no secret nonce or spend key. The current funded actor and
-provider contract continue to declare both `musig2_key_path=false` and
-`musig2_key_path_signer=false` until the interactive actor path and #18
-process lab pass. Completing the vector corpus does not convert it into a
-deployment claim.
+The provider foundation exposes an ephemeral cooperative signer that derives
+the exact quoted wallet key, verifies the transaction, fee, destination,
+prevout, aggregate key, counterparty nonce commitment, every partial, and the
+final signature. The signed actor accepts only byte-identical Status Events
+already stored in `ProviderSession`; it binds the exact provider exit package
+and settlement template before nonce allocation, preflights signed transcript
+state before consuming the nonce, and withholds final transaction bytes until
+the final provider Status is signed and stored. Restart recovery creates a
+bounded script-path abort without restoring a nonce. The provider database and
+public effect records receive no secret nonce or spend key.
+
+This adoption decision keeps the funded Quote and provider contract flags
+`musig2_key_path=false` and `musig2_key_path_signer=false`. Funded-mode actor
+ownership, rail broadcast, and capability advertisement remain gated on the
+#18 process lab, so the actor packet is not a deployment claim.

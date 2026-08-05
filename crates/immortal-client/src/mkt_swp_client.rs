@@ -1221,7 +1221,10 @@ impl SwapRecordFactory {
 pub mod provider_support {
     use serde_json::{Map, Value};
 
-    use super::{Event, StatusProjection, SwapClientConfig, SwapClientError};
+    use super::{
+        CooperativeSigningContext, CooperativeSigningMessage, Event, ExitPackage, ParticipantRole,
+        StatusProjection, SwapClientConfig, SwapClientError,
+    };
 
     pub fn error(code: &'static str, detail: impl Into<String>) -> SwapClientError {
         SwapClientError::new(code, detail)
@@ -1304,6 +1307,28 @@ pub mod provider_support {
         contract: &Value,
     ) -> Result<(), SwapClientError> {
         super::validate_provider_contract_candidate(config, records, contract)
+    }
+
+    pub fn cooperative_signing_message(
+        event: &Event,
+        role: ParticipantRole,
+    ) -> Result<Option<CooperativeSigningMessage>, SwapClientError> {
+        super::cooperative_signing_message(event, role)
+    }
+
+    pub fn validate_provider_cooperative_context(
+        config: &SwapClientConfig,
+        records: &[Event],
+        context: &CooperativeSigningContext,
+        package: &ExitPackage,
+    ) -> Result<(), SwapClientError> {
+        super::validate_cooperative_context_binding(
+            config,
+            records,
+            context,
+            package,
+            Some(ParticipantRole::Provider),
+        )
     }
 }
 
@@ -6207,6 +6232,30 @@ fn validate_cooperative_context_bindings(
     if contexts.is_empty() {
         return Ok(());
     }
+    for context in contexts.values() {
+        let mut matching_package = None;
+        for package in exit_packages {
+            if package.commitment_sha256()? == context.exit_package_sha256 {
+                matching_package = Some(package);
+                break;
+            }
+        }
+        let package = matching_package.ok_or_else(|| {
+            musig_error("cooperative context has no exact local unilateral exit package")
+        })?;
+        validate_cooperative_context_binding(config, records, context, package, None)?;
+    }
+    Ok(())
+}
+
+fn validate_cooperative_context_binding(
+    config: &SwapClientConfig,
+    records: &[Event],
+    context: &CooperativeSigningContext,
+    package: &ExitPackage,
+    expected_role: Option<ParticipantRole>,
+) -> Result<(), SwapClientError> {
+    context.validate()?;
     let bound = BoundSession::from_records(config, records)?;
     let contract = object(&bound.contract, "Swap Contract")?;
     if contract.get("musig2_execution").and_then(Value::as_bool) != Some(true) {
@@ -6218,79 +6267,135 @@ fn validate_cooperative_context_bindings(
         .get("effect_bindings")
         .and_then(Value::as_array)
         .ok_or_else(|| musig_error("Swap Contract has no cooperative effect bindings"))?;
-    for context in contexts.values() {
-        if context.order_id != bound.order.id
-            || context.swap_contract_sha256 != bound.contract_sha256
-            || !effect_bindings.iter().any(|binding| {
-                binding.get("role").and_then(Value::as_str) == Some("cooperative_sign")
-                    && binding.get("leg_id").and_then(Value::as_str)
-                        == Some(context.leg_id.as_str())
-            })
-        {
-            return Err(musig_error(
-                "cooperative context is not bound by the bilateral Swap Contract",
-            ));
-        }
-        let verifier = verifier_for_leg(contract, &context.leg_id)?;
-        let declared_keys = verifier
-            .get("cooperative_pubkeys")
-            .and_then(Value::as_array)
-            .ok_or_else(|| musig_error("contract verifier has no cooperative keys"))?;
-        let expected_keys = ["requester", "provider"]
-            .iter()
-            .map(|role| {
-                declared_keys
-                    .iter()
-                    .find(|entry| {
-                        entry.get("participant_role").and_then(Value::as_str) == Some(*role)
-                    })
-                    .and_then(|entry| entry.get("public_key"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .ok_or_else(|| musig_error("contract cooperative key order is incomplete"))
-            })
-            .collect::<Result<Vec<_>, SwapClientError>>()?;
-        if context.participant_keys != expected_keys
-            || verifier.get("taproot_output_key").and_then(Value::as_str)
-                != Some(context.aggregate_key.as_str())
-        {
-            return Err(musig_error(
-                "cooperative context keys differ from the contract verifier",
-            ));
-        }
-        let keys = cooperative_public_keys(&context.participant_keys)?;
-        let merkle_root = fixed_hex::<32>(
-            verifier
-                .get("taproot_merkle_root")
-                .and_then(Value::as_str)
-                .ok_or_else(|| musig_error("contract verifier has no Taproot merkle root"))?,
-            "contract Taproot merkle root",
-        )?;
-        let expected_tweak = crate::mkt_swp_verify::musig2_taproot_tweak(&keys, merkle_root)
-            .map_err(core_musig_error)?;
-        if context.tweaks
-            != vec![CooperativeTweak {
-                value: lower_hex(&expected_tweak.value),
-                xonly: expected_tweak.xonly,
-            }]
-        {
-            return Err(musig_error(
-                "cooperative context tweak differs from the committed Taproot tree",
-            ));
-        }
-        let mut matching_package = None;
-        for package in exit_packages {
-            if package.commitment_sha256()? == context.exit_package_sha256 {
-                matching_package = Some(package);
-                break;
-            }
-        }
-        let package = matching_package.ok_or_else(|| {
-            musig_error("cooperative context has no exact local unilateral exit package")
-        })?;
-        validate_cooperative_package_binding(context, package)?;
+    if context.order_id != bound.order.id
+        || context.swap_contract_sha256 != bound.contract_sha256
+        || !effect_bindings.iter().any(|binding| {
+            binding.get("role").and_then(Value::as_str) == Some("cooperative_sign")
+                && binding.get("leg_id").and_then(Value::as_str) == Some(context.leg_id.as_str())
+        })
+    {
+        return Err(musig_error(
+            "cooperative context is not bound by the bilateral Swap Contract",
+        ));
     }
-    Ok(())
+    let verifier = verifier_for_leg(contract, &context.leg_id)?;
+    let declared_keys = verifier
+        .get("cooperative_pubkeys")
+        .and_then(Value::as_array)
+        .ok_or_else(|| musig_error("contract verifier has no cooperative keys"))?;
+    let expected_keys = ["requester", "provider"]
+        .iter()
+        .map(|role| {
+            declared_keys
+                .iter()
+                .find(|entry| entry.get("participant_role").and_then(Value::as_str) == Some(*role))
+                .and_then(|entry| entry.get("public_key"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| musig_error("contract cooperative key order is incomplete"))
+        })
+        .collect::<Result<Vec<_>, SwapClientError>>()?;
+    if context.participant_keys != expected_keys
+        || verifier.get("taproot_output_key").and_then(Value::as_str)
+            != Some(context.aggregate_key.as_str())
+    {
+        return Err(musig_error(
+            "cooperative context keys differ from the contract verifier",
+        ));
+    }
+    let keys = cooperative_public_keys(&context.participant_keys)?;
+    let merkle_root = fixed_hex::<32>(
+        verifier
+            .get("taproot_merkle_root")
+            .and_then(Value::as_str)
+            .ok_or_else(|| musig_error("contract verifier has no Taproot merkle root"))?,
+        "contract Taproot merkle root",
+    )?;
+    let expected_tweak = crate::mkt_swp_verify::musig2_taproot_tweak(&keys, merkle_root)
+        .map_err(core_musig_error)?;
+    if context.tweaks
+        != vec![CooperativeTweak {
+            value: lower_hex(&expected_tweak.value),
+            xonly: expected_tweak.xonly,
+        }]
+    {
+        return Err(musig_error(
+            "cooperative context tweak differs from the committed Taproot tree",
+        ));
+    }
+    let document = object(package.document(), "cooperative exit package")?;
+    if package.commitment_sha256()? != context.exit_package_sha256
+        || document.get("order_id").and_then(Value::as_str) != Some(bound.order.id.as_str())
+        || document.get("contract_sha256").and_then(Value::as_str)
+            != Some(bound.contract_sha256.as_str())
+    {
+        return Err(musig_error(
+            "cooperative exit package does not bind the accepted session",
+        ));
+    }
+    let contract_ids = bound.contract_ids();
+    let package_contract_ids = document
+        .get("swap_contract_ids")
+        .and_then(Value::as_array)
+        .ok_or_else(|| musig_error("cooperative exit package has no Swap Contract IDs"))?;
+    if !contract_ids.iter().all(|id| {
+        package_contract_ids
+            .iter()
+            .any(|candidate| candidate.as_str() == Some(id))
+    }) {
+        return Err(musig_error(
+            "cooperative exit package does not bind both Swap Contract records",
+        ));
+    }
+    let role = require_string(
+        document,
+        "participant_role",
+        None,
+        "swp_musig_transcript_invalid",
+    )?;
+    if expected_role.is_some_and(|expected| role != expected.as_str()) {
+        return Err(musig_error(
+            "cooperative actor requires the provider unilateral exit package",
+        ));
+    }
+    let leg = require_string(document, "leg_id", None, "swp_musig_transcript_invalid")?;
+    let path = package.path()?;
+    let mode = package.mode()?;
+    let exit_effect_role = match path {
+        "claim" => "chain_claim",
+        "refund" => "chain_refund",
+        _ => return Err(musig_error("cooperative exit path is unsupported")),
+    };
+    if package.effect_id()? != effect_id(&bound.order.id, exit_effect_role, leg)?
+        || !effect_bindings.iter().any(|binding| {
+            binding.get("role").and_then(Value::as_str) == Some(exit_effect_role)
+                && binding.get("leg_id").and_then(Value::as_str) == Some(leg)
+        })
+    {
+        return Err(musig_error(
+            "cooperative exit package has no exact unilateral effect binding",
+        ));
+    }
+    let package_digest = package.commitment_sha256()?;
+    let committed = contract
+        .get("exit_package_commitments")
+        .and_then(Value::as_array)
+        .is_some_and(|commitments| {
+            commitments.iter().any(|commitment| {
+                commitment.get("participant_role").and_then(Value::as_str) == Some(role)
+                    && commitment.get("leg_id").and_then(Value::as_str) == Some(leg)
+                    && commitment.get("path").and_then(Value::as_str) == Some(path)
+                    && commitment.get("package_mode").and_then(Value::as_str) == Some(mode)
+                    && commitment.get("package_sha256").and_then(Value::as_str)
+                        == Some(package_digest.as_str())
+            })
+        });
+    if !committed {
+        return Err(musig_error(
+            "cooperative exit package has no exact Swap Contract commitment",
+        ));
+    }
+    validate_cooperative_package_binding(context, package)
 }
 
 fn validate_cooperative_package_binding(

@@ -21,6 +21,11 @@ use immortal_client::mkt_swp_client::{
         validate_quote_profile,
     },
 };
+#[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
+use immortal_client::mkt_swp_client::{
+    CooperativeSigningContext, CooperativeSigningMessage, ExitPackage,
+    provider_support::validate_provider_cooperative_context,
+};
 use immortal_core::domain::{
     Event, MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_ENVELOPE_SCHEMA, MKT_OFFERING_KIND, MKT_ORDER_KIND,
     MKT_PROVIDER_PROFILE_KIND, MKT_QUOTE_KIND, MKT_RFQ_KIND, MKT_STATUS_KIND, MKT_SWP_PROFILE_ID,
@@ -749,6 +754,46 @@ impl ProviderSession {
             ));
         }
         Ok(request)
+    }
+
+    #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
+    pub(crate) fn provider_cooperative_status(
+        &self,
+        created_at: u64,
+        distinct: &str,
+        status: StatusState<'_>,
+        message: CooperativeSigningMessage,
+    ) -> Result<MktSigningRequest, SwapClientError> {
+        let request = self.factory.cooperative_status(
+            ParticipantRole::Provider,
+            created_at,
+            distinct,
+            &self.order()?.id,
+            status,
+            message,
+        )?;
+        let unsigned = unsigned_event(&request);
+        self.validate_next_event(&unsigned)?;
+        let mut candidate = self.signed_records.clone();
+        candidate.push(unsigned.clone());
+        let projection = project_status(&self.config, &candidate)?;
+        require_signer_status_contiguous(&projection, &self.config.provider_pubkey)?;
+        if projection.invalid_claims.contains_key(&unsigned.id) {
+            return Err(provider_error(
+                "swp_status_transition_invalid",
+                "provider cannot author an invalid cooperative Status claim",
+            ));
+        }
+        Ok(request)
+    }
+
+    #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
+    pub(crate) fn validate_provider_cooperative_context(
+        &self,
+        context: &CooperativeSigningContext,
+        package: &ExitPackage,
+    ) -> Result<(), SwapClientError> {
+        validate_provider_cooperative_context(&self.config, &self.signed_records, context, package)
     }
 
     pub fn provider_status_with_evidence(
@@ -2792,6 +2837,15 @@ pub mod fixture_replay {
         order: Event,
     }
 
+    #[cfg(test)]
+    pub(crate) struct CooperativeActorSetup {
+        pub(crate) requester: MarketSigner,
+        pub(crate) provider: MarketSigner,
+        pub(crate) factory: SwapRecordFactory,
+        pub(crate) session: ProviderSession,
+        pub(crate) order: Event,
+    }
+
     #[derive(Clone, Copy)]
     enum ReserveMutation {
         Confirmed,
@@ -3049,6 +3103,18 @@ pub mod fixture_replay {
             rfq,
             quote,
             order,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cooperative_actor_setup() -> Result<CooperativeActorSetup, SwapClientError> {
+        let ordered = through_order("submarine", 0xc7)?;
+        Ok(CooperativeActorSetup {
+            requester: ordered.setup.requester,
+            provider: ordered.setup.provider,
+            factory: ordered.factory,
+            session: ordered.provider,
+            order: ordered.order,
         })
     }
 

@@ -22,7 +22,17 @@ signing, and final signature aggregation. The checked-in README records the
 upstream license and each file digest.
 
 `tests/fixtures/nipmkt/swp-cooperative-signing-v1.json` pins the wire action
-shapes, refusal cases, custody boundary, and these footprint values. This is
-deterministic local conformance evidence. Runtime advertisement and public
-replacement claims remain gated on the funded #18 lab and live deployment
-evidence, respectively.
+shapes, refusal cases, custody boundary, actor ingress, stable Status `d`
+tokens, and these footprint values. `immortal-provider` accepts actor input
+only as a byte-identical signed Event already retained by `ProviderSession`.
+Before wallet nonce allocation, the actor binds the context to the bilateral
+contract, its cooperative effect, the provider's exact committed unilateral
+exit package, and the settlement template. A partial is released only after
+both signed nonce Status records are stored. Final transaction bytes remain
+withheld until the provider's final-signature Status is signed and stored.
+
+A restart never restores or persists a secret nonce. It produces a bounded
+abort Status and retains the committed script-path exit. This is deterministic
+local conformance evidence. Funded-mode activation, runtime advertisement, and
+public replacement claims remain gated on the #18 process lab and live
+deployment evidence, respectively.

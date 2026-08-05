@@ -20,6 +20,8 @@ pub mod config;
 ))]
 pub mod contract;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
+pub mod cooperative;
+#[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub mod funded;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub(crate) mod funded_mode;

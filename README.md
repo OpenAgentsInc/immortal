@@ -26,9 +26,11 @@ The products:
   complete sessions without rail effects. Funded mode reserves operator-owned
   Bitcoin and Lightning capacity, drives bitcoind and Core Lightning, and
   executes script-path claim/refund recovery. Its allowlist-only MuSig2
-  foundation supports the cooperative key-path protocol, while the signer
-  capability and runtime execution remain disabled until the complete vector,
-  actor, and funded-process lab gates pass. Reverse Quotes bind the exact
+  foundation and signed actor support the cooperative key-path protocol. The
+  actor is fail-closed on exact stored Status bytes and the pre-committed
+  provider exit package, while signer capability and runtime execution remain
+  disabled until FundedMode integration and the funded-process lab gate pass.
+  Reverse Quotes bind the exact
   reserve-selected funding transaction before either contract is signed;
   signed action deadlines, durable competing-path watches, and signer-local
   terminal Close records bound the resulting execution. That mode holds the

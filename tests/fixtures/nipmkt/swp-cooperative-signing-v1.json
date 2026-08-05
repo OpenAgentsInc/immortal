@@ -13,6 +13,29 @@
     "idempotency": "exact signed record bytes",
     "effect_role": "cooperative_sign"
   },
+  "signed_actor": {
+    "component": "immortal-provider",
+    "runtime_owner": "pending FundedMode integration and issue 18 process evidence",
+    "ingress": "exact byte-identical signed Event already stored in ProviderSession",
+    "context_gate": [
+      "bilateral_swap_contract",
+      "cooperative_effect_binding",
+      "provider_exit_package_exact_commitment",
+      "settlement_template_exact_context"
+    ],
+    "distinct_domain": "openagents.mkt-swp.cooperative-status.v1",
+    "distinct_action_tokens": [
+      "nonce_commitment",
+      "public_nonce",
+      "partial_signature",
+      "final_signature",
+      "aborted"
+    ],
+    "partial_release_precondition": "both exact signed public-nonce Status records stored",
+    "broadcast_release_precondition": "provider final-signature Status signed and stored",
+    "restart": "abort to the pre-committed provider script-path exit without restoring a nonce",
+    "runtime_advertisement": false
+  },
   "context_fields": [
     "schema",
     "order_id",
@@ -77,7 +100,12 @@
     "prevout_key_mismatch",
     "transaction_digest_mismatch",
     "signature_hash_mismatch",
-    "noncanonical_latest_safe_height"
+    "noncanonical_latest_safe_height",
+    "same_id_changed_event_bytes",
+    "provider_exit_package_role_mismatch",
+    "provider_exit_package_contract_id_mismatch",
+    "partial_release_before_signed_preflight",
+    "final_transaction_release_before_signed_status"
   ],
   "security": {
     "secret_nonce_storage": "signing_wallet_only",
