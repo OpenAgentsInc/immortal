@@ -122,6 +122,8 @@ services:
       context: ../../..
       dockerfile: scripts/support/provider-funded/Dockerfile.cln-hold-adversarial
     command: ["--conf=/run/immortal-private/cln-provider-a.conf"]
+    environment:
+      LIGHTNINGD_NETWORK: regtest
     depends_on:
       - bitcoin-a
     network_mode: service:bitcoin-a
@@ -139,6 +141,8 @@ services:
       context: ../../..
       dockerfile: scripts/support/provider-funded/Dockerfile.cln-hold-adversarial
     command: ["--conf=/run/immortal-private/cln-provider-b.conf"]
+    environment:
+      LIGHTNINGD_NETWORK: regtest
     depends_on:
       - bitcoin-b
     network_mode: service:bitcoin-b
@@ -156,6 +160,8 @@ services:
       context: ../../..
       dockerfile: scripts/support/provider-funded/Dockerfile.cln-hold
     command: ["--conf=/run/immortal-private/cln-wallet.conf"]
+    environment:
+      LIGHTNINGD_NETWORK: regtest
     depends_on:
       - bitcoin-a
       - wallet-gateway

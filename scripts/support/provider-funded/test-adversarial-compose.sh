@@ -87,6 +87,9 @@ namespace = {
 for service, expected_mode in namespace.items():
     if services[service].get("network_mode") != expected_mode:
         raise SystemExit(f"{service} has another network namespace")
+for service in ("cln-provider-a", "cln-provider-b", "cln-wallet"):
+    if services[service].get("environment", {}).get("LIGHTNINGD_NETWORK") != "regtest":
+        raise SystemExit(f"{service} does not force the pinned image entrypoint to regtest")
 provider_cln_dockerfile = "scripts/support/provider-funded/Dockerfile.cln-hold-adversarial"
 for service in ("cln-provider-a", "cln-provider-b"):
     if services[service].get("build", {}).get("dockerfile") != provider_cln_dockerfile:
