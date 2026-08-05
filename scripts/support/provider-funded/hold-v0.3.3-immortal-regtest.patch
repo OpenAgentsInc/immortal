@@ -1,0 +1,94 @@
+--- a/src/commands/invoice.rs
++++ b/src/commands/invoice.rs
+@@ -18,0 +19,8 @@
++#[derive(Debug, Deserialize)]
++struct ImmortalRegtestInvoiceRequest {
++    payment_hash: String,
++    amount: u64,
++    expiry_seconds: u64,
++    min_final_cltv_expiry_delta: u64,
++}
++
+@@ -31,0 +40,18 @@
++impl FromArr for ImmortalRegtestInvoiceRequest {
++    fn from_arr(arr: Vec<Value>) -> Result<ImmortalRegtestInvoiceRequest> {
++        if arr.len() < 4 {
++            return Err(ParamsError::TooFewParams.into());
++        }
++        if arr.len() > 4 {
++            return Err(ParamsError::TooManyParams.into());
++        }
++
++        Ok(ImmortalRegtestInvoiceRequest {
++            payment_hash: arr[0].as_str().ok_or(ParamsError::ParseError)?.to_string(),
++            amount: arr[1].as_u64().ok_or(ParamsError::ParseError)?,
++            expiry_seconds: arr[2].as_u64().ok_or(ParamsError::ParseError)?,
++            min_final_cltv_expiry_delta: arr[3].as_u64().ok_or(ParamsError::ParseError)?,
++        })
++    }
++}
++
+@@ -63,0 +90,47 @@
++
++#[instrument(name = "cmd::immortal_regtest_invoice", skip_all)]
++pub async fn immortal_regtest_invoice<T, E>(
++    plugin: Plugin<State<T, E>>,
++    args: Value,
++) -> Result<Value>
++where
++    T: InvoiceHelper + Sync + Send + Clone,
++    E: InvoiceEncoder + Sync + Send + Clone,
++{
++    if plugin.configuration().network != "regtest" {
++        return Err(anyhow::anyhow!(
++            "immortal regtest invoice method requires regtest"
++        ));
++    }
++    let params = parse_args::<ImmortalRegtestInvoiceRequest>(args)?;
++    if params.expiry_seconds != 30 || params.min_final_cltv_expiry_delta != 80 {
++        return Err(anyhow::anyhow!(
++            "immortal regtest invoice policy is not exact"
++        ));
++    }
++    let minimum_final_cltv_expiry_delta =
++        i32::try_from(params.min_final_cltv_expiry_delta)?;
++    let payment_hash = hex::decode(params.payment_hash)?;
++    let invoice = plugin
++        .state()
++        .encoder
++        .encode(
++            InvoiceBuilder::new(&payment_hash)
++                .amount_msat(params.amount)
++                .expiry(params.expiry_seconds)
++                .min_final_cltv_expiry_delta(params.min_final_cltv_expiry_delta),
++        )
++        .await?;
++    plugin.state().invoice_helper.insert(&InvoiceInsertable {
++        invoice: invoice.clone(),
++        payment_hash: payment_hash.clone(),
++        state: InvoiceState::Unpaid.into(),
++        min_cltv: Some(minimum_final_cltv_expiry_delta),
++    })?;
++    plugin
++        .state()
++        .settler
++        .new_invoice(invoice.clone(), payment_hash, params.amount);
++
++    Ok(serde_json::to_value(&InvoiceResponse { bolt11: invoice })?)
++}
+--- a/src/commands/mod.rs
++++ b/src/commands/mod.rs
+@@ -12 +12 @@
+-pub use invoice::invoice;
++pub use invoice::{immortal_regtest_invoice, invoice};
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -86,0 +87,8 @@
++        )
++        .rpcmethod_from_builder(
++            RpcMethodBuilder::new(
++                "holdinvoiceimmortalregtest",
++                commands::immortal_regtest_invoice,
++            )
++            .description("Creates an Immortal adversarial-regtest hold invoice")
++            .usage("payment_hash amount expiry_seconds min_final_cltv_expiry_delta"),

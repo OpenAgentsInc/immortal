@@ -4,6 +4,13 @@ mod bitcoind;
 #[allow(dead_code)]
 #[path = "../src/cln.rs"]
 mod cln;
+#[allow(dead_code)]
+#[path = "../src/lightning.rs"]
+mod lightning;
+#[cfg(feature = "lnd")]
+#[allow(dead_code)]
+#[path = "../src/lnd.rs"]
+mod lnd;
 
 use std::{
     path::{Path, PathBuf},
@@ -15,8 +22,12 @@ use bitcoind::{
     BitcoindAuth, BitcoindClient, BitcoindEndpoint, BitcoindError, BitcoindLimits, Freshness,
     FreshnessPolicy, PollBackoff, RpcRequestId,
 };
-use cln::{ClnClient, ClnEndpoint, ClnError, ClnLimits, ClnRequestId, Millisatoshi};
+use cln::{
+    ClnClient, ClnEndpoint, ClnError, ClnLimits, ClnRequestId, IMMORTAL_REGTEST_HOLD_METHOD,
+    Millisatoshi,
+};
 use immortal_core::mkt_swp_verify::parse_bolt11;
+use lightning::{ClnLightningRail, LightningRail};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -483,12 +494,8 @@ async fn cln_hold_invoice_matches_the_pinned_plugin_wire() {
         })],
     )
     .await;
-    let invoice = cln_client(&path, ClnLimits::default())
-        .hold_invoice(
-            &ClnRequestId::new("effect:hold:1").unwrap(),
-            &payment_hash,
-            amount,
-        )
+    let invoice = ClnLightningRail::new(cln_client(&path, ClnLimits::default()))
+        .hold_invoice("effect:hold:1", &payment_hash, amount, 604_800, 80)
         .await
         .unwrap();
     assert_eq!(invoice.payment_hash, payment_hash);
@@ -504,6 +511,138 @@ async fn cln_hold_invoice_matches_the_pinned_plugin_wire() {
         })
     );
     cleanup_socket(&path);
+}
+
+#[tokio::test]
+async fn cln_adversarial_hold_policy_probes_and_verifies_the_distinct_rpc() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/provider/cln-adversarial-hold-v1.json"
+    ))
+    .unwrap();
+    let request = &fixture["rpc"]["request"];
+    let bolt11 = fixture["response"]["bolt11"].as_str().unwrap();
+    let parsed = parse_bolt11(bolt11).unwrap();
+    let amount = Millisatoshi::from_millisatoshis(request["amount"].as_u64().unwrap());
+    let expiry_seconds = u32::try_from(request["expiry_seconds"].as_u64().unwrap()).unwrap();
+    let minimum_final_cltv_delta =
+        u32::try_from(request["min_final_cltv_expiry_delta"].as_u64().unwrap()).unwrap();
+
+    let methods = [
+        "holdinvoice",
+        "listholdinvoices",
+        "settleholdinvoice",
+        "cancelholdinvoice",
+        "invoice",
+        "pay",
+        "listinvoices",
+        "listpays",
+        "listfunds",
+        "getinfo",
+    ];
+    let mut responses = methods
+        .iter()
+        .enumerate()
+        .map(|(index, method)| {
+            json!({
+                "jsonrpc":"2.0",
+                "id":format!("startup:probe:{index}"),
+                "result":{"help":[{"command":format!("{method} usage")}]}
+            })
+        })
+        .collect::<Vec<_>>();
+    responses.push(json!({
+        "jsonrpc":"2.0",
+        "id":"startup:probe:exact",
+        "result":{"help":[{"command":format!("{IMMORTAL_REGTEST_HOLD_METHOD} usage")}]}
+    }));
+    let path = socket_path("cln-adversarial-probe");
+    let server = spawn_cln(path.clone(), responses).await;
+    let rail =
+        ClnLightningRail::with_immortal_regtest_policy(cln_client(&path, ClnLimits::default()));
+    rail.probe("startup").await.unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), methods.len() + 1);
+    assert_eq!(requests.last().unwrap()["method"], "help");
+    assert_eq!(
+        requests.last().unwrap()["params"]["command"],
+        IMMORTAL_REGTEST_HOLD_METHOD
+    );
+    cleanup_socket(&path);
+
+    let path = socket_path("cln-adversarial-hold");
+    let server = spawn_cln(
+        path.clone(),
+        vec![json!({
+            "jsonrpc":"2.0",
+            "id":"effect:adversarial-hold:1",
+            "result":{"bolt11":bolt11}
+        })],
+    )
+    .await;
+    let rail =
+        ClnLightningRail::with_immortal_regtest_policy(cln_client(&path, ClnLimits::default()));
+    let invoice = rail
+        .hold_invoice(
+            "effect:adversarial-hold:1",
+            request["payment_hash"].as_str().unwrap(),
+            amount,
+            expiry_seconds,
+            minimum_final_cltv_delta,
+        )
+        .await
+        .unwrap();
+    assert_eq!(invoice.bolt11, bolt11);
+    assert_eq!(parsed.expiry_seconds, u64::from(expiry_seconds));
+    assert_eq!(
+        parsed.minimum_final_cltv_delta,
+        u64::from(minimum_final_cltv_delta)
+    );
+    let requests = server.await.unwrap();
+    assert_eq!(requests[0]["method"], IMMORTAL_REGTEST_HOLD_METHOD);
+    assert_eq!(requests[0]["params"], *request);
+    cleanup_socket(&path);
+}
+
+#[tokio::test]
+async fn cln_adversarial_hold_policy_rejects_changed_signed_timeouts() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/provider/cln-adversarial-hold-v1.json"
+    ))
+    .unwrap();
+    let request = &fixture["rpc"]["request"];
+    let bolt11 = fixture["response"]["bolt11"].as_str().unwrap();
+    let amount = Millisatoshi::from_millisatoshis(request["amount"].as_u64().unwrap());
+    for (index, expiry_seconds, minimum_final_cltv_delta) in [(0, 31, 80), (1, 30, 81)] {
+        let request_id = format!("effect:adversarial-reject:{index}");
+        let path = socket_path(&format!("cln-adv-reject-{index}"));
+        let server = spawn_cln(
+            path.clone(),
+            vec![json!({
+                "jsonrpc":"2.0",
+                "id":request_id,
+                "result":{"bolt11":bolt11}
+            })],
+        )
+        .await;
+        let error = cln_client(&path, ClnLimits::default())
+            .immortal_regtest_hold_invoice(
+                &ClnRequestId::new(request_id).unwrap(),
+                request["payment_hash"].as_str().unwrap(),
+                amount,
+                expiry_seconds,
+                minimum_final_cltv_delta,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ClnError::Json(
+                "invoice result does not bind the requested amount, hash, expiry, or final CLTV"
+            )
+        );
+        server.await.unwrap();
+        cleanup_socket(&path);
+    }
 }
 
 #[test]

@@ -26,6 +26,10 @@ name = "no_spend_live"
 required-features = ["no-spend"]
 
 [[test]]
+name = "lab_profile"
+required-features = ["funded"]
+
+[[test]]
 name = "provider_liquidity"
 required-features = ["funded"]
 

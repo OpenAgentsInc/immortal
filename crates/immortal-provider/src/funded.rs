@@ -138,6 +138,7 @@ async fn run_async() -> Result<(), FundedError> {
     let minimum_confirmations = config.minimum_confirmations;
     let reorg_safety_blocks = config.reorg_safety_blocks;
     let pricing = config.pricing;
+    let hold_invoice_expiry_seconds = config.hold_invoice_expiry_seconds;
     let boltz_pricing = pricing.clone();
     let boltz_config = config.boltz;
     let wallet = config.wallet;
@@ -153,6 +154,7 @@ async fn run_async() -> Result<(), FundedError> {
             minimum_confirmations,
             reorg_safety_blocks,
             pricing,
+            hold_invoice_expiry_seconds,
         },
     );
     let health = Arc::new(ProviderHealth::default());

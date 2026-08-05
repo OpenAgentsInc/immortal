@@ -16,6 +16,7 @@ use tokio::{
 pub(crate) const DEFAULT_MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub(crate) const DEFAULT_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RPC_ID_BYTES: usize = 128;
+pub(crate) const IMMORTAL_REGTEST_HOLD_METHOD: &str = "holdinvoiceimmortalregtest";
 const REQUIRED_METHODS: [&str; 10] = [
     "holdinvoice",
     "listholdinvoices",
@@ -289,6 +290,24 @@ impl ClnClient {
         Ok(ClnCapabilities { hold_plugin: true })
     }
 
+    pub async fn probe_capability(
+        &self,
+        request_id_prefix: &str,
+        method: &'static str,
+    ) -> Result<(), ClnError> {
+        validate_identifier(request_id_prefix, "capability request prefix is invalid")?;
+        validate_method(method)?;
+        let request_id = ClnRequestId::new(format!("{request_id_prefix}:probe:exact"))?;
+        match self
+            .call(&request_id, "help", json!({"command":method}))
+            .await
+        {
+            Ok(result) if help_result_names_method(&result, method) => Ok(()),
+            Ok(_) | Err(ClnError::Rpc { .. }) => Err(ClnError::MissingCapability(method)),
+            Err(error) => Err(error),
+        }
+    }
+
     pub async fn node_info(&self, request_id: &ClnRequestId) -> Result<ClnNodeInfo, ClnError> {
         let result = self.call(request_id, "getinfo", json!({})).await?;
         let object = result
@@ -465,6 +484,45 @@ impl ClnClient {
         InvoiceResult::parse_hold(&result, amount, payment_hash)
     }
 
+    pub async fn immortal_regtest_hold_invoice(
+        &self,
+        request_id: &ClnRequestId,
+        payment_hash: &str,
+        amount: Millisatoshi,
+        expiry_seconds: u32,
+        minimum_final_cltv_delta: u32,
+    ) -> Result<InvoiceResult, ClnError> {
+        validate_hash(payment_hash)?;
+        if expiry_seconds == 0
+            || expiry_seconds > 604_800
+            || minimum_final_cltv_delta == 0
+            || minimum_final_cltv_delta > 2_016
+        {
+            return Err(ClnError::InvalidConfiguration(
+                "regtest hold-invoice policy is outside supported bounds",
+            ));
+        }
+        let result = self
+            .call(
+                request_id,
+                IMMORTAL_REGTEST_HOLD_METHOD,
+                json!({
+                    "payment_hash":payment_hash,
+                    "amount":amount.as_millisatoshis(),
+                    "expiry_seconds":expiry_seconds,
+                    "min_final_cltv_expiry_delta":minimum_final_cltv_delta,
+                }),
+            )
+            .await?;
+        InvoiceResult::parse_hold_with_policy(
+            &result,
+            amount,
+            payment_hash,
+            expiry_seconds,
+            minimum_final_cltv_delta,
+        )
+    }
+
     pub async fn list_hold_invoices(
         &self,
         request_id: &ClnRequestId,
@@ -553,6 +611,7 @@ impl InvoiceResult {
             bolt11,
             expected_amount,
             Some(expected_expiry_seconds),
+            None,
             Some(response_payment_hash),
             Some(response_expires_at),
         )
@@ -572,6 +631,29 @@ impl InvoiceResult {
             bolt11,
             expected_amount,
             None,
+            None,
+            Some(expected_payment_hash),
+            None,
+        )
+    }
+
+    fn parse_hold_with_policy(
+        value: &Value,
+        expected_amount: Millisatoshi,
+        expected_payment_hash: &str,
+        expected_expiry_seconds: u32,
+        expected_minimum_final_cltv_delta: u32,
+    ) -> Result<Self, ClnError> {
+        let bolt11 = value
+            .as_object()
+            .and_then(|object| object.get("bolt11"))
+            .and_then(Value::as_str)
+            .ok_or(ClnError::Json("hold-invoice result has no bolt11"))?;
+        Self::from_invoice(
+            bolt11,
+            expected_amount,
+            Some(expected_expiry_seconds),
+            Some(expected_minimum_final_cltv_delta),
             Some(expected_payment_hash),
             None,
         )
@@ -581,6 +663,7 @@ impl InvoiceResult {
         bolt11: &str,
         expected_amount: Millisatoshi,
         expected_expiry_seconds: Option<u32>,
+        expected_minimum_final_cltv_delta: Option<u32>,
         expected_payment_hash: Option<&str>,
         response_expires_at: Option<u64>,
     ) -> Result<Self, ClnError> {
@@ -593,11 +676,13 @@ impl InvoiceResult {
         if invoice.amount_msat != Some(expected_amount.as_millisatoshis())
             || expected_expiry_seconds
                 .is_some_and(|expected| invoice.expiry_seconds != u64::from(expected))
+            || expected_minimum_final_cltv_delta
+                .is_some_and(|expected| invoice.minimum_final_cltv_delta != u64::from(expected))
             || expected_payment_hash.is_some_and(|expected| expected != payment_hash)
             || response_expires_at.is_some_and(|expires_at| invoice_expiry != expires_at)
         {
             return Err(ClnError::Json(
-                "invoice result does not bind the requested amount, hash, or expiry",
+                "invoice result does not bind the requested amount, hash, expiry, or final CLTV",
             ));
         }
         Ok(Self {

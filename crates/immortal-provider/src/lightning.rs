@@ -3,8 +3,8 @@ use std::{fmt, future::Future, pin::Pin};
 use serde_json::{Value, json};
 
 use crate::cln::{
-    ClnClient, ClnError, ClnRequestId, InvoiceResult, Millisatoshi, PaymentResult,
-    ReleasedPaymentPreimage,
+    ClnClient, ClnError, ClnRequestId, IMMORTAL_REGTEST_HOLD_METHOD, InvoiceResult, Millisatoshi,
+    PaymentResult, ReleasedPaymentPreimage,
 };
 
 pub type LightningFuture<'a, T> =
@@ -231,11 +231,28 @@ pub trait LightningRail: fmt::Debug + Send + Sync {
 #[derive(Debug, Clone)]
 pub struct ClnLightningRail {
     client: ClnClient,
+    hold_policy: ClnHoldPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClnHoldPolicy {
+    Stock,
+    ImmortalRegtestExact,
 }
 
 impl ClnLightningRail {
     pub fn new(client: ClnClient) -> Self {
-        Self { client }
+        Self {
+            client,
+            hold_policy: ClnHoldPolicy::Stock,
+        }
+    }
+
+    pub fn with_immortal_regtest_policy(client: ClnClient) -> Self {
+        Self {
+            client,
+            hold_policy: ClnHoldPolicy::ImmortalRegtestExact,
+        }
     }
 
     fn request_id(request_context: &str) -> Result<ClnRequestId, LightningError> {
@@ -254,8 +271,14 @@ impl LightningRail for ClnLightningRail {
             self.client
                 .probe_required_capabilities(&request_context)
                 .await
-                .map(|_| ())
-                .map_err(LightningError::cln)
+                .map_err(LightningError::cln)?;
+            if self.hold_policy == ClnHoldPolicy::ImmortalRegtestExact {
+                self.client
+                    .probe_capability(&request_context, IMMORTAL_REGTEST_HOLD_METHOD)
+                    .await
+                    .map_err(LightningError::cln)?;
+            }
+            Ok(())
         })
     }
 
@@ -309,17 +332,32 @@ impl LightningRail for ClnLightningRail {
         request_context: &str,
         payment_hash: &str,
         amount: Millisatoshi,
-        _expiry_seconds: u32,
-        _cltv_expiry: u32,
+        expiry_seconds: u32,
+        cltv_expiry: u32,
     ) -> LightningFuture<'_, LightningInvoice> {
         let request_id = Self::request_id(request_context);
         let payment_hash = payment_hash.to_owned();
         Box::pin(async move {
-            self.client
-                .hold_invoice(&request_id?, &payment_hash, amount)
-                .await
-                .map(Into::into)
-                .map_err(LightningError::cln)
+            let request_id = request_id?;
+            let invoice = match self.hold_policy {
+                ClnHoldPolicy::Stock => {
+                    self.client
+                        .hold_invoice(&request_id, &payment_hash, amount)
+                        .await
+                }
+                ClnHoldPolicy::ImmortalRegtestExact => {
+                    self.client
+                        .immortal_regtest_hold_invoice(
+                            &request_id,
+                            &payment_hash,
+                            amount,
+                            expiry_seconds,
+                            cltv_expiry,
+                        )
+                        .await
+                }
+            };
+            invoice.map(Into::into).map_err(LightningError::cln)
         })
     }
 

@@ -23,6 +23,10 @@ const COOPERATIVE_RUNTIME_FIXTURE: &[u8] =
 const LND_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/provider/lnd-rest-v1.json");
 const BOLTZ_API_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/nipmkt/boltz-provider-api-v1.json");
+const ADVERSARIAL_LAB_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/lab/adversarial-v1.json");
+const CLN_ADVERSARIAL_HOLD_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/cln-adversarial-hold-v1.json");
 
 #[test]
 fn provider_contract_is_canonical_byte_stable_and_matches_export() {
@@ -67,6 +71,14 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
         (
             "tests/fixtures/nipmkt/boltz-provider-api-v1.json",
             BOLTZ_API_FIXTURE,
+        ),
+        (
+            "tests/fixtures/lab/adversarial-v1.json",
+            ADVERSARIAL_LAB_FIXTURE,
+        ),
+        (
+            "tests/fixtures/provider/cln-adversarial-hold-v1.json",
+            CLN_ADVERSARIAL_HOLD_FIXTURE,
         ),
     ] {
         let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();
@@ -184,6 +196,16 @@ fn provider_contract_distinguishes_required_and_optional_environment() {
     assert_eq!(selector["choices"], json!(["cln", "lnd"]));
     assert_eq!(selector["implicit_choice_when_absent"], "cln");
 
+    let lab_profile = variables
+        .iter()
+        .find(|variable| variable["name"] == "IMMORTAL_PROVIDER_LAB_PROFILE")
+        .unwrap();
+    assert_eq!(lab_profile["choices"], json!(["regtest_adversarial"]));
+    assert_eq!(lab_profile["required_network"], "regtest");
+    assert_eq!(lab_profile["quote_expiry_seconds"], 3);
+    assert_eq!(lab_profile["hold_invoice_expiry_seconds"], 30);
+    assert_eq!(lab_profile["defaulted"], false);
+
     let cln = variables
         .iter()
         .find(|variable| variable["name"] == "IMMORTAL_PROVIDER_CLN_RPC_PATH")
@@ -249,6 +271,24 @@ fn provider_contract_distinguishes_required_and_optional_environment() {
     assert_eq!(
         contract["operations"]["boltz_compatibility"]["requester_exit_package_modes"],
         json!(["presigned", "wallet_sign"])
+    );
+}
+
+#[test]
+fn provider_contract_keeps_the_adversarial_cln_policy_out_of_production() {
+    let contract = provider_contract_value().unwrap();
+    let policy = &contract["rails"]["cln"]["hold_invoice_policy"];
+    assert_eq!(policy["production"]["rpc_method"], "holdinvoice");
+    assert_eq!(policy["production"]["explicit_expiry_policy"], false);
+    assert_eq!(
+        policy["regtest_adversarial"]["rpc_method"],
+        "holdinvoiceimmortalregtest"
+    );
+    assert_eq!(policy["regtest_adversarial"]["network"], "regtest");
+    assert_eq!(policy["regtest_adversarial"]["expiry_seconds"], 30);
+    assert_eq!(
+        policy["regtest_adversarial"]["minimum_final_cltv_delta"],
+        80
     );
 }
 

@@ -1,0 +1,43 @@
+{
+  "schema": "openagents.immortal.cln-adversarial-hold.v1",
+  "profile": "regtest_adversarial",
+  "network": "regtest",
+  "source": {
+    "project": "BoltzExchange/hold",
+    "version": "0.3.3",
+    "archive": "https://github.com/BoltzExchange/hold/archive/refs/tags/v0.3.3.tar.gz",
+    "archive_sha256": "2a5631e6766b06d9af18ca4ca352d410bf78f79ccb7eb17f5d6030f0aca5177e",
+    "patch": "scripts/support/provider-funded/hold-v0.3.3-immortal-regtest.patch",
+    "patch_sha256": "b10df060ac3e67a813ffe27ad618765ab51bf4d3847094ebdbd4c9bfeca9ff9e",
+    "docker_context_include": "!scripts/support/provider-funded/hold-v0.3.3-immortal-regtest.patch",
+    "dockerfile": "scripts/support/provider-funded/Dockerfile.cln-hold-adversarial",
+    "dockerfile_sha256": "a366da9da88e8177de8361ea8d6d4d52ae277ae22c285e9973a48464878ff327"
+  },
+  "rpc": {
+    "method": "holdinvoiceimmortalregtest",
+    "required_at_startup": true,
+    "stock_method": "holdinvoice",
+    "stock_method_unchanged": true,
+    "request": {
+      "payment_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "amount": 1000000,
+      "expiry_seconds": 30,
+      "min_final_cltv_expiry_delta": 80
+    }
+  },
+  "response": {
+    "bolt11": "lnbcrt10u1pj48ugqpp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygssp5xvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxvenxves9qrsgqdp5d9kk6mmjw3skcgrpv3mx2unnv9exjctvyp5x7mryypcx7mrfvdusxqp7cqzzs7pp8qnsvrrj8fpna7uay7w7gs6w96qcqts7e9264rmqsjuzam3qxakccfw76qsn8rc374jhycymzmt44a4tj0rd6yh5uj0l2atgruvqpjp7u79",
+    "network": "regtest",
+    "amount_msat": 1000000,
+    "payment_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+    "expiry_seconds": 30,
+    "minimum_final_cltv_delta": 80
+  },
+  "production": {
+    "dockerfile": "scripts/support/provider-funded/Dockerfile.cln-hold",
+    "dockerfile_sha256": "5033ac4464a153269bf1e96302a0d437539fb69cd0c85fde1ae8ac0ba758f382",
+    "rpc_method": "holdinvoice",
+    "explicit_expiry_policy": false,
+    "unchanged": true
+  }
+}

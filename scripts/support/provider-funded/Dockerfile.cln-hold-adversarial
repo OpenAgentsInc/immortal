@@ -1,0 +1,38 @@
+FROM rust:1.94.1-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55 AS build
+
+ARG HOLD_VERSION=0.3.3
+ARG HOLD_SOURCE_SHA256=2a5631e6766b06d9af18ca4ca352d410bf78f79ccb7eb17f5d6030f0aca5177e
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gcc \
+        libpq-dev \
+        libsqlite3-dev \
+        patch \
+        protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/support/provider-funded/hold-v0.3.3-immortal-regtest.patch /tmp/hold.patch
+
+WORKDIR /build
+RUN curl --fail --location --silent --show-error \
+        "https://github.com/BoltzExchange/hold/archive/refs/tags/v0.3.3.tar.gz" \
+        --output hold.tar.gz \
+    && printf '%s  %s\n' "${HOLD_SOURCE_SHA256}" hold.tar.gz \
+        | sha256sum --check --strict \
+    && tar --extract --gzip --file hold.tar.gz \
+    && patch --batch --fuzz=0 --strip=1 \
+        --directory="hold-${HOLD_VERSION}" --input=/tmp/hold.patch \
+    && cd "hold-${HOLD_VERSION}" \
+    && cargo build --locked --release --no-default-features
+
+FROM elementsproject/lightningd:v26.06.6@sha256:094be3630f865c795649d6063a8796afa0f78e82a0c311bb34f2b0bd570c819a
+
+USER root
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libpq5 libsqlite3-0 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /build/hold-0.3.3/target/release/hold /usr/local/bin/hold

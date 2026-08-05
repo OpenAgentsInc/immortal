@@ -19,6 +19,15 @@ const MIN_STALE_SECONDS: u64 = 5;
 const MAX_STALE_SECONDS: u64 = 3_600;
 const MIN_CONFIRMATIONS: u32 = 1;
 const MAX_CONFIRMATIONS: u32 = 144;
+pub(crate) const PRODUCTION_HOLD_INVOICE_EXPIRY_SECONDS: u32 = 604_800;
+pub(crate) const REGTEST_ADVERSARIAL_QUOTE_EXPIRY_SECONDS: u64 = 3;
+pub(crate) const REGTEST_ADVERSARIAL_HOLD_INVOICE_EXPIRY_SECONDS: u32 = 30;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LabTimeoutProfile {
+    quote_expiry_seconds: u64,
+    hold_invoice_expiry_seconds: u32,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
@@ -81,6 +90,7 @@ pub struct FundedProviderConfig {
     pub minimum_confirmations: u32,
     pub reorg_safety_blocks: u32,
     pub pricing: PricingConfig,
+    pub hold_invoice_expiry_seconds: u32,
     pub boltz: Option<BoltzConfig>,
 }
 
@@ -101,6 +111,10 @@ impl fmt::Debug for FundedProviderConfig {
             .field("minimum_confirmations", &self.minimum_confirmations)
             .field("reorg_safety_blocks", &self.reorg_safety_blocks)
             .field("pricing", &self.pricing)
+            .field(
+                "hold_invoice_expiry_seconds",
+                &self.hold_invoice_expiry_seconds,
+            )
             .field("boltz", &self.boltz)
             .finish()
     }
@@ -115,6 +129,7 @@ impl FundedProviderConfig {
         relay_actor::validate_relay_url(&relay_url, "funded")
             .map_err(|_| ConfigError::Invalid("IMMORTAL_PROVIDER_RELAY_URL"))?;
         let network = parse_network(&required("IMMORTAL_PROVIDER_BITCOIN_NETWORK")?)?;
+        let lab_timeout_profile = lab_timeout_profile_from_lookup(network, optional)?;
 
         let bitcoind_host = required("IMMORTAL_PROVIDER_BITCOIND_HOST")?;
         let bitcoind_port = parse_number::<u16>(
@@ -133,7 +148,7 @@ impl FundedProviderConfig {
         )
         .map_err(|_| ConfigError::Bitcoind)?;
 
-        let lightning = lightning_from_environment()?;
+        let lightning = lightning_from_environment(lab_timeout_profile)?;
         let wallet =
             ProviderWallet::load_from_environment(network).map_err(|_| ConfigError::Wallet)?;
 
@@ -174,7 +189,14 @@ impl FundedProviderConfig {
             6_u32,
             MIN_CONFIRMATIONS..=MAX_CONFIRMATIONS,
         )?;
-        let pricing = PricingConfig::from_env().map_err(ConfigError::Pricing)?;
+        let mut pricing = PricingConfig::from_env().map_err(ConfigError::Pricing)?;
+        let hold_invoice_expiry_seconds = match lab_timeout_profile {
+            Some(profile) => {
+                pricing.quote_expiry_seconds = profile.quote_expiry_seconds;
+                profile.hold_invoice_expiry_seconds
+            }
+            None => PRODUCTION_HOLD_INVOICE_EXPIRY_SECONDS,
+        };
         if pricing.reservation_tier != ReservationTier::Hard {
             return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_RESERVATION_TIER"));
         }
@@ -194,6 +216,7 @@ impl FundedProviderConfig {
             minimum_confirmations,
             reorg_safety_blocks,
             pricing,
+            hold_invoice_expiry_seconds,
             boltz,
         })
     }
@@ -203,7 +226,9 @@ impl FundedProviderConfig {
     }
 }
 
-fn lightning_from_environment() -> Result<Arc<dyn LightningRail>, ConfigError> {
+fn lightning_from_environment(
+    lab_timeout_profile: Option<LabTimeoutProfile>,
+) -> Result<Arc<dyn LightningRail>, ConfigError> {
     match optional("IMMORTAL_PROVIDER_LIGHTNING_RAIL").as_deref() {
         None | Some("cln") => {
             let client = ClnClient::new(
@@ -212,7 +237,12 @@ fn lightning_from_environment() -> Result<Arc<dyn LightningRail>, ConfigError> {
                 ClnLimits::default(),
             )
             .map_err(|_| ConfigError::Cln)?;
-            Ok(Arc::new(ClnLightningRail::new(client)))
+            let rail = if lab_timeout_profile.is_some() {
+                ClnLightningRail::with_immortal_regtest_policy(client)
+            } else {
+                ClnLightningRail::new(client)
+            };
+            Ok(Arc::new(rail))
         }
         Some("lnd") => lnd_from_environment(),
         Some(_) => Err(ConfigError::Invalid("IMMORTAL_PROVIDER_LIGHTNING_RAIL")),
@@ -278,6 +308,22 @@ fn parse_network(value: &str) -> Result<BitcoinNetwork, ConfigError> {
         "regtest" => Ok(BitcoinNetwork::Regtest),
         _ => Err(ConfigError::Invalid("IMMORTAL_PROVIDER_BITCOIN_NETWORK")),
     }
+}
+
+fn lab_timeout_profile_from_lookup(
+    network: BitcoinNetwork,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<Option<LabTimeoutProfile>, ConfigError> {
+    let Some(profile) = lookup("IMMORTAL_PROVIDER_LAB_PROFILE") else {
+        return Ok(None);
+    };
+    if profile != "regtest_adversarial" || network != BitcoinNetwork::Regtest {
+        return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_LAB_PROFILE"));
+    }
+    Ok(Some(LabTimeoutProfile {
+        quote_expiry_seconds: REGTEST_ADVERSARIAL_QUOTE_EXPIRY_SECONDS,
+        hold_invoice_expiry_seconds: REGTEST_ADVERSARIAL_HOLD_INVOICE_EXPIRY_SECONDS,
+    }))
 }
 
 fn validate_database_url(value: &str) -> Result<(), ConfigError> {
@@ -357,5 +403,77 @@ mod tests {
             "provider pricing config error: IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB must be between 1 and 2000"
         );
         assert!(std::error::Error::source(&error).is_some());
+    }
+
+    #[test]
+    fn adversarial_lab_profile_is_fixture_bound_and_regtest_only() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/lab/adversarial-v1.json"
+        ))
+        .expect("adversarial lab fixture parses");
+        let profile = &fixture["lab_profile"];
+        assert_eq!(profile["environment"], "IMMORTAL_PROVIDER_LAB_PROFILE");
+        assert_eq!(profile["value"], "regtest_adversarial");
+
+        let timeout = lab_timeout_profile_from_lookup(BitcoinNetwork::Regtest, |name| {
+            (name
+                == profile["environment"]
+                    .as_str()
+                    .expect("profile environment"))
+            .then(|| profile["value"].as_str().expect("profile value").to_owned())
+        })
+        .expect("regtest profile validates")
+        .expect("regtest profile is active");
+        assert_eq!(
+            timeout.quote_expiry_seconds,
+            profile["tiny_quote_expiry_seconds"]
+                .as_u64()
+                .expect("quote expiry")
+        );
+        assert_eq!(
+            u64::from(timeout.hold_invoice_expiry_seconds),
+            profile["tiny_hold_invoice_expiry_seconds"]
+                .as_u64()
+                .expect("hold expiry")
+        );
+
+        for network in [
+            BitcoinNetwork::Mainnet,
+            BitcoinNetwork::Testnet,
+            BitcoinNetwork::Signet,
+        ] {
+            assert_eq!(
+                lab_timeout_profile_from_lookup(network, |name| {
+                    (name == "IMMORTAL_PROVIDER_LAB_PROFILE")
+                        .then(|| "regtest_adversarial".to_owned())
+                }),
+                Err(ConfigError::Invalid("IMMORTAL_PROVIDER_LAB_PROFILE"))
+            );
+        }
+        assert_eq!(
+            lab_timeout_profile_from_lookup(BitcoinNetwork::Regtest, |name| {
+                (name == "IMMORTAL_PROVIDER_LAB_PROFILE").then(|| "unknown".to_owned())
+            }),
+            Err(ConfigError::Invalid("IMMORTAL_PROVIDER_LAB_PROFILE"))
+        );
+    }
+
+    #[test]
+    fn production_timeout_policy_is_unchanged_without_the_lab_profile() {
+        assert_eq!(
+            lab_timeout_profile_from_lookup(BitcoinNetwork::Mainnet, |_| None),
+            Ok(None)
+        );
+        assert_eq!(PRODUCTION_HOLD_INVOICE_EXPIRY_SECONDS, 604_800);
+        let pricing = PricingConfig::from_lookup(|_| None).expect("default pricing validates");
+        assert_eq!(pricing.quote_expiry_seconds, 300);
+        assert!(
+            PricingConfig {
+                quote_expiry_seconds: 1,
+                ..pricing
+            }
+            .validate()
+            .is_ok()
+        );
     }
 }

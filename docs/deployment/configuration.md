@@ -192,7 +192,7 @@ the same host; public `wss://` provider transport is not claimed.
 | `IMMORTAL_PROVIDER_BITCOIND_PORT` | funded | JSON-RPC port, 1–65,535. |
 | `IMMORTAL_PROVIDER_BITCOIND_RPC_USER` | funded | Basic-auth username, 1–256 bytes. |
 | `IMMORTAL_PROVIDER_BITCOIND_RPC_PASSWORD` | funded | Basic-auth password, 1–1,024 bytes. |
-| `IMMORTAL_PROVIDER_CLN_RPC_PATH` | funded with `cln` rail | Absolute CLN Unix-socket path, 1–4,096 bytes. Startup probes `help` for every required standard and hold-plugin command. |
+| `IMMORTAL_PROVIDER_CLN_RPC_PATH` | funded with `cln` rail | Absolute CLN Unix-socket path, 1–4,096 bytes. Startup probes `help` for every required standard and hold-plugin command. The adversarial profile additionally requires the distinct lab-only `holdinvoiceimmortalregtest` method. |
 | `IMMORTAL_PROVIDER_LND_HOST` | funded with `lnd` rail | Host that resolves and connects only to loopback. |
 | `IMMORTAL_PROVIDER_LND_PORT` | funded with `lnd` rail | LND REST TLS port, 1–65,535. |
 | `IMMORTAL_PROVIDER_LND_TLS_CERT_FILE` | funded with `lnd` rail | Absolute path to the operator-reviewed LND PEM certificate. The client pins the exact single leaf certificate and still verifies the TLS handshake signature. |
@@ -211,6 +211,7 @@ the contract artifact.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `IMMORTAL_PROVIDER_LIGHTNING_RAIL` | `cln` | Selected internal Lightning rail: `cln` or, when built with `--features lnd`, `lnd`. Selecting unavailable or incomplete rail configuration fails startup. |
+| `IMMORTAL_PROVIDER_LAB_PROFILE` | unset | Lab-only timeout selector. The sole value is `regtest_adversarial`, which is rejected unless the Bitcoin network is `regtest`; it fixes Quote expiry at 3 seconds and hold-invoice expiry at 30 seconds. It does not change production defaults. |
 | `IMMORTAL_PROVIDER_HEALTH_BIND` | `127.0.0.1:9091` | Private or loopback health/metrics listener. Public addresses fail startup. |
 | `IMMORTAL_PROVIDER_ALERT_URL` | disabled | Bounded plaintext HTTP URL on a private numeric or loopback address. HTTPS is outside the v1 dependency profile. |
 | `IMMORTAL_PROVIDER_CHAIN_POLL_SECONDS` | `5` | Chain polling interval, 1–300 seconds. |

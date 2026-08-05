@@ -63,7 +63,6 @@ const PROVIDER_ID: &str = "immortal-funded";
 const OFFERING_ID: &str = "immortal-funded-btc-lightning";
 const SETTLEMENT_MAXIMUM_WEIGHT: u64 = 1_600;
 const DUST_RELAY_FEE_SAT_PER_KILOBYTE: u64 = 3_000;
-const HOLD_INVOICE_EXPIRY_SECONDS: u32 = 604_800;
 const HOLD_INVOICE_CLTV_EXPIRY: u32 = 80;
 pub(crate) const MAXIMUM_WATCH_ATTEMPTS: u16 = 32;
 pub(crate) const QUOTE_RAIL_SYNC_ATTEMPTS: usize = 40;
@@ -80,6 +79,7 @@ pub(crate) struct FundedMode {
     minimum_confirmations: u32,
     reorg_safety_blocks: u32,
     pricing: PricingConfig,
+    hold_invoice_expiry_seconds: u32,
     cooperative_signing: bool,
     session_invoices: BTreeMap<String, String>,
     reserved_inputs: BTreeMap<String, Vec<FundingInput>>,
@@ -93,6 +93,7 @@ pub(crate) struct FundedModePolicy {
     pub minimum_confirmations: u32,
     pub reorg_safety_blocks: u32,
     pub pricing: PricingConfig,
+    pub hold_invoice_expiry_seconds: u32,
 }
 
 #[derive(Clone)]
@@ -234,6 +235,7 @@ impl FundedMode {
             minimum_confirmations: policy.minimum_confirmations,
             reorg_safety_blocks: policy.reorg_safety_blocks,
             pricing: policy.pricing,
+            hold_invoice_expiry_seconds: policy.hold_invoice_expiry_seconds,
             cooperative_signing: policy.cooperative_signing,
             session_invoices: BTreeMap::new(),
             reserved_inputs: BTreeMap::new(),
@@ -490,7 +492,7 @@ impl FundedMode {
                 payment_hash,
                 Millisatoshi::from_satoshis(amount_sat)
                     .map_err(|error| format!("reverse amount is invalid: {error}"))?,
-                HOLD_INVOICE_EXPIRY_SECONDS,
+                self.hold_invoice_expiry_seconds,
                 HOLD_INVOICE_CLTV_EXPIRY,
             ),
         );

@@ -26,6 +26,13 @@ const LND_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/provider/lnd-
 const BOLTZ_API_FIXTURE_PATH: &str = "tests/fixtures/nipmkt/boltz-provider-api-v1.json";
 const BOLTZ_API_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/nipmkt/boltz-provider-api-v1.json");
+const ADVERSARIAL_LAB_FIXTURE_PATH: &str = "tests/fixtures/lab/adversarial-v1.json";
+const ADVERSARIAL_LAB_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/lab/adversarial-v1.json");
+const CLN_ADVERSARIAL_HOLD_FIXTURE_PATH: &str =
+    "tests/fixtures/provider/cln-adversarial-hold-v1.json";
+const CLN_ADVERSARIAL_HOLD_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/cln-adversarial-hold-v1.json");
 pub(crate) const BOLTZ_CONFIGURATION_SCHEMA: &str = concat!(
     "openagents.mkt-swp.boltz-provider-api.config.v1\n",
     "activation=exact_fixture_digest_private_bind_and_exact_browser_origin\n",
@@ -143,6 +150,22 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                     "listfunds",
                     "getinfo"
                 ],
+                "hold_invoice_policy":{
+                    "production":{
+                        "rpc_method":"holdinvoice",
+                        "explicit_expiry_policy":false,
+                        "image":"scripts/support/provider-funded/Dockerfile.cln-hold"
+                    },
+                    "regtest_adversarial":{
+                        "network":"regtest",
+                        "rpc_method":"holdinvoiceimmortalregtest",
+                        "startup_capability_required":true,
+                        "expiry_seconds":30,
+                        "minimum_final_cltv_delta":80,
+                        "image":"scripts/support/provider-funded/Dockerfile.cln-hold-adversarial",
+                        "source_fixture":"tests/fixtures/provider/cln-adversarial-hold-v1.json"
+                    }
+                },
                 "quote_height_sync":{
                     "attempts_per_pass":40,
                     "delay_milliseconds":250,
@@ -332,7 +355,9 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 fixture_entry(PRICING_FIXTURE_PATH, PRICING_FIXTURE),
                 fixture_entry(COOPERATIVE_RUNTIME_FIXTURE_PATH, COOPERATIVE_RUNTIME_FIXTURE),
                 fixture_entry(LND_FIXTURE_PATH, LND_FIXTURE),
-                fixture_entry(BOLTZ_API_FIXTURE_PATH, BOLTZ_API_FIXTURE)
+                fixture_entry(BOLTZ_API_FIXTURE_PATH, BOLTZ_API_FIXTURE),
+                fixture_entry(ADVERSARIAL_LAB_FIXTURE_PATH, ADVERSARIAL_LAB_FIXTURE),
+                fixture_entry(CLN_ADVERSARIAL_HOLD_FIXTURE_PATH, CLN_ADVERSARIAL_HOLD_FIXTURE)
             ]
         },
         "relay_contract_affected":false,
@@ -864,6 +889,7 @@ fn environment_contract() -> Value {
             &["funded"],
             &["mainnet", "testnet", "signet", "regtest"]
         ),
+        lab_profile_environment(),
         env_string(
             "IMMORTAL_PROVIDER_BITCOIND_HOST",
             &["funded"],
@@ -1158,6 +1184,22 @@ fn lightning_selector_environment() -> Value {
         &["cln", "lnd"],
     );
     value["implicit_choice_when_absent"] = Value::String("cln".to_owned());
+    value
+}
+
+fn lab_profile_environment() -> Value {
+    let mut value = optional_environment(
+        env_choice(
+            "IMMORTAL_PROVIDER_LAB_PROFILE",
+            &["funded"],
+            &["regtest_adversarial"],
+        ),
+        &["funded"],
+        false,
+    );
+    value["required_network"] = Value::String("regtest".to_owned());
+    value["quote_expiry_seconds"] = json!(3);
+    value["hold_invoice_expiry_seconds"] = json!(30);
     value
 }
 

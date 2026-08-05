@@ -666,6 +666,28 @@ signed miner budget. Bitcoin/Lightning-only Quotes keep `price_feed` null; no
 outbound price-feed authority is adopted. The deterministic pricing corpus is
 bound by both the M11 fixture manifest and the provider contract.
 
+## M12 adversarial timeout-profile decision (2026-08-05)
+
+Issue #18 changes no source specification, event kind, relay admission rule,
+or NIP-11 advertisement. It adds one provider configuration value,
+`IMMORTAL_PROVIDER_LAB_PROFILE=regtest_adversarial`, which fails startup on
+mainnet, testnet, and signet. The profile fixes the Quote window at 3 seconds
+and the hold-invoice expiry at 30 seconds; absence of the profile preserves
+the 300-second Quote and 604,800-second hold-invoice production defaults.
+
+The stock Boltz CLN hold plugin 0.3.3 cannot express an expiry or minimum final
+CLTV through its native JSON-RPC method. The adversarial lab therefore pins
+the upstream source archive at SHA-256
+`2a5631e6766b06d9af18ca4ca352d410bf78f79ccb7eb17f5d6030f0aca5177e`,
+applies the reviewed in-repository patch recorded by
+`tests/fixtures/provider/cln-adversarial-hold-v1.json`, and exposes a distinct
+regtest-only `holdinvoiceimmortalregtest` method. The method accepts only the
+exact 30-second/80-block policy, encodes both values in BOLT11, persists the
+minimum CLTV for incoming-HTLC enforcement, and is a mandatory provider
+startup capability under the profile. The production image and stock
+`holdinvoice` path are unchanged. This is an external rail fixture, not a new
+Immortal dependency or protocol authority.
+
 ## Post-provider source sync review (2026-08-05)
 
 The post-#25 sync records these current inputs in `nips/manifest.json`:

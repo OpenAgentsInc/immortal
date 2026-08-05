@@ -9,5 +9,6 @@ tests
 deploy
 scripts
 !scripts/dev-work-items.json
+!scripts/support/provider-funded/hold-v0.3.3-immortal-regtest.patch
 PROVENANCE.md
 README.md
