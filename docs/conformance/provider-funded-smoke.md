@@ -190,6 +190,16 @@ state directory after teardown. This makes LND eligible for a #18 provider
 slot under the feature-gated local-lab profile. It does not supply the clean
 host or live deployment evidence owned by #32 and #19.
 
+The audited `scripts/run-debian-provider-funded.sh` gate passed on a fresh
+Debian 13 aarch64 disposable container on 2026-08-05 at commit
+`c787a96b7b052684bf2205c6d3feee454c6fe232`. Its bounded receipt is
+`docs/conformance/records/2026-08-05-funded-smoke-debian.json`: all three
+funded journeys, the forced requester replacement, and the Go/web adapter
+checks passed; matching provider containers and private runtime artifacts were
+absent afterward. This is clean-Debian single-provider smoke evidence. It does
+not prove #18's independent two-bitcoind topology, a live deployment, or a
+public replacement claim.
+
 ## Pinned rail software
 
 The test images support Linux `amd64` and `arm64`, including Docker Desktop on

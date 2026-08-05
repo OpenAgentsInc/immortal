@@ -1,0 +1,44 @@
+{
+  "clean_debian_environment": true,
+  "cleanup": {
+    "matching_provider_containers_after_run": 0,
+    "private_runtime_artifacts_retained": false
+  },
+  "command": "scripts/run-debian-provider-funded.sh --receipt <record>",
+  "environment_boundary": "The Debian process and Docker daemon are fresh and disposable. The privileged outer container starts a new dockerd with an empty data root and removes it after the gate.",
+  "finished_at": "2026-08-05T15:09:09Z",
+  "funded_smoke": {
+    "forced_restart": "submarine:funding_authorized",
+    "journeys": [
+      "submarine",
+      "reverse",
+      "noncooperative_refund"
+    ],
+    "passed": true
+  },
+  "limitations": [
+    "This does not establish live deployment or a public replacement claim.",
+    "This runs the single-provider funded smoke; the separate #32 topology gate covers two providers."
+  ],
+  "manifests": {
+    "scripts/test-provider-funded.sh": "137889261a50997d3c6c4137ec8167342492852365981eadb3d5f0b0914ee694",
+    "tests/fixtures/lab/funded-checkpoints-v1.json": "5de6c6fc8e3c7b414049b02f74215a28877c567c0c7eb9bcd1df2c829830ced0",
+    "tests/fixtures/lab/funded-matrix-v1.json": "71dc0b09fd2ca43d4c0c70bc70768b37111de688d9699a24cf0313a6c53e9573",
+    "tests/fixtures/provider/funded-smoke-v1.json": "882c1c6afa6ec7d1a9c09d3a8b4fb4c23d3e454e096262a91adb042747dafb54"
+  },
+  "platform": {
+    "architecture": "aarch64",
+    "cargo": "cargo 1.85.0 (d73d2caf9 2024-12-31)",
+    "docker_client": "26.1.5+dfsg1",
+    "docker_server": "26.1.5+dfsg1",
+    "go": "go version go1.24.4 linux/arm64",
+    "node": "v20.19.2",
+    "operating_system": "Debian 13",
+    "rustc": "rustc 1.85.0 (4d91de4e4 2025-02-17) (built from a source tarball)"
+  },
+  "result": "passed",
+  "schema": "openagents.immortal.debian-provider-funded-run.v1",
+  "scope": "fresh-debian-13-disposable-container",
+  "source_commit": "c787a96b7b052684bf2205c6d3feee454c6fe232",
+  "started_at": "2026-08-05T15:00:31Z"
+}

@@ -125,5 +125,7 @@ The three-journey default bitcoind/CLN process gate passed locally on
 2026-08-04 on macOS 26.4 arm64, and the feature-gated LND variant passed the
 same gate on 2026-08-05, with the exact success result
 `test-provider-funded: submarine, reverse, and noncooperative refund passed`.
-These local regtest results do not constitute Debian or live deployment
-evidence; issue #19 owns that proof.
+The audited fresh-Debian 13 single-provider gate then passed at commit
+`c787a96b7b052684bf2205c6d3feee454c6fe232`; its bounded receipt is
+`records/2026-08-05-funded-smoke-debian.json`. Neither result establishes live
+deployment evidence; issue #19 owns that proof.
