@@ -196,6 +196,7 @@ services:
       context: ../../..
       dockerfile: scripts/support/provider-funded/Dockerfile.provider
       target: driver
+    command: ["funded-smoke"]
     env_file:
       - ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/driver.env
     network_mode: service:bitcoin

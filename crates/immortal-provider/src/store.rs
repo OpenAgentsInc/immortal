@@ -4,11 +4,13 @@ mod migration;
 
 use std::{collections::BTreeMap, fmt};
 
-use immortal_client::mkt_swp_client::provider_support::reject_custody_material;
+use immortal_client::mkt_swp_client::provider_support::{
+    reject_custody_material, session_config, validate_bound_session, validate_status_prefix,
+};
 use immortal_core::{
     domain::{
-        Event, MKT_QUOTE_KIND, MKT_RFQ_KIND, MKT_STATUS_KIND, MKT_SWP_SWAP_CONTRACT_KIND,
-        parse_unique_json,
+        Event, MKT_ORDER_KIND, MKT_QUOTE_KIND, MKT_RFQ_KIND, MKT_STATUS_KIND,
+        MKT_SWP_SWAP_CONTRACT_KIND, parse_unique_json,
     },
     mkt_swp_verify::parse_bolt11,
 };
@@ -20,6 +22,7 @@ use tokio_postgres::{Client, NoTls, Transaction};
 pub use migration::ProviderMigrationReport;
 
 pub(crate) const MAX_SESSION_RECORDS: usize = 512;
+const MAX_STARTUP_INVOICE_RECONCILIATION: usize = 64;
 pub(crate) const MAX_SESSION_QUERY: usize = 512;
 pub(crate) const MAX_ACTIVE_SESSION_RECORD_QUERY: usize = 12 * MAX_SESSION_RECORDS;
 pub(crate) const MAX_SESSION_BATCH: usize = 64;
@@ -45,12 +48,16 @@ SELECT signed_event FROM provider_session_record
 WHERE session_id = $1 ORDER BY created_at, event_id LIMIT $2
 "#;
 const SELECT_BOLTZ_INVOICE_CANDIDATE_SESSIONS_SQL: &str = r#"
-SELECT DISTINCT session_id FROM provider_session_record
-WHERE kind = 39607
-  AND session_id > $1
-  AND (signed_event ->> 'content')::jsonb #>> '{mkt_swp,swp_state}' = 'hold_invoice_ready'
-  AND jsonb_typeof((signed_event ->> 'content')::jsonb #> '{mkt_swp,invoice}') = 'string'
-ORDER BY session_id LIMIT $2
+SELECT DISTINCT record.session_id FROM provider_session_record AS record
+WHERE record.kind = 39607
+  AND record.session_id > $1
+  AND (record.signed_event ->> 'content')::jsonb #>> '{mkt_swp,swp_state}' = 'hold_invoice_ready'
+  AND jsonb_typeof((record.signed_event ->> 'content')::jsonb #> '{mkt_swp,invoice}') = 'string'
+  AND NOT EXISTS (
+      SELECT 1 FROM provider_boltz_invoice_binding AS binding
+      WHERE binding.session_id = record.session_id
+  )
+ORDER BY record.session_id LIMIT $2
 "#;
 const SELECT_SESSION_RECORD_BATCH_SQL: &str = r#"
 SELECT session_id, signed_event FROM provider_session_record
@@ -78,6 +85,10 @@ ON CONFLICT (payment_hash) DO NOTHING
 const SELECT_BOLTZ_INVOICE_BINDING_SQL: &str = r#"
 SELECT invoice, session_id, status_event_id
 FROM provider_boltz_invoice_binding WHERE payment_hash = $1
+"#;
+const SELECT_BOLTZ_INVOICE_BINDING_BY_SESSION_SQL: &str = r#"
+SELECT payment_hash, invoice, session_id, status_event_id
+FROM provider_boltz_invoice_binding WHERE session_id = $1
 "#;
 const INSERT_SESSION_DISPOSITION_SQL: &str = r#"
 INSERT INTO provider_session_disposition (session_id, reason_code, disposed_at)
@@ -625,11 +636,11 @@ pub struct ProviderStore {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct InvoiceBinding {
-    payment_hash: String,
-    invoice: String,
-    session_id: String,
-    status_event_id: String,
+pub(crate) struct InvoiceBinding {
+    pub(crate) payment_hash: String,
+    pub(crate) invoice: String,
+    pub(crate) session_id: String,
+    pub(crate) status_event_id: String,
 }
 
 impl ProviderStore {
@@ -643,19 +654,20 @@ impl ProviderStore {
             }
         });
         let report = migration::apply(&mut client).await?;
-        reconcile_invoice_bindings(&mut client).await?;
+        if let Some(cursor) = reconcile_invoice_bindings_batch(&mut client, "").await? {
+            spawn_invoice_binding_reconciliation(database_url.to_owned(), cursor);
+        }
         Ok((Self { client, connection }, report))
     }
 
     pub async fn connect_verified(database_url: &str) -> Result<Self, ProviderStoreError> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
+        let (client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
         let connection = tokio::spawn(async move {
             if let Err(error) = connection.await {
                 eprintln!("provider database connection failed: {error}");
             }
         });
         migration::verify(&client).await?;
-        reconcile_invoice_bindings(&mut client).await?;
         Ok(Self { client, connection })
     }
 
@@ -878,17 +890,34 @@ impl ProviderStore {
         let Some(row) = self.client.query_opt(&statement, &[&payment_hash]).await? else {
             return Ok(None);
         };
-        let stored_invoice: String = row.get(0);
-        let session_id: String = row.get(1);
-        let status_event_id: String = row.get(2);
-        validate_hex(&session_id, "invoice session")?;
-        validate_hex(&status_event_id, "invoice status event")?;
-        if stored_invoice != invoice {
+        let binding = checked_invoice_binding(payment_hash, row.get(0), row.get(1), row.get(2))?;
+        if binding.invoice != invoice {
             return Err(ProviderStoreError::Conflict(
                 "payment hash is bound to another invoice".to_owned(),
             ));
         }
-        Ok(Some(session_id))
+        Ok(Some(binding.session_id))
+    }
+
+    pub(crate) async fn reverse_invoice_binding_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<InvoiceBinding>, ProviderStoreError> {
+        self.ensure_current()?;
+        validate_hex(session_id, "invoice session")?;
+        let statement = self
+            .client
+            .prepare(SELECT_BOLTZ_INVOICE_BINDING_BY_SESSION_SQL)
+            .await?;
+        let Some(row) = self.client.query_opt(&statement, &[&session_id]).await? else {
+            return Ok(None);
+        };
+        Ok(Some(checked_invoice_binding(
+            row.get(0),
+            row.get(1),
+            row.get(2),
+            row.get(3),
+        )?))
     }
 
     pub async fn dispose_session(
@@ -2532,32 +2561,78 @@ fn validate_watch_request(request: &WatchJobRequest) -> Result<(), ProviderStore
     Ok(())
 }
 
-async fn reconcile_invoice_bindings(client: &mut Client) -> Result<(), ProviderStoreError> {
+async fn reconcile_invoice_bindings_batch(
+    client: &mut Client,
+    cursor: &str,
+) -> Result<Option<String>, ProviderStoreError> {
     let statement = client
         .prepare(SELECT_BOLTZ_INVOICE_CANDIDATE_SESSIONS_SQL)
         .await?;
-    let mut cursor = String::new();
-    loop {
-        let limit = i64::try_from(MAX_SESSION_BATCH).unwrap_or(i64::MAX);
-        let session_ids = client
-            .query(&statement, &[&cursor, &limit])
-            .await?
-            .into_iter()
-            .map(|row| row.get::<_, String>(0))
-            .collect::<Vec<_>>();
-        let Some(last_session_id) = session_ids.last().cloned() else {
-            return Ok(());
-        };
+    let query_limit = MAX_STARTUP_INVOICE_RECONCILIATION
+        .checked_add(1)
+        .and_then(|value| i64::try_from(value).ok())
+        .ok_or_else(|| {
+            ProviderStoreError::InvalidInput(
+                "invoice reconciliation query limit overflows".to_owned(),
+            )
+        })?;
+    let mut session_ids = client
+        .query(&statement, &[&cursor, &query_limit])
+        .await?
+        .into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect::<Vec<_>>();
+    let has_more = session_ids.len() > MAX_STARTUP_INVOICE_RECONCILIATION;
+    session_ids.truncate(MAX_STARTUP_INVOICE_RECONCILIATION);
+    for session_id in &session_ids {
+        validate_hex(session_id, "invoice session")?;
         let transaction = client.transaction().await?;
         let lock = transaction.prepare(LOCK_SESSION_ADVISORY_SQL).await?;
-        for session_id in &session_ids {
-            validate_hex(session_id, "invoice session")?;
-            transaction.execute(&lock, &[session_id]).await?;
-            persist_validated_invoice_binding(&transaction, session_id).await?;
+        transaction.execute(&lock, &[session_id]).await?;
+        match persist_validated_invoice_binding(&transaction, session_id).await {
+            Ok(()) => transaction.commit().await?,
+            Err(
+                error @ (ProviderStoreError::Conflict(_) | ProviderStoreError::InvalidInput(_)),
+            ) => {
+                transaction.rollback().await?;
+                eprintln!("provider invoice reconciliation rejected session {session_id}: {error}");
+            }
+            Err(error) => return Err(error),
         }
-        transaction.commit().await?;
-        cursor = last_session_id;
     }
+    Ok(has_more.then(|| session_ids.last().cloned()).flatten())
+}
+
+fn spawn_invoice_binding_reconciliation(database_url: String, mut cursor: String) {
+    tokio::spawn(async move {
+        let Ok((mut client, connection)) = tokio_postgres::connect(&database_url, NoTls).await
+        else {
+            eprintln!("provider invoice reconciliation could not connect to Postgres");
+            return;
+        };
+        let connection = tokio::spawn(async move {
+            if let Err(error) = connection.await {
+                eprintln!("provider invoice reconciliation connection failed: {error}");
+            }
+        });
+        loop {
+            match reconcile_invoice_bindings_batch(&mut client, &cursor).await {
+                Ok(Some(next_cursor)) => {
+                    cursor = next_cursor;
+                    tokio::task::yield_now().await;
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    eprintln!("provider invoice reconciliation stopped: {error}");
+                    break;
+                }
+            }
+        }
+        drop(client);
+        if let Err(error) = connection.await {
+            eprintln!("provider invoice reconciliation task failed: {error}");
+        }
+    });
 }
 
 async fn persist_validated_invoice_binding(
@@ -2630,6 +2705,24 @@ fn validated_invoice_binding(
             "invoice session has multiple Quotes".to_owned(),
         ));
     };
+    if records
+        .iter()
+        .filter(|event| event.kind == MKT_RFQ_KIND)
+        .count()
+        < 1
+        || records
+            .iter()
+            .filter(|event| event.kind == MKT_ORDER_KIND)
+            .count()
+            < 1
+        || records
+            .iter()
+            .filter(|event| event.kind == MKT_SWP_SWAP_CONTRACT_KIND)
+            .count()
+            < 2
+    {
+        return Ok(None);
+    }
     let provider = quote.pubkey.as_str();
     let mut candidates = Vec::new();
     for event in records
@@ -2655,24 +2748,30 @@ fn validated_invoice_binding(
         .ok_or_else(|| {
             ProviderStoreError::Conflict("provider hold-invoice Status has no BOLT11".to_owned())
         })?;
-
-    let requesters = records
-        .iter()
-        .filter(|event| event.kind == MKT_RFQ_KIND)
-        .collect::<Vec<_>>();
-    let [rfq] = requesters.as_slice() else {
-        if requesters.is_empty() {
-            return Ok(None);
-        }
+    let config = session_config(records).map_err(|error| {
+        ProviderStoreError::Conflict(format!(
+            "invoice session authority is invalid: {}",
+            error.code
+        ))
+    })?;
+    if config.session_id != session_id {
         return Err(ProviderStoreError::Conflict(
-            "invoice session has multiple RFQs".to_owned(),
-        ));
-    };
-    if rfq.pubkey == provider {
-        return Err(ProviderStoreError::Conflict(
-            "invoice session participants are not distinct".to_owned(),
+            "invoice session ID differs from its signed records".to_owned(),
         ));
     }
+    let bound = validate_bound_session(&config, records).map_err(|error| {
+        ProviderStoreError::Conflict(format!(
+            "invoice bilateral Contract is invalid: {}",
+            error.code
+        ))
+    })?;
+    validate_status_prefix(&config, records, &bound.contract, &status.id).map_err(|error| {
+        ProviderStoreError::Conflict(format!("invoice Status prefix is invalid: {}", error.code))
+    })?;
+    let rfq = records
+        .iter()
+        .find(|event| event.kind == MKT_RFQ_KIND)
+        .ok_or_else(|| ProviderStoreError::Conflict("invoice RFQ is absent".to_owned()))?;
     let quote_profile = event_profile(quote)?;
     let quote_terms = quote_profile
         .get("terms")
@@ -2684,48 +2783,35 @@ fn validated_invoice_binding(
         ));
     }
 
-    let contracts = records
-        .iter()
-        .filter(|event| event.kind == MKT_SWP_SWAP_CONTRACT_KIND)
-        .collect::<Vec<_>>();
-    if contracts.len() < 2 {
-        return Ok(None);
-    }
-    if contracts.len() != 2
-        || !contracts.iter().any(|event| event.pubkey == rfq.pubkey)
-        || !contracts.iter().any(|event| event.pubkey == provider)
-    {
+    let contract = bound.contract.as_object().ok_or_else(|| {
+        ProviderStoreError::Conflict("bilateral Swap Contract is not an object".to_owned())
+    })?;
+    if contract.get("swap_type").and_then(Value::as_str) != Some("reverse") {
         return Err(ProviderStoreError::Conflict(
-            "invoice binding requires exact bilateral Contracts".to_owned(),
+            "invoice binding requires a reverse Contract".to_owned(),
         ));
     }
-    let first_contract = event_profile(contracts[0])?
-        .get("contract")
-        .and_then(Value::as_object)
-        .cloned()
-        .ok_or_else(|| ProviderStoreError::Conflict("Swap Contract is absent".to_owned()))?;
-    let second_contract = event_profile(contracts[1])?
-        .get("contract")
-        .and_then(Value::as_object)
-        .cloned()
-        .ok_or_else(|| ProviderStoreError::Conflict("Swap Contract is absent".to_owned()))?;
-    if first_contract != second_contract
-        || first_contract.get("swap_type").and_then(Value::as_str) != Some("reverse")
-    {
-        return Err(ProviderStoreError::Conflict(
-            "bilateral reverse Contracts do not match".to_owned(),
-        ));
-    }
-    let payment_hash = first_contract
+    let payment_hash = contract
         .get("payment_hash")
         .and_then(Value::as_str)
         .ok_or_else(|| {
             ProviderStoreError::Conflict("Contract payment hash is absent".to_owned())
         })?;
     validate_hex(payment_hash, "Contract payment hash")?;
+    let rfq_profile = event_profile(rfq)?;
+    let rfq_payment_hash = rfq_profile
+        .get("constraints")
+        .and_then(Value::as_object)
+        .and_then(|constraints| constraints.get("payment_hash"))
+        .and_then(Value::as_str);
     if quote_terms.get("payment_hash").and_then(Value::as_str) != Some(payment_hash) {
         return Err(ProviderStoreError::Conflict(
             "Quote and Contract payment hashes differ".to_owned(),
+        ));
+    }
+    if rfq_payment_hash != Some(payment_hash) {
+        return Err(ProviderStoreError::Conflict(
+            "RFQ and Contract payment hashes differ".to_owned(),
         ));
     }
     let parsed =
@@ -2741,6 +2827,30 @@ fn validated_invoice_binding(
         session_id: session_id.to_owned(),
         status_event_id: status.id.clone(),
     }))
+}
+
+fn checked_invoice_binding(
+    payment_hash: String,
+    invoice: String,
+    session_id: String,
+    status_event_id: String,
+) -> Result<InvoiceBinding, ProviderStoreError> {
+    validate_hex(&payment_hash, "invoice payment hash")?;
+    validate_hex(&session_id, "invoice session")?;
+    validate_hex(&status_event_id, "invoice status event")?;
+    let parsed = parse_bolt11(&invoice)
+        .map_err(|error| ProviderStoreError::MigrationDrift(error.to_string()))?;
+    if lower_hex(&parsed.payment_hash) != payment_hash {
+        return Err(ProviderStoreError::MigrationDrift(
+            "stored BOLT11 differs from its payment hash index".to_owned(),
+        ));
+    }
+    Ok(InvoiceBinding {
+        payment_hash,
+        invoice,
+        session_id,
+        status_event_id,
+    })
 }
 
 fn event_profile(event: &Event) -> Result<Map<String, Value>, ProviderStoreError> {

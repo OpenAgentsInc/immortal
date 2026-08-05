@@ -56,8 +56,10 @@ struct FundingLaw {
     sequence: Vec<String>,
     requester_contract_required: bool,
     provider_contract_required: bool,
+    contract_ids_are_finalize_callback_outputs: bool,
     exact_funding_binding_required: bool,
     persisted_script_path_exit_required: bool,
+    restored_authorization_snapshot_sha256_required: bool,
     cooperative_endpoints_allowed: bool,
     one_shot_prepare_and_broadcast_allowed: bool,
     maximum_raw_transaction_bytes: usize,
@@ -78,8 +80,10 @@ struct AdapterClient {
 
 #[derive(Deserialize)]
 struct AdapterCoverage {
+    pinned_upstream_client_builds: bool,
     adapter_source_and_unit_gate: bool,
     provider_listener_process_gate: bool,
+    fresh_client_engine_session_per_seam: bool,
     dependent_call_emulated_routes: usize,
     dependent_call_route_denominator: usize,
 }
@@ -152,8 +156,18 @@ fn adapted_client_fixture_pins_routes_and_removes_stock_funding_paths() {
     );
     assert!(adapters.funding_law.requester_contract_required);
     assert!(adapters.funding_law.provider_contract_required);
+    assert!(
+        adapters
+            .funding_law
+            .contract_ids_are_finalize_callback_outputs
+    );
     assert!(adapters.funding_law.exact_funding_binding_required);
     assert!(adapters.funding_law.persisted_script_path_exit_required);
+    assert!(
+        adapters
+            .funding_law
+            .restored_authorization_snapshot_sha256_required
+    );
     assert!(!adapters.funding_law.cooperative_endpoints_allowed);
     assert!(!adapters.funding_law.one_shot_prepare_and_broadcast_allowed);
     assert_eq!(
@@ -225,6 +239,8 @@ fn adapted_client_fixture_pins_routes_and_removes_stock_funding_paths() {
 
     assert!(adapters.coverage.adapter_source_and_unit_gate);
     assert!(adapters.coverage.provider_listener_process_gate);
+    assert!(!adapters.coverage.pinned_upstream_client_builds);
+    assert!(adapters.coverage.fresh_client_engine_session_per_seam);
     assert_eq!(adapters.coverage.dependent_call_emulated_routes, 19);
     assert_eq!(adapters.coverage.dependent_call_route_denominator, 19);
 }

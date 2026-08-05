@@ -17,6 +17,7 @@ COMMANDS:
     claim               Run the reverse journey through requester claim
     refund              Run the reverse noncooperative-refund journey
     funded-smoke        Run fund, claim, and refund; write conformance evidence
+    boltz-adapter       Run the process-gated transaction-first adapter callback
     status              Print persisted lab state
     run [--to STEP]     Run through STEP (discover, rfq, quote, verify, fund,
                         claim, or refund; defaults to verify)
@@ -117,6 +118,7 @@ pub enum Command {
     Claim,
     Refund,
     FundedSmoke,
+    BoltzAdapter,
     Status,
     Run { to: Step },
     Help,
@@ -151,6 +153,7 @@ pub fn parse(arguments: &[String]) -> Result<Command, String> {
         "claim" => Command::Claim,
         "refund" => Command::Refund,
         "funded-smoke" => Command::FundedSmoke,
+        "boltz-adapter" => Command::BoltzAdapter,
         "status" => Command::Status,
         "run" => {
             let mut to = Step::Verify;
@@ -194,6 +197,7 @@ mod tests {
         assert_eq!(parse(&args(&["claim"])), Ok(Command::Claim));
         assert_eq!(parse(&args(&["refund"])), Ok(Command::Refund));
         assert_eq!(parse(&args(&["funded-smoke"])), Ok(Command::FundedSmoke));
+        assert_eq!(parse(&args(&["boltz-adapter"])), Ok(Command::BoltzAdapter));
         assert_eq!(parse(&args(&["status"])), Ok(Command::Status));
         assert_eq!(parse(&args(&["help"])), Ok(Command::Help));
     }

@@ -85,6 +85,54 @@ const rawTransactionBytes = (value) => {
     return bytes;
 };
 
+export const adaptPinnedSubmarineCreate = (request, sessionId) => {
+    if (
+        request?.from !== "BTC" || request?.to !== "BTC" ||
+        typeof request?.invoice !== "string" || request.invoice === "" ||
+        typeof request?.pairHash !== "string" || request.pairHash === "" ||
+        typeof request?.refundPublicKey !== "string" ||
+        request.refundPublicKey === "" ||
+        request?.metadata !== undefined || request?.refundAddress !== undefined ||
+        request?.referralId !== undefined || !validLowerHex32(sessionId)
+    ) {
+        throw failure("invalid_funding_request");
+    }
+    return Object.freeze({
+        from: request.from,
+        to: request.to,
+        invoice: request.invoice,
+        pairHash: request.pairHash,
+        refundPublicKey: request.refundPublicKey,
+        mktSessionId: sessionId,
+    });
+};
+
+export const adaptPinnedReverseCreate = (request, sessionId) => {
+    if (
+        request?.from !== "BTC" || request?.to !== "BTC" ||
+        !Number.isSafeInteger(request?.invoiceAmount) ||
+        request.invoiceAmount <= 0 ||
+        typeof request?.preimageHash !== "string" ||
+        request.preimageHash === "" ||
+        typeof request?.claimPublicKey !== "string" ||
+        request.claimPublicKey === "" ||
+        typeof request?.pairHash !== "string" || request.pairHash === "" ||
+        request?.claimAddress !== undefined || request?.metadata !== undefined ||
+        request?.referralId !== undefined || !validLowerHex32(sessionId)
+    ) {
+        throw failure("invalid_funding_request");
+    }
+    return Object.freeze({
+        from: request.from,
+        to: request.to,
+        invoiceAmount: request.invoiceAmount,
+        preimageHash: request.preimageHash,
+        claimPublicKey: request.claimPublicKey,
+        pairHash: request.pairHash,
+        mktSessionId: sessionId,
+    });
+};
+
 const sha256Hex = async (subtle, bytes) => {
     const digest = await subtle.digest("SHA-256", bytes);
     return Array.from(new Uint8Array(digest), (value) =>
@@ -103,8 +151,10 @@ const validateApproval = (binding, approval) => {
         approval.outputIndex !== binding.outputIndex ||
         !validLowerHex32(approval.requesterContractEventId) ||
         !validLowerHex32(approval.providerContractEventId) ||
-        approval.requesterContractEventId === approval.providerContractEventId ||
+        approval.requesterContractEventId ===
+            approval.providerContractEventId ||
         !validLowerHex32(approval.exitPackageSha256) ||
+        !validLowerHex32(approval.authorizationSnapshotSha256) ||
         !["presigned", "wallet_sign"].includes(approval.exitPackageMode)
     ) {
         throw failure("bilateral_contract_approval_mismatch");

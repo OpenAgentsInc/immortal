@@ -33,6 +33,7 @@ use crate::{
 const SNAPSHOT_SCHEMA: &str = "openagents.mkt-swp.client-snapshot.v2";
 const EXIT_SCHEMA: &str = "openagents.mkt-swp.exit.v1";
 const MAX_SIGNED_RECORDS: usize = 512;
+const MAX_STATUS_SEQUENCE: u64 = 511;
 const MAX_EXIT_PACKAGES: usize = 16;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EXTERNAL_EFFECTS: usize = 64;
@@ -1219,12 +1220,30 @@ impl SwapRecordFactory {
 /// requester's fail-closed MKT-SWP validation without duplicating it.
 #[doc(hidden)]
 pub mod provider_support {
+    use std::collections::{BTreeMap, BTreeSet};
+
     use serde_json::{Map, Value};
 
     use super::{
-        CooperativeSigningContext, CooperativeSigningMessage, Event, ExitPackage, ParticipantRole,
-        StatusProjection, SwapClientConfig, SwapClientError,
+        CooperativeSigningContext, CooperativeSigningMessage, Event, ExitPackage,
+        MAX_SIGNED_RECORDS, MKT_ORDER_KIND, MKT_QUOTE_KIND, MKT_RFQ_KIND, MKT_STATUS_KIND,
+        MKT_SWP_SWAP_CONTRACT_KIND, ParticipantRole, StatusProjection, SwapClientConfig,
+        SwapClientError,
     };
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ValidatedSession {
+        pub contract: Value,
+        pub order_id: String,
+        pub requester_contract_id: String,
+        pub provider_contract_id: String,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct ValidatedPrecontractSession {
+        pub quote_terms: Value,
+        pub order_id: String,
+    }
 
     pub fn error(code: &'static str, detail: impl Into<String>) -> SwapClientError {
         SwapClientError::new(code, detail)
@@ -1247,6 +1266,827 @@ pub mod provider_support {
         records: &[Event],
     ) -> Result<StatusProjection, SwapClientError> {
         StatusProjection::from_records(config, records)
+    }
+
+    pub fn validate_bound_session(
+        config: &SwapClientConfig,
+        records: &[Event],
+    ) -> Result<ValidatedSession, SwapClientError> {
+        config.validate()?;
+        let bound = super::BoundSession::from_records(config, records)?;
+        bound.verify_contract_terms()?;
+        bound.verify_requester_topology()?;
+        Ok(ValidatedSession {
+            contract: bound.contract,
+            order_id: bound.order.id.clone(),
+            requester_contract_id: bound.requester_contract.id.clone(),
+            provider_contract_id: bound.provider_contract.id.clone(),
+        })
+    }
+
+    pub fn validate_precontract_session(
+        config: &SwapClientConfig,
+        records: &[Event],
+    ) -> Result<ValidatedPrecontractSession, SwapClientError> {
+        config.validate()?;
+        let rfq = super::exactly_one(records, MKT_RFQ_KIND, "swp_contract_terms_mismatch")?;
+        let quote = super::exactly_one(records, MKT_QUOTE_KIND, "swp_contract_terms_mismatch")?;
+        let order = super::exactly_one(records, MKT_ORDER_KIND, "swp_contract_terms_mismatch")?;
+        if rfq.pubkey != config.requester_pubkey
+            || quote.pubkey != config.provider_pubkey
+            || order.pubkey != config.requester_pubkey
+        {
+            return Err(SwapClientError::new(
+                "swp_contract_signer_invalid",
+                "RFQ, Quote, or Order author is not the configured participant",
+            ));
+        }
+        for event in [rfq, quote, order] {
+            let raw = serde_json::to_vec(event).map_err(|error| {
+                SwapClientError::new(
+                    "swp_contract_terms_mismatch",
+                    format!("could not serialize signed precontract record: {error}"),
+                )
+            })?;
+            let validated = super::validate_mkt_private_raw(&raw, &super::swp_profile_support())
+                .map_err(|error| {
+                    SwapClientError::new(
+                        "swp_contract_terms_mismatch",
+                        format!("signed precontract record failed validation: {error}"),
+                    )
+                })?;
+            if validated.envelope.session_id != config.session_id {
+                return Err(SwapClientError::new(
+                    "swp_contract_terms_mismatch",
+                    "signed precontract record belongs to another session",
+                ));
+            }
+        }
+        let offering_references = rfq
+            .tags
+            .iter()
+            .filter(|tag| {
+                tag.name() == Some("a")
+                    && tag.as_slice().get(3).map(String::as_str) == Some("offering")
+            })
+            .collect::<Vec<_>>();
+        if !matches!(offering_references.as_slice(), [reference] if reference.value() == Some(config.offering_address.as_str()))
+        {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "RFQ does not bind the configured Offering address",
+            ));
+        }
+        super::require_marked_reference(quote, "rfq", &rfq.id)?;
+        super::require_marked_reference(order, "quote", &quote.id)?;
+        let quote_content = super::parse_content(quote)?;
+        let quote_profile = super::object(
+            quote_content.get("mkt_swp").unwrap_or(&Value::Null),
+            "MKT-SWP Quote",
+        )?;
+        let reservation_class = super::tag_value(quote, "reservation")?;
+        super::validate_provider_quote_profile(quote_profile, reservation_class)?;
+        let quote_expiration = super::tag_value(quote, "expiration")?
+            .parse::<u64>()
+            .map_err(|_| {
+                SwapClientError::new("swp_quote_expired", "Quote expiration is invalid")
+            })?;
+        super::validate_quote_against_rfq(
+            rfq,
+            quote_profile,
+            super::tag_value(quote, "quote")?,
+            quote.created_at,
+            quote_expiration,
+        )?;
+        let order_content = super::parse_content(order)?;
+        let order_profile = super::object(
+            order_content.get("mkt_swp").unwrap_or(&Value::Null),
+            "MKT-SWP Order",
+        )?;
+        if order_profile
+            .get("accepted_quote_id")
+            .and_then(Value::as_str)
+            != Some(quote.id.as_str())
+        {
+            return Err(SwapClientError::new(
+                "swp_order_selection_invalid",
+                "Order body does not accept the referenced Quote",
+            ));
+        }
+        super::validate_order_acceptance_deadline(
+            quote_profile,
+            quote_expiration,
+            order.created_at,
+        )?;
+        super::validate_order_selection(quote_profile, order_profile)?;
+        let quote_terms = quote_profile.get("terms").cloned().ok_or_else(|| {
+            SwapClientError::new("swp_contract_terms_mismatch", "MKT-SWP Quote has no terms")
+        })?;
+        super::object(&quote_terms, "MKT-SWP Quote terms")?;
+        Ok(ValidatedPrecontractSession {
+            quote_terms,
+            order_id: order.id.clone(),
+        })
+    }
+
+    pub fn session_config(records: &[Event]) -> Result<SwapClientConfig, SwapClientError> {
+        let rfq = super::exactly_one(records, MKT_RFQ_KIND, "swp_contract_terms_mismatch")?;
+        let quote = super::exactly_one(records, MKT_QUOTE_KIND, "swp_contract_terms_mismatch")?;
+        let offering = rfq
+            .tags
+            .iter()
+            .filter(|tag| {
+                tag.name() == Some("a")
+                    && tag.as_slice().get(3).map(String::as_str) == Some("offering")
+            })
+            .collect::<Vec<_>>();
+        let offering_address = match offering.as_slice() {
+            [tag] => tag
+                .value()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    SwapClientError::new(
+                        "swp_contract_terms_mismatch",
+                        "RFQ offering address is empty",
+                    )
+                })?,
+            _ => {
+                return Err(SwapClientError::new(
+                    "swp_contract_terms_mismatch",
+                    "RFQ requires exactly one marked Offering address",
+                ));
+            }
+        };
+        let config = SwapClientConfig {
+            session_id: super::tag_value(rfq, "session")?.to_owned(),
+            requester_pubkey: rfq.pubkey.clone(),
+            provider_pubkey: quote.pubkey.clone(),
+            offering_address: offering_address.to_owned(),
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate_status_history(
+        config: &SwapClientConfig,
+        records: &[Event],
+        contract: &Value,
+    ) -> Result<StatusProjection, SwapClientError> {
+        config.validate()?;
+        if records.is_empty() || records.len() > MAX_SIGNED_RECORDS {
+            return Err(SwapClientError::new(
+                "swp_status_transition_invalid",
+                "signed record history is empty or exceeds its bound",
+            ));
+        }
+        let mut event_ids = BTreeSet::new();
+        for event in records {
+            let raw = serde_json::to_vec(event).map_err(|error| {
+                SwapClientError::new(
+                    "swp_status_transition_invalid",
+                    format!("could not serialize signed record: {error}"),
+                )
+            })?;
+            let validated = super::validate_mkt_private_raw(&raw, &super::swp_profile_support())
+                .map_err(|error| {
+                    SwapClientError::new(
+                        "swp_status_transition_invalid",
+                        format!("signed record failed MKT-SWP validation: {error}"),
+                    )
+                })?;
+            if validated.envelope.session_id != config.session_id {
+                return Err(SwapClientError::new(
+                    "swp_status_transition_invalid",
+                    "signed record belongs to another session",
+                ));
+            }
+            super::role_for_author(config, &event.pubkey)?;
+            if !event_ids.insert(event.id.clone()) {
+                return Err(SwapClientError::new(
+                    "swp_status_fork",
+                    "signed record history repeats an event ID",
+                ));
+            }
+        }
+        let order = super::exactly_one(records, MKT_ORDER_KIND, "swp_status_transition_invalid")?;
+        for status in records.iter().filter(|event| event.kind == MKT_STATUS_KIND) {
+            super::require_marked_reference(status, "order", &order.id)?;
+        }
+        let projection = StatusProjection::from_records(config, records)?;
+        projection.require_contiguous()?;
+        validate_facade_predecessors(config, records)?;
+        validate_facade_evidence(config, records, contract)?;
+        Ok(projection)
+    }
+
+    pub fn validate_status_prefix(
+        config: &SwapClientConfig,
+        records: &[Event],
+        contract: &Value,
+        terminal_status_id: &str,
+    ) -> Result<StatusProjection, SwapClientError> {
+        let terminal = records
+            .iter()
+            .filter(|event| event.kind == MKT_STATUS_KIND && event.id == terminal_status_id)
+            .collect::<Vec<_>>();
+        let [terminal] = terminal.as_slice() else {
+            return Err(SwapClientError::new(
+                "swp_status_transition_invalid",
+                "Status prefix requires one exact terminal Status",
+            ));
+        };
+        let mut prefix = records
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    MKT_RFQ_KIND | MKT_QUOTE_KIND | MKT_ORDER_KIND | MKT_SWP_SWAP_CONTRACT_KIND
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut chain = Vec::new();
+        let mut visited = BTreeSet::new();
+        let mut current = *terminal;
+        loop {
+            if !visited.insert(current.id.clone()) {
+                return Err(SwapClientError::new(
+                    "swp_status_fork",
+                    "Status prefix contains a predecessor cycle",
+                ));
+            }
+            chain.push(current.clone());
+            let sequence = super::tag_value(current, "seq")?
+                .parse::<u64>()
+                .map_err(|_| SwapClientError::new("swp_status_gap", "Status seq is invalid"))?;
+            if sequence == 0 {
+                break;
+            }
+            let previous_id = super::marked_reference(current, "previous")?;
+            let previous = records
+                .iter()
+                .filter(|event| {
+                    event.kind == MKT_STATUS_KIND
+                        && event.id == previous_id
+                        && event.pubkey == current.pubkey
+                })
+                .collect::<Vec<_>>();
+            let [previous] = previous.as_slice() else {
+                return Err(SwapClientError::new(
+                    "swp_status_gap",
+                    "Status prefix predecessor is absent or has another signer",
+                ));
+            };
+            current = *previous;
+        }
+        prefix.extend(chain.into_iter().rev());
+        validate_status_history(config, &prefix, contract)
+    }
+
+    fn validate_facade_predecessors(
+        config: &SwapClientConfig,
+        records: &[Event],
+    ) -> Result<(), SwapClientError> {
+        let swap_type = super::quote_swap_type(records)?;
+        let mut streams = BTreeMap::<&str, BTreeMap<u64, &Event>>::new();
+        let mut settlement_started = false;
+        let mut cancelled_or_expired = false;
+        for event in records.iter().filter(|event| event.kind == MKT_STATUS_KIND) {
+            let sequence = super::tag_value(event, "seq")?
+                .parse::<u64>()
+                .map_err(|_| SwapClientError::new("swp_status_gap", "Status seq is invalid"))?;
+            let state = super::status_state(event)?;
+            settlement_started |= facade_settlement_started(&state);
+            cancelled_or_expired |= matches!(state.as_str(), "cancelled" | "expired");
+            streams
+                .entry(event.pubkey.as_str())
+                .or_default()
+                .insert(sequence, event);
+        }
+        if settlement_started && cancelled_or_expired {
+            return Err(SwapClientError::new(
+                "swp_status_transition_invalid",
+                "Status cannot cancel or expire after settlement starts",
+            ));
+        }
+        for (author, stream) in streams {
+            let role = super::role_for_author(config, author)?;
+            let initial = stream.get(&0).ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_status_gap",
+                    "Status signer stream does not begin at seq 0",
+                )
+            })?;
+            let initial_state = super::status_state(initial)?;
+            if !facade_initial_state_allowed(swap_type, role, &initial_state) {
+                return Err(SwapClientError::new(
+                    "swp_status_transition_invalid",
+                    "Status signer stream begins outside its role flow",
+                ));
+            }
+            for (sequence, current) in stream.range(1..) {
+                let previous = sequence
+                    .checked_sub(1)
+                    .and_then(|value| stream.get(&value))
+                    .ok_or_else(|| {
+                        SwapClientError::new(
+                            "swp_status_gap",
+                            "Status predecessor sequence is absent",
+                        )
+                    })?;
+                let previous_state = super::status_state(previous)?;
+                let current_state = super::status_state(current)?;
+                if !facade_predecessor_allowed(swap_type, role, &previous_state, &current_state) {
+                    return Err(SwapClientError::new(
+                        "swp_status_transition_invalid",
+                        "Status predecessor is outside the signer-local flow graph",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn facade_initial_state_allowed(
+        swap_type: super::SwapType,
+        role: ParticipantRole,
+        state: &str,
+    ) -> bool {
+        super::state_allowed_for_swap(role, state, swap_type)
+            && !matches!(state, "completed" | "refunded")
+    }
+
+    fn facade_predecessor_allowed(
+        swap_type: super::SwapType,
+        role: ParticipantRole,
+        previous: &str,
+        current: &str,
+    ) -> bool {
+        if previous == "cooperative_signing_pending" && current == previous {
+            return true;
+        }
+        if matches!(
+            current,
+            "cancelled" | "expired" | "disputed" | "failed" | "unresolved"
+        ) {
+            if matches!(current, "cancelled" | "expired") && facade_settlement_started(previous) {
+                return false;
+            }
+            return !matches!(previous, "completed" | "refunded");
+        }
+        if current == "completed" {
+            return match swap_type {
+                super::SwapType::Submarine => previous == "provider_claimed",
+                super::SwapType::Reverse => previous == "lightning_paid",
+                super::SwapType::Chain => matches!(
+                    previous,
+                    "provider_source_claimed" | "requester_destination_claimed"
+                ),
+            };
+        }
+        if current == "refunded" {
+            return match swap_type {
+                super::SwapType::Submarine => previous == "refund_pending",
+                super::SwapType::Reverse => previous == "invoice_cancelled",
+                super::SwapType::Chain => matches!(
+                    previous,
+                    "requester_source_refunded" | "provider_destination_refunded"
+                ),
+            };
+        }
+        if matches!(
+            (previous, current),
+            ("lightning_paid", "provider_claim_pending")
+                | ("lightning_paid", "cooperative_signing_pending")
+                | ("cooperative_signing_pending", "provider_claim_pending")
+                | ("funding_final", "lightning_settlement_pending")
+                | ("funding_final", "cooperative_signing_pending")
+                | (
+                    "cooperative_signing_pending",
+                    "lightning_settlement_pending"
+                )
+                | ("requester_lock_verified", "requester_claim_pending")
+                | ("requester_lock_verified", "cooperative_signing_pending")
+                | ("cooperative_signing_pending", "requester_claim_pending")
+                | ("funding_final", "provider_refund_prepared")
+                | ("provider_refund_prepared", "provider_refund_pending")
+                | ("provider_refund_pending", "provider_refunded")
+                | ("provider_refunded", "invoice_cancel_pending")
+                | ("invoice_cancel_pending", "invoice_cancelled")
+                | ("requester_funding_broadcast", "refund_prepared")
+                | ("refund_prepared", "refund_pending")
+        ) {
+            return true;
+        }
+        let flow: &[&str] = match (swap_type, role) {
+            (super::SwapType::Submarine, ParticipantRole::Requester) => &[
+                "requester_verification_passed",
+                "funding_required",
+                "requester_funding_broadcast",
+                "refund_prepared",
+                "refund_pending",
+            ],
+            (super::SwapType::Submarine, ParticipantRole::Provider) => &[
+                "accepted",
+                "lock_terms_ready",
+                "funding_observed",
+                "funding_final",
+                "lightning_payment_pending",
+                "lightning_paid",
+                "cooperative_signing_pending",
+                "provider_claim_pending",
+                "provider_claimed",
+            ],
+            (super::SwapType::Reverse, ParticipantRole::Requester) => &[
+                "requester_invoice_verified",
+                "lightning_payment_pending",
+                "requester_lock_verified",
+                "cooperative_signing_pending",
+                "requester_claim_pending",
+                "requester_claimed",
+            ],
+            (super::SwapType::Reverse, ParticipantRole::Provider) => &[
+                "accepted",
+                "hold_invoice_ready",
+                "lightning_htlcs_held",
+                "provider_lock_terms_ready",
+                "provider_funding_broadcast",
+                "funding_observed",
+                "funding_final",
+                "cooperative_signing_pending",
+                "lightning_settlement_pending",
+                "lightning_paid",
+                "provider_refund_prepared",
+                "provider_refund_pending",
+                "provider_refunded",
+                "invoice_cancel_pending",
+                "invoice_cancelled",
+            ],
+            _ => {
+                return super::transition_rank(swap_type, previous)
+                    .zip(super::transition_rank(swap_type, current))
+                    .is_some_and(|(left, right)| right > left);
+            }
+        };
+        flow.iter()
+            .position(|state| *state == previous)
+            .zip(flow.iter().position(|state| *state == current))
+            .is_some_and(|(left, right)| right > left)
+    }
+
+    fn validate_facade_evidence(
+        config: &SwapClientConfig,
+        records: &[Event],
+        contract: &Value,
+    ) -> Result<(), SwapClientError> {
+        let contract = super::object(contract, "Swap Contract")?;
+        let swap_type = super::quote_swap_type(records)?;
+        let contract_minimum = contract
+            .get("evidence_requirements")
+            .and_then(Value::as_object)
+            .and_then(|requirements| requirements.get("minimum_rung"))
+            .and_then(Value::as_str)
+            .and_then(evidence_rung)
+            .ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_status_transition_invalid",
+                    "Swap Contract evidence requirement is invalid",
+                )
+            })?;
+        for event in records.iter().filter(|event| event.kind == MKT_STATUS_KIND) {
+            super::role_for_author(config, &event.pubkey)?;
+            let content = super::parse_content(event)?;
+            let profile = super::object(
+                content.get("mkt_swp").unwrap_or(&Value::Null),
+                "MKT-SWP Status",
+            )?;
+            let state = profile
+                .get("swp_state")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    SwapClientError::new("swp_status_transition_invalid", "Status has no swp_state")
+                })?;
+            let required = match state {
+                "funding_observed" | "source_funding_observed" | "destination_funding_observed" => {
+                    Some(2)
+                }
+                "funding_final" | "source_funding_final" | "destination_funding_final" => {
+                    Some(contract_minimum.max(3))
+                }
+                "provider_claim_pending"
+                | "provider_source_claim_pending"
+                | "requester_destination_claim_pending"
+                | "requester_source_refund_pending"
+                | "provider_refund_pending"
+                | "provider_destination_refund_pending"
+                | "refund_pending" => Some(2),
+                "provider_claimed"
+                | "provider_source_claimed"
+                | "requester_destination_claimed"
+                | "lightning_paid"
+                | "lightning_settlement_pending"
+                | "refunded"
+                | "invoice_cancelled"
+                | "requester_source_refunded"
+                | "provider_refunded"
+                | "provider_destination_refunded" => Some(contract_minimum.max(5)),
+                _ => None,
+            };
+            let Some(required) = required else { continue };
+            let evidence = profile.get("evidence").ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_status_transition_invalid",
+                    "observational provider Status has no evidence",
+                )
+            })?;
+            super::validate_mkt_swp_evidence_reference(evidence).map_err(|error| {
+                SwapClientError::new(
+                    "swp_status_transition_invalid",
+                    format!("provider Status evidence is invalid: {error}"),
+                )
+            })?;
+            let rung = evidence
+                .get("rung")
+                .and_then(Value::as_str)
+                .and_then(evidence_rung)
+                .ok_or_else(|| {
+                    SwapClientError::new(
+                        "swp_status_transition_invalid",
+                        "provider Status evidence rung is invalid",
+                    )
+                })?;
+            if rung < required {
+                return Err(SwapClientError::new(
+                    "swp_status_transition_invalid",
+                    "provider Status evidence is below the required rung",
+                ));
+            }
+            validate_facade_evidence_binding(swap_type, event, state, evidence, contract)?;
+        }
+        Ok(())
+    }
+
+    fn facade_settlement_started(state: &str) -> bool {
+        matches!(
+            state,
+            "funding_observed"
+                | "funding_final"
+                | "source_funding_observed"
+                | "source_funding_final"
+                | "destination_funding_observed"
+                | "destination_funding_final"
+                | "provider_claim_pending"
+                | "provider_claimed"
+                | "requester_claim_pending"
+                | "requester_claimed"
+                | "provider_source_claim_pending"
+                | "provider_source_claimed"
+                | "requester_destination_claim_pending"
+                | "requester_destination_claimed"
+                | "lightning_settlement_pending"
+                | "lightning_paid"
+                | "refund_pending"
+                | "refunded"
+                | "requester_source_refund_pending"
+                | "requester_source_refunded"
+                | "provider_refund_pending"
+                | "provider_refunded"
+                | "provider_destination_refund_pending"
+                | "provider_destination_refunded"
+                | "invoice_cancel_pending"
+                | "invoice_cancelled"
+                | "completed"
+        )
+    }
+
+    fn validate_facade_evidence_binding(
+        swap_type: super::SwapType,
+        event: &Event,
+        state: &str,
+        evidence: &Value,
+        contract: &Map<String, Value>,
+    ) -> Result<(), SwapClientError> {
+        let evidence = super::object(evidence, "Status evidence")?;
+        let (leg_id, class, reference_mode) =
+            facade_evidence_target(swap_type, state).ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_status_transition_invalid",
+                    "observational Status has no contract evidence mapping",
+                )
+            })?;
+        let legs = contract
+            .get("legs")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_status_transition_invalid",
+                    "Swap Contract has no evidence legs",
+                )
+            })?;
+        let matching_legs = legs
+            .iter()
+            .filter(|leg| leg.get("leg_id").and_then(Value::as_str) == Some(leg_id))
+            .collect::<Vec<_>>();
+        let [leg] = matching_legs.as_slice() else {
+            return Err(SwapClientError::new(
+                "swp_status_transition_invalid",
+                "Status evidence does not identify one Contract leg",
+            ));
+        };
+        let rail = leg.get("rail").and_then(Value::as_str).ok_or_else(|| {
+            SwapClientError::new(
+                "swp_status_transition_invalid",
+                "Contract evidence leg has no rail",
+            )
+        })?;
+        let verifier_policy = leg
+            .get("verifier_policy")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_status_transition_invalid",
+                    "Contract evidence leg has no verifier policy",
+                )
+            })?;
+        let verifier = super::verifier_for_leg(contract, leg_id).map_err(|_| {
+            SwapClientError::new(
+                "swp_status_transition_invalid",
+                "Status evidence has no exact Contract verifier",
+            )
+        })?;
+        if evidence.get("class").and_then(Value::as_str) != Some(class)
+            || evidence.get("rail").and_then(Value::as_str) != Some(rail)
+            || evidence.get("verifier_policy").and_then(Value::as_str) != Some(verifier_policy)
+            || evidence.get("producer_pubkey").and_then(Value::as_str)
+                != Some(event.pubkey.as_str())
+            || !super::evidence_verifier_is_authorized(evidence, verifier)
+        {
+            return Err(SwapClientError::new(
+                "swp_status_transition_invalid",
+                "Status evidence policy or authority differs from the Contract",
+            ));
+        }
+        let reference = evidence
+            .get("reference")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_status_transition_invalid",
+                    "Status evidence has no reference",
+                )
+            })?;
+        let expected_reference = match reference_mode {
+            FacadeEvidenceReference::FundingOutpoint => {
+                let raw = super::decode_hex(
+                    super::require_string(
+                        verifier,
+                        "funding_transaction",
+                        None,
+                        "swp_status_transition_invalid",
+                    )?,
+                    "Status funding transaction",
+                )?;
+                let transaction = super::Transaction::parse(&raw).map_err(|error| {
+                    SwapClientError::new(
+                        "swp_status_transition_invalid",
+                        format!("Status funding transaction is invalid: {error}"),
+                    )
+                })?;
+                let output_index = super::required_u32(verifier, "output_index")?;
+                format!(
+                    "{}:{output_index}",
+                    super::lower_hex(&transaction.txid().map_err(|error| {
+                        SwapClientError::new(
+                            "swp_status_transition_invalid",
+                            format!("could not derive Status funding txid: {error}"),
+                        )
+                    })?)
+                )
+            }
+            FacadeEvidenceReference::PaymentHash => super::require_string(
+                contract,
+                "payment_hash",
+                None,
+                "swp_status_transition_invalid",
+            )?
+            .to_owned(),
+            FacadeEvidenceReference::StatusTransaction => super::require_string(
+                super::object(
+                    super::parse_content(event)?
+                        .get("mkt_swp")
+                        .unwrap_or(&Value::Null),
+                    "MKT-SWP Status",
+                )?,
+                "transaction_id",
+                None,
+                "swp_status_transition_invalid",
+            )?
+            .to_owned(),
+        };
+        if reference != expected_reference {
+            return Err(SwapClientError::new(
+                "swp_status_transition_invalid",
+                "Status evidence reference differs from the Contract-bound artifact",
+            ));
+        }
+        if class == "bitcoin_output"
+            && evidence.get("artifact_sha256").and_then(Value::as_str)
+                != verifier
+                    .get("funding_transaction_sha256")
+                    .and_then(Value::as_str)
+        {
+            return Err(SwapClientError::new(
+                "swp_status_transition_invalid",
+                "Status funding artifact differs from the Contract",
+            ));
+        }
+        Ok(())
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum FacadeEvidenceReference {
+        FundingOutpoint,
+        PaymentHash,
+        StatusTransaction,
+    }
+
+    fn facade_evidence_target(
+        swap_type: super::SwapType,
+        state: &str,
+    ) -> Option<(&'static str, &'static str, FacadeEvidenceReference)> {
+        use FacadeEvidenceReference::{FundingOutpoint, PaymentHash, StatusTransaction};
+        match (swap_type, state) {
+            (super::SwapType::Submarine, "funding_observed" | "funding_final") => {
+                Some(("source", "bitcoin_output", FundingOutpoint))
+            }
+            (super::SwapType::Reverse, "funding_observed" | "funding_final") => {
+                Some(("destination", "bitcoin_output", FundingOutpoint))
+            }
+            (_, "source_funding_observed" | "source_funding_final") => {
+                Some(("source", "bitcoin_output", FundingOutpoint))
+            }
+            (_, "destination_funding_observed" | "destination_funding_final") => {
+                Some(("destination", "bitcoin_output", FundingOutpoint))
+            }
+            (super::SwapType::Submarine, "provider_claim_pending") => {
+                Some(("source", "claim", StatusTransaction))
+            }
+            (super::SwapType::Submarine, "provider_claimed") => {
+                Some(("source", "bitcoin_spend", FundingOutpoint))
+            }
+            (super::SwapType::Submarine, "refund_pending" | "refunded") => {
+                Some(("source", "refund", StatusTransaction))
+            }
+            (super::SwapType::Reverse, "requester_claim_pending") => {
+                Some(("destination", "claim", StatusTransaction))
+            }
+            (super::SwapType::Reverse, "requester_claimed" | "lightning_settlement_pending") => {
+                Some(("destination", "bitcoin_spend", FundingOutpoint))
+            }
+            (super::SwapType::Reverse, "provider_refund_pending" | "provider_refunded") => {
+                Some(("destination", "refund", StatusTransaction))
+            }
+            (super::SwapType::Reverse, "refunded") => {
+                Some(("destination", "refund", StatusTransaction))
+            }
+            (super::SwapType::Reverse, "lightning_paid")
+            | (super::SwapType::Submarine, "lightning_paid") => {
+                Some(("lightning", "lightning_payment", PaymentHash))
+            }
+            (super::SwapType::Reverse, "invoice_cancelled") => {
+                Some(("lightning", "invoice", PaymentHash))
+            }
+            (super::SwapType::Chain, "provider_source_claim_pending") => {
+                Some(("source", "claim", StatusTransaction))
+            }
+            (super::SwapType::Chain, "provider_source_claimed") => {
+                Some(("source", "bitcoin_spend", FundingOutpoint))
+            }
+            (super::SwapType::Chain, "requester_destination_claim_pending") => {
+                Some(("destination", "claim", StatusTransaction))
+            }
+            (super::SwapType::Chain, "requester_destination_claimed") => {
+                Some(("destination", "bitcoin_spend", FundingOutpoint))
+            }
+            (
+                super::SwapType::Chain,
+                "requester_source_refund_pending" | "requester_source_refunded",
+            ) => Some(("source", "refund", StatusTransaction)),
+            (
+                super::SwapType::Chain,
+                "provider_destination_refund_pending" | "provider_destination_refunded",
+            ) => Some(("destination", "refund", StatusTransaction)),
+            _ => None,
+        }
+    }
+
+    fn evidence_rung(value: &str) -> Option<u8> {
+        [
+            "pledged", "reserved", "measured", "verified", "paid", "settled",
+        ]
+        .iter()
+        .position(|candidate| *candidate == value)
+        .and_then(|index| u8::try_from(index).ok())
     }
 
     pub fn require_contiguous_status(projection: &StatusProjection) -> Result<(), SwapClientError> {
@@ -3573,6 +4413,12 @@ impl StatusProjection {
             let sequence = tag_value(event, "seq")?
                 .parse::<u64>()
                 .map_err(|_| SwapClientError::new("swp_status_gap", "Status seq is invalid"))?;
+            if sequence > MAX_STATUS_SEQUENCE {
+                return Err(SwapClientError::new(
+                    "swp_status_gap",
+                    "Status seq exceeds the signed record bound",
+                ));
+            }
             let role = role_for_author(config, &event.pubkey)?;
             let content = parse_content(event)?;
             let swp_state = object(

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,6 +35,39 @@ type processSnapshot struct {
 	} `json:"config"`
 	SignedRecords []processEvent           `json:"signed_records"`
 	ExitPackages  []map[string]interface{} `json:"exit_packages"`
+}
+
+type processAdapterPrepared struct {
+	Schema            string `json:"schema"`
+	Client            string `json:"client"`
+	SessionID         string `json:"session_id"`
+	Invoice           string `json:"invoice"`
+	RefundPublicKey   string `json:"refund_public_key"`
+	RawTransactionHex string `json:"raw_transaction_hex"`
+	OutputIndex       uint32 `json:"output_index"`
+}
+
+type processAdapterApproval struct {
+	Schema                      string `json:"schema"`
+	Client                      string `json:"client"`
+	SessionID                   string `json:"session_id"`
+	FinalizePath                string `json:"finalize_path"`
+	FundingTransactionSHA256    string `json:"funding_transaction_sha256"`
+	OutputIndex                 uint32 `json:"output_index"`
+	RequesterContractEventID    string `json:"requester_contract_event_id"`
+	ProviderContractEventID     string `json:"provider_contract_event_id"`
+	ExitPackageSHA256           string `json:"exit_package_sha256"`
+	ExitPackageMode             string `json:"exit_package_mode"`
+	AuthorizationSnapshotSHA256 string `json:"authorization_snapshot_sha256"`
+	ExitPackagePersisted        bool   `json:"exit_package_persisted"`
+	ScriptPathOnly              bool   `json:"script_path_only"`
+}
+
+type processAdapterComplete struct {
+	Schema        string `json:"schema"`
+	Client        string `json:"client"`
+	SessionID     string `json:"session_id"`
+	TransactionID string `json:"transaction_id"`
 }
 
 type processHTTP struct {
@@ -77,6 +111,74 @@ func (client processHTTP) request(method, path string, body interface{}) (map[st
 	return value, nil
 }
 
+func readProcessControl(t *testing.T, controlPath string, target interface{}) {
+	t.Helper()
+	bytes, err := os.ReadFile(controlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(bytes, target); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitProcessControl(controlPath string, target interface{}) error {
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		bytes, err := os.ReadFile(controlPath)
+		if err == nil {
+			return json.Unmarshal(bytes, target)
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for %s", controlPath)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func writeProcessControl(controlPath string, value interface{}) error {
+	bytes, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(controlPath), ".boltz-control-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			if removeErr := os.Remove(temporaryPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				return
+			}
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(bytes); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, controlPath); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
 type processFundingPreparer struct {
 	transaction string
 	outputIndex uint32
@@ -87,15 +189,44 @@ func (preparer processFundingPreparer) PrepareFunding(context.Context, FundingRe
 }
 
 type processFinalizer struct {
-	client            processHTTP
-	exitPackageSHA256 string
-	exitPackageMode   string
+	client         processHTTP
+	stateDirectory string
+	clientName     string
 }
 
 func (finalizer processFinalizer) FinalizeSubmarineAndPersistExit(
 	_ context.Context,
 	binding FundingBinding,
 ) (BilateralApproval, error) {
+	request := map[string]interface{}{
+		"schema":                     "openagents.immortal.boltz-adapter-finalize.v1",
+		"client":                     finalizer.clientName,
+		"session_id":                 binding.SessionID,
+		"finalize_path":              binding.FinalizePath,
+		"raw_transaction_hex":        binding.RawTransactionHex,
+		"funding_transaction_sha256": binding.FundingTransactionSHA256,
+		"output_index":               binding.OutputIndex,
+	}
+	if err := writeProcessControl(
+		filepath.Join(finalizer.stateDirectory, "boltz-"+finalizer.clientName+"-finalize-request.json"),
+		request,
+	); err != nil {
+		return BilateralApproval{}, err
+	}
+	var callback processAdapterApproval
+	if err := waitProcessControl(
+		filepath.Join(finalizer.stateDirectory, "boltz-"+finalizer.clientName+"-approval.json"),
+		&callback,
+	); err != nil {
+		return BilateralApproval{}, err
+	}
+	if callback.Schema != "openagents.immortal.boltz-adapter-approval.v1" ||
+		callback.Client != finalizer.clientName || callback.SessionID != binding.SessionID ||
+		callback.FinalizePath != binding.FinalizePath ||
+		callback.FundingTransactionSHA256 != binding.FundingTransactionSHA256 ||
+		callback.OutputIndex != binding.OutputIndex {
+		return BilateralApproval{}, fmt.Errorf("client engine approved another funding binding")
+	}
 	value, err := finalizer.client.request("POST", binding.FinalizePath, map[string]interface{}{
 		"sessionId":                binding.SessionID,
 		"finalizePath":             binding.FinalizePath,
@@ -106,27 +237,112 @@ func (finalizer processFinalizer) FinalizeSubmarineAndPersistExit(
 	if err != nil {
 		return BilateralApproval{}, err
 	}
-	if stringMember(value, "exitPackageSha256") != finalizer.exitPackageSHA256 ||
-		stringMember(value, "exitPackageMode") != finalizer.exitPackageMode {
-		return BilateralApproval{}, fmt.Errorf("provider finalized another persisted exit package")
+	if !providerApprovalMatchesCallback(value, callback) {
+		return BilateralApproval{}, fmt.Errorf("provider finalized another client-engine approval")
 	}
 	return BilateralApproval{
-		SessionID:                stringMember(value, "sessionId"),
-		FinalizePath:             stringMember(value, "finalizePath"),
-		FundingTransactionSHA256: stringMember(value, "fundingTransactionSha256"),
-		OutputIndex:              uint32(numberMember(value, "outputIndex")),
-		RequesterContractEventID: stringMember(value, "requesterContractEventId"),
-		ProviderContractEventID:  stringMember(value, "providerContractEventId"),
-		ExitPackageSHA256:        stringMember(value, "exitPackageSha256"),
-		ExitPackageMode:          stringMember(value, "exitPackageMode"),
-		ExitPackagePersisted:     true,
-		ScriptPathOnly:           value["scriptPathOnly"] == true,
+		SessionID:                   stringMember(value, "sessionId"),
+		FinalizePath:                stringMember(value, "finalizePath"),
+		FundingTransactionSHA256:    stringMember(value, "fundingTransactionSha256"),
+		OutputIndex:                 uint32(numberMember(value, "outputIndex")),
+		RequesterContractEventID:    stringMember(value, "requesterContractEventId"),
+		ProviderContractEventID:     stringMember(value, "providerContractEventId"),
+		ExitPackageSHA256:           stringMember(value, "exitPackageSha256"),
+		ExitPackageMode:             stringMember(value, "exitPackageMode"),
+		AuthorizationSnapshotSHA256: callback.AuthorizationSnapshotSHA256,
+		ExitPackagePersisted:        callback.ExitPackagePersisted,
+		ScriptPathOnly:              callback.ScriptPathOnly && value["scriptPathOnly"] == true,
 	}, nil
 }
 
+func providerApprovalMatchesCallback(value map[string]interface{}, callback processAdapterApproval) bool {
+	return stringMember(value, "requesterContractEventId") == callback.RequesterContractEventID &&
+		stringMember(value, "providerContractEventId") == callback.ProviderContractEventID &&
+		stringMember(value, "exitPackageSha256") == callback.ExitPackageSHA256 &&
+		stringMember(value, "exitPackageMode") == callback.ExitPackageMode &&
+		value["scriptPathOnly"] == callback.ScriptPathOnly
+}
+
+func TestProviderFinalizeMustMatchTheClientEngineApproval(t *testing.T) {
+	callback := processAdapterApproval{
+		RequesterContractEventID: strings.Repeat("1", 64),
+		ProviderContractEventID:  strings.Repeat("2", 64),
+		ExitPackageSHA256:        strings.Repeat("3", 64),
+		ExitPackageMode:          "wallet_sign",
+		ScriptPathOnly:           true,
+	}
+	matching := map[string]interface{}{
+		"requesterContractEventId": callback.RequesterContractEventID,
+		"providerContractEventId":  callback.ProviderContractEventID,
+		"exitPackageSha256":        callback.ExitPackageSHA256,
+		"exitPackageMode":          callback.ExitPackageMode,
+		"scriptPathOnly":           true,
+	}
+	if !providerApprovalMatchesCallback(matching, callback) {
+		t.Fatal("exact provider approval did not match the client engine callback")
+	}
+	for name, mutate := range map[string]func(map[string]interface{}){
+		"swapped roles": func(value map[string]interface{}) {
+			value["requesterContractEventId"] = callback.ProviderContractEventID
+			value["providerContractEventId"] = callback.RequesterContractEventID
+		},
+		"foreign provider": func(value map[string]interface{}) {
+			value["providerContractEventId"] = strings.Repeat("4", 64)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := make(map[string]interface{}, len(matching))
+			for key, value := range matching {
+				candidate[key] = value
+			}
+			mutate(candidate)
+			if providerApprovalMatchesCallback(candidate, callback) {
+				t.Fatal("mismatched provider approval matched the client engine callback")
+			}
+		})
+	}
+}
+
 type processBroadcaster struct {
-	client    processHTTP
-	sessionID string
+	client         processHTTP
+	sessionID      string
+	stateDirectory string
+	clientName     string
+}
+
+func TestAdaptedGoClientFirstBroadcastAgainstProviderProcess(t *testing.T) {
+	baseURL := os.Getenv("IMMORTAL_BOLTZ_PROVIDER_PROCESS_URL")
+	stateDirectory := os.Getenv("IMMORTAL_BOLTZ_PROVIDER_PROCESS_STATE_DIR")
+	if baseURL == "" || stateDirectory == "" {
+		t.Skip("provider process first-broadcast gate is not configured")
+	}
+	submarine := readProcessSnapshot(t, filepath.Join(stateDirectory, "funded-submarine-session.json"))
+	bitcoin := processBitcoin(t, processContract(t, submarine), "source")
+	raw := stringMember(bitcoin.verifier, "funding_transaction")
+	mutated, expectedTransactionID, err := mutateWitnessSameTransactionID(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := processHTTP{baseURL: baseURL}
+	body := map[string]interface{}{
+		"hex":          raw,
+		"mktSessionId": submarine.Config.SessionID,
+	}
+	first := mustRequest(t, client, "POST", "/v2/chain/BTC/transaction", body)
+	if stringMember(first, "id") != expectedTransactionID {
+		t.Fatal("first HTTP broadcast returned another transaction ID")
+	}
+	replay := mustRequest(t, client, "POST", "/v2/chain/BTC/transaction", body)
+	if stringMember(replay, "id") != expectedTransactionID {
+		t.Fatal("exact first-broadcast replay returned another transaction ID")
+	}
+	if _, err := client.request("POST", "/v2/chain/BTC/transaction", map[string]interface{}{
+		"hex":          mutated,
+		"mktSessionId": submarine.Config.SessionID,
+	}); err == nil {
+		t.Fatal("same-txid transaction with changed witness was accepted")
+	}
+	websocketUpdate(t, baseURL, submarine.Config.SessionID, true)
 }
 
 func (broadcaster processBroadcaster) BroadcastPreparedFunding(
@@ -140,7 +356,31 @@ func (broadcaster processBroadcaster) BroadcastPreparedFunding(
 	if err != nil {
 		return "", err
 	}
-	return stringMember(value, "id"), nil
+	transactionID := stringMember(value, "id")
+	if err := writeProcessControl(
+		filepath.Join(broadcaster.stateDirectory, "boltz-"+broadcaster.clientName+"-broadcast.json"),
+		map[string]interface{}{
+			"schema":         "openagents.immortal.boltz-adapter-broadcast.v1",
+			"client":         broadcaster.clientName,
+			"session_id":     broadcaster.sessionID,
+			"transaction_id": transactionID,
+		},
+	); err != nil {
+		return "", err
+	}
+	var complete processAdapterComplete
+	if err := waitProcessControl(
+		filepath.Join(broadcaster.stateDirectory, "boltz-"+broadcaster.clientName+"-complete.json"),
+		&complete,
+	); err != nil {
+		return "", err
+	}
+	if complete.Schema != "openagents.immortal.boltz-adapter-complete.v1" ||
+		complete.Client != broadcaster.clientName || complete.SessionID != broadcaster.sessionID ||
+		complete.TransactionID != transactionID {
+		return "", fmt.Errorf("client engine completed another broadcast")
+	}
+	return transactionID, nil
 }
 
 func TestAdaptedGoClientAgainstProviderProcess(t *testing.T) {
@@ -152,7 +392,12 @@ func TestAdaptedGoClientAgainstProviderProcess(t *testing.T) {
 	if len(ReleasedRouteShapes()) != 13 {
 		t.Fatal("released Go route count changed")
 	}
-	submarine := readProcessSnapshot(t, filepath.Join(stateDirectory, "funded-submarine-session.json"))
+	var prepared processAdapterPrepared
+	readProcessControl(t, filepath.Join(stateDirectory, "boltz-go-prepared.json"), &prepared)
+	if prepared.Schema != "openagents.immortal.boltz-adapter-prepared.v1" ||
+		prepared.Client != "go" || !validLowerHex32(prepared.SessionID) {
+		t.Fatal("Rust client engine produced another adapter preparation")
+	}
 	reverse := readProcessSnapshot(t, filepath.Join(stateDirectory, "funded-reverse-session.json"))
 	client := processHTTP{baseURL: baseURL}
 
@@ -160,26 +405,26 @@ func TestAdaptedGoClientAgainstProviderProcess(t *testing.T) {
 	if stringMember(version, "profile") != "bitcoin-lightning-script-path-v1" {
 		t.Fatal("provider reported another released profile")
 	}
-	submarineTerms := processContract(t, submarine)
-	submarineBitcoin := processBitcoin(t, submarineTerms, "source")
-	exitPackageMode, exitPackageSHA256 := assertProcessExitPersisted(
-		t,
-		submarineTerms,
-		submarine.ExitPackages,
-	)
-	submarineRFQ := processProfile(t, oneProcessRecord(t, submarine, 39604))
 	submarinePairs := mustRequest(t, client, "GET", "/v2/swap/submarine", nil)
 	submarinePair := nestedMap(t, submarinePairs, "BTC", "BTC")
-	created := mustRequest(t, client, "POST", "/v2/swap/submarine", map[string]interface{}{
-		"from":            "BTC",
-		"to":              "BTC",
-		"invoice":         stringMember(submarineRFQ, "invoice"),
-		"pairHash":        stringMember(submarinePair, "hash"),
-		"refundPublicKey": stringMember(submarineBitcoin.leg, "refund_public_key"),
-		"mktSessionId":    submarine.Config.SessionID,
-	})
+	submarineCreate, err := AdaptPinnedSubmarineCreate(PinnedSubmarineCreate{
+		From: "BTC", To: "BTC",
+		Invoice:         prepared.Invoice,
+		PairHash:        stringMember(submarinePair, "hash"),
+		RefundPublicKey: prepared.RefundPublicKey,
+	}, prepared.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := mustRequestEventually(t, client, "POST", "/v2/swap/submarine", submarineCreate)
+	mutatedFunding, expectedTransactionID, err := mutateWitnessSameTransactionID(prepared.RawTransactionHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.request("GET", "/v2/chain/BTC/transaction/"+expectedTransactionID, nil); err == nil {
+		t.Fatal("prepared funding transaction existed before adapter broadcast")
+	}
 
-	outputIndex := uint32(numberMember(submarineBitcoin.verifier, "output_index"))
 	gate, err := NewFundingGate(
 		Profile{
 			PartialSignaturesDisabled:    true,
@@ -188,33 +433,45 @@ func TestAdaptedGoClientAgainstProviderProcess(t *testing.T) {
 			ProviderWebSocketURL:         strings.Replace(baseURL, "http", "ws", 1) + "/v2/ws",
 		},
 		processFundingPreparer{
-			transaction: stringMember(submarineBitcoin.verifier, "funding_transaction"),
-			outputIndex: outputIndex,
+			transaction: prepared.RawTransactionHex,
+			outputIndex: prepared.OutputIndex,
 		},
 		processFinalizer{
-			client:            client,
-			exitPackageSHA256: exitPackageSHA256,
-			exitPackageMode:   exitPackageMode,
+			client:         client,
+			stateDirectory: stateDirectory,
+			clientName:     "go",
 		},
-		processBroadcaster{client: client, sessionID: submarine.Config.SessionID},
+		processBroadcaster{
+			client: client, sessionID: prepared.SessionID,
+			stateDirectory: stateDirectory, clientName: "go",
+		},
 	)
 	if err != nil {
 		t.Fatalf("create funding gate: %v", err)
 	}
 	transactionID, err := gate.FundSubmarine(context.Background(), FundingRequest{
-		SessionID:  submarine.Config.SessionID,
+		SessionID:  prepared.SessionID,
 		Address:    stringMember(created, "address"),
 		AmountSats: uint64(numberMember(created, "expectedAmount")),
 	})
 	if err != nil {
 		t.Fatalf("fund through compatibility gate: %v", err)
 	}
+	if transactionID != expectedTransactionID {
+		t.Fatal("adapter broadcast returned another prepared transaction ID")
+	}
 	replayedFunding := mustRequest(t, client, "POST", "/v2/chain/BTC/transaction", map[string]interface{}{
-		"hex":          stringMember(submarineBitcoin.verifier, "funding_transaction"),
-		"mktSessionId": submarine.Config.SessionID,
+		"hex":          prepared.RawTransactionHex,
+		"mktSessionId": prepared.SessionID,
 	})
 	if stringMember(replayedFunding, "id") != transactionID {
 		t.Fatal("exact funding replay returned another transaction")
+	}
+	if _, err := client.request("POST", "/v2/chain/BTC/transaction", map[string]interface{}{
+		"hex":          mutatedFunding,
+		"mktSessionId": prepared.SessionID,
+	}); err == nil {
+		t.Fatal("same-txid transaction with changed witness was accepted")
 	}
 
 	reverseTerms := processContract(t, reverse)
@@ -223,17 +480,19 @@ func TestAdaptedGoClientAgainstProviderProcess(t *testing.T) {
 	reverseConstraints := mapMember(t, reverseRFQ, "constraints")
 	reversePairs := mustRequest(t, client, "GET", "/v2/swap/reverse", nil)
 	reversePair := nestedMap(t, reversePairs, "BTC", "BTC")
-	mustRequest(t, client, "POST", "/v2/swap/reverse", map[string]interface{}{
-		"from":           "BTC",
-		"to":             "BTC",
-		"invoiceAmount":  decimalStringNumber(t, stringMember(reverseConstraints, "input_amount")),
-		"preimageHash":   stringMember(reverseConstraints, "payment_hash"),
-		"claimPublicKey": stringMember(reverseBitcoin.leg, "claim_public_key"),
-		"pairHash":       stringMember(reversePair, "hash"),
-		"mktSessionId":   reverse.Config.SessionID,
-	})
+	reverseCreate, err := AdaptPinnedReverseCreate(PinnedReverseCreate{
+		From: "BTC", To: "BTC",
+		InvoiceAmount:  decimalStringNumber(t, stringMember(reverseConstraints, "input_amount")),
+		PreimageHash:   stringMember(reverseConstraints, "payment_hash"),
+		ClaimPublicKey: stringMember(reverseBitcoin.leg, "claim_public_key"),
+		PairHash:       stringMember(reversePair, "hash"),
+	}, reverse.Config.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustRequest(t, client, "POST", "/v2/swap/reverse", reverseCreate)
 	if _, err := client.request("POST", "/v2/chain/BTC/transaction", map[string]interface{}{
-		"hex":          stringMember(submarineBitcoin.verifier, "funding_transaction"),
+		"hex":          prepared.RawTransactionHex,
 		"mktSessionId": reverse.Config.SessionID,
 	}); err == nil {
 		t.Fatal("provider accepted a transaction bound to another session")
@@ -248,12 +507,12 @@ func TestAdaptedGoClientAgainstProviderProcess(t *testing.T) {
 		t.Fatal("reverse claim replay returned another transaction")
 	}
 
-	websocketUpdate(t, baseURL, submarine.Config.SessionID)
-	submarineTransaction := mustRequest(t, client, "GET", "/v2/swap/submarine/"+submarine.Config.SessionID+"/transaction", nil)
+	websocketUpdate(t, baseURL, prepared.SessionID, true)
+	submarineTransaction := mustRequest(t, client, "GET", "/v2/swap/submarine/"+prepared.SessionID+"/transaction", nil)
 	if stringMember(submarineTransaction, "id") != transactionID {
 		t.Fatal("provider transaction route disagrees with broadcast")
 	}
-	preimage := mustRequest(t, client, "GET", "/v2/swap/submarine/"+submarine.Config.SessionID+"/preimage", nil)
+	preimage := mustRequest(t, client, "GET", "/v2/swap/submarine/"+prepared.SessionID+"/preimage", nil)
 	if !validLowerHex32(stringMember(preimage, "preimage")) {
 		t.Fatal("provider returned an invalid released preimage")
 	}
@@ -419,6 +678,28 @@ func processContract(t *testing.T, snapshot processSnapshot) map[string]interfac
 	return contracts[0]
 }
 
+func processContractIDs(t *testing.T, snapshot processSnapshot) (string, string) {
+	t.Helper()
+	ids := make(map[string]string)
+	for _, event := range snapshot.SignedRecords {
+		if event.Kind != 39610 {
+			continue
+		}
+		role := stringMember(processProfile(t, event), "signer_role")
+		if role != "requester" && role != "provider" {
+			t.Fatalf("unsupported Contract signer role %q", role)
+		}
+		if ids[role] != "" {
+			t.Fatalf("duplicate %s Contract", role)
+		}
+		ids[role] = event.ID
+	}
+	if !validLowerHex32(ids["requester"]) || !validLowerHex32(ids["provider"]) {
+		t.Fatal("bilateral Contract IDs are missing")
+	}
+	return ids["requester"], ids["provider"]
+}
+
 func processBitcoin(t *testing.T, terms map[string]interface{}, legID string) processBitcoinTerms {
 	t.Helper()
 	var result processBitcoinTerms
@@ -447,6 +728,22 @@ func mustRequest(t *testing.T, client processHTTP, method, path string, body int
 		t.Fatal(err)
 	}
 	return value
+}
+
+func mustRequestEventually(t *testing.T, client processHTTP, method, path string, body interface{}) map[string]interface{} {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		value, err := client.request(method, path, body)
+		if err == nil {
+			return value
+		}
+		lastErr = err
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("request never became ready: %v", lastErr)
+	return nil
 }
 
 func mapMember(t *testing.T, value map[string]interface{}, name string) map[string]interface{} {
@@ -494,7 +791,135 @@ func decimalStringNumber(t *testing.T, value string) uint64 {
 	return number
 }
 
-func websocketUpdate(t *testing.T, baseURL, sessionID string) {
+func mutateWitnessSameTransactionID(raw string) (string, string, error) {
+	transaction, err := hex.DecodeString(raw)
+	if err != nil {
+		return "", "", fmt.Errorf("decode funding transaction: %w", err)
+	}
+	if len(transaction) < 10 || transaction[4] != 0 || transaction[5] != 1 {
+		return "", "", fmt.Errorf("funding transaction has no SegWit witness")
+	}
+	offset := 6
+	inputCount, inputCountBytes, err := readCompactSize(transaction, offset)
+	if err != nil {
+		return "", "", err
+	}
+	stripped := append([]byte{}, transaction[:4]...)
+	stripped = append(stripped, transaction[offset:offset+inputCountBytes]...)
+	offset += inputCountBytes
+	for input := uint64(0); input < inputCount; input++ {
+		inputStart := offset
+		if offset+36 > len(transaction) {
+			return "", "", fmt.Errorf("funding input is truncated")
+		}
+		offset += 36
+		scriptLength, scriptLengthBytes, err := readCompactSize(transaction, offset)
+		if err != nil {
+			return "", "", err
+		}
+		offset += scriptLengthBytes
+		if scriptLength > uint64(len(transaction)-offset) || offset+int(scriptLength)+4 > len(transaction) {
+			return "", "", fmt.Errorf("funding input script is truncated")
+		}
+		offset += int(scriptLength) + 4
+		stripped = append(stripped, transaction[inputStart:offset]...)
+	}
+	outputCount, outputCountBytes, err := readCompactSize(transaction, offset)
+	if err != nil {
+		return "", "", err
+	}
+	outputStart := offset
+	offset += outputCountBytes
+	for output := uint64(0); output < outputCount; output++ {
+		if offset+8 > len(transaction) {
+			return "", "", fmt.Errorf("funding output is truncated")
+		}
+		offset += 8
+		scriptLength, scriptLengthBytes, err := readCompactSize(transaction, offset)
+		if err != nil {
+			return "", "", err
+		}
+		offset += scriptLengthBytes
+		if scriptLength > uint64(len(transaction)-offset) {
+			return "", "", fmt.Errorf("funding output script is truncated")
+		}
+		offset += int(scriptLength)
+	}
+	stripped = append(stripped, transaction[outputStart:offset]...)
+	mutated := append([]byte{}, transaction...)
+	mutatedWitness := false
+	for input := uint64(0); input < inputCount; input++ {
+		itemCount, itemCountBytes, err := readCompactSize(transaction, offset)
+		if err != nil {
+			return "", "", err
+		}
+		offset += itemCountBytes
+		for item := uint64(0); item < itemCount; item++ {
+			itemLength, itemLengthBytes, err := readCompactSize(transaction, offset)
+			if err != nil {
+				return "", "", err
+			}
+			offset += itemLengthBytes
+			if itemLength > uint64(len(transaction)-offset) {
+				return "", "", fmt.Errorf("funding witness is truncated")
+			}
+			if itemLength > 0 && !mutatedWitness {
+				mutated[offset] ^= 1
+				mutatedWitness = true
+			}
+			offset += int(itemLength)
+		}
+	}
+	if !mutatedWitness || offset+4 != len(transaction) {
+		return "", "", fmt.Errorf("funding transaction has no mutable bounded witness")
+	}
+	stripped = append(stripped, transaction[offset:]...)
+	first := sha256.Sum256(stripped)
+	second := sha256.Sum256(first[:])
+	for left, right := 0, len(second)-1; left < right; left, right = left+1, right-1 {
+		second[left], second[right] = second[right], second[left]
+	}
+	return hex.EncodeToString(mutated), hex.EncodeToString(second[:]), nil
+}
+
+func readCompactSize(bytes []byte, offset int) (uint64, int, error) {
+	if offset >= len(bytes) {
+		return 0, 0, fmt.Errorf("compact size is truncated")
+	}
+	switch bytes[offset] {
+	case 0xfd:
+		if offset+3 > len(bytes) {
+			return 0, 0, fmt.Errorf("compact size uint16 is truncated")
+		}
+		value := uint64(binary.LittleEndian.Uint16(bytes[offset+1 : offset+3]))
+		if value < 0xfd {
+			return 0, 0, fmt.Errorf("compact size uint16 is noncanonical")
+		}
+		return value, 3, nil
+	case 0xfe:
+		if offset+5 > len(bytes) {
+			return 0, 0, fmt.Errorf("compact size uint32 is truncated")
+		}
+		value := uint64(binary.LittleEndian.Uint32(bytes[offset+1 : offset+5]))
+		if value <= 0xffff {
+			return 0, 0, fmt.Errorf("compact size uint32 is noncanonical")
+		}
+		return value, 5, nil
+	case 0xff:
+		if offset+9 > len(bytes) {
+			return 0, 0, fmt.Errorf("compact size uint64 is truncated")
+		}
+		value := binary.LittleEndian.Uint64(bytes[offset+1 : offset+9])
+		if value <= 0xffffffff {
+			return 0, 0, fmt.Errorf("compact size uint64 is noncanonical")
+		}
+		return value, 9, nil
+	default:
+		return uint64(bytes[offset]), 1, nil
+	}
+}
+
+func websocketUpdate(t *testing.T, baseURL, sessionID string, proveHeartbeats bool) {
 	t.Helper()
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
@@ -528,30 +953,28 @@ func websocketUpdate(t *testing.T, baseURL, sessionID string) {
 			break
 		}
 	}
-	payload, _ := json.Marshal(map[string]interface{}{
-		"op": "subscribe", "channel": "swap.update", "args": []string{sessionID},
-	})
-	mask := make([]byte, 4)
-	if _, err := rand.Read(mask); err != nil {
-		t.Fatal(err)
+	writeFrame := func(opcode byte, payload []byte) {
+		t.Helper()
+		mask := make([]byte, 4)
+		if _, err := rand.Read(mask); err != nil {
+			t.Fatal(err)
+		}
+		frame := []byte{0x80 | opcode}
+		if len(payload) <= 125 {
+			frame = append(frame, byte(len(payload))|0x80)
+		} else {
+			frame = append(frame, 126|0x80, byte(len(payload)>>8), byte(len(payload)))
+		}
+		frame = append(frame, mask...)
+		for index, value := range payload {
+			frame = append(frame, value^mask[index%4])
+		}
+		if _, err := connection.Write(frame); err != nil {
+			t.Fatal(err)
+		}
 	}
-	frame := []byte{0x81}
-	if len(payload) <= 125 {
-		frame = append(frame, byte(len(payload))|0x80)
-	} else {
-		frame = append(frame, 126|0x80, byte(len(payload)>>8), byte(len(payload)))
-	}
-	frame = append(frame, mask...)
-	for index, value := range payload {
-		frame = append(frame, value^mask[index%4])
-	}
-	if _, err := connection.Write(frame); err != nil {
-		t.Fatal(err)
-	}
-	if err := connection.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	for {
+	readFrame := func() (byte, []byte) {
+		t.Helper()
 		first, err := reader.ReadByte()
 		if err != nil {
 			t.Fatal(err)
@@ -572,7 +995,32 @@ func websocketUpdate(t *testing.T, baseURL, sessionID string) {
 		if _, err := io.ReadFull(reader, message); err != nil {
 			t.Fatal(err)
 		}
-		if first&0x0f != 1 {
+		return first & 0x0f, message
+	}
+	if err := connection.SetReadDeadline(time.Now().Add(45 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if proveHeartbeats {
+		time.Sleep(15 * time.Second)
+		writeFrame(1, []byte(`{"op":"ping"}`))
+		opcode, message := readFrame()
+		if opcode != 1 || string(message) != `{"event":"pong"}` {
+			t.Fatalf("application heartbeat response changed: opcode=%d payload=%q", opcode, message)
+		}
+		time.Sleep(16 * time.Second)
+		writeFrame(9, nil)
+		opcode, message = readFrame()
+		if opcode != 10 || len(message) != 0 {
+			t.Fatalf("control heartbeat response changed: opcode=%d payload=%q", opcode, message)
+		}
+	}
+	payload, _ := json.Marshal(map[string]interface{}{
+		"op": "subscribe", "channel": "swap.update", "args": []string{sessionID},
+	})
+	writeFrame(1, payload)
+	for {
+		opcode, message := readFrame()
+		if opcode != 1 {
 			continue
 		}
 		var value map[string]interface{}

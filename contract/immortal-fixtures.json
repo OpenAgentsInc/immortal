@@ -271,8 +271,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/boltz-client-adapters-v1.json",
-      "sha256": "d2283867e09dfe17b5a78b074a7551186ec3354873845cccc3dd354433a1d3fc",
-      "bytes": 5677,
+      "sha256": "e6e4d9436c9e2c090ae3319578bb02c1c5175143748749f3eef1923bcb22f625",
+      "bytes": 6143,
       "scope": "client"
     },
     {
@@ -283,8 +283,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/boltz-provider-api-v1.json",
-      "sha256": "c2fb9742fbcd0afe971759db53b12f3ba3f8496e5c1704d04cae289eb7a7195c",
-      "bytes": 10160,
+      "sha256": "34d1422f43ede335b83da03c76fa24f8b30e035183b5b6e3d0044a8211ba70fa",
+      "bytes": 17232,
       "scope": "provider"
     },
     {

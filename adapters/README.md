@@ -7,19 +7,24 @@ source. The inspected upstream commits and Git blob identities are fixed in
 
 Both implementations expose the same funding boundary:
 
-1. the embedding wallet prepares raw transaction bytes without broadcasting;
-2. the seam derives the exact transaction SHA-256 and output index;
-3. the finalize callback receives the concrete session-scoped
+1. the seam accepts a session, address, and amount without Contract IDs;
+2. the embedding wallet prepares raw transaction bytes without broadcasting;
+3. the seam derives the exact transaction SHA-256 and output index;
+4. the finalize callback receives the concrete session-scoped
    `/v2/swap/submarine/<id>/finalize` path, and the embedding Immortal client
    engine verifies both signed Swap Contracts, binds them to those exact
-   bytes/output, and persists the script-path exit package;
-4. the seam permits broadcast of the unchanged prepared transaction.
+   bytes/output, persists the script-path exit package, and restores the
+   funding-authorization snapshot;
+5. the seam compares the provider finalize response with that local approval;
+6. the seam permits broadcast of the unchanged prepared transaction.
 
 The approval callback is a trust boundary, not an HTTP response from the
 provider. It must be backed by the transport-neutral `immortal-client` engine
-or a generated SDK implementation of the same exported contract. Event IDs,
-funding digest/output, exit-package digest, persistence result, and
-script-path-only mode are checked again at the seam before broadcast.
+or a generated SDK implementation of the same exported contract. Contract
+event IDs are callback outputs, not preparation inputs. Event IDs, funding
+digest/output, exit-package digest, authorization-snapshot digest, persistence
+result, and script-path-only mode are checked again at the seam before
+broadcast.
 
 ## Go integration
 
@@ -45,7 +50,12 @@ Run the dependency-free source and unit gate with:
 ./scripts/test-boltz-client-adapters.sh
 ```
 
-This packet supplies buildable client seams and static/unit evidence. It does
-not implement the provider HTTP/WebSocket listener and therefore changes
-neither the 0/53 endpoint result nor the 0/19 dependent-call result. The
-provider process replay remains the next #15 packet.
+These files are clean-room extracted seams shaped from the pinned call
+inventory. They are not patches to, or builds of, the pinned upstream Go
+daemon and web application. `scripts/test-provider-funded.sh` runs each seam
+against the provider listener with a separate fresh Rust client-engine session
+and proves the causal prepare/finalize/authorize/broadcast sequence. The fresh
+Go process also holds its provider WebSocket for more than 31 seconds across
+the web JSON ping/pong and Go control ping/pong before receiving a status
+update. The 19/19 count is route coverage for the inspected dependent-call
+union.

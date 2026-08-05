@@ -62,6 +62,10 @@ fn provider_store_uses_prepared_runtime_statements_and_bounded_queries() {
     assert!(STORE.contains("ORDER BY updated_at, job_id LIMIT $1"));
     assert!(STORE.contains("MAX_SESSION_RECORDS"));
     assert!(STORE.contains("SELECT_BOLTZ_INVOICE_BINDING_SQL"));
+    assert!(STORE.contains("SELECT_BOLTZ_INVOICE_CANDIDATE_SESSIONS_SQL"));
+    assert!(STORE.contains("binding.session_id = record.session_id"));
+    assert!(STORE.contains("MAX_STARTUP_INVOICE_RECONCILIATION: usize = 64"));
+    assert!(STORE.contains("spawn_invoice_binding_reconciliation"));
     assert!(STORE.contains("persist_validated_invoice_binding"));
     assert!(STORE.contains("BOLT11 and Contract payment hashes differ"));
     assert!(STORE.contains("hold_invoice_ready"));

@@ -8,11 +8,21 @@ Boltz source revisions, safe route classes, submarine finalize seam, activation
 law, custody boundary, exact 19-call inventory, and separate 53-route endpoint
 and 19-call dependent denominators. `nipmkt/boltz-provider-api-v1.json` binds
 the funded provider implementation and the resulting 17/53 endpoint and 19/19
-dependent-call process coverage. The facade fixture contains no wallet, rail,
-transaction, key, or preimage material; its BOLT11 is a public parser vector.
+dependent-call process coverage, one connection deadline, separate WebSocket
+idle/partial-frame deadlines and shared peer-IP budgets, canonical
+signed-session projection, and causal prepare/Contract/authorization/finalize/
+broadcast plus exact-replay/witness-conflict process proofs. Its executable
+admission matrix covers zero, one, and two Contracts and refuses invalid,
+foreign, or causally misbound RFQ/Quote/Order/Offering authority. The selected
+fresh Go process proves both heartbeat forms and a later status update on one
+WebSocket held open for more than 31 seconds.
+The facade fixture contains no wallet, rail, transaction, key, or preimage
+material; its BOLT11 is a public parser vector.
 `nipmkt/boltz-client-adapters-v1.json` pins the inspected Go/web source blobs,
 per-client route subsets, shared pre-broadcast funding law, forbidden stock
-paths, and the source/unit-versus-process coverage boundary.
+paths, and the source/unit-versus-process coverage boundary. The process gate
+uses clean-room seams with fresh Rust client-engine sessions; it does not build
+the pinned upstream applications.
 
 ## Provenance
 

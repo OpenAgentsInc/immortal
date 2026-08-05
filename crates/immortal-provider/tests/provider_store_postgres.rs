@@ -2,6 +2,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use immortal_client::mkt_swp_client::{
+    ParticipantRole, StatusState, SwapClientConfig, SwapRecordFactory,
+};
 use immortal_core::{
     domain::{Event, MKT_CLOSE_KIND, MKT_RFQ_KIND, MKT_STATUS_KIND, Tag},
     market::MarketSigner,
@@ -741,17 +744,10 @@ async fn reverse_invoice_lookup_is_indexed_beyond_global_history_prefix() {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    let target_session = id("target-session");
+    let target_session = "aa".repeat(32);
     let requester = MarketSigner::from_secret_bytes([40; 32]).expect("requester signer");
     let provider = MarketSigner::from_secret_bytes([41; 32]).expect("provider signer");
-    let target_records = reverse_invoice_records(
-        &requester,
-        &provider,
-        &target_session,
-        &payment_hash,
-        BOLT11,
-        6_145,
-    );
+    let target_records = canonical_reverse_invoice_records(BOLT11);
     for record in &target_records {
         store
             .persist_session_record(record)
@@ -763,8 +759,51 @@ async fn reverse_invoice_lookup_is_indexed_beyond_global_history_prefix() {
             .reverse_invoice_session(BOLT11)
             .await
             .expect("indexed invoice lookup must succeed"),
-        Some(target_session)
+        Some(target_session.clone())
     );
+
+    let hold_status = target_records
+        .iter()
+        .find(|event| {
+            event.kind == MKT_STATUS_KIND
+                && event
+                    .content
+                    .contains("\"swp_state\":\"hold_invoice_ready\"")
+        })
+        .expect("canonical hold-invoice Status");
+    let status_one = canonical_reverse_status(
+        &target_records,
+        1,
+        hold_status.id.as_str(),
+        "executing",
+        "lightning_htlcs_held",
+    );
+    let status_two = canonical_reverse_status(
+        &target_records,
+        2,
+        status_one.id.as_str(),
+        "awaiting_input",
+        "provider_lock_terms_ready",
+    );
+    store
+        .persist_session_record(&status_two)
+        .await
+        .expect("out-of-order later Status must not invalidate the invoice prefix");
+    drop(store);
+    let mut store = ProviderStore::connect_verified(&database_url)
+        .await
+        .expect("restart must retain an invoice binding while later Status has a gap");
+    assert_eq!(
+        store
+            .reverse_invoice_session(BOLT11)
+            .await
+            .expect("invoice lookup after out-of-order restart must succeed"),
+        Some(target_session.clone())
+    );
+    store
+        .persist_session_record(&status_one)
+        .await
+        .expect("late predecessor must persist without changing the invoice binding");
 
     let poisoned_session = id("poisoned-session");
     let foreign = MarketSigner::from_secret_bytes([42; 32]).expect("foreign signer");
@@ -798,47 +837,21 @@ async fn reverse_invoice_lookup_is_indexed_beyond_global_history_prefix() {
             .reverse_invoice_session(BOLT11)
             .await
             .expect("invoice lookup after poison records must succeed"),
-        Some(id("target-session"))
+        Some(target_session.clone())
     );
-
-    let mismatch_session = id("mismatch-session");
-    let mismatch_hash = "00".repeat(32);
-    for record in reverse_session_prerequisites(
-        &requester,
-        &provider,
-        &mismatch_session,
-        &mismatch_hash,
-        8_000,
-    ) {
-        store
-            .persist_session_record(&record)
-            .await
-            .expect("mismatch-session prerequisite must persist");
-    }
-    let mismatch = signed_store_profile_event(
-        &provider,
-        &mismatch_session,
-        MKT_STATUS_KIND,
-        8_004,
-        json!({"invoice":BOLT11,"swp_state":"hold_invoice_ready"}),
-    );
-    assert!(matches!(
-        store.persist_session_record(&mismatch).await,
-        Err(ProviderStoreError::Conflict(_))
-    ));
     let delete_binding = client
         .prepare("DELETE FROM provider_boltz_invoice_binding WHERE session_id = $1")
         .await
         .expect("binding deletion must prepare");
     assert_eq!(
         client
-            .execute(&delete_binding, &[&id("target-session")])
+            .execute(&delete_binding, &[&target_session])
             .await
             .expect("test binding must delete"),
         1
     );
     drop(store);
-    let rebuilt = ProviderStore::connect_verified(&database_url)
+    let (rebuilt, _) = ProviderStore::connect(&database_url)
         .await
         .expect("startup reconciliation must validate and rebuild the invoice index");
     assert_eq!(
@@ -846,9 +859,133 @@ async fn reverse_invoice_lookup_is_indexed_beyond_global_history_prefix() {
             .reverse_invoice_session(BOLT11)
             .await
             .expect("rebuilt invoice lookup must succeed"),
-        Some(id("target-session"))
+        Some(target_session.clone())
     );
     drop(rebuilt);
+    assert_eq!(
+        client
+            .execute(&delete_binding, &[&target_session])
+            .await
+            .expect("rebuilt binding must delete before continuation proof"),
+        1
+    );
+    let poison_prefix = &id("invoice-reconciliation-poison")[..48];
+    let insert_poison_candidates = client
+        .prepare(
+            r#"
+            WITH generated AS (
+                SELECT sequence,
+                       lpad(to_hex(sequence), 64, '0') AS session_id,
+                       $1::text || lpad(to_hex(sequence), 16, '0') AS event_id
+                FROM generate_series(1::bigint, 65::bigint) AS sequence
+            )
+            INSERT INTO provider_session_record
+                (event_id, session_id, author_pubkey, kind, created_at,
+                 event_sha256, signed_event)
+            SELECT event_id, session_id, repeat('1', 64), 39607, 8000 + sequence,
+                   repeat('b', 64),
+                   jsonb_build_object(
+                       'id', event_id,
+                       'pubkey', repeat('1', 64),
+                       'created_at', 8000 + sequence,
+                       'kind', 39607,
+                       'tags', jsonb_build_array(jsonb_build_array('session', session_id)),
+                       'content', jsonb_build_object(
+                           'mkt_swp', jsonb_build_object(
+                               'swp_state', 'hold_invoice_ready',
+                               'invoice', 'invalid-historical-bolt11'
+                           )
+                       )::text,
+                       'sig', repeat('2', 128)
+                   )
+            FROM generated
+            "#,
+        )
+        .await
+        .expect("poison candidate insert must prepare");
+    assert_eq!(
+        client
+            .execute(&insert_poison_candidates, &[&poison_prefix])
+            .await
+            .expect("poison historical hold candidates must insert"),
+        65
+    );
+    let insert_conflicting_quotes = client
+        .prepare(
+            r#"
+            INSERT INTO provider_session_record
+                (event_id, session_id, author_pubkey, kind, created_at,
+                 event_sha256, signed_event)
+            SELECT $1 || lpad(to_hex(sequence), 16, '0'),
+                   lpad(to_hex(1), 64, '0'), repeat('3', 64), 39605,
+                   9000 + sequence, repeat('c', 64),
+                   jsonb_build_object(
+                       'id', $1 || lpad(to_hex(sequence), 16, '0'),
+                       'pubkey', repeat('3', 64),
+                       'created_at', 9000 + sequence,
+                       'kind', 39605,
+                       'tags', jsonb_build_array(
+                           jsonb_build_array('session', lpad(to_hex(1), 64, '0'))
+                       ),
+                       'content', '{"mkt_swp":{"terms":{}}}',
+                       'sig', repeat('4', 128)
+                   )
+            FROM generate_series(1::bigint, 2::bigint) AS sequence
+            "#,
+        )
+        .await
+        .expect("conflicting Quote insert must prepare");
+    let quote_prefix = id("poison-quotes");
+    let quote_prefix = &quote_prefix[..48];
+    assert_eq!(
+        client
+            .execute(&insert_conflicting_quotes, &[&quote_prefix])
+            .await
+            .expect("conflicting historical Quotes must insert"),
+        2
+    );
+    client
+        .batch_execute("BEGIN")
+        .await
+        .expect("target advisory-lock transaction must begin");
+    let advisory_lock = client
+        .prepare("SELECT pg_advisory_xact_lock(hashtextextended('provider-session:' || $1, 0))")
+        .await
+        .expect("target advisory lock must prepare");
+    client
+        .execute(&advisory_lock, &[&target_session])
+        .await
+        .expect("target advisory lock must be held");
+    let (bounded_restart, _) = ProviderStore::connect(&database_url)
+        .await
+        .expect("startup must continue after the first bounded candidate page");
+    assert_eq!(
+        bounded_restart
+            .reverse_invoice_session(BOLT11)
+            .await
+            .expect("background target lookup before lock release must succeed"),
+        None
+    );
+    client
+        .batch_execute("COMMIT")
+        .await
+        .expect("target advisory lock must release");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if bounded_restart
+                .reverse_invoice_session(BOLT11)
+                .await
+                .expect("background invoice lookup must succeed")
+                == Some(target_session.clone())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background reconciliation must advance past 65 historical candidates");
+    drop(bounded_restart);
     drop(client);
     connection
         .await
@@ -856,24 +993,106 @@ async fn reverse_invoice_lookup_is_indexed_beyond_global_history_prefix() {
         .expect("database connection must close cleanly");
 }
 
-fn reverse_invoice_records(
-    requester: &MarketSigner,
-    provider: &MarketSigner,
-    session_id: &str,
-    payment_hash: &str,
-    invoice: &str,
-    created_at: u64,
-) -> Vec<Event> {
-    let mut records =
-        reverse_session_prerequisites(requester, provider, session_id, payment_hash, created_at);
-    records.push(signed_store_profile_event(
-        provider,
-        session_id,
-        MKT_STATUS_KIND,
-        created_at + 4,
-        json!({"invoice":invoice,"swp_state":"hold_invoice_ready"}),
-    ));
+fn canonical_reverse_invoice_records(invoice: &str) -> Vec<Event> {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json"
+    ))
+    .expect("full MKT-SWP sessions fixture");
+    let snapshot = &fixture["flows"]["reverse"]["snapshot"];
+    let config: SwapClientConfig =
+        serde_json::from_value(snapshot["config"].clone()).expect("reverse fixture config");
+    let mut records: Vec<Event> = serde_json::from_value(snapshot["signed_records"].clone())
+        .expect("reverse fixture records");
+    let provider = fixture_market_signer(b"provider");
+    assert_eq!(provider.pubkey(), config.provider_pubkey);
+    let order_id = records
+        .iter()
+        .find(|event| event.kind == immortal_core::domain::MKT_ORDER_KIND)
+        .map(|event| event.id.as_str())
+        .expect("reverse fixture Order");
+    let factory = SwapRecordFactory::new(config).expect("reverse fixture record factory");
+    let request = factory
+        .status(
+            ParticipantRole::Provider,
+            700,
+            &digest(b"provider-invoice-index:hold-invoice-ready"),
+            order_id,
+            StatusState {
+                sequence: 0,
+                previous: None,
+                base_state: "awaiting_input",
+                swp_state: "hold_invoice_ready",
+            },
+            json!({"invoice":invoice})
+                .as_object()
+                .expect("invoice Status fields")
+                .clone(),
+        )
+        .expect("hold-invoice Status request");
+    let status = provider.sign(
+        request.created_at,
+        request.kind,
+        request.tags.clone(),
+        request.content.clone(),
+    );
+    records.push(
+        request
+            .verify_signed(status)
+            .expect("signed hold-invoice Status"),
+    );
     records
+}
+
+fn fixture_market_signer(label: &[u8]) -> MarketSigner {
+    let key: [u8; 32] =
+        Sha256::digest([b"immortal-mkt-swp-test-only:".as_slice(), label].concat()).into();
+    MarketSigner::from_secret_bytes(key).expect("fixture market signer")
+}
+
+fn canonical_reverse_status(
+    records: &[Event],
+    sequence: u64,
+    previous: &str,
+    base_state: &str,
+    swp_state: &str,
+) -> Event {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json"
+    ))
+    .expect("full MKT-SWP sessions fixture");
+    let config: SwapClientConfig =
+        serde_json::from_value(fixture["flows"]["reverse"]["snapshot"]["config"].clone())
+            .expect("reverse fixture config");
+    let order_id = records
+        .iter()
+        .find(|event| event.kind == immortal_core::domain::MKT_ORDER_KIND)
+        .map(|event| event.id.as_str())
+        .expect("reverse fixture Order");
+    let request = SwapRecordFactory::new(config)
+        .expect("reverse fixture record factory")
+        .status(
+            ParticipantRole::Provider,
+            701 + sequence,
+            &digest(format!("provider-invoice-index:{sequence}:{swp_state}").as_bytes()),
+            order_id,
+            StatusState {
+                sequence,
+                previous: Some(previous),
+                base_state,
+                swp_state,
+            },
+            serde_json::Map::new(),
+        )
+        .expect("later reverse Status request");
+    let provider = fixture_market_signer(b"provider");
+    request
+        .verify_signed(provider.sign(
+            request.created_at,
+            request.kind,
+            request.tags.clone(),
+            request.content.clone(),
+        ))
+        .expect("signed later reverse Status")
 }
 
 fn reverse_session_prerequisites(

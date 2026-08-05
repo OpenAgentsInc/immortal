@@ -124,6 +124,45 @@ func TestFundingGateAuthorizesAndPersistsBeforeBroadcast(t *testing.T) {
 	}
 }
 
+func TestPinnedCreateRequestsAreAdaptedToTheClosedProviderBodies(t *testing.T) {
+	submarine, err := AdaptPinnedSubmarineCreate(PinnedSubmarineCreate{
+		From: "BTC", To: "BTC", Invoice: "invoice", PairHash: "pair", RefundPublicKey: "key",
+	}, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	submarineJSON, err := json.Marshal(submarine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(submarineJSON) != `{"from":"BTC","to":"BTC","invoice":"invoice","pairHash":"pair","refundPublicKey":"key","mktSessionId":"`+sessionID+`"}` {
+		t.Fatalf("submarine adaptation changed: %s", submarineJSON)
+	}
+	reverse, err := AdaptPinnedReverseCreate(PinnedReverseCreate{
+		From: "BTC", To: "BTC", InvoiceAmount: 1000, PreimageHash: "hash", ClaimPublicKey: "key", PairHash: "pair",
+	}, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reverseJSON, err := json.Marshal(reverse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(reverseJSON) != `{"from":"BTC","to":"BTC","invoiceAmount":1000,"preimageHash":"hash","claimPublicKey":"key","pairHash":"pair","mktSessionId":"`+sessionID+`"}` {
+		t.Fatalf("reverse adaptation changed: %s", reverseJSON)
+	}
+	if _, err := AdaptPinnedSubmarineCreate(PinnedSubmarineCreate{
+		From: "BTC", To: "BTC", Invoice: "invoice", PairHash: "pair", RefundPublicKey: "key", ReferralID: "stock-referral",
+	}, sessionID); !errors.Is(err, ErrInvalidFundingRequest) {
+		t.Fatal("stock submarine referral field was not refused")
+	}
+	if _, err := AdaptPinnedReverseCreate(PinnedReverseCreate{
+		From: "BTC", To: "BTC", InvoiceAmount: 1000, PreimageHash: "hash", ClaimPublicKey: "key", PairHash: "pair", Address: "stock-address",
+	}, sessionID); !errors.Is(err, ErrInvalidFundingRequest) {
+		t.Fatal("stock reverse address field was not refused")
+	}
+}
+
 func TestFundingGateRejectsProfilesThatRetainStockPaths(t *testing.T) {
 	cases := []Profile{
 		{
@@ -187,6 +226,20 @@ func TestFundingGateNeverBroadcastsWithoutExactBilateralScriptApproval(t *testin
 			name: "provider Contract",
 			mutate: func(approval *BilateralApproval) {
 				approval.ProviderContractEventID = ""
+			},
+			err: ErrBilateralApprovalMismatch,
+		},
+		{
+			name: "authorization snapshot",
+			mutate: func(approval *BilateralApproval) {
+				approval.AuthorizationSnapshotSHA256 = ""
+			},
+			err: ErrBilateralApprovalMismatch,
+		},
+		{
+			name: "identical Contract roles",
+			mutate: func(approval *BilateralApproval) {
+				approval.RequesterContractEventID = approval.ProviderContractEventID
 			},
 			err: ErrBilateralApprovalMismatch,
 		},
@@ -259,15 +312,16 @@ func validRequest() FundingRequest {
 
 func validApproval(binding FundingBinding) (BilateralApproval, error) {
 	return BilateralApproval{
-		SessionID:                binding.SessionID,
-		FinalizePath:             binding.FinalizePath,
-		FundingTransactionSHA256: binding.FundingTransactionSHA256,
-		OutputIndex:              binding.OutputIndex,
-		RequesterContractEventID: requesterContractID,
-		ProviderContractEventID:  providerContractID,
-		ExitPackageSHA256:        exitPackageDigest,
-		ExitPackageMode:          "wallet_sign",
-		ExitPackagePersisted:     true,
-		ScriptPathOnly:           true,
+		SessionID:                   binding.SessionID,
+		FinalizePath:                binding.FinalizePath,
+		FundingTransactionSHA256:    binding.FundingTransactionSHA256,
+		OutputIndex:                 binding.OutputIndex,
+		RequesterContractEventID:    requesterContractID,
+		ProviderContractEventID:     providerContractID,
+		ExitPackageSHA256:           exitPackageDigest,
+		ExitPackageMode:             "wallet_sign",
+		AuthorizationSnapshotSHA256: strings.Repeat("e", 64),
+		ExitPackagePersisted:        true,
+		ScriptPathOnly:              true,
 	}, nil
 }

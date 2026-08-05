@@ -788,26 +788,34 @@ fetches chain pairs and starts Liquid-oriented listeners; and
 unconditionally reads chain pairs, retains a preliminary cooperative claim
 read, sends stock on-chain payments to an external wallet without observing
 raw funding bytes, and derives its WebSocket origin from the HTTP API origin.
-The adapted upstream builds must integrate the checked-in seams at those call
-sites and pass the 19-call process gate before #18 replacement scenarios; #19
-still owns deployment evidence.
+No adapted upstream build is present in this repository. A future upstream
+integration must place the checked-in seams at those call sites and pass the
+same funding and route gates. The current 19-call process result covers the
+inspected route inventory through clean-room seams; #19 still owns deployment
+evidence.
 
 The adapter packet records clean-room CC0 Go and browser/Node seams in
 `adapters/` rather than copying either pinned client. Its fixture pins the
 inspected upstream Git blobs and proves that the 13-call Go and 15-call web
-subsets have the same 19-call union as the facade ledger. Both gates make the
-one-shot payment path unrepresentable: raw bytes are prepared, bound into two
-locally verified Contract events, paired with a persisted script-path exit,
-and only then passed unchanged to broadcast. The subsequent provider adoption
-keeps that boundary: compatibility creation names an existing signed native
-session, finalization reads equal bilateral Contracts, broadcast accepts only
-the committed funding transaction or the exact reverse script-path claim, and
-released-secret lookup derives from the public claim transaction. The listener
-requires an exact corpus digest, private or loopback bind, and exact browser
-origin; it is absent by default and never enters NIP-11. The funded smoke runs
-both adapter processes over the 19-call union. This changes no source-lane
-precedence or kind allocation and is the #15 adoption decision; #19 retains the
-public replacement gate.
+subsets have the same 19-call union as the facade ledger. Each clean-room seam
+uses a fresh native session. Compatibility creation validates the exact signed
+RFQ, hard Quote, and Order with zero Contracts. The wallet then prepares raw
+bytes without broadcast; the Rust client engine exchanges both Contract
+records, persists the unilateral exit, restores the funding authorization, and
+returns the Contract IDs as callback outputs. Provider `/finalize` must return
+those exact IDs, bytes/output binding, and exit commitment before the seam may
+broadcast. The funded gate proves absence before each seam's first broadcast,
+exact replay afterward, and same-txid witness conflict refusal. Reverse route
+shapes reuse the native reverse session. The selected fresh Go journey also
+holds one WebSocket for more than 31 seconds across the web JSON heartbeat and
+Go control heartbeat before accepting a subscribed status update. An
+executable signed-record matrix accepts zero and two Contracts, refuses one,
+and refuses invalid, foreign, or misbound RFQ/Quote/Order/Offering authority.
+This does not claim an upstream client build. The listener requires an exact
+corpus digest, private or loopback bind,
+and exact browser origin; it is absent by default and never enters NIP-11. This
+changes no source-lane precedence or kind allocation and is the #15 adoption
+decision; #19 retains the public replacement gate.
 
 The funded process gate also pins two Bitcoin evidence details. Reverse claim
 outpoints compare the serialized wire-order previous transaction ID with the
@@ -816,9 +824,11 @@ lookup selects the latest claim Status that carries a transaction ID; a later
 terminal Status without that field cannot hide the public claim.
 
 The correction packet keeps that adoption decision and closes its observable
-edges. Request bodies and WebSocket messages now use closed member sets and
-total read deadlines; WebSocket message, subscription, and batched-query rates
-are explicit. Boltz status is derived from dense signer-local `seq` streams and
+edges. Request bodies and WebSocket messages use closed member sets. WebSocket
+connections permit 90 seconds of idle time, but a partial frame has ten seconds
+to complete; polls cannot restart either deadline. Message, subscription, and
+batched-query rates are shared by peer IP. Boltz status is derived from dense
+signer-local `seq` streams and
 exact `previous` references, never `created_at`; an intention or prepared exit
 does not become a broadcast observation. Broadcast retry compares the exact raw
 transaction returned by bitcoind, including witness, rather than accepting a
@@ -827,9 +837,12 @@ and reverse BIP21 uses a durable payment-hash/session index instead of a global
 history prefix. The index admits only the Quote provider's
 `hold_invoice_ready` Status after the parsed invoice hash matches the Quote and
 equal bilateral reverse Contracts; requester or foreign Status cannot poison
-it, and startup reconstruction uses the same Rust validation instead of a SQL
-text inference. These are compatibility semantics and storage indexing; they
-add no event kind, lane source, relay custody, or NIP-11 advertisement.
+it. Only the migration-owning connection reconstructs missing bindings: it
+validates at most 64 sessions synchronously, then continues with bounded keyset
+pages in the background, excluding already indexed history. The same Rust
+validation replaces SQL text inference. These are compatibility semantics and
+storage indexing; they add no event kind, lane source, relay custody, or NIP-11
+advertisement.
 
 ## M12 LND provider-rail decision (2026-08-05)
 

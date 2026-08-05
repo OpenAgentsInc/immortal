@@ -92,6 +92,61 @@ impl LabPaths {
     pub fn funded_signed_exit(&self, journey: &str) -> PathBuf {
         self.root.join(format!("funded-{journey}-signed-exit.hex"))
     }
+
+    pub fn boltz_adapter_control(&self, client: &str, phase: &str) -> PathBuf {
+        self.root.join(format!("boltz-{client}-{phase}.json"))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoltzAdapterPrepared {
+    pub schema: String,
+    pub client: String,
+    pub session_id: String,
+    pub invoice: String,
+    pub refund_public_key: String,
+    pub raw_transaction_hex: String,
+    pub output_index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoltzAdapterFinalizeRequest {
+    pub schema: String,
+    pub client: String,
+    pub session_id: String,
+    pub finalize_path: String,
+    pub raw_transaction_hex: String,
+    pub funding_transaction_sha256: String,
+    pub output_index: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoltzAdapterApproval {
+    pub schema: String,
+    pub client: String,
+    pub session_id: String,
+    pub finalize_path: String,
+    pub funding_transaction_sha256: String,
+    pub output_index: u32,
+    pub requester_contract_event_id: String,
+    pub provider_contract_event_id: String,
+    pub exit_package_sha256: String,
+    pub exit_package_mode: String,
+    pub authorization_snapshot_sha256: String,
+    pub exit_package_persisted: bool,
+    pub script_path_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoltzAdapterBroadcast {
+    pub schema: String,
+    pub client: String,
+    pub session_id: String,
+    pub transaction_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -440,6 +495,81 @@ pub fn load_funded_checkpoint(paths: &LabPaths) -> Result<Option<FundedCheckpoin
         Ok(Some(checkpoint))
     } else {
         Ok(None)
+    }
+}
+
+pub fn clear_boltz_adapter_controls(paths: &LabPaths, client: &str) -> Result<(), String> {
+    validate_boltz_adapter_client(client)?;
+    for phase in [
+        "prepared",
+        "finalize-request",
+        "approval",
+        "broadcast",
+        "complete",
+    ] {
+        let path = paths.boltz_adapter_control(client, phase);
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|error| format!("could not remove {}: {error}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+pub fn store_boltz_adapter_prepared(
+    paths: &LabPaths,
+    value: &BoltzAdapterPrepared,
+) -> Result<(), String> {
+    validate_boltz_adapter_client(&value.client)?;
+    write_json(
+        &paths.boltz_adapter_control(&value.client, "prepared"),
+        value,
+    )
+}
+
+pub fn load_boltz_adapter_finalize_request(
+    paths: &LabPaths,
+    client: &str,
+) -> Result<BoltzAdapterFinalizeRequest, String> {
+    validate_boltz_adapter_client(client)?;
+    read_json(&paths.boltz_adapter_control(client, "finalize-request"))
+}
+
+pub fn store_boltz_adapter_approval(
+    paths: &LabPaths,
+    value: &BoltzAdapterApproval,
+) -> Result<(), String> {
+    validate_boltz_adapter_client(&value.client)?;
+    write_json(
+        &paths.boltz_adapter_control(&value.client, "approval"),
+        value,
+    )
+}
+
+pub fn load_boltz_adapter_broadcast(
+    paths: &LabPaths,
+    client: &str,
+) -> Result<BoltzAdapterBroadcast, String> {
+    validate_boltz_adapter_client(client)?;
+    read_json(&paths.boltz_adapter_control(client, "broadcast"))
+}
+
+pub fn store_boltz_adapter_complete(
+    paths: &LabPaths,
+    value: &BoltzAdapterBroadcast,
+) -> Result<(), String> {
+    validate_boltz_adapter_client(&value.client)?;
+    write_json(
+        &paths.boltz_adapter_control(&value.client, "complete"),
+        value,
+    )
+}
+
+fn validate_boltz_adapter_client(client: &str) -> Result<(), String> {
+    if matches!(client, "go" | "web") {
+        Ok(())
+    } else {
+        Err("IMMORTAL_LAB_BOLTZ_ADAPTER_CLIENT must be go or web".to_owned())
     }
 }
 

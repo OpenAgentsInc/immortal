@@ -47,6 +47,7 @@ fn execute(command: Command) -> Result<(), Exit> {
         Command::Claim => emit(funded::run_funded_journey(FundedJourney::ReverseClaim)),
         Command::Refund => emit(funded::run_funded_journey(FundedJourney::ReverseRefund)),
         Command::FundedSmoke => funded::run_funded_smoke().map_err(Exit::Failure),
+        Command::BoltzAdapter => emit(funded::run_boltz_adapter_session()),
         Command::Run { to } => {
             if to >= Step::Fund {
                 emit(funded::run_funded_journey(FundedJourney::Submarine))?;

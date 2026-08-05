@@ -40,11 +40,14 @@ use tokio::{runtime::Runtime, task::JoinHandle};
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message, WebSocket, client};
 
 use crate::state::{
-    FundedCheckpoint, FundedInjectionRequest, LabPaths, load_funded_journey_checkpoint,
-    load_funded_secret, load_funded_signed_exit, load_or_create_funded_run_id,
-    load_or_create_identity, remove_funded_secret, store_funded_checkpoint, store_funded_injection,
-    store_funded_journey_checkpoint, store_funded_secret, store_funded_signed_exit,
-    store_funded_snapshot,
+    BoltzAdapterApproval, BoltzAdapterBroadcast, BoltzAdapterFinalizeRequest, BoltzAdapterPrepared,
+    FundedCheckpoint, FundedInjectionRequest, LabPaths, clear_boltz_adapter_controls,
+    load_boltz_adapter_broadcast, load_boltz_adapter_finalize_request,
+    load_funded_journey_checkpoint, load_funded_secret, load_funded_signed_exit,
+    load_or_create_funded_run_id, load_or_create_identity, remove_funded_secret,
+    store_boltz_adapter_approval, store_boltz_adapter_complete, store_boltz_adapter_prepared,
+    store_funded_checkpoint, store_funded_injection, store_funded_journey_checkpoint,
+    store_funded_secret, store_funded_signed_exit, store_funded_snapshot,
 };
 
 const OFFERING_ID: &str = "immortal-funded-btc-lightning";
@@ -105,6 +108,22 @@ struct SessionContext {
     authorized_verifier: Option<SwapSession<FundingAuthorized>>,
     requester_funding: Option<SignedFundingTransaction>,
     requester_status: Option<(u64, String)>,
+    journey_name: String,
+    control: StepControl,
+}
+
+struct PendingSession {
+    reader: RelayClient,
+    publisher: RelayClient,
+    requester: MarketSigner,
+    provider_pubkey: String,
+    factory: SwapRecordFactory,
+    config: SwapClientConfig,
+    records: Vec<Event>,
+    order: Event,
+    contract: Value,
+    exit_package_seed: ExitPackage,
+    requester_funding: Option<SignedFundingTransaction>,
     journey_name: String,
     control: StepControl,
 }
@@ -427,6 +446,288 @@ pub fn run_funded_journey(journey: FundedJourney) -> Result<Value, String> {
         "provider_pubkey": provider_pubkey,
         "journey": result,
     }))
+}
+
+pub fn run_boltz_adapter_session() -> Result<Value, String> {
+    let client = required_environment("IMMORTAL_LAB_BOLTZ_ADAPTER_CLIENT")?;
+    let key_index = match client.as_str() {
+        "go" => 20,
+        "web" => 21,
+        _ => return Err("IMMORTAL_LAB_BOLTZ_ADAPTER_CLIENT must be go or web".to_owned()),
+    };
+    let journey_name = format!("boltz_{client}");
+    let runtime =
+        Runtime::new().map_err(|error| format!("could not start lab runtime: {error}"))?;
+    let environment = SmokeEnvironment::load()?;
+    verify_health(&environment.health_url)?;
+    clear_boltz_adapter_controls(&environment.control.paths, &client)?;
+    let provider_pubkey = discover_provider(
+        &environment.relay_url,
+        &environment.requester,
+        JOURNEY_TIMEOUT,
+    )?;
+    let client_input = fund_client_wallet(&runtime, &environment)?;
+    let invoice = runtime
+        .block_on(
+            environment.peer_cln.invoice(
+                &cln_id(&format!("boltz-{client}-invoice"))?,
+                Millisatoshi::from_satoshis(OUTPUT_AMOUNT_SAT)
+                    .map_err(|error| format!("Boltz adapter invoice amount is invalid: {error}"))?,
+                &format!("immortal-{journey_name}"),
+                "Immortal Boltz adapter process gate",
+                86_400,
+            ),
+        )
+        .map_err(|error| format!("could not create Boltz adapter invoice: {error}"))?;
+    let requester_key = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(2, false, key_index)
+                .map_err(|error| format!("Boltz adapter refund path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive Boltz adapter refund key: {error}"))?
+        .internal_key;
+    let exit_destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, key_index)
+                .map_err(|error| format!("Boltz adapter exit path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive Boltz adapter exit destination: {error}"))?;
+    let pending = prepare_negotiation(
+        &environment,
+        &provider_pubkey,
+        NegotiationInput {
+            journey_name: &journey_name,
+            swap_type: "submarine",
+            payment_hash: &invoice.payment_hash,
+            invoice: Some(&invoice.bolt11),
+            requester_key,
+            requester_funding_input: Some(&client_input),
+            exit_destination_script_pubkey: &exit_destination.script_pubkey,
+        },
+    )?;
+    let funding = pending
+        .requester_funding
+        .as_ref()
+        .ok_or_else(|| "Boltz adapter preparation produced no funding transaction".to_owned())?
+        .clone();
+    let source_leg = pending
+        .contract
+        .get("legs")
+        .and_then(Value::as_array)
+        .and_then(|legs| {
+            legs.iter()
+                .find(|leg| leg.get("leg_id").and_then(Value::as_str) == Some("source"))
+        })
+        .and_then(Value::as_object)
+        .ok_or_else(|| "Boltz adapter Contract has no source leg".to_owned())?;
+    let refund_public_key = required_string(source_leg, "refund_public_key")?.to_owned();
+    let session_id = pending.config.session_id.clone();
+    let output_index = pending
+        .contract
+        .get("verifier_inputs")
+        .and_then(Value::as_array)
+        .and_then(|verifiers| {
+            verifiers
+                .iter()
+                .find(|value| value.get("leg_id").and_then(Value::as_str) == Some("source"))
+        })
+        .and_then(Value::as_object)
+        .ok_or_else(|| "Boltz adapter Contract has no source verifier".to_owned())
+        .and_then(|verifier| bounded_u32_member(verifier, "output_index"))?;
+    store_boltz_adapter_prepared(
+        &environment.control.paths,
+        &BoltzAdapterPrepared {
+            schema: "openagents.immortal.boltz-adapter-prepared.v1".to_owned(),
+            client: client.clone(),
+            session_id: session_id.clone(),
+            invoice: invoice.bolt11.clone(),
+            refund_public_key,
+            raw_transaction_hex: funding.raw_transaction.clone(),
+            output_index,
+        },
+    )?;
+    let finalize_request = wait_for_boltz_finalize_request(&environment, &client)?;
+    let raw = decode_hex(&funding.raw_transaction)?;
+    let funding_sha256 = lower_hex(&sha256(&raw));
+    let finalize_path = format!("/v2/swap/submarine/{session_id}/finalize");
+    if finalize_request
+        != (BoltzAdapterFinalizeRequest {
+            schema: "openagents.immortal.boltz-adapter-finalize.v1".to_owned(),
+            client: client.clone(),
+            session_id: session_id.clone(),
+            finalize_path: finalize_path.clone(),
+            raw_transaction_hex: funding.raw_transaction.clone(),
+            funding_transaction_sha256: funding_sha256.clone(),
+            output_index,
+        })
+    {
+        return Err("Boltz adapter finalization request changed the prepared funding".to_owned());
+    }
+    let mut session = finalize_negotiation(pending)?;
+    session.wait_provider_state("accepted")?;
+    session.wait_provider_state("lock_terms_ready")?;
+    let authorized = verify_submarine_before_fund(&session, &invoice.bolt11, &funding)?;
+    let authorization_snapshot = authorized
+        .persist()
+        .map_err(|error| format!("could not serialize adapter authorization: {error}"))?;
+    let authorization_snapshot_sha256 = lower_hex(&sha256(&authorization_snapshot));
+    let restored_authorization =
+        SwapSession::<AwaitingVerification>::restore(&authorization_snapshot)
+            .and_then(SwapSession::resume_funding_authorized)
+            .map_err(|error| format!("could not restore adapter authorization: {error}"))?;
+    session.set_authorized_verifier(restored_authorization)?;
+    session.publish_requester_status("requester_verification_passed", Map::new())?;
+    session.persist_authorized_details(
+        "funding_execution_ready",
+        true,
+        json!({"external_identifier":funding.txid.clone()}),
+    )?;
+    let (requester_contract_event_id, provider_contract_event_id) =
+        approval_contract_ids(&session)?;
+    let (exit_package_mode, exit_package_sha256) = approval_exit_commitment(&session.contract)?;
+    store_boltz_adapter_approval(
+        &environment.control.paths,
+        &BoltzAdapterApproval {
+            schema: "openagents.immortal.boltz-adapter-approval.v1".to_owned(),
+            client: client.clone(),
+            session_id: session_id.clone(),
+            finalize_path,
+            funding_transaction_sha256: funding_sha256,
+            output_index,
+            requester_contract_event_id,
+            provider_contract_event_id,
+            exit_package_sha256,
+            exit_package_mode,
+            authorization_snapshot_sha256,
+            exit_package_persisted: true,
+            script_path_only: true,
+        },
+    )?;
+    let broadcast = wait_for_boltz_broadcast(&environment, &client)?;
+    if broadcast.schema != "openagents.immortal.boltz-adapter-broadcast.v1"
+        || broadcast.client != client
+        || broadcast.session_id != session_id
+        || broadcast.transaction_id != funding.txid
+    {
+        return Err("Boltz adapter broadcast acknowledgement changed session or txid".to_owned());
+    }
+    require_known_bitcoin_transaction(
+        &runtime,
+        &environment.bitcoind,
+        "boltz-adapter-funding",
+        &funding.txid,
+        Some(&funding.raw_transaction),
+    )?;
+    session.record_funding_effect(
+        funding.txid.clone(),
+        sha256(funding.raw_transaction.as_bytes()),
+    )?;
+    let result = finish_submarine(
+        &runtime,
+        &environment,
+        session,
+        funding.txid.clone(),
+        &invoice.payment_hash,
+    )?;
+    store_boltz_adapter_complete(
+        &environment.control.paths,
+        &BoltzAdapterBroadcast {
+            schema: "openagents.immortal.boltz-adapter-complete.v1".to_owned(),
+            client,
+            session_id,
+            transaction_id: funding.txid,
+        },
+    )?;
+    Ok(result)
+}
+
+fn wait_for_boltz_finalize_request(
+    environment: &SmokeEnvironment,
+    client: &str,
+) -> Result<BoltzAdapterFinalizeRequest, String> {
+    wait_for_boltz_control(
+        &environment
+            .control
+            .paths
+            .boltz_adapter_control(client, "finalize-request"),
+        || load_boltz_adapter_finalize_request(&environment.control.paths, client),
+    )
+}
+
+fn wait_for_boltz_broadcast(
+    environment: &SmokeEnvironment,
+    client: &str,
+) -> Result<BoltzAdapterBroadcast, String> {
+    wait_for_boltz_control(
+        &environment
+            .control
+            .paths
+            .boltz_adapter_control(client, "broadcast"),
+        || load_boltz_adapter_broadcast(&environment.control.paths, client),
+    )
+}
+
+fn wait_for_boltz_control<T>(
+    path: &Path,
+    load: impl Fn() -> Result<T, String>,
+) -> Result<T, String> {
+    let started = Instant::now();
+    while !path.exists() {
+        if started.elapsed() >= JOURNEY_TIMEOUT {
+            return Err(format!("timed out waiting for {}", path.display()));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    load()
+}
+
+fn approval_contract_ids(session: &SessionContext) -> Result<(String, String), String> {
+    let mut requester = None;
+    let mut provider = None;
+    for event in session
+        .verifier
+        .signed_records()
+        .iter()
+        .filter(|event| event.kind == MKT_SWP_SWAP_CONTRACT_KIND)
+    {
+        match record_profile(event)?
+            .get("signer_role")
+            .and_then(Value::as_str)
+        {
+            Some("requester") if requester.is_none() => requester = Some(event.id.clone()),
+            Some("provider") if provider.is_none() => provider = Some(event.id.clone()),
+            _ => return Err("Boltz adapter Contracts have duplicate or invalid roles".to_owned()),
+        }
+    }
+    requester
+        .zip(provider)
+        .ok_or_else(|| "Boltz adapter approval lacks bilateral Contracts".to_owned())
+}
+
+fn approval_exit_commitment(contract: &Value) -> Result<(String, String), String> {
+    let commitments = contract
+        .get("exit_package_commitments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Boltz adapter Contract has no exit commitments".to_owned())?;
+    let matching = commitments
+        .iter()
+        .filter(|commitment| {
+            commitment.get("participant_role").and_then(Value::as_str) == Some("requester")
+                && commitment.get("path").and_then(Value::as_str) == Some("refund")
+        })
+        .collect::<Vec<_>>();
+    let [commitment] = matching.as_slice() else {
+        return Err("Boltz adapter Contract has no unique requester refund exit".to_owned());
+    };
+    let commitment = commitment
+        .as_object()
+        .ok_or_else(|| "Boltz adapter exit commitment is not an object".to_owned())?;
+    Ok((
+        required_string(commitment, "package_mode")?.to_owned(),
+        required_string(commitment, "package_sha256")?.to_owned(),
+    ))
 }
 
 fn restore_authorized_session(
@@ -1547,6 +1848,14 @@ fn negotiate(
     provider_pubkey: &str,
     input: NegotiationInput<'_>,
 ) -> Result<SessionContext, String> {
+    finalize_negotiation(prepare_negotiation(environment, provider_pubkey, input)?)
+}
+
+fn prepare_negotiation(
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    input: NegotiationInput<'_>,
+) -> Result<PendingSession, String> {
     let session_id = digest(&format!(
         "funded-smoke:{}:{}",
         environment.control.run_id, input.journey_name
@@ -1640,6 +1949,45 @@ fn negotiate(
         &quote.id,
         input.exit_destination_script_pubkey,
     )?;
+    Ok(PendingSession {
+        reader,
+        publisher,
+        requester: environment.requester.clone(),
+        provider_pubkey: provider_pubkey.to_owned(),
+        factory,
+        config,
+        records,
+        order,
+        contract,
+        exit_package_seed,
+        requester_funding,
+        journey_name: input.journey_name.to_owned(),
+        control: environment.control.clone(),
+    })
+}
+
+fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, String> {
+    let PendingSession {
+        mut reader,
+        mut publisher,
+        requester,
+        provider_pubkey,
+        factory,
+        config,
+        mut records,
+        order,
+        contract,
+        exit_package_seed,
+        requester_funding,
+        journey_name,
+        control,
+    } = pending;
+    let session_id = config.session_id.clone();
+    let quote_id = records
+        .iter()
+        .find(|event| event.kind == MKT_QUOTE_KIND)
+        .map(|event| event.id.clone())
+        .ok_or_else(|| "prepared funded session has no Quote".to_owned())?;
     let requester_contract = sign_request(
         factory
             .swap_contract(
@@ -1648,24 +1996,24 @@ fn negotiate(
                 &digest(&format!("requester-contract:{session_id}")),
                 SwapContractReferences {
                     order_id: &order.id,
-                    quote_id: &quote.id,
+                    quote_id: &quote_id,
                     accepted_status_id: None,
                 },
                 contract.clone(),
             )
             .map_err(|error| format!("could not construct funded contract: {error}"))?,
-        &environment.requester,
+        &requester,
     )?;
     records.push(requester_contract.clone());
     publish_private(
         &mut publisher,
         &requester_contract,
-        &environment.requester,
-        provider_pubkey,
+        &requester,
+        &provider_pubkey,
     )?;
     let provider_contract = receive_matching_private(
         &mut reader,
-        &environment.requester,
+        &requester,
         &session_id,
         JOURNEY_TIMEOUT,
         |event| event.kind == MKT_SWP_SWAP_CONTRACT_KIND && event.pubkey == provider_pubkey,
@@ -1691,8 +2039,8 @@ fn negotiate(
     let mut session = SessionContext {
         reader,
         publisher,
-        requester: environment.requester.clone(),
-        provider_pubkey: provider_pubkey.to_owned(),
+        requester,
+        provider_pubkey,
         factory,
         verifier,
         order,
@@ -1700,8 +2048,8 @@ fn negotiate(
         authorized_verifier: None,
         requester_funding,
         requester_status: None,
-        journey_name: input.journey_name.to_owned(),
-        control: environment.control.clone(),
+        journey_name,
+        control,
     };
     session.apply_pre_fund_injection()?;
     Ok(session)

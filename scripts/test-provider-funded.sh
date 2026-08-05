@@ -925,17 +925,53 @@ current_phase=boltz-provider-process-gate
 boltz_provider_url="http://$(compose port bitcoin 19093)"
 wait_for "Boltz provider compatibility listener" \
   curl --fail --silent --show-error "${boltz_provider_url}/v2/version"
+
+current_phase=boltz-go-client-engine-callback
+compose run --rm --no-deps \
+  --env IMMORTAL_LAB_BOLTZ_ADAPTER_CLIENT=go \
+  driver boltz-adapter >"${private_root}/boltz-go-driver.log" 2>&1 &
+boltz_driver_process=$!
+if ! wait_for "Go adapter client-engine preparation" \
+  test -f "${private_root}/state/boltz-go-prepared.json"; then
+  kill -TERM "${boltz_driver_process}" >/dev/null 2>&1 || true
+  wait "${boltz_driver_process}" >/dev/null 2>&1 || true
+  exit 1
+fi
 if ! (cd adapters/boltz-client-go && \
   IMMORTAL_BOLTZ_PROVIDER_PROCESS_URL="${boltz_provider_url}" \
     IMMORTAL_BOLTZ_PROVIDER_PROCESS_STATE_DIR="${private_root}/state" \
     go test -v ./... -run TestAdaptedGoClientAgainstProviderProcess -count=1); then
+  kill -TERM "${boltz_driver_process}" >/dev/null 2>&1 || true
+  wait "${boltz_driver_process}" >/dev/null 2>&1 || true
   echo "test-provider-funded: adapted Go client failed against the provider process" >&2
+  exit 1
+fi
+if ! wait "${boltz_driver_process}"; then
+  echo "test-provider-funded: Go adapter client-engine callback failed" >&2
+  exit 1
+fi
+
+current_phase=boltz-web-client-engine-callback
+compose run --rm --no-deps \
+  --env IMMORTAL_LAB_BOLTZ_ADAPTER_CLIENT=web \
+  driver boltz-adapter >"${private_root}/boltz-web-driver.log" 2>&1 &
+boltz_driver_process=$!
+if ! wait_for "web adapter client-engine preparation" \
+  test -f "${private_root}/state/boltz-web-prepared.json"; then
+  kill -TERM "${boltz_driver_process}" >/dev/null 2>&1 || true
+  wait "${boltz_driver_process}" >/dev/null 2>&1 || true
   exit 1
 fi
 if ! IMMORTAL_BOLTZ_PROVIDER_PROCESS_URL="${boltz_provider_url}" \
   IMMORTAL_BOLTZ_PROVIDER_PROCESS_STATE_DIR="${private_root}/state" \
   node --test adapters/boltz-web-app/provider-process.test.mjs; then
+  kill -TERM "${boltz_driver_process}" >/dev/null 2>&1 || true
+  wait "${boltz_driver_process}" >/dev/null 2>&1 || true
   echo "test-provider-funded: adapted web client failed against the provider process" >&2
+  exit 1
+fi
+if ! wait "${boltz_driver_process}"; then
+  echo "test-provider-funded: web adapter client-engine callback failed" >&2
   exit 1
 fi
 

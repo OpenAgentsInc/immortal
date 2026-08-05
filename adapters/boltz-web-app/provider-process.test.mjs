@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-import { createFundingGate, releasedRouteShapes } from "./adapter.mjs";
+import {
+    adaptPinnedReverseCreate,
+    adaptPinnedSubmarineCreate,
+    createFundingGate,
+    releasedRouteShapes,
+} from "./adapter.mjs";
 
 const baseUrl = process.env.IMMORTAL_BOLTZ_PROVIDER_PROCESS_URL;
 const stateDirectory = process.env.IMMORTAL_BOLTZ_PROVIDER_PROCESS_STATE_DIR;
@@ -29,39 +34,29 @@ const bitcoin = (terms, legId) => {
     assert.ok(leg);
     return { verifier, leg };
 };
-const canonicalJson = (value) => {
-    if (Array.isArray(value)) {
-        return `[${value.map(canonicalJson).join(",")}]`;
+const waitControl = async (name) => {
+    const controlPath = path.join(stateDirectory, name);
+    const deadline = Date.now() + 180_000;
+    for (;;) {
+        try {
+            return JSON.parse(await readFile(controlPath, "utf8"));
+        } catch (error) {
+            if (error?.code !== "ENOENT") {
+                throw error;
+            }
+        }
+        if (Date.now() >= deadline) {
+            throw new Error(`timed out waiting for ${controlPath}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    if (value !== null && typeof value === "object") {
-        return `{${Object.keys(value).sort().map((key) => (
-            `${JSON.stringify(key)}:${canonicalJson(value[key])}`
-        )).join(",")}}`;
-    }
-    return JSON.stringify(value);
 };
 
-const persistedExit = (snapshot, terms) => {
-    const commitment = terms.exit_package_commitments.find((value) =>
-        value.participant_role === "requester" &&
-        value.path === "refund" &&
-        ["presigned", "wallet_sign"].includes(value.package_mode));
-    assert.ok(commitment);
-    assert.match(commitment.package_sha256, /^[0-9a-f]{64}$/);
-    const persisted = snapshot.exit_packages.find((candidate) => {
-        const document = candidate?.document;
-        if (document?.exit?.mode !== commitment.package_mode) {
-            return false;
-        }
-        const { swap_contract_ids: _ids, contract_sha256: _contract, ...bound } = document;
-        const digest = createHash("sha256").update(canonicalJson(bound)).digest("hex");
-        return digest === commitment.package_sha256;
-    });
-    assert.ok(persisted, "matching exit package mode and digest must be persisted");
-    return Object.freeze({
-        mode: commitment.package_mode,
-        sha256: commitment.package_sha256,
-    });
+const writeControl = async (name, value) => {
+    const controlPath = path.join(stateDirectory, name);
+    const temporary = `${controlPath}.${process.pid}.tmp`;
+    await writeFile(temporary, JSON.stringify(value), { mode: 0o600 });
+    await rename(temporary, controlPath);
 };
 
 const request = async (method, route, body) => {
@@ -88,6 +83,113 @@ const refused = async (method, route, body) => {
         body: body === undefined ? undefined : JSON.stringify(body),
     });
     assert.ok(!response.ok, `${method} ${route} unexpectedly succeeded`);
+};
+
+const requestEventually = async (method, route, body) => {
+    const deadline = Date.now() + 30_000;
+    let lastError;
+    while (Date.now() < deadline) {
+        try {
+            return await request(method, route, body);
+        } catch (error) {
+            lastError = error;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+    }
+    throw lastError;
+};
+
+const providerApprovalMatchesCallback = (approval, callback) =>
+    approval.requesterContractEventId === callback.requester_contract_event_id &&
+    approval.providerContractEventId === callback.provider_contract_event_id &&
+    approval.exitPackageSha256 === callback.exit_package_sha256 &&
+    approval.exitPackageMode === callback.exit_package_mode &&
+    approval.scriptPathOnly === callback.script_path_only;
+
+const readCompactSize = (bytes, offset) => {
+    assert.ok(offset < bytes.length, "compact size is truncated");
+    const prefix = bytes[offset];
+    if (prefix < 0xfd) {
+        return { value: prefix, bytes: 1 };
+    }
+    const widths = new Map([[0xfd, 2], [0xfe, 4], [0xff, 8]]);
+    const width = widths.get(prefix);
+    assert.ok(offset + 1 + width <= bytes.length, "compact size is truncated");
+    const value = width === 2
+        ? bytes.readUInt16LE(offset + 1)
+        : width === 4
+            ? bytes.readUInt32LE(offset + 1)
+            : Number(bytes.readBigUInt64LE(offset + 1));
+    assert.ok(Number.isSafeInteger(value), "compact size exceeds the safe test bound");
+    if (width === 2) {
+        assert.ok(value >= 0xfd, "compact size uint16 is noncanonical");
+    } else if (width === 4) {
+        assert.ok(value > 0xffff, "compact size uint32 is noncanonical");
+    } else {
+        assert.ok(value > 0xffffffff, "compact size uint64 is noncanonical");
+    }
+    return { value, bytes: 1 + width };
+};
+
+const changedWitnessSameTransactionId = (raw) => {
+    const transaction = Buffer.from(raw, "hex");
+    assert.ok(
+        transaction.length >= 10 && transaction[4] === 0 && transaction[5] === 1,
+        "funding transaction has no SegWit witness",
+    );
+    let offset = 6;
+    const inputs = readCompactSize(transaction, offset);
+    const stripped = [transaction.subarray(0, 4), transaction.subarray(offset, offset + inputs.bytes)];
+    offset += inputs.bytes;
+    for (let input = 0; input < inputs.value; input += 1) {
+        const start = offset;
+        assert.ok(offset + 36 <= transaction.length, "funding input is truncated");
+        offset += 36;
+        const script = readCompactSize(transaction, offset);
+        offset += script.bytes;
+        assert.ok(
+            script.value <= transaction.length - offset &&
+                offset + script.value + 4 <= transaction.length,
+            "funding input script is truncated",
+        );
+        offset += script.value + 4;
+        stripped.push(transaction.subarray(start, offset));
+    }
+    const outputStart = offset;
+    const outputs = readCompactSize(transaction, offset);
+    offset += outputs.bytes;
+    for (let output = 0; output < outputs.value; output += 1) {
+        assert.ok(offset + 8 <= transaction.length, "funding output is truncated");
+        offset += 8;
+        const script = readCompactSize(transaction, offset);
+        offset += script.bytes;
+        assert.ok(script.value <= transaction.length - offset, "funding output script is truncated");
+        offset += script.value;
+    }
+    stripped.push(transaction.subarray(outputStart, offset));
+    const mutated = Buffer.from(transaction);
+    let changed = false;
+    for (let input = 0; input < inputs.value; input += 1) {
+        const items = readCompactSize(transaction, offset);
+        offset += items.bytes;
+        for (let item = 0; item < items.value; item += 1) {
+            const witness = readCompactSize(transaction, offset);
+            offset += witness.bytes;
+            assert.ok(witness.value <= transaction.length - offset, "funding witness is truncated");
+            if (witness.value > 0 && !changed) {
+                mutated[offset] ^= 1;
+                changed = true;
+            }
+            offset += witness.value;
+        }
+    }
+    assert.ok(changed && offset + 4 === transaction.length, "funding witness is not mutable");
+    stripped.push(transaction.subarray(offset));
+    const first = createHash("sha256").update(Buffer.concat(stripped)).digest();
+    const transactionId = Buffer.from(
+        createHash("sha256").update(first).digest(),
+    ).reverse().toString("hex");
+    return { raw: mutated.toString("hex"), transactionId };
 };
 
 const statusTransaction = (snapshot, ...states) => {
@@ -135,34 +237,44 @@ test("adapted web client replays its 15 calls against the provider process", {
     skip: baseUrl === undefined || stateDirectory === undefined,
 }, async () => {
     assert.equal(releasedRouteShapes.length, 15);
-    const submarine = JSON.parse(await readFile(
-        path.join(stateDirectory, "funded-submarine-session.json"),
+    const prepared = JSON.parse(await readFile(
+        path.join(stateDirectory, "boltz-web-prepared.json"),
         "utf8",
     ));
+    assert.equal(prepared.schema, "openagents.immortal.boltz-adapter-prepared.v1");
+    assert.equal(prepared.client, "web");
+    assert.match(prepared.session_id, /^[0-9a-f]{64}$/);
     const reverse = JSON.parse(await readFile(
         path.join(stateDirectory, "funded-reverse-session.json"),
         "utf8",
     ));
-    const submarineId = submarine.config.session_id;
+    const submarineId = prepared.session_id;
     const reverseId = reverse.config.session_id;
-    const submarineRfq = profile(record(submarine, 39604));
-    const submarineContract = contract(submarine);
-    const submarineBitcoin = bitcoin(submarineContract, "source");
-    const submarineExit = persistedExit(submarine, submarineContract);
     const reverseRfq = profile(record(reverse, 39604));
     const reverseContract = contract(reverse);
     const reverseBitcoin = bitcoin(reverseContract, "destination");
 
     const submarinePairs = await request("GET", "/v2/swap/submarine");
-    const submarineCreated = await request("POST", "/v2/swap/submarine", {
+    const submarineCreate = adaptPinnedSubmarineCreate({
         from: "BTC",
         to: "BTC",
-        invoice: submarineRfq.invoice,
+        invoice: prepared.invoice,
         pairHash: submarinePairs.BTC.BTC.hash,
-        refundPublicKey: submarineBitcoin.leg.refund_public_key,
-        mktSessionId: submarineId,
-    });
+        refundPublicKey: prepared.refund_public_key,
+    }, submarineId);
+    const submarineCreated = await requestEventually(
+        "POST",
+        "/v2/swap/submarine",
+        submarineCreate,
+    );
     assert.equal(submarineCreated.id, submarineId);
+    const changedWitness = changedWitnessSameTransactionId(
+        prepared.raw_transaction_hex,
+    );
+    await refused(
+        "GET",
+        `/v2/chain/BTC/transaction/${changedWitness.transactionId}`,
+    );
 
     const fundingGate = createFundingGate({
         profile: {
@@ -172,10 +284,29 @@ test("adapted web client replays its 15 calls against the provider process", {
             providerWebSocketUrl: `${baseUrl.replace(/^http/, "ws")}/v2/ws`,
         },
         prepareFunding: async () => ({
-            rawTransactionHex: submarineBitcoin.verifier.funding_transaction,
-            outputIndex: submarineBitcoin.verifier.output_index,
+            rawTransactionHex: prepared.raw_transaction_hex,
+            outputIndex: prepared.output_index,
         }),
         finalizeSubmarineAndPersistExit: async (binding) => {
+            await writeControl("boltz-web-finalize-request.json", {
+                schema: "openagents.immortal.boltz-adapter-finalize.v1",
+                client: "web",
+                session_id: binding.sessionId,
+                finalize_path: binding.finalizePath,
+                raw_transaction_hex: binding.rawTransactionHex,
+                funding_transaction_sha256: binding.fundingTransactionSha256,
+                output_index: binding.outputIndex,
+            });
+            const callback = await waitControl("boltz-web-approval.json");
+            assert.equal(callback.schema, "openagents.immortal.boltz-adapter-approval.v1");
+            assert.equal(callback.client, "web");
+            assert.equal(callback.session_id, binding.sessionId);
+            assert.equal(callback.finalize_path, binding.finalizePath);
+            assert.equal(
+                callback.funding_transaction_sha256,
+                binding.fundingTransactionSha256,
+            );
+            assert.equal(callback.output_index, binding.outputIndex);
             const approval = await request("POST", binding.finalizePath, {
                 sessionId: binding.sessionId,
                 finalizePath: binding.finalizePath,
@@ -183,16 +314,38 @@ test("adapted web client replays its 15 calls against the provider process", {
                 fundingTransactionSha256: binding.fundingTransactionSha256,
                 outputIndex: binding.outputIndex,
             });
-            assert.equal(approval.exitPackageMode, submarineExit.mode);
-            assert.equal(approval.exitPackageSha256, submarineExit.sha256);
-            return { ...approval, exitPackagePersisted: true };
+            assert.ok(providerApprovalMatchesCallback(approval, callback));
+            return {
+                ...approval,
+                exitPackagePersisted: callback.exit_package_persisted,
+                authorizationSnapshotSha256:
+                    callback.authorization_snapshot_sha256,
+                scriptPathOnly:
+                    callback.script_path_only && approval.scriptPathOnly,
+            };
         },
-        broadcastPreparedFunding: async (prepared) => (
-            await request("POST", "/v2/chain/BTC/transaction", {
-                hex: prepared.rawTransactionHex,
-                mktSessionId: submarineId,
-            })
-        ).id,
+        broadcastPreparedFunding: async (candidate) => {
+            const transactionId = (
+                await request("POST", "/v2/chain/BTC/transaction", {
+                    hex: candidate.rawTransactionHex,
+                    mktSessionId: submarineId,
+                })
+            ).id;
+            await writeControl("boltz-web-broadcast.json", {
+                schema: "openagents.immortal.boltz-adapter-broadcast.v1",
+                client: "web",
+                session_id: submarineId,
+                transaction_id: transactionId,
+            });
+            const complete = await waitControl("boltz-web-complete.json");
+            assert.deepEqual(complete, {
+                schema: "openagents.immortal.boltz-adapter-complete.v1",
+                client: "web",
+                session_id: submarineId,
+                transaction_id: transactionId,
+            });
+            return transactionId;
+        },
     });
     const fundingTransactionId = await fundingGate.fundSubmarine({
         sessionId: submarineId,
@@ -200,25 +353,39 @@ test("adapted web client replays its 15 calls against the provider process", {
         amountSats: submarineCreated.expectedAmount,
     });
     const fundingReplay = await request("POST", "/v2/chain/BTC/transaction", {
-        hex: submarineBitcoin.verifier.funding_transaction,
+        hex: prepared.raw_transaction_hex,
         mktSessionId: submarineId,
     });
     assert.equal(fundingReplay.id, fundingTransactionId);
+    assert.equal(fundingTransactionId, changedWitness.transactionId);
+    await refused("POST", "/v2/chain/BTC/transaction", {
+        hex: changedWitness.raw,
+        mktSessionId: submarineId,
+    });
+    const observedFunding = await request(
+        "GET",
+        `/v2/chain/BTC/transaction/${fundingTransactionId}`,
+    );
+    assert.equal(observedFunding.hex, prepared.raw_transaction_hex);
 
     const reversePairs = await request("GET", "/v2/swap/reverse");
-    const reverseCreated = await request("POST", "/v2/swap/reverse", {
+    const reverseCreate = adaptPinnedReverseCreate({
         from: "BTC",
         to: "BTC",
         invoiceAmount: Number(reverseRfq.constraints.input_amount),
         preimageHash: reverseRfq.constraints.payment_hash,
         claimPublicKey: reverseBitcoin.leg.claim_public_key,
         pairHash: reversePairs.BTC.BTC.hash,
-        mktSessionId: reverseId,
-    });
+    }, reverseId);
+    const reverseCreated = await request(
+        "POST",
+        "/v2/swap/reverse",
+        reverseCreate,
+    );
     assert.equal(reverseCreated.id, reverseId);
     assert.equal(typeof reverseCreated.invoice, "string");
     await refused("POST", "/v2/chain/BTC/transaction", {
-        hex: submarineBitcoin.verifier.funding_transaction,
+        hex: prepared.raw_transaction_hex,
         mktSessionId: reverseId,
     });
     const reverseClaimId = statusTransaction(reverse, "requester_claimed");
@@ -275,4 +442,31 @@ test("adapted web client replays its 15 calls against the provider process", {
     assert.equal(transaction.hex, reverseTransaction.hex);
     const nodes = await request("GET", "/v2/nodes/stats");
     assert.ok(nodes.BTC.Immortal.capacity > 0);
+});
+
+test("provider finalize must match the client-engine approval", () => {
+    const callback = {
+        requester_contract_event_id: "1".repeat(64),
+        provider_contract_event_id: "2".repeat(64),
+        exit_package_sha256: "3".repeat(64),
+        exit_package_mode: "wallet_sign",
+        script_path_only: true,
+    };
+    const matching = {
+        requesterContractEventId: callback.requester_contract_event_id,
+        providerContractEventId: callback.provider_contract_event_id,
+        exitPackageSha256: callback.exit_package_sha256,
+        exitPackageMode: callback.exit_package_mode,
+        scriptPathOnly: true,
+    };
+    assert.ok(providerApprovalMatchesCallback(matching, callback));
+    assert.ok(!providerApprovalMatchesCallback({
+        ...matching,
+        requesterContractEventId: callback.provider_contract_event_id,
+        providerContractEventId: callback.requester_contract_event_id,
+    }, callback));
+    assert.ok(!providerApprovalMatchesCallback({
+        ...matching,
+        providerContractEventId: "4".repeat(64),
+    }, callback));
 });

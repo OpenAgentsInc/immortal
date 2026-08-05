@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+    adaptPinnedReverseCreate,
+    adaptPinnedSubmarineCreate,
     createFundingGate,
     mappingRevision,
     releasedRouteShapes,
@@ -40,6 +42,7 @@ const approvalFor = (binding) => ({
     providerContractEventId,
     exitPackageSha256,
     exitPackageMode: "wallet_sign",
+    authorizationSnapshotSha256: "e".repeat(64),
     exitPackagePersisted: true,
     scriptPathOnly: true,
 });
@@ -83,6 +86,33 @@ test("funding is approved and persisted before unchanged bytes broadcast", async
     assert.equal(gate.providerWebSocketUrl, "wss://provider.example/v2/ws");
     assert.equal(await gate.fundSubmarine(validRequest()), "e".repeat(64));
     assert.deepEqual(calls, ["prepare", "finalize", "broadcast"]);
+});
+
+test("pinned create inputs adapt to exact closed provider bodies", () => {
+    assert.deepEqual(adaptPinnedSubmarineCreate({
+        from: "BTC", to: "BTC", invoice: "invoice", pairHash: "pair",
+        refundPublicKey: "key",
+    }, sessionId), {
+        from: "BTC", to: "BTC", invoice: "invoice", pairHash: "pair",
+        refundPublicKey: "key", mktSessionId: sessionId,
+    });
+    assert.deepEqual(adaptPinnedReverseCreate({
+        from: "BTC", to: "BTC", invoiceAmount: 1000,
+        preimageHash: "hash", claimPublicKey: "key", pairHash: "pair",
+    }, sessionId), {
+        from: "BTC", to: "BTC", invoiceAmount: 1000,
+        preimageHash: "hash", claimPublicKey: "key", pairHash: "pair",
+        mktSessionId: sessionId,
+    });
+    assert.throws(() => adaptPinnedSubmarineCreate({
+        from: "BTC", to: "BTC", invoice: "invoice", pairHash: "pair",
+        refundPublicKey: "key", metadata: "stock-metadata",
+    }, sessionId), { code: "invalid_funding_request" });
+    assert.throws(() => adaptPinnedReverseCreate({
+        from: "BTC", to: "BTC", invoiceAmount: 1000,
+        preimageHash: "hash", claimPublicKey: "key", pairHash: "pair",
+        claimAddress: "stock-address",
+    }, sessionId), { code: "invalid_funding_request" });
 });
 
 test("profiles retaining stock paths fail closed", () => {
@@ -136,6 +166,21 @@ test("broadcast is unreachable without exact bilateral script approval", async (
             name: "provider Contract",
             mutate: (approval) => {
                 approval.providerContractEventId = "";
+            },
+            code: "bilateral_contract_approval_mismatch",
+        },
+        {
+            name: "authorization snapshot",
+            mutate: (approval) => {
+                approval.authorizationSnapshotSha256 = "";
+            },
+            code: "bilateral_contract_approval_mismatch",
+        },
+        {
+            name: "identical Contract roles",
+            mutate: (approval) => {
+                approval.requesterContractEventId =
+                    approval.providerContractEventId;
             },
             code: "bilateral_contract_approval_mismatch",
         },

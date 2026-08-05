@@ -30,7 +30,9 @@ pub(crate) const BOLTZ_CONFIGURATION_SCHEMA: &str = concat!(
     "openagents.mkt-swp.boltz-provider-api.config.v1\n",
     "activation=exact_fixture_digest_private_bind_and_exact_browser_origin\n",
     "native_session=existing_signed_records_only\n",
+    "submarine_create=rfq_quote_order_before_funding_prepare\n",
     "submarine_finalize=bilateral_contract_before_broadcast\n",
+    "client_authorization=restored_snapshot_receipt_before_broadcast\n",
     "broadcast=session_bound\n",
     "preimage=public_claim_transaction_only\n",
     "nip11_advertisement=never\n",
@@ -266,6 +268,9 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 "mapping_revision":immortal_core::boltz_compat::BOLTZ_MAPPING_REVISION,
                 "provider_process":true,
                 "signed_native_session_source":true,
+                "clean_room_client_seams":true,
+                "pinned_upstream_client_builds":false,
+                "fresh_client_engine_sessions":true,
                 "session_bound_broadcast":true,
                 "relay_body_access":false,
                 "nip11_advertised":false,
@@ -408,10 +413,12 @@ fn limits_contract() -> Value {
             "status_ids":crate::boltz::MAX_STATUS_IDS,
             "websocket_subscriptions":crate::boltz::MAX_WS_SUBSCRIPTIONS,
             "websocket_frame_bytes":crate::boltz::MAX_WS_FRAME_BYTES,
-            "websocket_messages_per_minute":crate::boltz::MAX_WS_MESSAGES_PER_MINUTE,
-            "websocket_status_query_batches_per_minute":crate::boltz::MAX_WS_STATUS_QUERY_BATCHES_PER_MINUTE,
+            "websocket_messages_per_minute_per_ip":crate::boltz::MAX_WS_MESSAGES_PER_MINUTE,
+            "websocket_status_query_batches_per_minute_per_ip":crate::boltz::MAX_WS_STATUS_QUERY_BATCHES_PER_MINUTE,
             "websocket_poll_interval_milliseconds":crate::boltz::WS_POLL_INTERVAL.as_millis(),
-            "request_timeout_seconds":crate::boltz::REQUEST_TIMEOUT.as_secs()
+            "connection_deadline_seconds":crate::boltz::REQUEST_TIMEOUT.as_secs(),
+            "websocket_idle_deadline_seconds":crate::boltz::WS_IDLE_TIMEOUT.as_secs(),
+            "websocket_frame_completion_deadline_seconds":crate::boltz::REQUEST_TIMEOUT.as_secs()
         },
         "quote":{
             "rail_sync_attempts":crate::funded_mode::QUOTE_RAIL_SYNC_ATTEMPTS,
@@ -480,10 +487,12 @@ fn limits_contract() -> Value {
             "status_ids":64,
             "websocket_subscriptions":64,
             "websocket_frame_bytes":16384,
-            "websocket_messages_per_minute":120,
-            "websocket_status_query_batches_per_minute":60,
+            "websocket_messages_per_minute_per_ip":120,
+            "websocket_status_query_batches_per_minute_per_ip":60,
             "websocket_poll_interval_milliseconds":1000,
-            "request_timeout_seconds":10
+            "connection_deadline_seconds":10,
+            "websocket_idle_deadline_seconds":90,
+            "websocket_frame_completion_deadline_seconds":10
         },
         "quote":{
             "rail_sync_attempts":40,

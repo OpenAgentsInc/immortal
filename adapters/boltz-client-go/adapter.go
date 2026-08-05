@@ -60,6 +60,83 @@ type FundingRequest struct {
 	AmountSats uint64
 }
 
+type PinnedSubmarineCreate struct {
+	From            string
+	To              string
+	PairHash        string
+	RefundPublicKey string
+	Invoice         string
+	ReferralID      string
+	PreimageHash    string
+	Error           string
+}
+
+type ProviderSubmarineCreate struct {
+	From            string `json:"from"`
+	To              string `json:"to"`
+	Invoice         string `json:"invoice"`
+	PairHash        string `json:"pairHash"`
+	RefundPublicKey string `json:"refundPublicKey"`
+	MKTSessionID    string `json:"mktSessionId"`
+}
+
+type PinnedReverseCreate struct {
+	From             string
+	To               string
+	PreimageHash     string
+	ClaimPublicKey   string
+	InvoiceAmount    uint64
+	OnchainAmount    uint64
+	PairHash         string
+	ReferralID       string
+	Address          string
+	AddressSignature string
+	Description      string
+	DescriptionHash  string
+	InvoiceExpiry    uint64
+	Error            string
+}
+
+type ProviderReverseCreate struct {
+	From           string `json:"from"`
+	To             string `json:"to"`
+	InvoiceAmount  uint64 `json:"invoiceAmount"`
+	PreimageHash   string `json:"preimageHash"`
+	ClaimPublicKey string `json:"claimPublicKey"`
+	PairHash       string `json:"pairHash"`
+	MKTSessionID   string `json:"mktSessionId"`
+}
+
+func AdaptPinnedSubmarineCreate(request PinnedSubmarineCreate, sessionID string) (ProviderSubmarineCreate, error) {
+	if request.From != "BTC" || request.To != "BTC" ||
+		request.Invoice == "" || request.PairHash == "" || request.RefundPublicKey == "" ||
+		request.ReferralID != "" || request.PreimageHash != "" || request.Error != "" ||
+		!validLowerHex32(sessionID) {
+		return ProviderSubmarineCreate{}, ErrInvalidFundingRequest
+	}
+	return ProviderSubmarineCreate{
+		From: request.From, To: request.To, Invoice: request.Invoice,
+		PairHash: request.PairHash, RefundPublicKey: request.RefundPublicKey,
+		MKTSessionID: sessionID,
+	}, nil
+}
+
+func AdaptPinnedReverseCreate(request PinnedReverseCreate, sessionID string) (ProviderReverseCreate, error) {
+	if request.From != "BTC" || request.To != "BTC" || request.InvoiceAmount == 0 ||
+		request.PreimageHash == "" || request.ClaimPublicKey == "" || request.PairHash == "" ||
+		request.OnchainAmount != 0 || request.ReferralID != "" || request.Address != "" ||
+		request.AddressSignature != "" || request.Description != "" ||
+		request.DescriptionHash != "" || request.InvoiceExpiry != 0 || request.Error != "" ||
+		!validLowerHex32(sessionID) {
+		return ProviderReverseCreate{}, ErrInvalidFundingRequest
+	}
+	return ProviderReverseCreate{
+		From: request.From, To: request.To, InvoiceAmount: request.InvoiceAmount,
+		PreimageHash: request.PreimageHash, ClaimPublicKey: request.ClaimPublicKey,
+		PairHash: request.PairHash, MKTSessionID: sessionID,
+	}, nil
+}
+
 type PreparedFunding struct {
 	RawTransactionHex string
 	OutputIndex       uint32
@@ -74,16 +151,17 @@ type FundingBinding struct {
 }
 
 type BilateralApproval struct {
-	SessionID                string
-	FinalizePath             string
-	FundingTransactionSHA256 string
-	OutputIndex              uint32
-	RequesterContractEventID string
-	ProviderContractEventID  string
-	ExitPackageSHA256        string
-	ExitPackageMode          string
-	ExitPackagePersisted     bool
-	ScriptPathOnly           bool
+	SessionID                   string
+	FinalizePath                string
+	FundingTransactionSHA256    string
+	OutputIndex                 uint32
+	RequesterContractEventID    string
+	ProviderContractEventID     string
+	ExitPackageSHA256           string
+	ExitPackageMode             string
+	AuthorizationSnapshotSHA256 string
+	ExitPackagePersisted        bool
+	ScriptPathOnly              bool
 }
 
 type FundingPreparer interface {
@@ -139,7 +217,7 @@ func (gate *FundingGate) FundSubmarine(
 	if err != nil {
 		return "", fmt.Errorf("prepare funding: %w", err)
 	}
-	binding, err := fundingBinding(request.SessionID, prepared)
+	binding, err := fundingBinding(request, prepared)
 	if err != nil {
 		return "", err
 	}
@@ -157,15 +235,15 @@ func (gate *FundingGate) FundSubmarine(
 	return transactionID, nil
 }
 
-func fundingBinding(sessionID string, prepared PreparedFunding) (FundingBinding, error) {
+func fundingBinding(request FundingRequest, prepared PreparedFunding) (FundingBinding, error) {
 	raw, err := decodeRawTransaction(prepared.RawTransactionHex)
 	if err != nil {
 		return FundingBinding{}, err
 	}
 	digest := sha256.Sum256(raw)
 	return FundingBinding{
-		SessionID:                sessionID,
-		FinalizePath:             fmt.Sprintf("/v2/swap/submarine/%s/finalize", sessionID),
+		SessionID:                request.SessionID,
+		FinalizePath:             fmt.Sprintf("/v2/swap/submarine/%s/finalize", request.SessionID),
 		RawTransactionHex:        prepared.RawTransactionHex,
 		FundingTransactionSHA256: hex.EncodeToString(digest[:]),
 		OutputIndex:              prepared.OutputIndex,
@@ -197,6 +275,7 @@ func validateApproval(binding FundingBinding, approval BilateralApproval) error 
 		!validLowerHex32(approval.ProviderContractEventID) ||
 		approval.RequesterContractEventID == approval.ProviderContractEventID ||
 		!validLowerHex32(approval.ExitPackageSHA256) ||
+		!validLowerHex32(approval.AuthorizationSnapshotSHA256) ||
 		(approval.ExitPackageMode != "presigned" && approval.ExitPackageMode != "wallet_sign") {
 		return ErrBilateralApprovalMismatch
 	}

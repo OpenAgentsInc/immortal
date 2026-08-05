@@ -55,40 +55,66 @@ All three absent disables the listener. A partial profile, stale digest,
 public bind, or invalid origin fails startup. Supplied browser origins must
 match exactly; native clients may omit `Origin`. The API applies 64 concurrent
 connection permits, 120 requests per minute per source address, bounded HTTP
-heads/bodies and WebSocket frames/subscriptions. The complete HTTP head,
-complete HTTP request, WebSocket handshake, and complete WebSocket frame each
-have a ten-second deadline; byte-by-byte traffic cannot restart a deadline.
-Each WebSocket admits at most 120 client messages and 60 status-query batches
-per minute, polls at one-second intervals, and reads all subscribed sessions
-in one bounded batch. It is never advertised in NIP-11.
+heads/bodies and WebSocket frames/subscriptions. One ten-second connection
+deadline covers HTTP preview, request parsing, route execution, and response,
+or the WebSocket handshake. After upgrade, the persistent reader permits 90
+seconds between complete frames. Once the first byte arrives, the rest of that
+frame must arrive within ten seconds; one-second status polls cannot restart
+either deadline. Application `ping` messages receive `pong` responses. All
+WebSockets from one source address share
+the 120-message and 60-status-query-batch minute budgets. The listener reads
+all subscribed sessions in one bounded batch. It is never advertised in
+NIP-11.
 
 Creation bodies use closed member sets. Submarine creation accepts only
 `from`, `to`, `invoice`, `pairHash`, `refundPublicKey`, and `mktSessionId`.
 Reverse creation accepts only `from`, `to`, `invoiceAmount`, `preimageHash`,
 `claimPublicKey`, `pairHash`, and `mktSessionId`; the claim key and amount must
-equal the signed Contract and RFQ. Optional Boltz operator fields are refused
-instead of ignored or defaulted.
+equal the RFQ, Quote, and bilateral Contract, as must the payment hash.
+Submarine invoice, payment hash, amount, and refund key receive the same
+cross-record binding. Before funding is prepared, submarine creation accepts
+an exact RFQ/Quote/Order session with no Contract and an unexpired hard
+reservation. One Contract is always refused. Two Contracts are accepted only
+after the full bilateral validator succeeds. This permits raw funding bytes to
+be prepared before the Contracts can commit those bytes. The facade derives
+requester authority from the exact RFQ author, provider authority from the
+exact Quote author, and the session's marked Offering before it evaluates a
+body. Optional Boltz operator fields are refused instead of ignored or
+defaulted.
 
-Status projection follows each participant's dense `seq` and exact
-`previous` references. It checks the signer allowed for each MKT-SWP state and
-does not use `created_at` to order claims. A signed broadcast intention remains
-`swap.created` until a funding observation exists, and a prepared refund is
-never reported as mempool broadcast. Reverse BIP21 lookup uses the durable
+Status projection reuses the transport-neutral client's MKT-SWP validator. It
+requires the exact Order reference, base `state`, signer-local dense `seq` and
+`previous` ancestry, allowed predecessor graph, and required evidence rung;
+`created_at` never orders claims. A signed `provider_funding_broadcast`
+intention remains `swap.created` until a `funding_observed` record supplies
+measured evidence, and a prepared refund is never reported as mempool
+broadcast. Reverse BIP21 lookup uses the durable
 payment-hash/session index, so unrelated global history cannot hide a valid
 invoice. Only the Quote provider's `hold_invoice_ready` Status can populate
 that index, after exact RFQ/Quote participants, equal bilateral reverse
 Contracts, and the BOLT11/Quote/Contract payment hash have all matched.
 Requester and foreign Status records remain durable evidence but cannot
-populate or redirect the index. Startup rebuilds missing index rows through
-keyset-paged application validation; the SQL migration does not infer a
-payment hash from unparsed invoice text.
+populate or redirect the index. Only the migration-owning
+`ProviderStore::connect` performs startup reconciliation. It selects sessions
+without an existing binding, validates at most 64 synchronously, then
+continues in bounded keyset pages on a background task. `connect_verified`
+does not start a competing scan. The immutable binding validates the
+canonical RFQ, Quote, Order, bilateral Contracts, and the exact
+`hold_invoice_ready` predecessor prefix; later or temporarily out-of-order
+Status arrival cannot revalidate or mutate it. Each session takes its own
+transaction and advisory lock, giving reconciliation the same deterministic
+lock order as live ingestion; the SQL migration does not infer a payment hash
+from unparsed invoice text.
 
-Submarine finalize returns the exact signed exit-package commitment mode with
-its SHA-256. `presigned` means a keyless package; `wallet_sign` means the
-persisted package still names the wallet signing callback. The compatibility
-response never treats those modes as equivalent, and each adapted client
-checks the returned mode and digest against its persisted package before
-broadcast.
+Submarine finalize runs after raw transaction preparation and the requester
+client-engine callback has exchanged both Contract records. It compares the
+raw bytes, transaction SHA-256, and output index against the bilateral
+Contract, then returns both exact Contract event IDs and the signed
+exit-package commitment mode with its SHA-256. `presigned` means a keyless
+package; `wallet_sign` means the persisted package still names the wallet
+signing callback. Each seam compares the provider response with the local
+callback, which also carries the SHA-256 of an authorization snapshot restored
+through `resume_funding_authorized`, before broadcast.
 
 The external provider endpoint must be reachable by the client. A loopback
 provider URL is suitable only when the client is on that host. WebSocket
@@ -131,19 +157,22 @@ relay's `/v2/ws` response is a discovery handoff, not a WebSocket proxy.
   metadata or restore storage.
 
 An unmodified URL-only stock client is not compatible with submarine swaps.
-After accepting a Quote it constructs the funding transaction, then calls:
+After accepting a Quote, the seam creates the pre-Contract swap, constructs
+the funding transaction without broadcasting, and passes the exact bytes and
+output to the Immortal client engine. The engine exchanges matching
+`kind:39610` Swap Contracts and persists the unilateral exit before the seam
+calls:
 
 ```text
 POST /v2/swap/submarine/:id/finalize
 ```
 
-The provider verifies that the lowercase raw transaction, SHA-256, and output
-index resolve exactly the requester-funded source verifier without changing
-any other Quote term. Both participants then sign matching `kind:39610` Swap
-Contracts. The client may broadcast only after both Contracts are present and
-its local verifier has rechecked the funding output and persisted its exit
-package. The handoff does not weaken MKT-SWP section 4.1 and does not give the
-relay wallet authority.
+The provider verifies that the lowercase raw transaction, SHA-256, output
+index, both Contract IDs, and exit commitment resolve to that exact bilateral
+session without changing any Quote term. The client may broadcast only after
+the provider response equals its restored local authorization receipt. The
+handoff does not weaken MKT-SWP section 4.1 and does not give the relay wallet
+authority.
 
 Reverse flow may start from the provider-funded transaction already bound by
 the signed Quote and bilateral Contracts. Script-path claim and refund remain
@@ -152,29 +181,43 @@ the v1 recovery paths; cooperative MuSig2 helpers are excluded.
 ### Adapted-client source gate
 
 The clean-room CC0 seams under `adapters/` are built independently of Cargo
-and add no Rust dependency:
+and add no Rust dependency. They are extracted boundary implementations shaped
+from the pinned route inventory. This repository does not patch or build the
+pinned upstream Go daemon or web application:
 
 - `boltz-client-go/adapter.go` is a Go-standard-library funding gate for the
   pinned daemon integration.
 - `boltz-web-app/adapter.mjs` is a browser/Node-standard-library funding gate
   for the pinned web integration.
 
-Both enforce the fixture sequence: prepare raw funding without broadcast,
-derive its exact SHA-256 and output index, require the requester and provider
-Contract event IDs plus a persisted script-path exit package from the local
-Immortal client engine, then broadcast the unchanged prepared bytes. The
+Both enforce the fixture sequence: accept an address/amount request, prepare
+raw funding without broadcast, derive its exact SHA-256 and output index,
+obtain the requester and provider Contract event IDs plus a persisted
+script-path exit package from the local Immortal client-engine callback, then
+broadcast the unchanged prepared bytes. Contract IDs are callback outputs;
+they are never preconditions for transaction preparation. The
 constructors require explicit partial/cooperative-helper and chain-pair
 disablement plus a direct provider WebSocket URL. Static tests exclude those
 stock calls, the one-shot wallet method, and the external-wallet handoff from
 the production adapter sources. An upstream build must integrate these seams
 at the pinned call sites; a configuration flag alone is insufficient.
 
-`tests/fixtures/nipmkt/boltz-client-adapters-v1.json` pins the upstream source
-and blob identities, the 13-call Go subset, the 15-call web subset, and their
-exact 19-call union. `scripts/test-boltz-client-adapters.sh` runs both
-dependency-free unit suites. The funded smoke also runs both adapter processes
-against the provider listener and the same signed sessions used for its native
-rail journeys.
+`tests/fixtures/nipmkt/boltz-client-adapters-v1.json` pins the inspected
+upstream source and blob identities, the 13-call Go subset, the 15-call web
+subset, and their exact 19-call union. Those counts establish provider route
+coverage for the inspected call inventory; they are not upstream application
+build coverage. `scripts/test-boltz-client-adapters.sh` runs both
+dependency-free unit suites. The funded smoke creates one fresh native
+submarine session per seam. Each process waits for prepared bytes, invokes the
+Rust `immortal-client` Contract exchange and exit-persistence callback through
+atomic mode-0600 control files, restores the authorization snapshot, compares
+the provider finalize response with the local approval, proves the transaction
+is absent, and performs its first exact-byte broadcast. Both replay the bytes
+and prove that a same-txid transaction with changed witness is refused.
+Reverse-route shapes replay against the native reverse session.
+The selected fresh Go process also keeps one provider WebSocket open for more
+than 31 seconds, receives the web application's JSON ping/pong and the Go
+client's control ping/pong, then receives its subscribed status update.
 
 ## Endpoint matrix
 
@@ -292,6 +335,12 @@ Fixture and Postgres tests additionally pin signer/sequence projection,
 same-txid witness mutation refusal, and invoice lookup after more than 6,144
 unrelated records. This is separate from the **17/53 endpoint-surface** result
 above. A relay `307`, `404`, or configuration promise earns no coverage.
+
+The submarine admission fixture executes the Contract-count boundary against
+signed records. A canonical hard-reserved RFQ/Quote/Order is accepted before
+Contracts exist, one Contract is refused, and the bilateral pair is accepted.
+Invalid or foreign RFQ, Quote, and Order records, misbound causal references,
+and an Offering coordinate naming another authority are refused.
 
 The process result makes the profile eligible for #18 replacement scenarios.
 Public replacement remains gated on #18 and #19 deployment evidence.
