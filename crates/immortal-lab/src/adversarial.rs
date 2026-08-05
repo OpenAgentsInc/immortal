@@ -317,6 +317,48 @@ fn journey_proof(
             required_hash(result, "/journey/refund_txid", "journey refund txid")?,
         ),
     };
+    let checks = if journey == FundedJourney::SubmarineRefund {
+        if result
+            .pointer("/journey/both_bitcoind_nodes_agree")
+            .and_then(Value::as_bool)
+            != Some(true)
+            || result
+                .pointer("/journey/provider_claim_effects")
+                .and_then(Value::as_u64)
+                != Some(0)
+            || result
+                .pointer("/journey/lightning_state")
+                .and_then(Value::as_str)
+                != Some("unpaid_final")
+            || result
+                .pointer("/journey/exit_package_mode")
+                .and_then(Value::as_str)
+                != Some("wallet_sign")
+            || result
+                .pointer("/journey/client_recovery_action")
+                .and_then(Value::as_str)
+                != Some("request_wallet_refund")
+        {
+            return Err("submarine refund lacks independent terminal checks".to_owned());
+        }
+        json!({
+            "exit_package_committed_before_funding":true,
+            "client_recovery_authorized_wallet_refund":true,
+            "exact_transaction_outpoint_lineage":true,
+            "confirmations":true,
+            "both_bitcoind_nodes_agree":true,
+            "lightning_unpaid_final":true,
+            "provider_claim_effects":0,
+        })
+    } else {
+        json!({
+            "exact_transaction_outpoint_lineage":true,
+            "confirmations":true,
+            "lightning_terminal_state":true,
+            "signed_close":true,
+            "provider_health":true,
+        })
+    };
     let mut proof = json!({
         "proof_class":"funded_journey",
         "provider_index":provider_index,
@@ -327,21 +369,34 @@ fn journey_proof(
         "payment_hash":payment_hash,
         "outcome":expected,
         "resumed":resumed,
-        "checks":{
-            "exact_transaction_outpoint_lineage":true,
-            "confirmations":true,
-            "lightning_terminal_state":true,
-            "signed_close":true,
-            "provider_health":true,
-        }
+        "checks":checks
     });
     let object = proof
         .as_object_mut()
         .ok_or_else(|| "journey proof is not an object".to_owned())?;
     object.insert(terminal_member.to_owned(), Value::String(terminal_txid));
+    if journey == FundedJourney::SubmarineRefund {
+        let funding_confirmation_height = result
+            .pointer("/journey/funding_confirmation_height")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "submarine refund has no funding confirmation height".to_owned())?;
+        let refund_lock_height = result
+            .pointer("/journey/refund_lock_height")
+            .and_then(Value::as_u64)
+            .filter(|height| *height > funding_confirmation_height)
+            .ok_or_else(|| "submarine refund has no later CLTV height".to_owned())?;
+        object.insert(
+            "funding_confirmation_height".to_owned(),
+            json!(funding_confirmation_height),
+        );
+        object.insert("refund_lock_height".to_owned(), json!(refund_lock_height));
+    }
     if let Some(injection) = injection {
         object.insert("injection".to_owned(), Value::String(injection.to_owned()));
-        if matches!(injection, "relay_loss" | "provider_crash") {
+        if matches!(
+            injection,
+            "relay_loss" | "provider_crash" | "provider_noncooperative"
+        ) {
             let control = result
                 .get("external_control")
                 .and_then(Value::as_object)
@@ -351,10 +406,20 @@ fn journey_proof(
                 "provider_crash" => {
                     format!("provider-{}", if provider_index == 0 { "a" } else { "b" })
                 }
+                "provider_noncooperative" => {
+                    format!("provider-{}", if provider_index == 0 { "a" } else { "b" })
+                }
                 _ => return Err("external process injection is unsupported".to_owned()),
             };
+            let expected_transition = if injection == "provider_noncooperative" {
+                "process_stopped"
+            } else {
+                "process_replaced_and_ready"
+            };
+            let expected_restored = injection != "provider_noncooperative";
             if control.get("schema").and_then(Value::as_str)
                 != Some("openagents.immortal.lab-injection-ack.v1")
+                || control.get("restored").and_then(Value::as_bool) != Some(expected_restored)
                 || control
                     .get("evidence")
                     .and_then(Value::as_object)
@@ -366,7 +431,7 @@ fn journey_proof(
                     .and_then(Value::as_object)
                     .and_then(|evidence| evidence.get("transition"))
                     .and_then(Value::as_str)
-                    != Some("process_replaced_and_ready")
+                    != Some(expected_transition)
             {
                 return Err(
                     "external process control proof does not bind the selected target".to_owned(),
@@ -596,8 +661,11 @@ fn proof_plan(case_id: &str) -> ProofPlan {
             expected_code: "rejected_before_effect",
             outcome: "rejected_before_effect",
         },
-        "submarine-provider-noncooperative-refund" => ProofPlan::Unsupported {
-            reason: "the funded harness has no requester submarine timeout-refund journey",
+        "submarine-provider-noncooperative-refund" => ProofPlan::Journey {
+            provider_index: 0,
+            journey: FundedJourney::SubmarineRefund,
+            injection: Some("provider_noncooperative"),
+            outcome: JourneyOutcome::Refunded,
         },
         "doomsday-submarine-provider-gone"
         | "doomsday-reverse-coordinator-gone"
@@ -751,7 +819,7 @@ mod tests {
             .keys()
             .filter(|case_id| !matches!(proof_plan(case_id), ProofPlan::Unsupported { .. }))
             .count();
-        assert_eq!(supported, 20);
+        assert_eq!(supported, 21);
         for case_id in cases.keys() {
             if let ProofPlan::Unsupported { reason } = proof_plan(case_id) {
                 assert!(
@@ -906,6 +974,72 @@ mod tests {
                 FundedJourney::Submarine,
                 Some("provider_crash"),
                 JourneyOutcome::Claimed,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn submarine_refund_proof_binds_timeout_nodes_and_stopped_provider() {
+        let result = json!({
+            "step":"submarine_refund",
+            "provider_pubkey":hash("1"),
+            "external_control":{
+                "schema":"openagents.immortal.lab-injection-ack.v1",
+                "run_id":"run-2",
+                "checkpoint":"submarine_refund:funding_effect_recorded",
+                "injection":"provider_noncooperative",
+                "restored":false,
+                "evidence":{
+                    "target":"provider-a",
+                    "before_pid":303,
+                    "transition":"process_stopped",
+                }
+            },
+            "journey":{
+                "order_id":hash("2"),
+                "lockup_txid":hash("3"),
+                "lockup_vout":0,
+                "payment_hash":hash("4"),
+                "funding_confirmation_height":110,
+                "refund_lock_height":116,
+                "refund_txid":hash("5"),
+                "exit_package_mode":"wallet_sign",
+                "client_recovery_action":"request_wallet_refund",
+                "both_bitcoind_nodes_agree":true,
+                "provider_claim_effects":0,
+                "lightning_state":"unpaid_final",
+                "result":"refunded",
+            }
+        });
+        let proof = journey_proof(
+            &result,
+            0,
+            FundedJourney::SubmarineRefund,
+            Some("provider_noncooperative"),
+            JourneyOutcome::Refunded,
+        )
+        .expect("submarine refund should produce a bounded proof");
+        assert_eq!(
+            proof.pointer("/external_control/evidence/transition"),
+            Some(&Value::String("process_stopped".to_owned()))
+        );
+        assert_eq!(
+            proof.pointer("/checks/provider_claim_effects"),
+            Some(&json!(0))
+        );
+        assert_eq!(proof.get("funding_confirmation_height"), Some(&json!(110)));
+        assert_eq!(proof.get("refund_lock_height"), Some(&json!(116)));
+
+        let mut false_agreement = result;
+        false_agreement["journey"]["both_bitcoind_nodes_agree"] = Value::Bool(false);
+        assert!(
+            journey_proof(
+                &false_agreement,
+                0,
+                FundedJourney::SubmarineRefund,
+                Some("provider_noncooperative"),
+                JourneyOutcome::Refunded,
             )
             .is_err()
         );

@@ -160,6 +160,11 @@ run_case() (
       external_checkpoint=submarine:funding_effect_recorded
       external_target=provider-b
       ;;
+    submarine-provider-noncooperative-refund)
+      external_injection=provider_noncooperative
+      external_checkpoint=submarine_refund:funding_effect_recorded
+      external_target=provider-a
+      ;;
   esac
   maximum_seconds="$(python3 - "${fixture}" <<'PY'
 import json, pathlib, sys
@@ -371,7 +376,7 @@ PY
 
   acknowledge_external_injection() {
     local request_file acknowledgement_file request_metadata request_run_id request_sha256
-    local before_pid after_pid target_suffix target_port target_provider
+    local before_pid after_pid target_suffix target_port target_provider restored transition
     request_file="${private_root}/state/funded-injection.json"
     acknowledgement_file="${private_root}/state/funded-continue"
     wait_for_injection_request "${request_file}"
@@ -412,6 +417,9 @@ PY
 
     before_pid="$(container_pid "${external_target}")"
     [[ "${before_pid}" =~ ^[1-9][0-9]*$ ]]
+    restored=true
+    transition=process_replaced_and_ready
+    after_pid=""
     case "${external_injection}" in
       relay_loss)
         current_phase="${external_target}-partition"
@@ -447,19 +455,32 @@ PY
         fi
         wait_for "restored ${external_target}" provider_ready "${target_suffix}" "${target_port}"
         ;;
+      provider_noncooperative)
+        current_phase="${external_target}-noncooperative-stop"
+        compose stop "${external_target}" >/dev/null
+        if compose ps --services --status running | grep -Fx "${external_target}" >/dev/null; then
+          echo "test-lab-adversarial: ${case_id}: provider remained running after noncooperative stop" >&2
+          return 1
+        fi
+        restored=false
+        transition=process_stopped
+        ;;
       *)
         echo "test-lab-adversarial: ${case_id}: unsupported external injection" >&2
         return 1
         ;;
     esac
-    after_pid="$(container_pid "${external_target}")"
-    [[ "${after_pid}" =~ ^[1-9][0-9]*$ ]]
-    test "${before_pid}" != "${after_pid}"
+    if test "${restored}" = true; then
+      after_pid="$(container_pid "${external_target}")"
+      [[ "${after_pid}" =~ ^[1-9][0-9]*$ ]]
+      test "${before_pid}" != "${after_pid}"
+    fi
 
     current_phase=injection-acknowledgement
     python3 - "${request_file}" "${acknowledgement_file}" "${request_run_id}" \
       "${request_sha256}" "${external_injection}" "${external_checkpoint}" \
-      "${external_target}" "${before_pid}" "${after_pid}" <<'PY'
+      "${external_target}" "${before_pid}" "${after_pid}" "${restored}" \
+      "${transition}" <<'PY'
 import hashlib
 import json
 import os
@@ -484,14 +505,15 @@ acknowledgement = {
     "run_id": sys.argv[3],
     "checkpoint": sys.argv[6],
     "injection": sys.argv[5],
-    "restored": True,
+    "restored": sys.argv[10] == "true",
     "evidence": {
         "target": sys.argv[7],
         "before_pid": int(sys.argv[8]),
-        "after_pid": int(sys.argv[9]),
-        "transition": "process_replaced_and_ready",
+        "transition": sys.argv[11],
     },
 }
+if sys.argv[9]:
+    acknowledgement["evidence"]["after_pid"] = int(sys.argv[9])
 output = json.dumps(acknowledgement, separators=(",", ":")).encode()
 temporary = acknowledgement_path.with_name(acknowledgement_path.name + ".tmp")
 descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

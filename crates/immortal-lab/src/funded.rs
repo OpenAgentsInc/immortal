@@ -61,12 +61,14 @@ const NETWORK_ID: &str = "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4";
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const JOURNEY_TIMEOUT: Duration = Duration::from_secs(180);
 const LIGHTNING_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+const SUBMARINE_REFUND_INVOICE_EXPIRY_SECONDS: u32 = 86_400;
 const FUNDED_TOPOLOGY_FIXTURE: &str =
     include_str!("../../../tests/fixtures/lab/topology-funded-v1.json");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FundedJourney {
     Submarine,
+    SubmarineRefund,
     ReverseClaim,
     ReverseRefund,
 }
@@ -75,6 +77,7 @@ impl FundedJourney {
     pub fn name(self) -> &'static str {
         match self {
             Self::Submarine => "submarine",
+            Self::SubmarineRefund => "submarine_refund",
             Self::ReverseClaim => "reverse",
             Self::ReverseRefund => "reverse_refund",
         }
@@ -178,6 +181,7 @@ enum HarnessInjection {
     SecretLeak,
     RelayLoss,
     ProviderCrash,
+    ProviderNoncooperative,
     StatusGap,
     StatusFork,
     WrongClaimKey,
@@ -192,6 +196,7 @@ impl HarnessInjection {
             "secret_leak" => Ok(Self::SecretLeak),
             "relay_loss" => Ok(Self::RelayLoss),
             "provider_crash" => Ok(Self::ProviderCrash),
+            "provider_noncooperative" => Ok(Self::ProviderNoncooperative),
             "status_gap" => Ok(Self::StatusGap),
             "status_fork" => Ok(Self::StatusFork),
             "wrong_claim_key" => Ok(Self::WrongClaimKey),
@@ -207,6 +212,7 @@ impl HarnessInjection {
             Self::SecretLeak => "secret_leak",
             Self::RelayLoss => "relay_loss",
             Self::ProviderCrash => "provider_crash",
+            Self::ProviderNoncooperative => "provider_noncooperative",
             Self::StatusGap => "status_gap",
             Self::StatusFork => "status_fork",
             Self::WrongClaimKey => "wrong_claim_key",
@@ -214,7 +220,10 @@ impl HarnessInjection {
     }
 
     const fn requires_external_control(self) -> bool {
-        matches!(self, Self::RelayLoss | Self::ProviderCrash)
+        matches!(
+            self,
+            Self::RelayLoss | Self::ProviderCrash | Self::ProviderNoncooperative
+        )
     }
 }
 
@@ -376,29 +385,21 @@ fn validate_injection_acknowledgement(
         .map_err(|error| format!("injection continuation is invalid JSON: {error}"))?;
     provider_support::reject_custody_material(&value)
         .map_err(|error| format!("injection continuation contains custody material: {error}"))?;
+    let provider_stopped = injection == HarnessInjection::ProviderNoncooperative;
     if value.get("schema").and_then(Value::as_str)
         != Some("openagents.immortal.lab-injection-ack.v1")
         || value.get("run_id").and_then(Value::as_str) != Some(run_id)
         || value.get("checkpoint").and_then(Value::as_str) != Some(checkpoint)
         || value.get("injection").and_then(Value::as_str) != Some(injection.name())
-        || value.get("restored").and_then(Value::as_bool) != Some(true)
+        || value.get("restored").and_then(Value::as_bool) != Some(!provider_stopped)
     {
         return Err("injection continuation does not bind the requested recovery".to_owned());
     }
-    if let Some(evidence) = value.get("evidence") {
-        let evidence = evidence
-            .as_object()
-            .ok_or_else(|| "injection evidence is not an object".to_owned())?;
-        if evidence.len() != 4
-            || evidence.keys().any(|name| {
-                !matches!(
-                    name.as_str(),
-                    "target" | "before_pid" | "after_pid" | "transition"
-                )
-            })
-        {
-            return Err("injection evidence has another shape".to_owned());
-        }
+    {
+        let evidence = value
+            .get("evidence")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "injection evidence is absent or is not an object".to_owned())?;
         let target = evidence
             .get("target")
             .and_then(Value::as_str)
@@ -408,15 +409,33 @@ fn validate_injection_acknowledgement(
             .and_then(Value::as_str)
             .ok_or_else(|| "injection evidence has no transition".to_owned())?;
         let before_pid = evidence.get("before_pid").and_then(Value::as_u64);
-        let after_pid = evidence.get("after_pid").and_then(Value::as_u64);
-        if !matches!(target, "relay-a" | "relay-b" | "provider-a" | "provider-b")
-            || transition != "process_replaced_and_ready"
-            || before_pid.is_none_or(|pid| pid == 0 || pid > i32::MAX as u64)
-            || after_pid.is_none_or(|pid| pid == 0 || pid > i32::MAX as u64)
-            || before_pid == after_pid
-        {
+        let valid_shape = if provider_stopped {
+            evidence.len() == 3
+                && evidence
+                    .keys()
+                    .all(|name| matches!(name.as_str(), "target" | "before_pid" | "transition"))
+                && matches!(target, "provider-a" | "provider-b")
+                && transition == "process_stopped"
+                && before_pid.is_some_and(|pid| pid > 0 && pid <= i32::MAX as u64)
+        } else {
+            let after_pid = evidence.get("after_pid").and_then(Value::as_u64);
+            evidence.len() == 4
+                && evidence.keys().all(|name| {
+                    matches!(
+                        name.as_str(),
+                        "target" | "before_pid" | "after_pid" | "transition"
+                    )
+                })
+                && matches!(target, "relay-a" | "relay-b" | "provider-a" | "provider-b")
+                && transition == "process_replaced_and_ready"
+                && before_pid.is_some_and(|pid| pid > 0 && pid <= i32::MAX as u64)
+                && after_pid.is_some_and(|pid| pid > 0 && pid <= i32::MAX as u64)
+                && before_pid != after_pid
+        };
+        if !valid_shape {
             return Err(
-                "injection evidence does not prove one bounded process replacement".to_owned(),
+                "injection evidence does not prove the requested bounded process transition"
+                    .to_owned(),
             );
         }
     }
@@ -932,7 +951,9 @@ fn run_funded_journey_with_environment(
         &environment.requester,
         JOURNEY_TIMEOUT,
     )?;
-    if let Some(restored) = restore_authorized_session(environment, journey)? {
+    if journey != FundedJourney::SubmarineRefund
+        && let Some(restored) = restore_authorized_session(environment, journey)?
+    {
         let result = resume_authorized_journey(runtime, environment, journey, restored)?;
         verify_health(&environment.health_url)?;
         return Ok(json!({
@@ -946,6 +967,10 @@ fn run_funded_journey_with_environment(
         FundedJourney::Submarine => {
             let client_input = fund_client_wallet(runtime, environment)?;
             drive_submarine(runtime, environment, &provider_pubkey, client_input)?
+        }
+        FundedJourney::SubmarineRefund => {
+            let client_input = fund_client_wallet(runtime, environment)?;
+            drive_submarine_refund(runtime, environment, &provider_pubkey, client_input)?
         }
         FundedJourney::ReverseClaim => drive_reverse(
             runtime,
@@ -962,7 +987,9 @@ fn run_funded_journey_with_environment(
             true,
         )?,
     };
-    verify_health(&environment.health_url)?;
+    if journey != FundedJourney::SubmarineRefund {
+        verify_health(&environment.health_url)?;
+    }
     Ok(json!({
         "step": journey.name(),
         "provider_pubkey": provider_pubkey,
@@ -1434,6 +1461,7 @@ fn restartable_checkpoint(journey: FundedJourney, label: &str) -> bool {
                 | "funding_effect_recorded"
                 | "completed"
         ),
+        FundedJourney::SubmarineRefund => false,
         FundedJourney::ReverseClaim => matches!(
             label,
             "funding_authorized"
@@ -1656,6 +1684,73 @@ fn drive_submarine(
     )
 }
 
+fn drive_submarine_refund(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    client_input: FundingInput,
+) -> Result<Value, String> {
+    let invoice_label = "immortal-funded-submarine-refund";
+    let invoice =
+        runtime
+            .block_on(environment.peer_cln.invoice(
+                &cln_id("submarine-refund-invoice")?,
+                Millisatoshi::from_satoshis(OUTPUT_AMOUNT_SAT).map_err(|error| {
+                    format!("submarine refund invoice amount is invalid: {error}")
+                })?,
+                invoice_label,
+                "Immortal adversarial submarine refund",
+                SUBMARINE_REFUND_INVOICE_EXPIRY_SECONDS,
+            ))
+            .map_err(|error| format!("could not create submarine refund invoice: {error}"))?;
+    let refund_path = WalletPath::new(2, false, 0)
+        .map_err(|error| format!("submarine refund path is invalid: {error}"))?;
+    let requester_key = environment
+        .wallet
+        .derive_address(refund_path)
+        .map_err(|error| format!("could not derive submarine refund key: {error}"))?
+        .internal_key;
+    let exit_destination =
+        environment
+            .wallet
+            .derive_address(WalletPath::new(0, true, 10).map_err(|error| {
+                format!("submarine refund destination path is invalid: {error}")
+            })?)
+            .map_err(|error| format!("could not derive submarine refund destination: {error}"))?;
+    let mut session = negotiate(
+        environment,
+        provider_pubkey,
+        NegotiationInput {
+            journey_name: FundedJourney::SubmarineRefund.name(),
+            swap_type: "submarine",
+            payment_hash: &invoice.payment_hash,
+            invoice: Some(&invoice.bolt11),
+            requester_key,
+            requester_funding_input: Some(&client_input),
+            exit_destination_script_pubkey: &exit_destination.script_pubkey,
+        },
+    )?;
+    session.wait_provider_state("accepted")?;
+    session.wait_provider_state("lock_terms_ready")?;
+    let funding = session
+        .requester_funding
+        .take()
+        .ok_or_else(|| "submarine refund has no contract-bound funding transaction".to_owned())?;
+    let authorized = verify_submarine_before_fund(&session, &invoice.bolt11, &funding)?;
+    session.set_authorized_verifier(authorized)?;
+    continue_submarine_refund(
+        runtime,
+        environment,
+        session,
+        &funding.raw_transaction,
+        &funding.txid,
+        &invoice.payment_hash,
+        invoice_label,
+        refund_path,
+        exit_destination.script_pubkey.to_vec(),
+    )
+}
+
 fn reject_wrong_claim_key(
     environment: &SmokeEnvironment,
     session: &SessionContext,
@@ -1839,6 +1934,212 @@ fn finish_submarine(
         "result":"claimed"
     });
     session.persist_terminal("completed", result.clone())?;
+    Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn continue_submarine_refund(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    mut session: SessionContext,
+    raw_funding: &str,
+    intended_txid: &str,
+    payment_hash: &str,
+    invoice_label: &str,
+    refund_path: WalletPath,
+    destination_script_pubkey: Vec<u8>,
+) -> Result<Value, String> {
+    session.publish_requester_status("requester_verification_passed", Map::new())?;
+    session.persist_authorized_details(
+        "funding_execution_ready",
+        true,
+        json!({"external_identifier":intended_txid}),
+    )?;
+    let lockup_txid = broadcast_bitcoin_once(
+        runtime,
+        &environment.bitcoind,
+        "submarine-refund-funding",
+        raw_funding,
+        intended_txid,
+    )?;
+    session.record_funding_effect(lockup_txid.clone(), sha256(raw_funding.as_bytes()))?;
+    if session.control.injection != Some(HarnessInjection::ProviderNoncooperative) {
+        return Err("submarine refund requires the selected provider stop proof".to_owned());
+    }
+
+    let mut funding_extra = Map::new();
+    funding_extra.insert(
+        "transaction_id".to_owned(),
+        Value::String(lockup_txid.clone()),
+    );
+    funding_extra.insert("output_index".to_owned(), json!(0));
+    session.publish_requester_status("requester_funding_broadcast", funding_extra)?;
+    mine_blocks(
+        runtime,
+        &environment.bitcoind,
+        1,
+        "submarine-refund-funding",
+    )?;
+    let funding_confirmation_height = transaction_confirmation_height(
+        runtime,
+        &environment.bitcoind,
+        "submarine-refund-funding-confirmation",
+        &lockup_txid,
+    )?;
+    let bitcoin = bitcoin_terms(&session.contract, "source")?;
+    if funding_confirmation_height >= bitcoin.refund_lock_height {
+        return Err("submarine refund lockup confirmed after its CLTV deadline".to_owned());
+    }
+    finalize_invoice_unpaid(runtime, &environment.peer_cln, invoice_label, payment_hash)?;
+    let current_height = chain_height(runtime, &environment.bitcoind, "refund-before-timeout")?;
+    let before_timeout = submarine_refund_action(
+        &session,
+        current_height,
+        funding_confirmation_height,
+        LightningRecoveryState::UnpaidFinal,
+    )?;
+    if before_timeout != RecoveryAction::WaitForTimeout {
+        return Err("client recovery did not wait for the committed refund timeout".to_owned());
+    }
+    mine_blocks(
+        runtime,
+        &environment.bitcoind,
+        u64::from(bitcoin.refund_lock_height - current_height),
+        "submarine-refund-timeout",
+    )?;
+    let timeout_height = chain_height(runtime, &environment.bitcoind, "refund-timeout")?;
+    if timeout_height != bitcoin.refund_lock_height {
+        return Err("scripted mining did not stop at the exact CLTV refund height".to_owned());
+    }
+    let recovery = submarine_refund_action(
+        &session,
+        timeout_height,
+        funding_confirmation_height,
+        LightningRecoveryState::UnpaidFinal,
+    )?;
+    let expected_refund_effect = match recovery {
+        RecoveryAction::RequestWalletRefund { effect_id } => effect_id,
+        _ => {
+            return Err("client recovery did not authorize the requester wallet refund".to_owned());
+        }
+    };
+
+    session.publish_requester_status("refund_prepared", Map::new())?;
+    let destination_value_sat = bitcoin
+        .amount_sat
+        .checked_sub(bitcoin.miner_fee_budget_sat)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "submarine refund fee consumes its output".to_owned())?;
+    let refund = SettlementBridge::new(&environment.wallet)
+        .refund(&SettlementTemplate {
+            wallet_path: refund_path,
+            previous_txid_wire: display_txid_wire(&lockup_txid)?,
+            previous_output: 0,
+            prevout_value_sat: bitcoin.amount_sat,
+            prevout_script_pubkey: bitcoin.script_pubkey,
+            destination_value_sat,
+            destination_script_pubkey,
+            transaction_version: 2,
+            input_sequence: 0xffff_fffe,
+            lock_time: bitcoin.refund_lock_height,
+            taproot_script: bitcoin.refund_script,
+            taproot_control_block: bitcoin.refund_control_block,
+            maximum_fee_sat: bitcoin.miner_fee_budget_sat,
+            maximum_fee_rate_sat_per_vbyte: 10_000,
+            maximum_weight: 1_600,
+            dust_relay_fee_sat_per_kilobyte: 3_000,
+        })
+        .map_err(|error| format!("could not construct requester submarine refund: {error}"))?;
+    let raw_refund = lower_hex(refund.broadcast_bytes());
+    let refund_txid = lower_hex(&refund.transaction_id());
+    let mut signing_request = None;
+    let signing = session
+        .authorized_verifier
+        .as_ref()
+        .ok_or_else(|| "submarine refund lost its funding authorization".to_owned())?
+        .sign_exit_with(0, |request| {
+            signing_request = Some(request.clone());
+            Ok(refund.broadcast_bytes().to_vec())
+        })
+        .map_err(|error| format!("client engine rejected requester refund signing: {error}"))?;
+    let ExitSigningOutcome::Signed(signed) = signing else {
+        return Err("requester refund signing unexpectedly reused another effect".to_owned());
+    };
+    if signed.effect_id != expected_refund_effect || signed.transaction != raw_refund {
+        return Err("client engine signed another requester refund transaction".to_owned());
+    }
+    let request = ExternalEffectRequest::WalletSigning(
+        signing_request
+            .ok_or_else(|| "requester refund wallet callback was not invoked".to_owned())?,
+    );
+    session
+        .authorized_verifier
+        .as_mut()
+        .ok_or_else(|| "submarine refund lost its mutable funding authorization".to_owned())?
+        .record_external_effect(
+            &request,
+            refund_txid.clone(),
+            lower_hex(&sha256(refund.broadcast_bytes())),
+        )
+        .map_err(|error| format!("could not persist requester refund signing effect: {error}"))?;
+    session.persist_snapshot()?;
+    session.publish_requester_status("refund_pending", Map::new())?;
+    broadcast_bitcoin_once(
+        runtime,
+        &environment.bitcoind,
+        "submarine-requester-refund",
+        &raw_refund,
+        &refund_txid,
+    )?;
+    mine_blocks(
+        runtime,
+        &environment.bitcoind,
+        environment.terminal_confirmations,
+        "submarine-requester-refund",
+    )?;
+
+    let peer_bitcoind = load_adversarial_bitcoind("B")?;
+    verify_refund_spend_on_both_nodes(
+        runtime,
+        [&environment.bitcoind, &peer_bitcoind],
+        &lockup_txid,
+        0,
+        &refund_txid,
+        &raw_refund,
+    )?;
+    if session.verifier.signed_records().iter().any(|event| {
+        event.kind == MKT_STATUS_KIND
+            && event.pubkey == session.provider_pubkey
+            && record_profile(event)
+                .ok()
+                .and_then(|profile| profile.get("swp_state").cloned())
+                .and_then(|state| state.as_str().map(str::to_owned))
+                .is_some_and(|state| {
+                    matches!(
+                        state.as_str(),
+                        "lightning_paid" | "provider_claim_pending" | "provider_claimed"
+                    )
+                })
+    }) {
+        return Err("noncooperative provider produced a settlement effect".to_owned());
+    }
+    session.publish_requester_status("refunded", Map::new())?;
+    let result = json!({
+        "order_id":session.order.id,
+        "lockup_txid":lockup_txid,
+        "lockup_vout":0,
+        "payment_hash":payment_hash,
+        "funding_confirmation_height":funding_confirmation_height,
+        "refund_lock_height":bitcoin.refund_lock_height,
+        "refund_txid":refund_txid,
+        "exit_package_mode":"wallet_sign",
+        "client_recovery_action":"request_wallet_refund",
+        "both_bitcoind_nodes_agree":true,
+        "provider_claim_effects":0,
+        "lightning_state":"unpaid_final",
+        "result":"refunded"
+    });
+    session.persist_terminal("refunded", result.clone())?;
     Ok(result)
 }
 
@@ -2858,7 +3159,9 @@ impl SessionContext {
             }
             Some(HarnessInjection::StatusGap) => self.inject_status_gap(),
             Some(HarnessInjection::StatusFork) => self.inject_status_fork(),
-            Some(HarnessInjection::WrongClaimKey) => Ok(()),
+            Some(HarnessInjection::WrongClaimKey | HarnessInjection::ProviderNoncooperative) => {
+                Ok(())
+            }
             Some(HarnessInjection::StaleQuote)
             | Some(HarnessInjection::RelayLoss | HarnessInjection::ProviderCrash)
             | None => Ok(()),
@@ -4092,6 +4395,9 @@ struct BitcoinTerms {
     script_pubkey: Vec<u8>,
     claim_script: Vec<u8>,
     claim_control_block: Vec<u8>,
+    refund_script: Vec<u8>,
+    refund_control_block: Vec<u8>,
+    refund_lock_height: u32,
 }
 
 fn bitcoin_terms(contract: &Value, leg_id: &str) -> Result<BitcoinTerms, String> {
@@ -4105,6 +4411,15 @@ fn bitcoin_terms(contract: &Value, leg_id: &str) -> Result<BitcoinTerms, String>
         })
         .and_then(Value::as_object)
         .ok_or_else(|| "funded contract has no Bitcoin verifier".to_owned())?;
+    let leg = contract
+        .get("legs")
+        .and_then(Value::as_array)
+        .and_then(|legs| {
+            legs.iter()
+                .find(|leg| leg.get("leg_id").and_then(Value::as_str) == Some(leg_id))
+        })
+        .and_then(Value::as_object)
+        .ok_or_else(|| "funded contract has no Bitcoin leg".to_owned())?;
     Ok(BitcoinTerms {
         amount_sat: canonical_u64(required_string(verifier, "amount")?)?,
         miner_fee_budget_sat: canonical_u64(
@@ -4116,7 +4431,196 @@ fn bitcoin_terms(contract: &Value, leg_id: &str) -> Result<BitcoinTerms, String>
         script_pubkey: decode_hex(required_string(verifier, "script_pubkey")?)?,
         claim_script: decode_hex(required_string(verifier, "claim_script")?)?,
         claim_control_block: decode_hex(required_string(verifier, "taproot_claim_control_block")?)?,
+        refund_script: decode_hex(required_string(verifier, "refund_script")?)?,
+        refund_control_block: decode_hex(required_string(
+            verifier,
+            "taproot_refund_control_block",
+        )?)?,
+        refund_lock_height: u32::try_from(canonical_u64(required_string(
+            leg,
+            "refund_lock_value",
+        )?)?)
+        .map_err(|_| "Bitcoin refund lock height exceeds u32".to_owned())?,
     })
+}
+
+fn submarine_refund_action(
+    session: &SessionContext,
+    current_height: u32,
+    funding_confirmation_height: u32,
+    lightning_state: LightningRecoveryState,
+) -> Result<RecoveryAction, String> {
+    session
+        .authorized_verifier
+        .as_ref()
+        .ok_or_else(|| "submarine refund has no funding-authorized client session".to_owned())?
+        .recovery_action_with(|request| {
+            if !matches!(
+                request.source_refund_condition,
+                Some(immortal_client::mkt_swp_client::RecoveryTimeoutCondition::Cltv { .. })
+            ) {
+                return Err("submarine refund recovery omitted its CLTV condition".to_owned());
+            }
+            Ok(LocalRecoveryObservation {
+                session_id: request.session_id.clone(),
+                order_id: request.order_id.clone(),
+                binding_sha256: request.binding_sha256.clone(),
+                current_height,
+                source_funding_confirmation_height: Some(funding_confirmation_height),
+                counterparty_available: false,
+                completed: false,
+                record_loss: false,
+                rail_state_unknown: false,
+                lightning_state: Some(lightning_state),
+                chain_state: None,
+            })
+        })
+        .map_err(|error| format!("client engine rejected submarine refund recovery view: {error}"))
+}
+
+fn finalize_invoice_unpaid(
+    runtime: &Runtime,
+    cln: &ClnClient,
+    label: &str,
+    payment_hash: &str,
+) -> Result<(), String> {
+    let deleted = runtime
+        .block_on(cln.call(
+            &cln_id("submarine-refund-invoice-final")?,
+            "delinvoice",
+            json!({"label":label,"status":"unpaid"}),
+        ))
+        .map_err(|error| format!("could not finalize requester invoice as unpaid: {error}"))?;
+    if deleted.get("payment_hash").and_then(Value::as_str) != Some(payment_hash)
+        || deleted.get("status").and_then(Value::as_str) != Some("unpaid")
+    {
+        return Err("deleted requester invoice differs from the exact unpaid invoice".to_owned());
+    }
+    let remaining = runtime
+        .block_on(cln.list_invoices(&cln_id("submarine-refund-invoice-absence")?, Some(label)))
+        .map_err(|error| format!("could not prove requester invoice deletion: {error}"))?;
+    if remaining
+        .get("invoices")
+        .and_then(Value::as_array)
+        .is_none_or(|invoices| !invoices.is_empty())
+    {
+        return Err("requester invoice remained payable after unpaid finalization".to_owned());
+    }
+    Ok(())
+}
+
+fn chain_height(runtime: &Runtime, bitcoind: &BitcoindClient, label: &str) -> Result<u32, String> {
+    runtime
+        .block_on(bitcoind.call(&rpc_id(label)?, "getblockcount", json!([])))
+        .map_err(|error| format!("could not read Bitcoin chain height: {error}"))?
+        .as_u64()
+        .and_then(|height| u32::try_from(height).ok())
+        .ok_or_else(|| "Bitcoin chain height exceeds u32".to_owned())
+}
+
+fn transaction_confirmation_height(
+    runtime: &Runtime,
+    bitcoind: &BitcoindClient,
+    label: &str,
+    transaction_id: &str,
+) -> Result<u32, String> {
+    let transaction = runtime
+        .block_on(bitcoind.raw_transaction(
+            &rpc_id(&format!("{label}-transaction"))?,
+            transaction_id,
+            true,
+        ))
+        .map_err(|error| format!("could not inspect confirmed funding transaction: {error}"))?;
+    let block_hash = transaction
+        .get("blockhash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "funding transaction is not confirmed".to_owned())?;
+    runtime
+        .block_on(bitcoind.call(
+            &rpc_id(&format!("{label}-block"))?,
+            "getblockheader",
+            json!([block_hash, true]),
+        ))
+        .map_err(|error| format!("could not inspect funding confirmation block: {error}"))?
+        .get("height")
+        .and_then(Value::as_u64)
+        .and_then(|height| u32::try_from(height).ok())
+        .ok_or_else(|| "funding confirmation height exceeds u32".to_owned())
+}
+
+fn load_adversarial_bitcoind(suffix: &str) -> Result<BitcoindClient, String> {
+    if !matches!(suffix, "A" | "B") {
+        return Err("adversarial bitcoind suffix must be A or B".to_owned());
+    }
+    let prefix = format!("IMMORTAL_LAB_ADVERSARIAL_BITCOIND_{suffix}");
+    let port = required_environment(&format!("{prefix}_PORT"))?
+        .parse::<u16>()
+        .map_err(|_| "adversarial bitcoind port is invalid".to_owned())?;
+    let endpoint = BitcoindEndpoint::new(required_environment(&format!("{prefix}_HOST"))?, port)
+        .map_err(|error| format!("adversarial bitcoind endpoint is invalid: {error}"))?;
+    let auth = BitcoindAuth::new(
+        required_environment(&format!("{prefix}_RPC_USER"))?,
+        required_environment(&format!("{prefix}_RPC_PASSWORD"))?,
+    )
+    .map_err(|error| format!("adversarial bitcoind credentials are invalid: {error}"))?;
+    BitcoindClient::new(endpoint, auth, BitcoindLimits::default())
+        .map_err(|error| format!("could not initialize adversarial bitcoind client: {error}"))
+}
+
+fn verify_refund_spend_on_both_nodes(
+    runtime: &Runtime,
+    nodes: [&BitcoindClient; 2],
+    funding_transaction_id: &str,
+    funding_output_index: u32,
+    refund_transaction_id: &str,
+    raw_refund: &str,
+) -> Result<(), String> {
+    for (index, node) in nodes.into_iter().enumerate() {
+        let deadline = Instant::now() + JOURNEY_TIMEOUT;
+        let transaction = loop {
+            match runtime.block_on(node.raw_transaction(
+                &rpc_id(&format!("refund-node-{index}"))?,
+                refund_transaction_id,
+                true,
+            )) {
+                Ok(transaction) => break transaction,
+                Err(BitcoindError::Rpc { code: -5 }) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(200));
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "Bitcoin node {index} did not observe the requester refund: {error}"
+                    ));
+                }
+            }
+        };
+        verify_known_bitcoin_transaction(&transaction, refund_transaction_id, Some(raw_refund))?;
+        let inputs = transaction
+            .get("vin")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "refund transaction has no input array".to_owned())?;
+        let [input] = inputs.as_slice() else {
+            return Err("requester refund does not have exactly one input".to_owned());
+        };
+        if input.get("txid").and_then(Value::as_str) != Some(funding_transaction_id)
+            || input.get("vout").and_then(Value::as_u64) != Some(u64::from(funding_output_index))
+        {
+            return Err("requester refund spends another funding outpoint".to_owned());
+        }
+        let unspent = runtime
+            .block_on(node.call(
+                &rpc_id(&format!("refund-outpoint-node-{index}"))?,
+                "gettxout",
+                json!([funding_transaction_id, funding_output_index, true]),
+            ))
+            .map_err(|error| {
+                format!("could not inspect refund outpoint on node {index}: {error}")
+            })?;
+        if !unspent.is_null() {
+            return Err("requester funding outpoint remains unspent on a Bitcoin node".to_owned());
+        }
+    }
+    Ok(())
 }
 
 fn reverse_refund_height(contract: &Value) -> Result<u32, String> {
@@ -4764,6 +5268,8 @@ fn base_state(state: &str) -> Result<&'static str, String> {
         "lightning_payment_pending" | "requester_claim_pending" | "requester_claimed" => {
             Ok("executing")
         }
+        "refund_prepared" | "refund_pending" => Ok("refund_pending"),
+        "refunded" => Ok("refunded"),
         _ => Err("requester state has no smoke base-state mapping".to_owned()),
     }
 }
@@ -5456,6 +5962,37 @@ mod tests {
                 "run-1",
                 "reverse:funding_effect_recorded",
                 HarnessInjection::ProviderCrash,
+            )
+            .is_err()
+        );
+
+        let provider_stopped = json!({
+            "schema":"openagents.immortal.lab-injection-ack.v1",
+            "run_id":"run-2",
+            "checkpoint":"submarine_refund:funding_effect_recorded",
+            "injection":"provider_noncooperative",
+            "restored":false,
+            "evidence":{
+                "target":"provider-a",
+                "before_pid":303,
+                "transition":"process_stopped",
+            }
+        });
+        validate_injection_acknowledgement(
+            provider_stopped.to_string().as_bytes(),
+            "run-2",
+            "submarine_refund:funding_effect_recorded",
+            HarnessInjection::ProviderNoncooperative,
+        )
+        .expect("permanently stopped provider acknowledgement should pass");
+        let mut falsely_restored = provider_stopped;
+        falsely_restored["restored"] = Value::Bool(true);
+        assert!(
+            validate_injection_acknowledgement(
+                falsely_restored.to_string().as_bytes(),
+                "run-2",
+                "submarine_refund:funding_effect_recorded",
+                HarnessInjection::ProviderNoncooperative,
             )
             .is_err()
         );
