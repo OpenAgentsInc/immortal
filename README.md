@@ -149,8 +149,10 @@ The relay also contains the off-by-default Boltz released-client handoff
 described in `docs/protocol/boltz-facade.md`. It redirects bounded compatibility
 requests to the external provider without reading their bodies and adds the
 required submarine pre-broadcast finalize seam. Redirects are not counted as
-API implementation: the provider HTTP surface and adapted-client process gate
-must land before #15 or any replacement claim is complete.
+API implementation. The pinned, dependency-free Go/web adapter seams enforce
+prepare-before-broadcast and bilateral Contract/script-exit approval, but the
+provider HTTP surface and adapted-client process gate must still land before
+#15 or any replacement claim is complete.
 
 The current feature list is a deployment snapshot, not Immortal's scope
 ceiling. The immediate protocol-totality program targets **every specification

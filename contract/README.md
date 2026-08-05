@@ -32,9 +32,9 @@ bounds, proof-class ordering, timer law, observation authority, and Postgres
 consistency model while keeping `executable_profiles` empty. Its client-engine
 subsection records the transport-neutral requester surface. The client-scoped
 fixture set also includes the fail-closed tbDEX 1.0 legacy translation audit
-and its exact
-test-only nine-schema/ten-vector source replay. That audit emits no Nostr event
-and grants no source record NIP-MKT authority.
+and its exact test-only nine-schema/ten-vector source replay, plus the pinned
+Boltz Go/web adapter source gate. Those client artifacts emit no Nostr event
+and grant no source record NIP-MKT authority.
 
 ## Consumers
 

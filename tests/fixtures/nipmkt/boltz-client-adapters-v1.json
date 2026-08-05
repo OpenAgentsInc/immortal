@@ -1,0 +1,166 @@
+{
+  "schema": "openagents.mkt-swp.boltz-client-adapters.v1",
+  "mapping_revision": "openagents.mkt-swp.boltz-released-client.v2",
+  "source_pins": {
+    "boltz_client": "746f73c5ecbd3621f628f60108a404ef26f0de95",
+    "boltz_web_app": "dd9c2df26db54a2554dc1e628b095ce856c0d9de"
+  },
+  "source_anchors": {
+    "boltz_client": [
+      {
+        "path": "pkg/boltz/api.go",
+        "git_blob": "c0e7fda7d903b6d36d2e6a618bfd5e958686cf07"
+      },
+      {
+        "path": "internal/rpcserver/router.go",
+        "git_blob": "624c1d1e2d9a7db960b371f81376666473412ceb"
+      },
+      {
+        "path": "internal/onchain/wallet.go",
+        "git_blob": "03fc01bcc2bc08d7887e14ad67be87dc87038737"
+      },
+      {
+        "path": "internal/rpcserver/server.go",
+        "git_blob": "11bc5a21c4e46ce6d16f31856abcccd0884f83d8"
+      }
+    ],
+    "boltz_web_app": [
+      {
+        "path": "src/context/Global.tsx",
+        "git_blob": "2f68a0d45b07c697a59a7bcbcf6d4ad2af37744a"
+      },
+      {
+        "path": "src/components/PayOnchain.tsx",
+        "git_blob": "57d36fcf89af6d5ca952bc994ede6d35339e1cbb"
+      },
+      {
+        "path": "src/context/Pay.tsx",
+        "git_blob": "e0580975171375026465cc4c26579b3327a028aa"
+      },
+      {
+        "path": "src/boltzSwapsConfig.ts",
+        "git_blob": "6fcef61597067395ed7bf2b4434711bae6c0975f"
+      },
+      {
+        "path": "packages/boltz-swaps/src/statusSource/websocket.ts",
+        "git_blob": "a72e03ec34036114eff03de5e2e63c68895824ee"
+      },
+      {
+        "path": "packages/boltz-swaps/src/config.ts",
+        "git_blob": "beddd3c6a86c208f24d7df9c73e549e1ee2b24ee"
+      }
+    ]
+  },
+  "funding_law": {
+    "sequence": [
+      "prepare_raw_funding_transaction_without_broadcast",
+      "derive_exact_transaction_sha256_and_output_index",
+      "finalize_submarine_and_verify_and_persist_bilateral_contracts_and_script_exit",
+      "broadcast_the_same_prepared_transaction"
+    ],
+    "requester_contract_required": true,
+    "provider_contract_required": true,
+    "exact_funding_binding_required": true,
+    "persisted_script_path_exit_required": true,
+    "cooperative_endpoints_allowed": false,
+    "one_shot_prepare_and_broadcast_allowed": false,
+    "maximum_raw_transaction_bytes": 1000000
+  },
+  "released_union_route_shapes": [
+    "GET /v2/version",
+    "GET /v2/swap/submarine",
+    "POST /v2/swap/submarine",
+    "POST /v2/swap/submarine/:id/finalize",
+    "GET /v2/swap/reverse",
+    "POST /v2/swap/reverse",
+    "GET /v2/swap/:id",
+    "GET /v2/swap/status?ids=:id...",
+    "GET /v2/ws",
+    "GET /v2/swap/submarine/:id/transaction",
+    "GET /v2/swap/reverse/:id/transaction",
+    "GET /v2/swap/submarine/:id/preimage",
+    "GET /v2/swap/reverse/:invoice/bip21",
+    "GET /v2/chain/fees",
+    "GET /v2/chain/BTC/fee",
+    "GET /v2/chain/BTC/height",
+    "GET /v2/chain/BTC/transaction/:txid",
+    "POST /v2/chain/BTC/transaction",
+    "GET /v2/nodes/stats"
+  ],
+  "clients": {
+    "go": {
+      "source": "adapters/boltz-client-go/adapter.go",
+      "test": "adapters/boltz-client-go/adapter_test.go",
+      "build": "go test ./...",
+      "route_shapes": [
+        "GET /v2/version",
+        "GET /v2/swap/submarine",
+        "POST /v2/swap/submarine",
+        "POST /v2/swap/submarine/:id/finalize",
+        "GET /v2/swap/reverse",
+        "POST /v2/swap/reverse",
+        "GET /v2/ws",
+        "GET /v2/swap/submarine/:id/transaction",
+        "GET /v2/swap/submarine/:id/preimage",
+        "GET /v2/chain/BTC/fee",
+        "GET /v2/chain/BTC/height",
+        "GET /v2/chain/BTC/transaction/:txid",
+        "POST /v2/chain/BTC/transaction"
+      ],
+      "forbidden_source_tokens": [
+        "SendToAddress",
+        "GetSwapClaimDetails",
+        "RefundSwap",
+        "/claim",
+        "/refund"
+      ]
+    },
+    "web": {
+      "source": "adapters/boltz-web-app/adapter.mjs",
+      "test": "adapters/boltz-web-app/adapter.test.mjs",
+      "build": "node --test adapter.test.mjs",
+      "route_shapes": [
+        "GET /v2/swap/submarine",
+        "POST /v2/swap/submarine",
+        "POST /v2/swap/submarine/:id/finalize",
+        "GET /v2/swap/reverse",
+        "POST /v2/swap/reverse",
+        "GET /v2/swap/:id",
+        "GET /v2/swap/status?ids=:id...",
+        "GET /v2/ws",
+        "GET /v2/swap/submarine/:id/transaction",
+        "GET /v2/swap/reverse/:id/transaction",
+        "GET /v2/swap/submarine/:id/preimage",
+        "GET /v2/swap/reverse/:invoice/bip21",
+        "GET /v2/chain/fees",
+        "POST /v2/chain/BTC/transaction",
+        "GET /v2/nodes/stats"
+      ],
+      "forbidden_source_tokens": [
+        "PayOnchain",
+        "getPairs",
+        "/v2/swap/chain",
+        "/claim",
+        "/refund",
+        "formatWsUrl(getBoltzApiUrl())"
+      ]
+    }
+  },
+  "negative_cases": [
+    "partial_or_cooperative_signatures_enabled",
+    "chain_pairs_or_cooperative_helpers_enabled",
+    "provider_websocket_url_missing_or_derived",
+    "prepared_transaction_missing_or_over_limit",
+    "approval_finalize_path_mismatch",
+    "approval_transaction_digest_or_output_mismatch",
+    "requester_or_provider_contract_missing",
+    "script_path_exit_not_persisted",
+    "prepared_transaction_changed_before_broadcast"
+  ],
+  "coverage": {
+    "adapter_source_and_unit_gate": true,
+    "provider_listener_process_gate": false,
+    "dependent_call_emulated_routes": 0,
+    "dependent_call_route_denominator": 19
+  }
+}

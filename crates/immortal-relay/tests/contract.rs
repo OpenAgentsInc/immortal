@@ -106,6 +106,17 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     );
     assert!(!descriptor.mkt.mkt_swp.boltz_facade.nip11_advertised);
     assert_eq!(
+        descriptor.mkt.mkt_swp.boltz_facade.client_adapter_fixture,
+        "tests/fixtures/nipmkt/boltz-client-adapters-v1.json"
+    );
+    assert!(
+        !descriptor
+            .mkt
+            .mkt_swp
+            .boltz_facade
+            .client_adapter_process_coverage
+    );
+    assert_eq!(
         descriptor.mkt.mkt_swp.boltz_facade.completion_gate,
         "external_provider_process_released_client_conformance"
     );

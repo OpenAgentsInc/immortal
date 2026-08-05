@@ -772,5 +772,17 @@ fetches chain pairs and starts Liquid-oriented listeners; and
 unconditionally reads chain pairs, retains a preliminary cooperative claim
 read, sends stock on-chain payments to an external wallet without observing
 raw funding bytes, and derives its WebSocket origin from the HTTP API origin.
-The adapters must close those gaps and pass the 19-call process gate before
-#18 replacement scenarios; #19 still owns deployment evidence.
+The adapted upstream builds must integrate the checked-in seams at those call
+sites and pass the 19-call process gate before #18 replacement scenarios; #19
+still owns deployment evidence.
+
+The first adapter packet records clean-room CC0 Go and browser/Node seams in
+`adapters/` rather than copying either pinned client. Its fixture pins the
+inspected upstream Git blobs and proves that the 13-call Go and 15-call web
+subsets have the same 19-call union as the facade ledger. Both gates make the
+one-shot payment path unrepresentable: raw bytes are prepared, bound into two
+locally verified Contract events, paired with a persisted script-path exit,
+and only then passed unchanged to broadcast. This changes no source-lane
+precedence, kind allocation, endpoint denominator, or emulation count. The
+external provider listener and actual process replay remain the next #15
+adoption evidence.

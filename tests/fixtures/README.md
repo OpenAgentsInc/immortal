@@ -8,6 +8,9 @@ Boltz source revisions, safe route classes, submarine finalize seam, activation
 law, custody boundary, exact 19-call inventory, and separate 0/53 endpoint and
 0/19 dependent-call coverage gates. It contains no provider, wallet, rail,
 transaction, key, or preimage material; its BOLT11 is a public parser vector.
+`nipmkt/boltz-client-adapters-v1.json` pins the inspected Go/web source blobs,
+per-client route subsets, shared pre-broadcast funding law, forbidden stock
+paths, and the source/unit-versus-process coverage boundary.
 
 ## Provenance
 

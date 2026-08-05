@@ -197,6 +197,9 @@ pub struct BoltzFacadeContract {
     pub nip11_advertised: bool,
     pub completion_gate: &'static str,
     pub fixture: &'static str,
+    pub client_adapter_fixture: &'static str,
+    pub client_adapter_gate: &'static str,
+    pub client_adapter_process_coverage: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1264,6 +1267,9 @@ fn mkt_grammar() -> MktGrammar {
                 nip11_advertised: false,
                 completion_gate: "external_provider_process_released_client_conformance",
                 fixture: "tests/fixtures/nipmkt/boltz-facade-v2.json",
+                client_adapter_fixture: "tests/fixtures/nipmkt/boltz-client-adapters-v1.json",
+                client_adapter_gate: "prepare_then_finalize_and_bilateral_contract_script_exit_verification_then_broadcast",
+                client_adapter_process_coverage: false,
             },
         },
         mkt_pfi: MktPfiGrammar {

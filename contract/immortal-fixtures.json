@@ -270,6 +270,12 @@
       "scope": "relay"
     },
     {
+      "path": "tests/fixtures/nipmkt/boltz-client-adapters-v1.json",
+      "sha256": "9aa40d9a04b13e621e80bfcc60707e291e0736ddca4a41681ba5b63e1aca3f38",
+      "bytes": 5404,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/nipmkt/boltz-facade-v2.json",
       "sha256": "18283f6d1e14505b0b7b981f459d275c9d2020ba62bc72850647488d416d909c",
       "bytes": 13056,

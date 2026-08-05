@@ -1,0 +1,8 @@
+{
+  "name": "@openagents/immortal-boltz-web-adapter",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test adapter.test.mjs"
+  }
+}

@@ -839,7 +839,10 @@
         "submarine_finalize_path": "/v2/swap/submarine/:id/finalize",
         "nip11_advertised": false,
         "completion_gate": "external_provider_process_released_client_conformance",
-        "fixture": "tests/fixtures/nipmkt/boltz-facade-v2.json"
+        "fixture": "tests/fixtures/nipmkt/boltz-facade-v2.json",
+        "client_adapter_fixture": "tests/fixtures/nipmkt/boltz-client-adapters-v1.json",
+        "client_adapter_gate": "prepare_then_finalize_and_bilateral_contract_script_exit_verification_then_broadcast",
+        "client_adapter_process_coverage": false
       }
     },
     "mkt_pfi": {

@@ -379,11 +379,19 @@ the workspace/provider packets: exact-digest activation, safe external-provider
 It is not endpoint emulation. The corrected inventory records **0/53 backend
 routes emulated** and, separately, **0/19 released-profile dependent calls
 emulated**. #15 remains incomplete until the funded provider serves those 19
-route shapes and the adapted Go/web process gate reaches 19/19. Those adapters
-must add the pre-broadcast finalize seam, enforce script-path mode, suppress
-stock chain/cooperative calls outside the profile, and connect WebSockets
-directly to the provider. #18 replacement scenarios wait for that gate; relay
-handoff custody/failure cases may proceed independently.
+route shapes and the adapted Go/web process gate reaches 19/19. Those builds
+must integrate the checked-in pre-broadcast seam, enforce script-path mode,
+suppress stock chain/cooperative calls outside the profile, and connect
+WebSockets directly to the provider. #18 replacement scenarios wait for that
+gate; relay handoff custody/failure cases may proceed independently.
+
+The fixture-first adapter source packet now supplies dependency-free Go and
+browser/Node gates for that exact pre-broadcast sequence. Their static/unit
+gate proves the 13-call and 15-call subsets, exact 19-call union, bilateral
+Contract funding binding, persisted script-path exit, unchanged-byte
+broadcast, and absence of the stock one-shot paths. It does not implement the
+provider listener, so the measured results remain 0/53 and 0/19 until the
+subsequent provider/process packet.
 
 ### M12 provider-runtime subledger (2026-08-04)
 

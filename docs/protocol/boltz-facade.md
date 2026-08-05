@@ -96,6 +96,32 @@ Reverse flow may start from the provider-funded transaction already bound by
 the signed Quote and bilateral Contracts. Script-path claim and refund remain
 the v1 recovery paths; cooperative MuSig2 helpers are excluded.
 
+### Adapted-client source gate
+
+The clean-room CC0 seams under `adapters/` are built independently of Cargo
+and add no Rust dependency:
+
+- `boltz-client-go/adapter.go` is a Go-standard-library funding gate for the
+  pinned daemon integration.
+- `boltz-web-app/adapter.mjs` is a browser/Node-standard-library funding gate
+  for the pinned web integration.
+
+Both enforce the fixture sequence: prepare raw funding without broadcast,
+derive its exact SHA-256 and output index, require the requester and provider
+Contract event IDs plus a persisted script-path exit package from the local
+Immortal client engine, then broadcast the unchanged prepared bytes. The
+constructors require explicit partial/cooperative-helper and chain-pair
+disablement plus a direct provider WebSocket URL. Static tests exclude those
+stock calls, the one-shot wallet method, and the external-wallet handoff from
+the production adapter sources. An upstream build must integrate these seams
+at the pinned call sites; a configuration flag alone is insufficient.
+
+`tests/fixtures/nipmkt/boltz-client-adapters-v1.json` pins the upstream source
+and blob identities, the 13-call Go subset, the 15-call web subset, and their
+exact 19-call union. `scripts/test-boltz-client-adapters.sh` runs both
+dependency-free unit suites. These are source/build seams; they do not answer
+provider routes or earn dependent-call coverage.
+
 ## Endpoint matrix
 
 The denominator is the 53 routes registered by the pinned backend's Swap,
@@ -205,11 +231,12 @@ cap and unsafe origin forms remain rejected.
 
 Dependent-call coverage is **0/19 (0%) emulated** because the current funded
 `immortal-provider` has health and Nostr/MKT-SWP rail actors but no Boltz HTTP
-server. This is separate from the **0/53 endpoint-surface** result above. The
-completion gate runs the adapted Go and web clients against the daemon and
-proves all 19 calls, including direct provider WebSocket status and submarine
-finalization. A relay `307`, `404`, `501`, or configuration promise counts as
-neither endpoint emulation nor dependent-call coverage.
+server. The adapter source/unit gate is green, but source conformance does not
+change this count. This is separate from the **0/53 endpoint-surface** result
+above. The completion gate runs the adapted Go and web clients against the
+daemon and proves all 19 calls, including direct provider WebSocket status and
+submarine finalization. A relay `307`, `404`, `501`, or configuration promise
+counts as neither endpoint emulation nor dependent-call coverage.
 
 This ordering affects #18: the lab may test the relay handoff's custody and
 failure behavior now, but replacement scenarios should wait for the provider
