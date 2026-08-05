@@ -271,8 +271,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/boltz-facade-v2.json",
-      "sha256": "616be7625c72d32b28c25767e526f8bcb2a8e774f04b5838449297f9cc5fe272",
-      "bytes": 3519,
+      "sha256": "18283f6d1e14505b0b7b981f459d275c9d2020ba62bc72850647488d416d909c",
+      "bytes": 13056,
       "scope": "relay_and_client"
     },
     {

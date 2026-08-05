@@ -109,7 +109,11 @@ mod tests {
     #[test]
     fn namespace_does_not_capture_relay_health_or_nip11() {
         assert!(is_boltz_request(&head("/v2/version")));
-        assert!(is_boltz_request(&head("/streamswapstatus?id=x")));
+        assert!(is_boltz_request(&head(&format!(
+            "/v2/swap/status?ids={}",
+            "a".repeat(64)
+        ))));
+        assert!(!is_boltz_request(&head("/streamswapstatus?id=x")));
         assert!(!is_boltz_request(&head("/health")));
         assert!(!is_boltz_request(&head("/")));
     }
@@ -127,7 +131,7 @@ mod tests {
         let (stream, peer) = listener.accept().await.unwrap();
         let request = HttpHead {
             method: "POST".to_owned(),
-            path: format!("/v2/swap/reverse/{}/claim", "a".repeat(64)),
+            path: "/v2/chain/BTC/transaction".to_owned(),
             headers: HashMap::from([("content-length".to_owned(), "1048576".to_owned())]),
         };
         let config = BoltzFacadeConfig {

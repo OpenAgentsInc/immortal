@@ -828,11 +828,11 @@
         "fixture": "tests/fixtures/nipmkt/swp-client-engine-v1.json"
       },
       "boltz_facade": {
-        "mapping_revision": "openagents.mkt-swp.boltz-released-client.v1",
+        "mapping_revision": "openagents.mkt-swp.boltz-released-client.v2",
         "enabled_by_default": false,
         "activation_environment": "IMMORTAL_BOLTZ_FACADE_CONFORMANCE_SHA256",
         "provider_base_url_environment": "IMMORTAL_BOLTZ_FACADE_PROVIDER_BASE_URL",
-        "conformance_sha256": "60319543f2b28ce33ed491cb98ededb71c55c7e5338e7635e4e2f175ab2e3f12",
+        "conformance_sha256": "d8d72f4914268f58c202b28590fdf0868fd352ef9f73e18fe3caf3383b6b67e0",
         "handoff": "http_307_external_provider_preserve_method_and_body",
         "relay_reads_request_body": false,
         "relay_persists_session_state": false,

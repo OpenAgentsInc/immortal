@@ -1,6 +1,6 @@
 {
   "schema": "openagents.mkt-swp.boltz-facade.v2",
-  "mapping_revision": "openagents.mkt-swp.boltz-released-client.v1",
+  "mapping_revision": "openagents.mkt-swp.boltz-released-client.v2",
   "source_pins": {
     "boltz_backend": "4d131ef8562eea25ab687bcc75a17ce899110b66",
     "boltz_client": "746f73c5ecbd3621f628f60108a404ef26f0de95",
@@ -27,22 +27,209 @@
     "websocket_provider_url_required": true
   },
   "route_cases": [
-    {"method": "GET", "path": "/v2/version", "class": "provider_public"},
-    {"method": "GET", "path": "/v2/swap/submarine", "class": "provider_public"},
-    {"method": "POST", "path": "/v2/swap/submarine", "class": "provider_session"},
-    {"method": "POST", "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/finalize", "class": "submarine_finalize"},
-    {"method": "GET", "path": "/v2/swap/reverse", "class": "provider_public"},
-    {"method": "POST", "path": "/v2/swap/reverse", "class": "provider_session"},
-    {"method": "GET", "path": "/v2/swap/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "class": "provider_public"},
-    {"method": "GET", "path": "/v2/swap/status?ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "class": "provider_public"},
-    {"method": "GET", "path": "/v2/ws", "class": "provider_websocket"},
-    {"method": "GET", "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/preimage", "class": "provider_sensitive"},
-    {"method": "POST", "path": "/v2/swap/reverse/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/claim", "class": "provider_sensitive"},
-    {"method": "POST", "path": "/v2/chain/BTC/transaction", "class": "provider_sensitive"},
-    {"method": "GET", "path": "/v2/chain/BTC/height", "class": "provider_public"},
-    {"method": "GET", "path": "/v2/nodes", "class": "provider_public"},
-    {"method": "POST", "path": "/swapstatus", "class": "provider_public"},
-    {"method": "GET", "path": "/streamswapstatus?id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "class": "provider_public"}
+    {
+      "method": "GET",
+      "path": "/v2/version",
+      "class": "provider_public",
+      "callers": [
+        "boltz-client"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/swap/submarine",
+      "class": "provider_public",
+      "callers": [
+        "boltz-client",
+        "boltz-web-app"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/swap/submarine",
+      "class": "provider_session",
+      "callers": [
+        "boltz-client",
+        "boltz-web-app"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/finalize",
+      "class": "submarine_finalize",
+      "callers": [
+        "boltz-client-adapter",
+        "boltz-web-app-adapter"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/swap/reverse",
+      "class": "provider_public",
+      "callers": [
+        "boltz-client",
+        "boltz-web-app"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/swap/reverse",
+      "class": "provider_session",
+      "callers": [
+        "boltz-client",
+        "boltz-web-app"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/swap/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "class": "provider_public",
+      "callers": [
+        "boltz-web-app"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/swap/status?ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&ids=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "class": "provider_public",
+      "callers": [
+        "boltz-web-app"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/ws",
+      "class": "provider_websocket",
+      "callers": [
+        "boltz-client",
+        "boltz-web-app"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/transaction",
+      "class": "provider_public",
+      "callers": [
+        "boltz-client",
+        "boltz-web-app"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/swap/reverse/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/transaction",
+      "class": "provider_public",
+      "callers": [
+        "boltz-web-app"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/preimage",
+      "class": "provider_sensitive",
+      "callers": [
+        "boltz-client",
+        "boltz-web-app"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/swap/reverse/lnbc10u1p3unwfusp5t9r3yymhpfqculx78u027lxspgxcr2n2987mx2j55nnfs95nxnzqpp5jmrh92pfld78spqs78v9euf2385t83uvpwk9ldrlvf6ch7tpascqhp5zvkrmemgth3tufcvflmzjzfvjt023nazlhljz2n9hattj4f8jq8qxqyjw5qcqpjrzjqtc4fc44feggv7065fqe5m4ytjarg3repr5j9el35xhmtfexc42yczarjuqqfzqqqqqqqqlgqqqqqqgq9q9qxpqysgq079nkq507a5tw7xgttmj4u990j7wfggtrasah5gd4ywfr2pjcn29383tphp4t48gquelz9z78p4cq7ml3nrrphw5w6eckhjwmhezhnqpy6gyf0/bip21",
+      "class": "provider_public",
+      "callers": [
+        "boltz-web-app"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/chain/fees",
+      "class": "provider_public",
+      "callers": [
+        "boltz-web-app"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/chain/BTC/fee",
+      "class": "provider_public",
+      "callers": [
+        "boltz-client"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/chain/BTC/height",
+      "class": "provider_public",
+      "callers": [
+        "boltz-client"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/chain/BTC/transaction/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "class": "provider_public",
+      "callers": [
+        "boltz-client"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/chain/BTC/transaction",
+      "class": "provider_sensitive",
+      "callers": [
+        "boltz-client",
+        "boltz-web-app"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/nodes/stats",
+      "class": "provider_public",
+      "callers": [
+        "boltz-web-app"
+      ]
+    }
+  ],
+  "adaptation_gaps": [
+    {
+      "client": "boltz-client",
+      "gaps": [
+        "Api.DisablePartialSignatures is not wired by boltzd",
+        "disabled partial signatures make submarine refund fail instead of selecting script path",
+        "full initialization fetches chain pairs and starts Liquid-oriented listeners outside this profile",
+        "wallet SendToAddress broadcasts without a pre-broadcast finalize callback"
+      ]
+    },
+    {
+      "client": "boltz-web-app",
+      "gaps": [
+        "getPairs always fetches the disabled chain-swap route",
+        "cooperativeDisabled does not suppress the preliminary submarine claim-details GET",
+        "PayOnchain hands an address or BIP21 URI to an external wallet without observing raw funding bytes",
+        "the default WebSocket source derives its URL from the HTTP API origin"
+      ]
+    }
+  ],
+  "client_only_suppressed_routes": [
+    {
+      "method": "GET",
+      "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/claim",
+      "reason": "cooperative claim details"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/claim",
+      "reason": "cooperative partial signature"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/refund",
+      "reason": "cooperative partial signature"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/swap/reverse/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/claim",
+      "reason": "cooperative partial signature"
+    }
   ],
   "rejected_paths": [
     "/v2/../health",
@@ -51,16 +238,65 @@
     "/v2/version#fragment"
   ],
   "routes_outside_profile": [
-    {"method": "GET", "path": "/v2/swap/chain"},
-    {"method": "PATCH", "path": "/v2/swap/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/metadata"},
-    {"method": "POST", "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/refund"},
-    {"method": "GET", "path": "/v2/referral"},
-    {"method": "GET", "path": "/v2/commitment/BTC/details"}
+    {
+      "method": "GET",
+      "path": "/v2/swap/chain"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/swap/reverse/expiry"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/invoice/amount"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/swap/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/metadata"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/claim"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/claim"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/swap/submarine/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/refund"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/swap/reverse/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/claim"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/nodes"
+    },
+    {
+      "method": "POST",
+      "path": "/swapstatus"
+    },
+    {
+      "method": "GET",
+      "path": "/streamswapstatus?id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/referral"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/commitment/BTC/details"
+    }
   ],
   "coverage": {
     "backend_v2_route_denominator": 53,
-    "relay_emulated_routes": 0,
+    "endpoint_surface_emulated_routes": 0,
+    "dependent_call_route_denominator": 19,
+    "dependent_call_emulated_routes": 0,
     "relay_redirect_routes_are_not_emulation": true,
-    "dependent_call_coverage_claim": "blocked_until_external_provider_process_gate"
+    "dependent_call_coverage_claim": "0/19 until the external provider process gate passes"
   }
 }

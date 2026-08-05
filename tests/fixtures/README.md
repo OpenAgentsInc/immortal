@@ -5,8 +5,9 @@ names the NIP that owns the behavior.
 
 `nipmkt/boltz-facade-v2.json` pins the released-client handoff profile,
 Boltz source revisions, safe route classes, submarine finalize seam, activation
-law, custody boundary, and coverage gate. It contains no provider, wallet,
-rail, invoice, transaction, key, or preimage material.
+law, custody boundary, exact 19-call inventory, and separate 0/53 endpoint and
+0/19 dependent-call coverage gates. It contains no provider, wallet, rail,
+transaction, key, or preimage material; its BOLT11 is a public parser vector.
 
 ## Provenance
 

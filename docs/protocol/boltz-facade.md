@@ -55,8 +55,21 @@ relay's `/v2/ws` response is a discovery handoff, not a WebSocket proxy.
   and DEX quote paths are disabled.
 - `boltz-web-app` sets `cooperativeDisabled=true`.
 - `boltz-client` sets `Api.DisablePartialSignatures=true`; the released daemon
-  needs an adapter or configuration patch because the pinned `boltzd` does
-  not wire that field itself.
+  needs an adapter because the pinned `boltzd` does not wire that field
+  itself. The library's disabled-partial-signature branch also fails a
+  submarine refund instead of constructing the script-path refund.
+- The Go adapter must avoid the full daemon initialization path, which fetches
+  chain pairs and starts Liquid-oriented listeners, and inserts the finalize
+  handoff before funding broadcast. The stock wallet `SendToAddress` method
+  broadcasts immediately and exposes no such callback.
+- The web adapter must suppress its unconditional chain-pairs read and the
+  preliminary submarine claim-details read that remains even with
+  `cooperativeDisabled=true`. Its stock `PayOnchain` path hands an address or
+  BIP21 URI to an external wallet and never observes the raw funding
+  transaction needed by finalization.
+- Both adapters receive the provider WebSocket URL explicitly. The stock web
+  client derives it from the HTTP API origin, which would point at the relay
+  handoff instead of the provider WebSocket.
 - The client owns preimages, funding inputs, change, claim/refund keys, and
   unilateral exit packages.
 - Provider-local helpers own released-preimage lookup, public raw-transaction
@@ -113,7 +126,7 @@ provider and a process conformance test. `refused` and
 | `POST /v2/swap/reverse` | deferred | Provider must create and bind the reverse session. |
 | `GET /v2/swap/reverse/expiry` | deferred | Provider-local hold-expiry policy. |
 | `GET /v2/swap/reverse/:id/transaction` | deferred | Provider-local public transaction helper. |
-| `POST /v2/swap/reverse/:id/claim` | deferred | Provider-local session-bound broadcast after client signing. |
+| `POST /v2/swap/reverse/:id/claim` | refused | Cooperative partial signatures are disabled; v1 claims through the script path and the chain broadcast route. |
 | `POST /v2/swap/reverse/claim` | refused | Deprecated unscoped custody-bearing route. |
 | `GET /v2/swap/reverse/:invoice/bip21` | deferred | Provider-local bounded session helper. |
 | `GET /v2/swap/chain` | deferred | Chain compatibility waits for the provider route and the #27 rail packet. |
@@ -154,20 +167,49 @@ rows into `emulated` or `emulated-degraded` before this issue can close.
 
 ## Dependent-call gate
 
-The pinned released profile invokes version; chain fee/height/transaction
-reads; submarine/reverse pair reads and creates; single/batch/WebSocket
-status; submarine/reverse transaction helpers; reverse BIP21; node reads; and
-the submarine finalize extension. Chain create, transaction, and Quote calls
-join the set only after #27. Legacy `/swapstatus` and `/streamswapstatus` are
-recognized as migration bridges.
+Mapping revision `openagents.mkt-swp.boltz-released-client.v2` contains exactly
+19 route shapes:
 
-The relay classifies and hands off every one of those paths. Dependent-call
-coverage is still **unclaimed** because the current funded
+| # | Route | Released-profile caller |
+| ---: | --- | --- |
+| 1 | `GET /v2/version` | Go |
+| 2 | `GET /v2/swap/submarine` | Go, web |
+| 3 | `POST /v2/swap/submarine` | Go, web |
+| 4 | `POST /v2/swap/submarine/:id/finalize` | Go adapter, web adapter |
+| 5 | `GET /v2/swap/reverse` | Go, web |
+| 6 | `POST /v2/swap/reverse` | Go, web |
+| 7 | `GET /v2/swap/:id` | web |
+| 8 | `GET /v2/swap/status?ids=...` | web, up to 64 lowercase 32-byte identifiers |
+| 9 | `GET /v2/ws` | Go, web discovery handoff |
+| 10 | `GET /v2/swap/submarine/:id/transaction` | Go, web |
+| 11 | `GET /v2/swap/reverse/:id/transaction` | web |
+| 12 | `GET /v2/swap/submarine/:id/preimage` | Go, web |
+| 13 | `GET /v2/swap/reverse/:invoice/bip21` | web; `:invoice` must parse as BOLT11 |
+| 14 | `GET /v2/chain/fees` | web |
+| 15 | `GET /v2/chain/BTC/fee` | Go |
+| 16 | `GET /v2/chain/BTC/height` | Go |
+| 17 | `GET /v2/chain/BTC/transaction/:txid` | Go |
+| 18 | `POST /v2/chain/BTC/transaction` | Go, web |
+| 19 | `GET /v2/nodes/stats` | web |
+
+Legacy `/swapstatus` and `/streamswapstatus`, generic node inventory,
+cooperative claim/refund helpers, reverse-expiry, and invoice-amount reads are
+outside this released profile. Chain-swap calls join a later profile only
+after #27; they are not counted here.
+
+The classifier accepts the web client's 64-identifier batch despite its
+request target exceeding the general 2,048-byte cap, but only for the exact
+bounded `ids=` grammar. The reverse BIP21 route accepts ordinary-length BOLT11
+invoices only after parsing them. Other request targets retain the global
+cap and unsafe origin forms remain rejected.
+
+Dependent-call coverage is **0/19 (0%) emulated** because the current funded
 `immortal-provider` has health and Nostr/MKT-SWP rail actors but no Boltz HTTP
-server. The completion gate is a process test that runs the adapted Go and web
-clients against that daemon and proves every invoked call, including direct
-provider WebSocket status and submarine finalization. A `307`, `404`, `501`,
-or configuration promise does not pass that gate.
+server. This is separate from the **0/53 endpoint-surface** result above. The
+completion gate runs the adapted Go and web clients against the daemon and
+proves all 19 calls, including direct provider WebSocket status and submarine
+finalization. A relay `307`, `404`, `501`, or configuration promise counts as
+neither endpoint emulation nor dependent-call coverage.
 
 This ordering affects #18: the lab may test the relay handoff's custody and
 failure behavior now, but replacement scenarios should wait for the provider

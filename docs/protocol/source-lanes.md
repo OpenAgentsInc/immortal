@@ -755,8 +755,22 @@ Contracts, and permits broadcast only after local verification and exit-package
 persistence. The bilateral Contract law is unchanged and the relay acquires no
 wallet authority.
 
-The checked-in coverage ledger counts a redirect as neither `emulated` nor
-dependent-call coverage. The current endpoint result is 0/53 emulated, and
-the client result is unclaimed until the external funded provider serves the
-profile and adapted Go/web builds pass an actual process gate. That gate is a
-prerequisite for #18 replacement scenarios and #19 deployment evidence.
+Inventory correction:
+`openagents.mkt-swp.boltz-released-client.v2` distinguishes the pinned
+backend's 53 registered v2 routes from the 19 route shapes invoked by the
+adapted Bitcoin/Lightning Go and web profile. The current results are **0/53
+endpoint routes emulated** and **0/19 dependent calls emulated**. A relay
+redirect counts toward neither denominator. Legacy `/swapstatus` and
+`/streamswapstatus`, generic node inventory, reverse-expiry, invoice-amount,
+and cooperative claim/refund calls are not part of the released profile.
+
+The pinned clients also require code adaptation, not only configuration. The
+Go daemon does not wire `DisablePartialSignatures`; the library fails its
+submarine refund when partial signatures are disabled; full initialization
+fetches chain pairs and starts Liquid-oriented listeners; and
+`SendToAddress` broadcasts before a finalize callback can run. The web client
+unconditionally reads chain pairs, retains a preliminary cooperative claim
+read, sends stock on-chain payments to an external wallet without observing
+raw funding bytes, and derives its WebSocket origin from the HTTP API origin.
+The adapters must close those gaps and pass the 19-call process gate before
+#18 replacement scenarios; #19 still owns deployment evidence.

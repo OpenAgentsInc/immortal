@@ -376,10 +376,14 @@ subledger; #19 still owns Debian and deployment evidence.
 The relay-side #15 compatibility handoff is implemented off by default after
 the workspace/provider packets: exact-digest activation, safe external-provider
 `307` routing, sensitive-body non-read proof, and the submarine finalize seam.
-It is not endpoint emulation. #15 remains incomplete until the funded provider
-serves the released-client API and the adapted Go/web process gate reaches
-100% of its invoked call set. #18 replacement scenarios wait for that gate;
-relay handoff custody/failure cases may proceed independently.
+It is not endpoint emulation. The corrected inventory records **0/53 backend
+routes emulated** and, separately, **0/19 released-profile dependent calls
+emulated**. #15 remains incomplete until the funded provider serves those 19
+route shapes and the adapted Go/web process gate reaches 19/19. Those adapters
+must add the pre-broadcast finalize seam, enforce script-path mode, suppress
+stock chain/cooperative calls outside the profile, and connect WebSockets
+directly to the provider. #18 replacement scenarios wait for that gate; relay
+handoff custody/failure cases may proceed independently.
 
 ### M12 provider-runtime subledger (2026-08-04)
 
@@ -419,9 +423,10 @@ sequenced first among extensions for commercial parity.
 The production user-facing swap surface is tracked downstream as
 [openagents#9324](https://github.com/OpenAgentsInc/openagents/issues/9324)
 (live-network swap UI on the SDK, gated on #18 and a funded provider).
-Existing Boltz API consumers reach the network through the facade (#15)
-without new client software; a standalone boltz-client-style CLI is
-deliberately not scheduled.
+The #15 compatibility target is the pinned Go/web source adapted to its exact
+19-call profile. Stock URL-only builds cannot satisfy the pre-funding Contract
+law or the direct-provider WebSocket boundary. A standalone
+boltz-client-style CLI is deliberately not scheduled.
 
 ## M13 — Market extension ledger (post-replacement)
 
