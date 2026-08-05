@@ -2538,7 +2538,12 @@ mod tests {
         let go_process_gate =
             include_str!("../../../adapters/boltz-client-go/provider_process_test.go");
         assert!(funded_gate.contains("compose exec -T bitcoin cat /etc/hosts"));
-        assert!(funded_gate.contains("wait_for \"Boltz provider compatibility listener\""));
+        assert!(funded_gate.contains(
+            "wait_for \"Boltz provider compatibility listener inside the smoke network\""
+        ));
+        assert!(
+            funded_gate.contains("wait_for \"Boltz provider compatibility published endpoint\"")
+        );
         assert!(funded_gate.contains("TestAdaptedGoClientAgainstProviderProcess"));
         assert!(go_process_gate.contains("websocketUpdate(t, baseURL, prepared.SessionID, true)"));
         assert!(!funded_gate.contains("IMMORTAL_PROVIDER_BOLTZ_BIND=127.0.0.1:19093"));

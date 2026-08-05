@@ -41,6 +41,11 @@ mutation is not an idempotent replay and that signed `created_at` skew cannot
 reorder dense signer streams. Neither client process mounts provider
 credentials, wallet state, or Postgres.
 
+The Go adapter's atomically renamed control files coordinate polling with the
+driver only. Their writes are not durability or custody evidence, so an
+`ENOTTY` VirtioFS file sync is accepted only for that handoff. Provider
+Postgres, chain, and Lightning evidence remain authoritative.
+
 **Compatibility process passed locally.** On 2026-08-05 on macOS 26.4
 arm64, the adapted Go client executed and passed its 13-call subset, and the
 adapted browser/Node client executed and passed its 15-call subset with zero

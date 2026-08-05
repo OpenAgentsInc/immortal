@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -165,9 +167,11 @@ func writeProcessControl(controlPath string, value interface{}) error {
 		temporary.Close()
 		return err
 	}
-	if err := temporary.Sync(); err != nil {
-		temporary.Close()
-		return err
+	if syncErr := temporary.Sync(); !processControlSyncAccepted(syncErr) {
+		if closeErr := temporary.Close(); closeErr != nil {
+			return errors.Join(syncErr, closeErr)
+		}
+		return syncErr
 	}
 	if err := temporary.Close(); err != nil {
 		return err
@@ -177,6 +181,30 @@ func writeProcessControl(controlPath string, value interface{}) error {
 	}
 	cleanup = false
 	return nil
+}
+
+func processControlSyncAccepted(syncErr error) bool {
+	// VirtioFS can report ENOTTY for this polling-only handoff.
+	return syncErr == nil || errors.Is(syncErr, syscall.ENOTTY)
+}
+
+func TestProcessControlSyncAccepted(t *testing.T) {
+	tests := []struct {
+		name     string
+		syncErr  error
+		accepted bool
+	}{
+		{name: "success", accepted: true},
+		{name: "wrapped ENOTTY", syncErr: fmt.Errorf("sync: %w", syscall.ENOTTY), accepted: true},
+		{name: "other error", syncErr: syscall.EIO},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if accepted := processControlSyncAccepted(test.syncErr); accepted != test.accepted {
+				t.Fatalf("accepted=%t, want %t", accepted, test.accepted)
+			}
+		})
+	}
 }
 
 type processFundingPreparer struct {
