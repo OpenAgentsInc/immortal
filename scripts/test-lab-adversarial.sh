@@ -350,8 +350,8 @@ fallbackfee=0.0002
 listen=1
 dnsseed=0
 listenonion=0
-bind=0.0.0.0:18444
 [regtest]
+bind=0.0.0.0:18444
 rpcbind=127.0.0.1
 rpcallowip=127.0.0.1
 rpcport=18443
@@ -366,8 +366,8 @@ fallbackfee=0.0002
 listen=1
 dnsseed=0
 listenonion=0
-bind=0.0.0.0:18444
 [regtest]
+bind=0.0.0.0:18444
 rpcbind=127.0.0.1
 rpcallowip=127.0.0.1
 rpcport=18443

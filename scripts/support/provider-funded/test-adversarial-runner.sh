@@ -47,4 +47,14 @@ if grep -R -E 'github/workflows|gh workflow|workflow_dispatch' "${runner}" >/dev
   exit 1
 fi
 
+python3 - "${runner}" <<'PY'
+import pathlib
+import sys
+
+runner = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+network_bind = "[regtest]\nbind=0.0.0.0:18444\nrpcbind=127.0.0.1"
+if runner.count(network_bind) != 2:
+    raise SystemExit("bitcoind P2P bind is not scoped to both regtest sections")
+PY
+
 echo "test-adversarial-runner: manifest-derived selection passed"
