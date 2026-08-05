@@ -222,6 +222,18 @@ commit `bd5d94ff79cacef21e261d13d487daf2c08b9315`. Its additive receipt is
 It covers the internal and caller-visible Boltz readiness checks, both adapted
 client process gates, all funded journeys, forced replacement, and cleanup.
 
+The final clean-host pair ran the same source commit,
+`c29c6beb83dcb653d3f306eda3659a6017c550e4`. The fresh Debian 13 container and
+daemon record is
+`docs/conformance/records/2026-08-05-funded-smoke-debian-final-v4.json`. The
+macOS 26.5 arm64 record is
+`docs/conformance/records/2026-08-05-funded-smoke-macos-clean-vm.json`: its
+source and control plane ran in a purpose-built VM from an exact Git bundle,
+while Docker used a restricted connection to the external host engine. Both
+runs passed the three funded journeys, forced replacement, Go and web process
+gates, and cleanup. The macOS record does not describe its Docker daemon as
+fresh.
+
 ## Pinned rail software
 
 The test images support Linux `amd64` and `arm64`, including Docker Desktop on
@@ -382,7 +394,9 @@ container Bitcoin path also created and replaced an opt-in-RBF transaction at
 recorded container, network, and state on macOS 26.4 arm64. The full topology
 has separate local records below. Issue #32 requires one exact 20-case matrix
 run plus the single-provider funded restart smoke on clean macOS and Debian
-hosts. The matrix is not required to repeat on both clean hosts.
+hosts. The matrix is not required to repeat on both clean hosts. The exact
+20-case record and the final paired clean-host records now satisfy that
+execution ledger; #18's independent provider-chain topology remains separate.
 
 ## Recovery and failure-control contract
 

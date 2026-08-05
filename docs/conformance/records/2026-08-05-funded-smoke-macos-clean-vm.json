@@ -1,0 +1,61 @@
+{
+  "adapter_process_gates": {
+    "go_released_calls": 13,
+    "go_result": "passed",
+    "web_released_calls": 15,
+    "web_result": "passed"
+  },
+  "bundle_sha256": "236b9ba84f983f5e05b7b7ff5dbac2f56dedaf3d2fd31d89311a980a76da033b",
+  "cleanup": {
+    "matching_provider_containers_after_run": 0,
+    "private_runtime_artifacts_retained": false,
+    "source_clone_clean_after_run": true
+  },
+  "command": "DOCKER_HOST=ssh://<restricted-host> IMMORTAL_PROVIDER_FUNDED_PRIVATE_ROOT_PARENT=<same-absolute-shared-parent> IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST=<host-only-rfc1918-address> scripts/test-provider-funded.sh",
+  "environment_boundary": "The source and control plane ran in a purpose-built macOS VM from an exact Git bundle. Docker commands used a restricted SSH connection to the external host Docker Desktop engine; that engine was not a fresh daemon.",
+  "finished_at": "2026-08-05T16:18:20Z",
+  "funded_smoke": {
+    "forced_restart": "submarine:funding_authorized",
+    "journeys": [
+      "submarine",
+      "reverse",
+      "noncooperative_refund"
+    ],
+    "passed": true
+  },
+  "limitations": [
+    "The Docker engine was external to the clean macOS source/control-plane VM and was not a fresh daemon.",
+    "This single-provider smoke does not prove issue #18's independent two-bitcoind topology.",
+    "This does not establish live deployment or a public replacement claim."
+  ],
+  "manifests": {
+    "scripts/test-provider-funded.sh": "f3b91e61efb7b9bcf1104604728e84298e22ce7b630bf684a22041e2e6e56763",
+    "tests/fixtures/lab/funded-checkpoints-v1.json": "5de6c6fc8e3c7b414049b02f74215a28877c567c0c7eb9bcd1df2c829830ced0",
+    "tests/fixtures/lab/funded-matrix-v1.json": "71dc0b09fd2ca43d4c0c70bc70768b37111de688d9699a24cf0313a6c53e9573",
+    "tests/fixtures/provider/funded-smoke-v1.json": "882c1c6afa6ec7d1a9c09d3a8b4fb4c23d3e454e096262a91adb042747dafb54"
+  },
+  "platform": {
+    "architecture": "arm64",
+    "build": "25F71",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)",
+    "docker_buildx": "v0.36.1",
+    "docker_client": "29.7.1",
+    "docker_compose": "5.4.0",
+    "docker_server": "29.4.3",
+    "go": "go version go1.26.5 darwin/arm64",
+    "node": "v24.16.0",
+    "operating_system": "macOS 26.5",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)"
+  },
+  "remote_docker": {
+    "boltz_publish_scope": "explicit host-only RFC1918 interface",
+    "global_tmpdir_shared_with_daemon": false,
+    "private_root_exact_bind_preflight": true,
+    "private_root_same_absolute_path": true
+  },
+  "result": "passed",
+  "schema": "openagents.immortal.macos-provider-funded-run.v1",
+  "scope": "purpose-built-macos-vm-source-and-control-plane-with-external-host-docker",
+  "source_commit": "c29c6beb83dcb653d3f306eda3659a6017c550e4",
+  "started_at": "2026-08-05T16:13:25Z"
+}
