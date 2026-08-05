@@ -60,13 +60,26 @@ impl ProviderProcess {
             .ok_or_else(|| "provider stdout pipe is missing".to_owned())?;
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
             let mut line = String::new();
-            let result = BufReader::new(stdout)
+            let result = reader
                 .read_line(&mut line)
                 .map(|_| line)
                 .map_err(|error| error.to_string());
             if sender.send(result).is_err() {
                 eprintln!("provider readiness receiver was dropped");
+            }
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!("could not drain provider output after readiness: {error}");
+                        break;
+                    }
+                }
             }
         });
         match receiver.recv_timeout(Duration::from_secs(15)) {

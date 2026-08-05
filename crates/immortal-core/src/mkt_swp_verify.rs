@@ -15,6 +15,10 @@ const MAX_WITNESS_ITEMS: usize = 1_024;
 const MAX_WITNESS_ITEM_BYTES: usize = 80_000;
 const MAX_INVOICE_CHARS: usize = 7_089;
 const MAX_MUSIG_KEYS: usize = 64;
+const TAPROOT_LEAF_VERSION: u8 = 0xc0;
+const TAPROOT_SIGHASH_DEFAULT: u8 = 0;
+const TAPROOT_KEY_VERSION: u8 = 0;
+const TAPROOT_NO_CODE_SEPARATOR: u32 = u32::MAX;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerificationError {
@@ -71,13 +75,29 @@ impl Transaction {
         outputs: Vec<TransactionOutput>,
         lock_time: u32,
     ) -> Self {
+        let has_witness = inputs.iter().any(|input| !input.witness.is_empty());
         Self {
             version,
             inputs,
             outputs,
             lock_time,
-            has_witness: false,
+            has_witness,
         }
+    }
+
+    pub fn set_input_witness(
+        &mut self,
+        input_index: usize,
+        witness: Vec<Vec<u8>>,
+    ) -> Result<(), VerificationError> {
+        validate_witness_items(&witness)?;
+        let input = self
+            .inputs
+            .get_mut(input_index)
+            .ok_or(VerificationError::Bounds("witness input index"))?;
+        input.witness = witness;
+        self.has_witness = self.inputs.iter().any(|input| !input.witness.is_empty());
+        Ok(())
     }
 
     pub fn parse(bytes: &[u8]) -> Result<Self, VerificationError> {
@@ -208,6 +228,77 @@ impl Transaction {
     pub fn wtxid(&self) -> Result<[u8; 32], VerificationError> {
         Ok(display_hash(double_sha256(&self.serialize(true)?)))
     }
+
+    pub fn weight(&self) -> Result<u64, VerificationError> {
+        let stripped = u64::try_from(self.serialize(false)?.len())
+            .map_err(|_| VerificationError::Bounds("stripped transaction size"))?;
+        let total = u64::try_from(self.serialize(true)?.len())
+            .map_err(|_| VerificationError::Bounds("witness transaction size"))?;
+        stripped
+            .checked_mul(3)
+            .and_then(|weight| weight.checked_add(total))
+            .ok_or(VerificationError::Bounds("transaction weight"))
+    }
+
+    pub fn virtual_size(&self) -> Result<u64, VerificationError> {
+        self.weight()?
+            .checked_add(3)
+            .map(|weight| weight / 4)
+            .ok_or(VerificationError::Bounds("transaction virtual size"))
+    }
+}
+
+impl TransactionInput {
+    pub fn serialize_without_witness(&self) -> Result<Vec<u8>, VerificationError> {
+        if self.script_sig.len() > MAX_SCRIPT_BYTES {
+            return Err(VerificationError::Bounds("scriptSig byte length"));
+        }
+        let mut output = Vec::with_capacity(41 + self.script_sig.len());
+        output.extend_from_slice(&self.previous_txid);
+        output.extend_from_slice(&self.previous_output.to_le_bytes());
+        write_var_bytes(&self.script_sig, &mut output)?;
+        output.extend_from_slice(&self.sequence.to_le_bytes());
+        Ok(output)
+    }
+}
+
+impl TransactionOutput {
+    pub fn serialize(&self) -> Result<Vec<u8>, VerificationError> {
+        if self.script_pubkey.len() > MAX_SCRIPT_BYTES {
+            return Err(VerificationError::Bounds("scriptPubKey byte length"));
+        }
+        let mut output = Vec::with_capacity(9 + self.script_pubkey.len());
+        output.extend_from_slice(&self.value_sat.to_le_bytes());
+        write_var_bytes(&self.script_pubkey, &mut output)?;
+        Ok(output)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwapLeafCondition {
+    Hashlock([u8; 32]),
+    Cltv(u32),
+    Csv(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParsedSwapLeaf {
+    pub signing_key: XOnlyPublicKey,
+    pub condition: SwapLeafCondition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidatedTaprootWitness {
+    pub signature: [u8; 64],
+    pub signing_key: XOnlyPublicKey,
+    pub sighash: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransactionCost {
+    pub fee_sat: u64,
+    pub weight: u64,
+    pub virtual_size: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,6 +363,383 @@ pub fn parse_swap_script(script: &[u8]) -> Result<Vec<ScriptInstruction>, Verifi
         }
     }
     Ok(instructions)
+}
+
+pub fn parse_swap_leaf_script(script: &[u8]) -> Result<ParsedSwapLeaf, VerificationError> {
+    let instructions = parse_swap_script(script)?;
+    let (key, condition) = match instructions.as_slice() {
+        [
+            ScriptInstruction::Opcode(0x82),
+            ScriptInstruction::Push(size),
+            ScriptInstruction::Opcode(0x88),
+            ScriptInstruction::Opcode(0xa8),
+            ScriptInstruction::Push(payment_hash),
+            ScriptInstruction::Opcode(0x88),
+            ScriptInstruction::Push(key),
+            ScriptInstruction::Opcode(0xac),
+        ] if size.as_slice() == [32] && payment_hash.len() == 32 && key.len() == 32 => {
+            let payment_hash = payment_hash
+                .as_slice()
+                .try_into()
+                .map_err(|_| VerificationError::Encoding("hashlock payment hash length"))?;
+            (key, SwapLeafCondition::Hashlock(payment_hash))
+        }
+        [
+            ScriptInstruction::Push(value),
+            ScriptInstruction::Opcode(0xb1),
+            ScriptInstruction::Opcode(0x75),
+            ScriptInstruction::Push(key),
+            ScriptInstruction::Opcode(0xac),
+        ] if key.len() == 32 => (key, SwapLeafCondition::Cltv(parse_script_number(value)?)),
+        [
+            ScriptInstruction::Push(value),
+            ScriptInstruction::Opcode(0xb2),
+            ScriptInstruction::Opcode(0x75),
+            ScriptInstruction::Push(key),
+            ScriptInstruction::Opcode(0xac),
+        ] if key.len() == 32 => (key, SwapLeafCondition::Csv(parse_script_number(value)?)),
+        _ => {
+            return Err(VerificationError::Unsupported(
+                "swap leaf is not an exact hashlock, CLTV, or CSV path",
+            ));
+        }
+    };
+    let signing_key = XOnlyPublicKey::from_byte_array(
+        key.as_slice()
+            .try_into()
+            .map_err(|_| VerificationError::Encoding("swap leaf signing key length"))?,
+    )
+    .map_err(|_| VerificationError::Crypto("swap leaf signing key"))?;
+    Ok(ParsedSwapLeaf {
+        signing_key,
+        condition,
+    })
+}
+
+pub fn taproot_script_spend_signature_message(
+    transaction: &Transaction,
+    prevouts: &[TransactionOutput],
+    input_index: usize,
+    script: &[u8],
+    control_block: &[u8],
+) -> Result<Vec<u8>, VerificationError> {
+    validate_taproot_spend_inputs(transaction, prevouts, input_index, script, control_block)?;
+    let input_index =
+        u32::try_from(input_index).map_err(|_| VerificationError::Bounds("Taproot input index"))?;
+
+    let mut serialized_prevouts = Vec::with_capacity(transaction.inputs.len() * 36);
+    let mut serialized_amounts = Vec::with_capacity(prevouts.len() * 8);
+    let mut serialized_script_pubkeys = Vec::new();
+    let mut serialized_sequences = Vec::with_capacity(transaction.inputs.len() * 4);
+    for (input, prevout) in transaction.inputs.iter().zip(prevouts) {
+        serialized_prevouts.extend_from_slice(&input.previous_txid);
+        serialized_prevouts.extend_from_slice(&input.previous_output.to_le_bytes());
+        serialized_amounts.extend_from_slice(&prevout.value_sat.to_le_bytes());
+        write_var_bytes(&prevout.script_pubkey, &mut serialized_script_pubkeys)?;
+        serialized_sequences.extend_from_slice(&input.sequence.to_le_bytes());
+    }
+    let mut serialized_outputs = Vec::new();
+    for output in &transaction.outputs {
+        serialized_outputs.extend_from_slice(&output.serialize()?);
+    }
+
+    let mut message = Vec::with_capacity(212);
+    message.push(0); // BIP-341 epoch.
+    message.push(TAPROOT_SIGHASH_DEFAULT);
+    message.extend_from_slice(&transaction.version.to_le_bytes());
+    message.extend_from_slice(&transaction.lock_time.to_le_bytes());
+    message.extend_from_slice(&sha256(&serialized_prevouts));
+    message.extend_from_slice(&sha256(&serialized_amounts));
+    message.extend_from_slice(&sha256(&serialized_script_pubkeys));
+    message.extend_from_slice(&sha256(&serialized_sequences));
+    message.extend_from_slice(&sha256(&serialized_outputs));
+    message.push(2); // ext_flag=1 (script path), annex_present=0.
+    message.extend_from_slice(&input_index.to_le_bytes());
+    message.extend_from_slice(&tapleaf_hash(TAPROOT_LEAF_VERSION, script)?);
+    message.push(TAPROOT_KEY_VERSION);
+    message.extend_from_slice(&TAPROOT_NO_CODE_SEPARATOR.to_le_bytes());
+    Ok(message)
+}
+
+pub fn taproot_script_spend_sighash(
+    transaction: &Transaction,
+    prevouts: &[TransactionOutput],
+    input_index: usize,
+    script: &[u8],
+    control_block: &[u8],
+) -> Result<[u8; 32], VerificationError> {
+    Ok(tagged_hash(
+        "TapSighash",
+        &taproot_script_spend_signature_message(
+            transaction,
+            prevouts,
+            input_index,
+            script,
+            control_block,
+        )?,
+    ))
+}
+
+pub fn taproot_key_spend_signature_message(
+    transaction: &Transaction,
+    prevouts: &[TransactionOutput],
+    input_index: usize,
+) -> Result<Vec<u8>, VerificationError> {
+    validate_taproot_key_spend_inputs(transaction, prevouts, input_index)?;
+    let input_index =
+        u32::try_from(input_index).map_err(|_| VerificationError::Bounds("Taproot input index"))?;
+
+    let mut serialized_prevouts = Vec::with_capacity(transaction.inputs.len() * 36);
+    let mut serialized_amounts = Vec::with_capacity(prevouts.len() * 8);
+    let mut serialized_script_pubkeys = Vec::new();
+    let mut serialized_sequences = Vec::with_capacity(transaction.inputs.len() * 4);
+    for (input, prevout) in transaction.inputs.iter().zip(prevouts) {
+        serialized_prevouts.extend_from_slice(&input.previous_txid);
+        serialized_prevouts.extend_from_slice(&input.previous_output.to_le_bytes());
+        serialized_amounts.extend_from_slice(&prevout.value_sat.to_le_bytes());
+        write_var_bytes(&prevout.script_pubkey, &mut serialized_script_pubkeys)?;
+        serialized_sequences.extend_from_slice(&input.sequence.to_le_bytes());
+    }
+    let mut serialized_outputs = Vec::new();
+    for output in &transaction.outputs {
+        serialized_outputs.extend_from_slice(&output.serialize()?);
+    }
+
+    let mut message = Vec::with_capacity(175);
+    message.push(0);
+    message.push(TAPROOT_SIGHASH_DEFAULT);
+    message.extend_from_slice(&transaction.version.to_le_bytes());
+    message.extend_from_slice(&transaction.lock_time.to_le_bytes());
+    message.extend_from_slice(&sha256(&serialized_prevouts));
+    message.extend_from_slice(&sha256(&serialized_amounts));
+    message.extend_from_slice(&sha256(&serialized_script_pubkeys));
+    message.extend_from_slice(&sha256(&serialized_sequences));
+    message.extend_from_slice(&sha256(&serialized_outputs));
+    message.push(0); // ext_flag=0 (key path), annex_present=0.
+    message.extend_from_slice(&input_index.to_le_bytes());
+    Ok(message)
+}
+
+pub fn taproot_key_spend_sighash(
+    transaction: &Transaction,
+    prevouts: &[TransactionOutput],
+    input_index: usize,
+) -> Result<[u8; 32], VerificationError> {
+    Ok(tagged_hash(
+        "TapSighash",
+        &taproot_key_spend_signature_message(transaction, prevouts, input_index)?,
+    ))
+}
+
+pub fn assemble_taproot_claim_witness(
+    signature: [u8; 64],
+    preimage: [u8; 32],
+    script: &[u8],
+    control_block: &[u8],
+) -> Result<Vec<Vec<u8>>, VerificationError> {
+    let leaf = parse_swap_leaf_script(script)?;
+    let SwapLeafCondition::Hashlock(payment_hash) = leaf.condition else {
+        return Err(VerificationError::Invalid(
+            "claim witness requires hashlock leaf",
+        ));
+    };
+    if !verify_preimage(&preimage, &payment_hash) {
+        return Err(VerificationError::Invalid("claim witness preimage"));
+    }
+    validate_control_block_shape(control_block)?;
+    Ok(vec![
+        signature.to_vec(),
+        preimage.to_vec(),
+        script.to_vec(),
+        control_block.to_vec(),
+    ])
+}
+
+pub fn assemble_taproot_refund_witness(
+    signature: [u8; 64],
+    script: &[u8],
+    control_block: &[u8],
+) -> Result<Vec<Vec<u8>>, VerificationError> {
+    let leaf = parse_swap_leaf_script(script)?;
+    if !matches!(
+        leaf.condition,
+        SwapLeafCondition::Cltv(_) | SwapLeafCondition::Csv(_)
+    ) {
+        return Err(VerificationError::Invalid(
+            "refund witness requires timelock leaf",
+        ));
+    }
+    validate_control_block_shape(control_block)?;
+    Ok(vec![
+        signature.to_vec(),
+        script.to_vec(),
+        control_block.to_vec(),
+    ])
+}
+
+pub fn validate_taproot_claim_witness(
+    transaction: &Transaction,
+    prevouts: &[TransactionOutput],
+    input_index: usize,
+    expected_script: &[u8],
+    expected_control_block: &[u8],
+) -> Result<ValidatedTaprootWitness, VerificationError> {
+    let input = transaction
+        .inputs
+        .get(input_index)
+        .ok_or(VerificationError::Bounds("claim witness input index"))?;
+    let [signature, preimage, script, control_block] = input.witness.as_slice() else {
+        return Err(VerificationError::Invalid("claim witness shape"));
+    };
+    let signature = exact_default_signature(signature)?;
+    let preimage: [u8; 32] = preimage
+        .as_slice()
+        .try_into()
+        .map_err(|_| VerificationError::Invalid("claim preimage length"))?;
+    if script != expected_script || control_block != expected_control_block {
+        return Err(VerificationError::Invalid("claim witness path mismatch"));
+    }
+    let leaf = parse_swap_leaf_script(script)?;
+    let SwapLeafCondition::Hashlock(payment_hash) = leaf.condition else {
+        return Err(VerificationError::Invalid("claim witness leaf condition"));
+    };
+    if !verify_preimage(&preimage, &payment_hash) {
+        return Err(VerificationError::Invalid("claim witness preimage"));
+    }
+    let sighash =
+        taproot_script_spend_sighash(transaction, prevouts, input_index, script, control_block)?;
+    Ok(ValidatedTaprootWitness {
+        signature,
+        signing_key: leaf.signing_key,
+        sighash,
+    })
+}
+
+pub fn validate_taproot_refund_witness(
+    transaction: &Transaction,
+    prevouts: &[TransactionOutput],
+    input_index: usize,
+    expected_script: &[u8],
+    expected_control_block: &[u8],
+) -> Result<ValidatedTaprootWitness, VerificationError> {
+    let input = transaction
+        .inputs
+        .get(input_index)
+        .ok_or(VerificationError::Bounds("refund witness input index"))?;
+    let [signature, script, control_block] = input.witness.as_slice() else {
+        return Err(VerificationError::Invalid("refund witness shape"));
+    };
+    let signature = exact_default_signature(signature)?;
+    if script != expected_script || control_block != expected_control_block {
+        return Err(VerificationError::Invalid("refund witness path mismatch"));
+    }
+    let leaf = parse_swap_leaf_script(script)?;
+    match leaf.condition {
+        SwapLeafCondition::Cltv(required) => {
+            if input.sequence == u32::MAX
+                || !check_cltv(Timelock::BlockHeight(required), transaction.lock_time)
+            {
+                return Err(VerificationError::Invalid("refund CLTV is not satisfied"));
+            }
+        }
+        SwapLeafCondition::Csv(required) => {
+            if transaction.version < 2 || !check_csv(required, input.sequence) {
+                return Err(VerificationError::Invalid("refund CSV is not satisfied"));
+            }
+        }
+        SwapLeafCondition::Hashlock(_) => {
+            return Err(VerificationError::Invalid("refund witness leaf condition"));
+        }
+    }
+    let sighash =
+        taproot_script_spend_sighash(transaction, prevouts, input_index, script, control_block)?;
+    Ok(ValidatedTaprootWitness {
+        signature,
+        signing_key: leaf.signing_key,
+        sighash,
+    })
+}
+
+pub fn transaction_cost(
+    transaction: &Transaction,
+    prevouts: &[TransactionOutput],
+) -> Result<TransactionCost, VerificationError> {
+    if transaction.inputs.len() != prevouts.len() {
+        return Err(VerificationError::Invalid("transaction prevout count"));
+    }
+    let input_value = prevouts.iter().try_fold(0_u64, |total, prevout| {
+        total
+            .checked_add(prevout.value_sat)
+            .ok_or(VerificationError::Bounds("transaction input value"))
+    })?;
+    let output_value = transaction
+        .outputs
+        .iter()
+        .try_fold(0_u64, |total, output| {
+            total
+                .checked_add(output.value_sat)
+                .ok_or(VerificationError::Bounds("transaction output value"))
+        })?;
+    let fee_sat = input_value
+        .checked_sub(output_value)
+        .ok_or(VerificationError::Invalid(
+            "transaction spends more than its prevouts",
+        ))?;
+    Ok(TransactionCost {
+        fee_sat,
+        weight: transaction.weight()?,
+        virtual_size: transaction.virtual_size()?,
+    })
+}
+
+pub fn validate_transaction_cost(
+    transaction: &Transaction,
+    prevouts: &[TransactionOutput],
+    maximum_fee_sat: u64,
+    maximum_fee_rate_sat_per_vbyte: u64,
+) -> Result<TransactionCost, VerificationError> {
+    let cost = transaction_cost(transaction, prevouts)?;
+    let maximum_rate_fee = maximum_fee_rate_sat_per_vbyte
+        .checked_mul(cost.virtual_size)
+        .ok_or(VerificationError::Bounds("maximum transaction fee rate"))?;
+    if cost.fee_sat > maximum_fee_sat || cost.fee_sat > maximum_rate_fee {
+        return Err(VerificationError::Invalid("transaction fee exceeds policy"));
+    }
+    Ok(cost)
+}
+
+pub fn dust_threshold(
+    script_pubkey: &[u8],
+    dust_relay_fee_sat_per_kilobyte: u64,
+) -> Result<u64, VerificationError> {
+    if script_pubkey.len() > MAX_SCRIPT_BYTES {
+        return Err(VerificationError::Bounds("dust scriptPubKey byte length"));
+    }
+    if script_pubkey.first() == Some(&0x6a) {
+        return Ok(0);
+    }
+    let output_size = 8_u64
+        .checked_add(compact_size_length(script_pubkey.len())?)
+        .and_then(|size| size.checked_add(u64::try_from(script_pubkey.len()).ok()?))
+        .ok_or(VerificationError::Bounds("dust output size"))?;
+    let spend_size = if is_witness_program(script_pubkey) {
+        67
+    } else {
+        148
+    };
+    fee_for_size(
+        dust_relay_fee_sat_per_kilobyte,
+        output_size
+            .checked_add(spend_size)
+            .ok_or(VerificationError::Bounds("dust spend size"))?,
+    )
+}
+
+pub fn is_dust(
+    output: &TransactionOutput,
+    dust_relay_fee_sat_per_kilobyte: u64,
+) -> Result<bool, VerificationError> {
+    Ok(output.value_sat < dust_threshold(&output.script_pubkey, dust_relay_fee_sat_per_kilobyte)?)
 }
 
 pub fn sha256(bytes: &[u8]) -> [u8; 32] {
@@ -906,6 +1374,200 @@ fn read_script_length(
         value |= u32::from(*byte) << (index * 8);
     }
     usize::try_from(value).map_err(|_| VerificationError::Bounds("script push length"))
+}
+
+fn parse_script_number(bytes: &[u8]) -> Result<u32, VerificationError> {
+    if bytes.is_empty() || bytes.len() > 5 || bytes.last().is_some_and(|byte| byte & 0x80 != 0) {
+        return Err(VerificationError::Invalid("swap timelock script number"));
+    }
+    if bytes.last().is_some_and(|byte| byte & 0x7f == 0)
+        && (bytes.len() == 1 || bytes[bytes.len() - 2] & 0x80 == 0)
+    {
+        return Err(VerificationError::Encoding(
+            "noncanonical swap timelock script number",
+        ));
+    }
+    let mut value = 0_u64;
+    for (index, byte) in bytes.iter().enumerate() {
+        value |= u64::from(*byte) << (index * 8);
+    }
+    u32::try_from(value).map_err(|_| VerificationError::Bounds("swap timelock value"))
+}
+
+fn validate_taproot_spend_inputs(
+    transaction: &Transaction,
+    prevouts: &[TransactionOutput],
+    input_index: usize,
+    script: &[u8],
+    control_block: &[u8],
+) -> Result<(), VerificationError> {
+    if transaction.inputs.is_empty()
+        || transaction.inputs.len() > MAX_INPUTS
+        || transaction.inputs.len() != prevouts.len()
+    {
+        return Err(VerificationError::Invalid("Taproot prevout count"));
+    }
+    if transaction.outputs.is_empty() || transaction.outputs.len() > MAX_OUTPUTS {
+        return Err(VerificationError::Bounds(
+            "Taproot transaction output count",
+        ));
+    }
+    let input = transaction
+        .inputs
+        .get(input_index)
+        .ok_or(VerificationError::Bounds("Taproot input index"))?;
+    if !input.script_sig.is_empty() {
+        return Err(VerificationError::Invalid(
+            "Taproot scriptSig must be empty",
+        ));
+    }
+    for input in &transaction.inputs {
+        if input.script_sig.len() > MAX_SCRIPT_BYTES {
+            return Err(VerificationError::Bounds("Taproot scriptSig byte length"));
+        }
+    }
+    for prevout in prevouts {
+        if prevout.script_pubkey.len() > MAX_SCRIPT_BYTES {
+            return Err(VerificationError::Bounds(
+                "Taproot prevout scriptPubKey length",
+            ));
+        }
+    }
+    let prevout = &prevouts[input_index];
+    let output_key = taproot_output_key_from_script_pubkey(&prevout.script_pubkey)?;
+    if control_block.first().map(|byte| byte & 0xfe) != Some(TAPROOT_LEAF_VERSION) {
+        return Err(VerificationError::Unsupported("Taproot leaf version"));
+    }
+    parse_swap_leaf_script(script)?;
+    verify_control_block(&output_key, script, control_block)
+}
+
+fn validate_taproot_key_spend_inputs(
+    transaction: &Transaction,
+    prevouts: &[TransactionOutput],
+    input_index: usize,
+) -> Result<(), VerificationError> {
+    if transaction.inputs.is_empty()
+        || transaction.inputs.len() > MAX_INPUTS
+        || transaction.inputs.len() != prevouts.len()
+    {
+        return Err(VerificationError::Invalid("Taproot prevout count"));
+    }
+    if transaction.outputs.is_empty() || transaction.outputs.len() > MAX_OUTPUTS {
+        return Err(VerificationError::Bounds(
+            "Taproot transaction output count",
+        ));
+    }
+    let input = transaction
+        .inputs
+        .get(input_index)
+        .ok_or(VerificationError::Bounds("Taproot input index"))?;
+    if !input.script_sig.is_empty() {
+        return Err(VerificationError::Invalid(
+            "Taproot scriptSig must be empty",
+        ));
+    }
+    for input in &transaction.inputs {
+        if !input.script_sig.is_empty() {
+            return Err(VerificationError::Invalid(
+                "Taproot scriptSig must be empty",
+            ));
+        }
+    }
+    for prevout in prevouts {
+        if prevout.script_pubkey.len() > MAX_SCRIPT_BYTES {
+            return Err(VerificationError::Bounds(
+                "Taproot prevout scriptPubKey length",
+            ));
+        }
+    }
+    taproot_output_key_from_script_pubkey(&prevouts[input_index].script_pubkey)?;
+    Ok(())
+}
+
+fn taproot_output_key_from_script_pubkey(
+    script_pubkey: &[u8],
+) -> Result<XOnlyPublicKey, VerificationError> {
+    let output_key =
+        script_pubkey
+            .strip_prefix(&[0x51, 0x20])
+            .ok_or(VerificationError::Invalid(
+                "prevout is not a v1 Taproot output",
+            ))?;
+    XOnlyPublicKey::from_byte_array(
+        output_key
+            .try_into()
+            .map_err(|_| VerificationError::Encoding("Taproot output key length"))?,
+    )
+    .map_err(|_| VerificationError::Crypto("Taproot output key"))
+}
+
+fn validate_control_block_shape(control_block: &[u8]) -> Result<(), VerificationError> {
+    if control_block.len() < 33
+        || control_block.len() > 33 + 32 * 128
+        || (control_block.len() - 33) % 32 != 0
+        || control_block.first().map(|byte| byte & 0xfe) != Some(TAPROOT_LEAF_VERSION)
+    {
+        return Err(VerificationError::Encoding("Taproot control block shape"));
+    }
+    Ok(())
+}
+
+fn exact_default_signature(signature: &[u8]) -> Result<[u8; 64], VerificationError> {
+    signature.try_into().map_err(|_| {
+        VerificationError::Invalid("Taproot signature must use implicit SIGHASH_DEFAULT")
+    })
+}
+
+fn validate_witness_items(witness: &[Vec<u8>]) -> Result<(), VerificationError> {
+    if witness.len() > MAX_WITNESS_ITEMS {
+        return Err(VerificationError::Bounds("witness item count"));
+    }
+    if witness
+        .iter()
+        .any(|item| item.len() > MAX_WITNESS_ITEM_BYTES)
+    {
+        return Err(VerificationError::Bounds("witness item byte length"));
+    }
+    Ok(())
+}
+
+fn compact_size_length(value: usize) -> Result<u64, VerificationError> {
+    if value < 0xfd {
+        Ok(1)
+    } else if value <= usize::from(u16::MAX) {
+        Ok(3)
+    } else if value <= usize::try_from(u32::MAX).unwrap_or(usize::MAX) {
+        Ok(5)
+    } else {
+        u64::try_from(value)
+            .map(|_| 9)
+            .map_err(|_| VerificationError::Bounds("compact size length"))
+    }
+}
+
+fn is_witness_program(script_pubkey: &[u8]) -> bool {
+    let Some((&version, rest)) = script_pubkey.split_first() else {
+        return false;
+    };
+    let Some((&program_length, program)) = rest.split_first() else {
+        return false;
+    };
+    matches!(version, 0x00 | 0x51..=0x60)
+        && matches!(program_length, 2..=40)
+        && program.len() == usize::from(program_length)
+}
+
+fn fee_for_size(rate_sat_per_kilobyte: u64, size: u64) -> Result<u64, VerificationError> {
+    let fee = rate_sat_per_kilobyte
+        .checked_mul(size)
+        .ok_or(VerificationError::Bounds("fee calculation"))?
+        / 1_000;
+    Ok(if fee == 0 && rate_sat_per_kilobyte > 0 {
+        1
+    } else {
+        fee
+    })
 }
 
 fn double_sha256(bytes: &[u8]) -> [u8; 32] {

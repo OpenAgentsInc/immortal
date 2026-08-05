@@ -43,7 +43,16 @@ A hard reservation is released only after an effective cancellation, its
 expiry, or a validated terminal Close. The embedding application performs the
 durable release before the provider signs a release-dependent Close.
 
-## Lifecycle and no-spend Close
+Reverse funding has an additional reserve gate. After the durable hard reserve
+selects exact controlled UTXOs, the provider constructs and signs the funding
+transaction, inserts its raw bytes, SHA-256 digest, and output index into the
+destination verifier, and recomputes the leg verifier digest before returning
+the Quote signing request. Both Swap Contracts therefore precommit the exact
+transaction. Before broadcast, funded mode rebuilds it from the recovered
+reserved inputs and fails closed unless the bytes still match; every later
+chain observation must report the same committed transaction and output.
+
+## Lifecycle and Close
 
 Provider and requester Status streams remain independent. Gaps, forks, and
 invalid transitions are retained in the projection and cannot silently
@@ -56,6 +65,11 @@ amounts to be zero. The Close names both assets, the exact released reservation
 amount, no evidence references, and no unknown fields. Funded terminal outcomes
 use the requester's general loss-accounting rules and require their bound rail
 evidence.
+
+Funded mode authors a signer-local terminal Close after its final
+`completed`, `refunded`, or effective-cancellation path. A requester Close or
+requester terminal Status does not release the provider reservation, retire
+the provider actor, or exclude the session from provider recovery.
 
 ## Persistence and process boundary
 
@@ -72,10 +86,60 @@ the requester's contract, countersigns identical terms, and closes mutually
 cancelled submarine, reverse, and chain sessions. It never calls a funding,
 wallet, node, payment, or broadcast API.
 
-Issue #25 adds funded rails, a provider database, wallet and watchtower, and a
-separate deterministic provider contract export. This packet does not change
-the relay binary, relay contract JSON, relay NIP-11 document, or relay
-executable-profile set.
+Funded mode adds a provider-owned Postgres database, a mode-0600 operator seed
+file, dynamic hard reservations, bounded bitcoind and Core Lightning clients,
+transaction construction, script-path settlement, and a polling watchtower.
+The same binary starts it with `immortal-provider run`; `--no-spend` retains
+the zero-rail rehearsal mode.
+
+Submarine RFQs bind the requester-created invoice before the provider signs a
+Quote. Reverse Quotes bind a provider-created hold invoice. Chain capacity is
+reserved by exact controlled UTXOs; Lightning capacity is reserved from the
+node's public balance response. The provider database stores only signed
+records, public commitments, reservations, UTXO observations, transaction
+artifacts, watch jobs, results, and alerts. Seeds, private keys, unreleased
+preimages, RPC credentials, and node credentials are excluded by both the API
+and database constraints.
+
+Reverse Quote construction reads the synchronized `getinfo.blockheight` from
+CLN and uses it with the invoice's minimum final CLTV delta to derive the
+signed minimum acceptable shortest incoming-HTLC expiry. The payer may choose
+a later expiry. The bitcoind and CLN heights must be ordered and within the
+configured reorg-safety margin, and CLN must name the configured network.
+Before publishing `lightning_htlcs_held`, the provider checks every observed
+HTLC's state, amount, and expiry. Bitcoind remains authoritative for refund
+heights and transaction confirmation.
+
+Temporary CLN/bitcoind height skew defers Quote construction under a bounded
+poll; it does not reject the requester's RFQ. An invalid held-HTLC set is
+cancelled through signed `invoice_cancel_pending`, `invoice_cancelled`, and
+`expired` statuses. Its reservation is released after the cancellation effect
+is durable. A hold invoice that settled before cancellation instead marks the
+reservation and session unresolved.
+
+Signed height members are exclusive deadlines. Submarine funding and claim,
+and both reverse hold/funding gates, stop when bitcoind height is equal to or
+greater than the signed bound. A pre-funding reverse expiry enters the durable
+invoice-cancellation path instead of funding. After a final cooperative
+requester claim, the provider settles or reconciles the hold invoice and marks
+the competing refund watch complete as `claim_settled`; a provider refund or
+replacement remains on the refund path.
+
+The process-level client actor uses `SwapSession` to reconstruct both signed
+contracts, parses the contract-bound requester `ExitPackage`, and completes
+verify-before-fund before publishing the requester authorization Status. It
+also ingests the final provider Close, so a rail result without valid terminal
+protocol accounting cannot pass the funded gate.
+
+Bitcoin funding inputs use a non-RBF sequence while retaining locktime
+semantics, matching the signed replacement policy. v1 executes Taproot
+script-path claim/refund only. It excludes ZMQ, LND, MuSig2 key-path
+execution, outbound price feeds, non-Bitcoin rails, and inventory strategy.
+The separate deterministic machine surface is documented in
+[`provider-contract.md`](provider-contract.md).
+
+This provider runtime does not change the relay binary, relay contract JSON,
+relay NIP-11 document, or relay executable-profile set.
 
 ## Conformance
 
@@ -87,8 +151,21 @@ Quote selection refusal. The provider integration test also reconstructs each
 completed history through the requester engine and validates the negotiated
 terms.
 
+`tests/fixtures/provider/provider-runtime-v1.json` is the executable funded
+runtime gate. Unit tests replay its invalid held-HTLC amount/state/expiry
+cases, exact and one-past exclusive height boundaries, cancelled hold state,
+and cooperative reverse refund-watch retirement through the production
+transition helpers. Its exact bytes and digest are bound by
+`provider-contract-v1.json`.
+
 Run the native, no-default, and zero-import WASM proof with:
 
 ```sh
 ./scripts/test-swp-verification.sh
+cargo test --locked -p immortal-provider --lib provider_runtime_fixture
+./scripts/export-provider-contract.sh --check
 ```
+
+The disposable bitcoind/CLN funded process gate is
+`scripts/test-provider-funded.sh`. Its three-journey result is pending; the
+unit and contract gates above do not replace it.

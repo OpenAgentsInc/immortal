@@ -46,6 +46,7 @@ by `AGENTS.md`.
 | Optional MKT-SWP coordination: exact-digest activation and NIP-11 gate, provider-signed none/soft/hard accounting, covenant-reserve proof ordering and double-use refusal, over-allocation and commitment forks, dense Status gaps/forks, reservation-only timeout sweeps, custody rejection, bounded measured-transaction observations labeled observation-not-authority, and two-relay/one-Postgres consistency | `tests/fixtures/nipmkt/swp-coordination-v1.json`, `crates/immortal-relay/tests/mkt_swp_coordination.rs`, migration 0011, gateway/contract tests, and `crates/immortal-relay/tests/multiprocess_postgres.rs` |
 | MKT-SWP transport-neutral requester execution: typed Lightning readiness/progression, exact external signing and persisted rail-evidence requests, bilateral contract and inherited Order selection, crash-complete exits, immutable signed-record ingestion, signer-local terminal Status ancestry, balanced per-asset loss claims, mutual cancellation with typed effect disposition, contradiction-safe recovery, recursive custody tripwires, and closed-world 62-case production-API replay of all six completed/refunded flows plus bounded negatives | `tests/fixtures/nipmkt/swp-client-engine-v1.json`, `tests/fixtures/nipmkt/swp-full-sessions-v1.json`, `crates/immortal-client/tests/mkt_swp_client.rs`, `docs/protocol/mkt-swp-client.md`, and `scripts/test-swp-verification.sh` on native and an invoked zero-import `wasm32-unknown-unknown` probe |
 | MKT-SWP provider sessions: rotating discovery records, complete RFQ-bound indicative/soft/hard Quote terms, reserve-before-hard-signing and release effects, bilateral contract equality, retained Status gaps/forks, exact no-spend cancellation/Close accounting, bounded custody-free persistence, and closed 30-case replay across submarine/reverse/chain | `tests/fixtures/nipmkt/swp-provider-engine-v1.json`, `crates/immortal-provider/tests/mkt_swp_provider.rs`, `docs/protocol/mkt-swp-provider.md`, and `scripts/test-swp-verification.sh` on native, no-default, and an invoked zero-import `wasm32-unknown-unknown` probe |
+| Funded provider runtime: reserve-gated exact reverse funding precommitment, production client verify-before-fund and `ExitPackage`, BIP-341/342 claim/refund construction bytes, exclusive chain deadlines, held-HTLC refusal/cancellation, cooperative refund-watch retirement, signer-local terminal Close, and deterministic closed-limit provider contract | `tests/fixtures/provider/provider-runtime-v1.json`, `tests/fixtures/provider/settlement-construction-v1.json`, `crates/immortal-provider/tests/provider_settlement.rs`, funded-mode unit tests, `crates/immortal-provider/tests/funded_live.rs`, `scripts/export-provider-contract.sh --check`, and the pending `scripts/test-provider-funded.sh` process gate |
 | M2 migrations, hash drift, prepared admission/query paths, least privilege, policy branches, FTS, transactional NOTIFY, replacement/deletion concurrency, and ephemeral non-storage | `crates/immortal-relay/tests/store_static.rs` and `crates/immortal-relay/tests/store_postgres.rs` |
 | M3 indexed fanout by ID/author/kind/tag, broad lane, race-free EOSE, deduplication, queue overflow, query cancellation, limits, rates, frame bounds, and graceful shutdown | gateway unit tests and `crates/immortal-relay/tests/gateway_postgres.rs` |
 | M4 two binaries/one Postgres, cross-delivery, bounded sequence-gap recovery, kill-one survival, and fail-closed unbounded gap | `crates/immortal-relay/tests/multiprocess_postgres.rs` |
@@ -104,3 +105,15 @@ proof is:
 ```
 
 It creates disposable local relay state and exercises no custody or rail API.
+
+The funded provider has a fixture/contract prerequisite and a separate
+process-level gate:
+
+```sh
+cargo test --locked -p immortal-provider --lib provider_runtime_fixture
+./scripts/export-provider-contract.sh --check
+./scripts/test-provider-funded.sh
+```
+
+The three-journey bitcoind/CLN process result is pending. Passing the first two
+commands does not constitute funded-provider conformance.

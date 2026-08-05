@@ -24,7 +24,7 @@
         "lane": "openagents",
         "repo": "https://github.com/OpenAgentsInc/openagents",
         "subdir": "docs/nips",
-        "commit": "006b35b1f428a2e2a18931ff1546e5a09a8f8961"
+        "commit": "c579a75bcba6d799941efff4dfbf82bd090e88c1"
       }
     ]
   },
@@ -291,7 +291,7 @@
       "path": "tests/fixtures/nipmkt/swp-pricing-v1.json",
       "sha256": "bf7dc9790b59db55767cd23dcfef473fab3d3bdb408f0b7df01469d6eada7cc0",
       "bytes": 21087,
-      "scope": "relay"
+      "scope": "provider"
     },
     {
       "path": "tests/fixtures/nipmkt/swp-profile-v1.json",
@@ -307,8 +307,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/swp-verification.json",
-      "sha256": "6fbb94a8423f7a756618d10cc2eb4b61632b1e9ec0155368a40b5d8038b3f9c3",
-      "bytes": 4436,
+      "sha256": "c4b0e0892356deff6468e6e79ca2d407e42cc664a3f2651daea488c8e7b2649c",
+      "bytes": 13295,
       "scope": "relay_and_client"
     },
     {

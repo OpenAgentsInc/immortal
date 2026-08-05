@@ -29,9 +29,9 @@ use immortal_core::domain::{
 };
 
 const PROVIDER_SNAPSHOT_SCHEMA: &str = "openagents.mkt-swp.provider-snapshot.v1";
-const MAX_PROVIDER_RECORDS: usize = 512;
-const MAX_PROVIDER_EFFECTS: usize = 128;
-const MAX_PROVIDER_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const MAX_PROVIDER_RECORDS: usize = 512;
+pub(crate) const MAX_PROVIDER_EFFECTS: usize = 128;
+pub(crate) const MAX_PROVIDER_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -568,6 +568,144 @@ impl ProviderSession {
             &rfq_id,
             expiration,
             mkt_swp,
+        )?;
+        if let Some(existing) = self.hard_quote_request.as_ref() {
+            if existing == &request {
+                return Ok(existing.clone());
+            }
+            return Err(provider_error(
+                "swp_idempotency_conflict",
+                "one confirmed reservation cannot back multiple hard Quote records",
+            ));
+        }
+        self.hard_quote_request = Some(request.clone());
+        Ok(request)
+    }
+
+    pub fn hard_quote_with_bound_reserve<F>(
+        &mut self,
+        created_at: u64,
+        distinct: &str,
+        expiration: u64,
+        reservation: ReservationRequest,
+        mkt_swp: Value,
+        mut reserve_and_bind: F,
+    ) -> Result<MktSigningRequest, SwapClientError>
+    where
+        F: FnMut(
+            &ProviderEffectRequest,
+            Option<&ReservationConfirmation>,
+            Value,
+        ) -> Result<(ReservationConfirmation, Value), String>,
+    {
+        let rfq = self.rfq()?.clone();
+        let rfq_id = rfq.id.clone();
+        validate_quote_profile(&mkt_swp, "none")?;
+        validate_quote_against_rfq(&rfq, &mkt_swp, "firm", created_at, expiration)?;
+        validate_reservation_request(&reservation, created_at)?;
+        let preflight_confirmation = ReservationConfirmation {
+            reservation_id: reservation.reservation_id.clone(),
+            capacity_bucket_id: reservation.capacity_bucket_id.clone(),
+            reserved_asset_id: reservation.reserved_asset_id.clone(),
+            reserved_amount: reservation.reserved_amount.clone(),
+            committed_capacity: reservation.reserved_amount.clone(),
+            reservation_expires_at: reservation.reservation_expires_at,
+            allocation_sequence: "1".into(),
+            proof_class: "handler_accounted".into(),
+            proof_ref: "provider-preflight".into(),
+            capacity_commitment_sha256: "00".repeat(32),
+        };
+        validate_reservation_confirmation(&reservation, &preflight_confirmation)?;
+        let mut preflight_profile = mkt_swp.clone();
+        insert_reservation_terms(&mut preflight_profile, &preflight_confirmation)?;
+        validate_quote_profile(&preflight_profile, "hard")?;
+        hard_quote_request(
+            &self.config,
+            created_at,
+            distinct,
+            &rfq_id,
+            expiration,
+            preflight_profile,
+        )?;
+        if let Some(existing) = self.reservation.as_ref()
+            && (existing.reservation_id != reservation.reservation_id
+                || existing.capacity_bucket_id != reservation.capacity_bucket_id
+                || existing.reserved_asset_id != reservation.reserved_asset_id
+                || existing.reserved_amount != reservation.reserved_amount
+                || existing.reservation_expires_at != reservation.reservation_expires_at)
+        {
+            return Err(provider_error(
+                "swp_idempotency_conflict",
+                "provider session cannot reserve a second hard-Quote allocation",
+            ));
+        }
+        let effect_request = reserve_effect_request(&self.config, &reservation)?;
+        let existing_confirmation = self
+            .effects
+            .get(&effect_request.effect_id)
+            .map(|existing| {
+                ensure_effect_replay(existing, &effect_request)?;
+                existing.confirmation.clone().ok_or_else(|| {
+                    provider_error(
+                        "swp_idempotency_conflict",
+                        "reserve-and-bind replay has no prior confirmation",
+                    )
+                })
+            })
+            .transpose()?;
+        let (confirmation, mut bound_profile) =
+            reserve_and_bind(&effect_request, existing_confirmation.as_ref(), mkt_swp).map_err(
+                |error| {
+                    provider_error(
+                        "swp_reservation_unconfirmed",
+                        format!("provider reserve-and-bind callback rejected capacity: {error}"),
+                    )
+                },
+            )?;
+        validate_reservation_confirmation(&reservation, &confirmation)?;
+        validate_quote_profile(&bound_profile, "none")?;
+        validate_quote_against_rfq(&rfq, &bound_profile, "firm", created_at, expiration)?;
+        let result_sha256 =
+            digest_value(&serde_json::to_value(&confirmation).map_err(|error| {
+                provider_error(
+                    "swp_reservation_confirmation_invalid",
+                    format!("could not encode reserve confirmation: {error}"),
+                )
+            })?)?;
+        let receipt = ProviderEffectReceipt {
+            effect_id: effect_request.effect_id.clone(),
+            request_sha256: effect_request.request_sha256.clone(),
+            external_reference: confirmation.proof_ref.clone(),
+            result_sha256,
+        };
+        let effect_record = ProviderEffectRecord {
+            request: effect_request.clone(),
+            receipt,
+            confirmation: Some(confirmation.clone()),
+        };
+        if let Some(existing) = self.effects.get(&effect_request.effect_id) {
+            ensure_effect_replay(existing, &effect_request)?;
+            if existing != &effect_record {
+                return Err(provider_error(
+                    "swp_idempotency_conflict",
+                    "reserve-and-bind replay changed its confirmation",
+                ));
+            }
+        } else {
+            validate_provider_collection_bounds(self.signed_records.len(), self.effects.len() + 1)?;
+            self.effects
+                .insert(effect_request.effect_id.clone(), effect_record);
+        }
+        self.reservation = Some(confirmation.clone());
+        insert_reservation_terms(&mut bound_profile, &confirmation)?;
+        validate_quote_profile(&bound_profile, "hard")?;
+        let request = hard_quote_request(
+            &self.config,
+            created_at,
+            distinct,
+            &rfq_id,
+            expiration,
+            bound_profile,
         )?;
         if let Some(existing) = self.hard_quote_request.as_ref() {
             if existing == &request {
@@ -3761,5 +3899,156 @@ pub mod fixture_replay {
 
     fn invalid(detail: &str) -> SwapClientError {
         provider_error("swp_provider_fixture_invalid", detail)
+    }
+
+    #[cfg(test)]
+    mod bound_reserve_tests {
+        use std::cell::Cell;
+
+        use super::*;
+
+        #[test]
+        fn bound_reserve_replay_preserves_exact_quote_bytes() {
+            let (_setup, mut provider, reservation) = reverse_hard_session();
+            let profile = complete_unreserved_quote_profile("reverse").expect("reverse profile");
+            let expected_funding = profile["terms"]["verifier_inputs"]
+                .as_array()
+                .and_then(|verifiers| {
+                    verifiers
+                        .iter()
+                        .find(|verifier| verifier["leg_id"] == "destination")
+                })
+                .and_then(|verifier| verifier["funding_transaction"].as_str())
+                .expect("fixture reverse funding transaction")
+                .to_owned();
+            let reserve_attempts = Cell::new(0);
+            let replay_confirmations = Cell::new(0);
+            let first = provider
+                .hard_quote_with_bound_reserve(
+                    101,
+                    &"34".repeat(32),
+                    200,
+                    reservation.clone(),
+                    profile.clone(),
+                    |request, existing_confirmation, profile| {
+                        assert!(existing_confirmation.is_none());
+                        reserve_attempts.set(reserve_attempts.get() + 1);
+                        Ok((confirmation(request), profile))
+                    },
+                )
+                .expect("first bound reserve");
+            let replay = provider
+                .hard_quote_with_bound_reserve(
+                    101,
+                    &"34".repeat(32),
+                    200,
+                    reservation,
+                    profile,
+                    |_request, existing_confirmation, profile| {
+                        let existing_confirmation = existing_confirmation
+                            .expect("replay must expose its durable confirmation");
+                        replay_confirmations.set(replay_confirmations.get() + 1);
+                        Ok((existing_confirmation.clone(), profile))
+                    },
+                )
+                .expect("exact bound reserve replay");
+
+            assert_eq!(reserve_attempts.get(), 1);
+            assert_eq!(replay_confirmations.get(), 1);
+            assert_eq!(first, replay);
+            let content: Value = serde_json::from_str(&first.content).expect("Quote content");
+            let committed = content["mkt_swp"]["terms"]["verifier_inputs"]
+                .as_array()
+                .and_then(|verifiers| {
+                    verifiers
+                        .iter()
+                        .find(|verifier| verifier["leg_id"] == "destination")
+                })
+                .and_then(|verifier| verifier["funding_transaction"].as_str())
+                .expect("bound reverse funding transaction");
+            assert_eq!(committed, expected_funding);
+        }
+
+        #[test]
+        fn bound_reserve_replay_rejects_confirmation_and_quote_conflicts() {
+            let (_setup, mut provider, reservation) = reverse_hard_session();
+            let profile = complete_unreserved_quote_profile("reverse").expect("reverse profile");
+            provider
+                .hard_quote_with_bound_reserve(
+                    101,
+                    &"35".repeat(32),
+                    200,
+                    reservation.clone(),
+                    profile.clone(),
+                    |request, existing_confirmation, profile| {
+                        assert!(existing_confirmation.is_none());
+                        Ok((confirmation(request), profile))
+                    },
+                )
+                .expect("first bound reserve");
+
+            let confirmation_conflict = provider
+                .hard_quote_with_bound_reserve(
+                    101,
+                    &"35".repeat(32),
+                    200,
+                    reservation.clone(),
+                    profile.clone(),
+                    |_request, existing_confirmation, profile| {
+                        let mut changed = existing_confirmation
+                            .expect("replay must expose its durable confirmation")
+                            .clone();
+                        changed.proof_ref = "fixture-node-view:changed".to_owned();
+                        Ok((changed, profile))
+                    },
+                )
+                .expect_err("changed confirmation must conflict");
+            assert_eq!(confirmation_conflict.code, "swp_idempotency_conflict");
+
+            let quote_conflict = provider
+                .hard_quote_with_bound_reserve(
+                    102,
+                    &"35".repeat(32),
+                    200,
+                    reservation,
+                    profile,
+                    |_request, existing_confirmation, profile| {
+                        let confirmation = existing_confirmation
+                            .expect("replay must expose its durable confirmation")
+                            .clone();
+                        Ok((confirmation, profile))
+                    },
+                )
+                .expect_err("changed Quote signing bytes must conflict");
+            assert_eq!(quote_conflict.code, "swp_idempotency_conflict");
+        }
+
+        fn reverse_hard_session() -> (Setup, ProviderSession, ReservationRequest) {
+            let setup = setup(0xa4).expect("setup");
+            let factory = SwapRecordFactory::new(setup.config.clone()).expect("factory");
+            let rfq = sign_private(
+                factory
+                    .rfq(
+                        100,
+                        &"31".repeat(32),
+                        300,
+                        complete_rfq_profile("reverse").expect("reverse RFQ profile"),
+                    )
+                    .expect("RFQ request"),
+                &setup.requester,
+            )
+            .expect("signed RFQ");
+            let mut provider = ProviderSession::new(setup.config.clone()).expect("provider");
+            provider.ingest_signed(rfq).expect("ingested RFQ");
+            let reservation = ReservationRequest {
+                reservation_id: "32".repeat(32),
+                capacity_bucket_id: "fixture-chain-capacity".to_owned(),
+                reserved_asset_id: "swp:1:bip122:00000000000000000000000000000000:btc:chain"
+                    .to_owned(),
+                reserved_amount: "890".to_owned(),
+                reservation_expires_at: 250,
+            };
+            (setup, provider, reservation)
+        }
     }
 }

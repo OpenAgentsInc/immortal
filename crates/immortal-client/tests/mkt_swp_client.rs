@@ -83,6 +83,32 @@ fn fixture_manifest_is_complete_and_unique() {
     assert_eq!(members.len(), tripwires.len());
 }
 
+#[test]
+fn custody_filter_rejects_normalized_secret_aliases_and_keeps_public_identifiers() {
+    for member in [
+        "unreleased_preimage",
+        "released-preimage",
+        "wallet_seed_hex",
+        "claim_spend_key",
+        "refund_private_key_bytes",
+        "admin_macaroon_hex",
+        "node_credentials",
+    ] {
+        let error = provider_support::reject_custody_material(&json!({member:"forbidden"}))
+            .expect_err(member);
+        assert_eq!(error.code, "swp_secret_material_forbidden", "{member}");
+    }
+    provider_support::reject_custody_material(&json!({
+        "payment_hash":"00".repeat(32),
+        "claim_public_key":"11".repeat(32),
+        "refund_public_key":"22".repeat(32),
+        "requester_public_keys":[],
+        "preimage_recovery_ref":"watchtower:public-reference",
+        "credential_exposure":"none"
+    }))
+    .expect("public protocol identifiers are not custody material");
+}
+
 #[cfg(feature = "mkt-swp-fixture-probe")]
 #[test]
 fn fixture_replay_rejects_expectation_and_nameset_drift() {
@@ -282,6 +308,58 @@ fn deterministic_record_factory_covers_all_private_base_records() {
         request.verify_signed(changed).unwrap_err().code,
         "swp_external_signature_mismatch"
     );
+}
+
+#[test]
+fn provider_lightning_paid_status_uses_completed_base_state() {
+    let fixture = fixture();
+    let setup = Setup::new(&fixture);
+    let factory = SwapRecordFactory::new(setup.config).unwrap();
+    let request = factory
+        .status(
+            ParticipantRole::Provider,
+            100,
+            &"06".repeat(32),
+            &"07".repeat(32),
+            StatusState {
+                sequence: 0,
+                previous: None,
+                base_state: "completed",
+                swp_state: "lightning_paid",
+            },
+            Default::default(),
+        )
+        .unwrap();
+    assert!(
+        request
+            .tags
+            .iter()
+            .any(|tag| { tag.name() == Some("state") && tag.value() == Some("completed") })
+    );
+}
+
+#[test]
+fn lightning_payment_pending_status_is_valid_for_either_funding_direction() {
+    let fixture = fixture();
+    let setup = Setup::new(&fixture);
+    let factory = SwapRecordFactory::new(setup.config).unwrap();
+    for role in [ParticipantRole::Requester, ParticipantRole::Provider] {
+        factory
+            .status(
+                role,
+                100,
+                &"08".repeat(32),
+                &"09".repeat(32),
+                StatusState {
+                    sequence: 0,
+                    previous: None,
+                    base_state: "executing",
+                    swp_state: "lightning_payment_pending",
+                },
+                Default::default(),
+            )
+            .expect("either Lightning payer can announce payment initiation");
+    }
 }
 
 #[test]
@@ -1049,6 +1127,99 @@ fn verification_refusals_cover_contract_rail_timeout_and_secret_boundaries() {
             .code,
         "swp_secret_material_forbidden"
     );
+}
+
+#[test]
+fn submarine_contract_resolves_only_the_requester_source_funding_transaction() {
+    let fixture = fixture();
+    let verification_fixture = verification_fixture();
+    let vector = &verification_fixture["quote_contract_funding_resolution"];
+    assert_eq!(
+        vector["allowed_additions"],
+        json!([
+            "funding_transaction",
+            "funding_transaction_sha256",
+            "output_index"
+        ])
+    );
+    let valid = try_build_session_with_options(
+        &fixture,
+        SwapType::Submarine,
+        BuildOptions {
+            funding_resolution: Some(FundingResolutionMutation::Valid),
+            ..BuildOptions::default()
+        },
+    )
+    .expect("requester source funding resolution");
+    let quote = valid
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == 39_605)
+        .expect("Quote");
+    let quote: Value = serde_json::from_str(&quote.content).expect("Quote JSON");
+    let quote_source = verifier_inputs_for(&quote["mkt_swp"]["terms"], "source");
+    for member in vector["allowed_additions"].as_array().expect("additions") {
+        assert!(
+            quote_source
+                .get(member.as_str().expect("addition name"))
+                .is_none(),
+            "Quote must leave the requester funding choice unresolved"
+        );
+    }
+    let contract = contract_document(&valid);
+    let contract_source = verifier_inputs_for(&contract, "source");
+    assert_eq!(
+        contract_source["funding_transaction"],
+        vector["funding_transaction"]
+    );
+    assert_eq!(
+        contract_source["funding_transaction_sha256"],
+        vector["funding_transaction_sha256"]
+    );
+    assert_eq!(contract_source["output_index"], vector["output_index"]);
+    assert_eq!(contract_source["amount"], vector["quoted_amount"]);
+    assert_eq!(
+        contract_source["script_pubkey"],
+        vector["quoted_script_pubkey"]
+    );
+    valid
+        .verify_before_fund(
+            verification_input(&fixture, SwapType::Submarine),
+            |_| Ok(()),
+        )
+        .expect("resolved contract remains fundable after local verification");
+
+    let mutation_names = vector["mutation_failures"]
+        .as_array()
+        .expect("mutation failures");
+    assert_eq!(mutation_names.len(), 8);
+    for mutation_name in mutation_names {
+        let mutation_name = mutation_name.as_str().expect("mutation name");
+        let mutation = FundingResolutionMutation::from_fixture_name(mutation_name);
+        let swap_type = if mutation == FundingResolutionMutation::WrongSwap {
+            SwapType::Reverse
+        } else {
+            SwapType::Submarine
+        };
+        let error = match try_build_session_with_options(
+            &fixture,
+            swap_type,
+            BuildOptions {
+                funding_resolution: Some(mutation),
+                ..BuildOptions::default()
+            },
+        ) {
+            Ok(session) => session
+                .verify_before_fund(verification_input(&fixture, swap_type), |_| Ok(()))
+                .expect_err(mutation_name),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.code,
+            vector["expected_error"].as_str().expect("error code"),
+            "{mutation_name}"
+        );
+    }
 }
 
 #[test]
@@ -2119,7 +2290,7 @@ fn terminal_close_requires_exact_persisted_rail_evidence_and_last_status() {
                     settlement_reference: request.reference.clone(),
                     verifier_pubkey: None,
                     producer_pubkey: Setup::new(&fixture).requester.pubkey().to_owned(),
-                    external_identifier: "funding-only".into(),
+                    external_identifier: request.reference.clone(),
                 })
             })
             .unwrap_err()
@@ -2137,7 +2308,7 @@ fn terminal_close_requires_exact_persisted_rail_evidence_and_last_status() {
                     settlement_reference: request.reference.clone(),
                     verifier_pubkey: None,
                     producer_pubkey: Setup::new(&fixture).requester.pubkey().to_owned(),
-                    external_identifier: "funding-only".into(),
+                    external_identifier: request.reference.clone(),
                 })
             })
             .unwrap_err()
@@ -2852,7 +3023,7 @@ fn terminal_close_session(fixture: &Value, outcome: &str) -> SwapSession<Awaitin
                     settlement_reference: if request.rail == "bitcoin" {
                         let transaction_id = format!("{:02x}", 176 + index).repeat(32);
                         if request.evidence_class == "bitcoin_spend" {
-                            format!("{transaction_id}:0")
+                            request.reference.clone()
                         } else {
                             transaction_id
                         }
@@ -3011,6 +3182,7 @@ struct BuildOptions<'a> {
     order_selection: Option<&'a Value>,
     contract_selection: Option<&'a Value>,
     null_funding_transaction_id: bool,
+    funding_resolution: Option<FundingResolutionMutation>,
 }
 
 impl Default for BuildOptions<'_> {
@@ -3024,6 +3196,36 @@ impl Default for BuildOptions<'_> {
             order_selection: None,
             contract_selection: None,
             null_funding_transaction_id: false,
+            funding_resolution: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FundingResolutionMutation {
+    Valid,
+    ExtraField,
+    WrongHash,
+    WrongIndex,
+    WrongScript,
+    WrongAmount,
+    WrongDigest,
+    WrongSwap,
+    WrongLeg,
+}
+
+impl FundingResolutionMutation {
+    fn from_fixture_name(name: &str) -> Self {
+        match name {
+            "extra_field" => Self::ExtraField,
+            "wrong_hash" => Self::WrongHash,
+            "wrong_index" => Self::WrongIndex,
+            "wrong_script" => Self::WrongScript,
+            "wrong_amount" => Self::WrongAmount,
+            "wrong_digest" => Self::WrongDigest,
+            "wrong_swap" => Self::WrongSwap,
+            "wrong_leg" => Self::WrongLeg,
+            _ => panic!("unknown funding-resolution mutation {name}"),
         }
     }
 }
@@ -3072,9 +3274,28 @@ fn build_session_with_options(
     swap_type: SwapType,
     options: BuildOptions<'_>,
 ) -> SwapSession<AwaitingVerification> {
+    try_build_session_with_options(fixture, swap_type, options).unwrap()
+}
+
+fn try_build_session_with_options(
+    fixture: &Value,
+    swap_type: SwapType,
+    options: BuildOptions<'_>,
+) -> Result<SwapSession<AwaitingVerification>, immortal_client::mkt_swp_client::SwapClientError> {
     let setup = Setup::new(fixture);
     let factory = SwapRecordFactory::new(setup.config.clone()).unwrap();
-    let terms = base_terms(fixture, swap_type);
+    let mut terms = base_terms(fixture, swap_type);
+    if options
+        .funding_resolution
+        .is_some_and(|mutation| mutation != FundingResolutionMutation::WrongLeg)
+    {
+        let leg_id = if swap_type == SwapType::Reverse {
+            "destination"
+        } else {
+            "source"
+        };
+        omit_quote_funding_resolution(&mut terms, leg_id);
+    }
     let rfq = signed(
         factory
             .rfq(
@@ -3170,6 +3391,9 @@ fn build_session_with_options(
         })
         .collect::<Vec<_>>();
     let mut contract = base_terms(fixture, swap_type);
+    if let Some(mutation) = options.funding_resolution {
+        mutate_contract_funding_resolution(&mut contract, mutation);
+    }
     let object = contract.as_object_mut().unwrap();
     if let Some(selection) = options.contract_selection {
         object.insert("order_selection".into(), selection.clone());
@@ -3325,7 +3549,6 @@ fn build_session_with_options(
         vec![rfq, quote, order, requester_contract, provider_contract],
         exit_packages,
     )
-    .unwrap()
 }
 
 fn base_terms(fixture: &Value, swap_type: SwapType) -> Value {
@@ -3490,6 +3713,135 @@ fn base_terms(fixture: &Value, swap_type: SwapType) -> Value {
         "price_feed":null,
         "evm_leg":null
     })
+}
+
+fn omit_quote_funding_resolution(terms: &mut Value, leg_id: &str) {
+    let verifier = terms["verifier_inputs"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|verifier| verifier["leg_id"] == leg_id)
+        .unwrap()
+        .as_object_mut()
+        .unwrap();
+    for member in [
+        "funding_transaction",
+        "funding_transaction_sha256",
+        "output_index",
+    ] {
+        verifier.remove(member).unwrap();
+    }
+    refresh_leg_verifier_digest(terms, leg_id);
+}
+
+fn mutate_contract_funding_resolution(contract: &mut Value, mutation: FundingResolutionMutation) {
+    let verification_fixture = verification_fixture();
+    let vector = &verification_fixture["quote_contract_funding_resolution"];
+    let leg_id = if mutation == FundingResolutionMutation::WrongLeg {
+        "lightning"
+    } else if mutation == FundingResolutionMutation::WrongSwap {
+        "destination"
+    } else {
+        "source"
+    };
+    if mutation == FundingResolutionMutation::WrongLeg {
+        let verifier = contract["verifier_inputs"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|verifier| verifier["leg_id"] == leg_id)
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        for member in [
+            "funding_transaction",
+            "funding_transaction_sha256",
+            "output_index",
+        ] {
+            verifier.insert(member.to_owned(), vector[member].clone());
+        }
+        refresh_leg_verifier_digest(contract, leg_id);
+        return;
+    }
+    if matches!(
+        mutation,
+        FundingResolutionMutation::Valid | FundingResolutionMutation::WrongSwap
+    ) {
+        return;
+    }
+    let verifier = contract["verifier_inputs"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|verifier| verifier["leg_id"] == leg_id)
+        .unwrap()
+        .as_object_mut()
+        .unwrap();
+    match mutation {
+        FundingResolutionMutation::ExtraField => {
+            verifier.insert("unexpected_resolution_field".to_owned(), json!(true));
+        }
+        FundingResolutionMutation::WrongHash => {
+            verifier.insert(
+                "funding_transaction_sha256".to_owned(),
+                json!("ff".repeat(32)),
+            );
+        }
+        FundingResolutionMutation::WrongIndex => {
+            verifier.insert("output_index".to_owned(), json!(1));
+        }
+        FundingResolutionMutation::WrongScript => {
+            verifier.insert(
+                "funding_transaction".to_owned(),
+                vector["wrong_script_transaction"].clone(),
+            );
+            verifier.insert(
+                "funding_transaction_sha256".to_owned(),
+                vector["wrong_script_transaction_sha256"].clone(),
+            );
+        }
+        FundingResolutionMutation::WrongAmount => {
+            verifier.insert(
+                "funding_transaction".to_owned(),
+                vector["wrong_amount_transaction"].clone(),
+            );
+            verifier.insert(
+                "funding_transaction_sha256".to_owned(),
+                vector["wrong_amount_transaction_sha256"].clone(),
+            );
+        }
+        FundingResolutionMutation::WrongDigest => {
+            let leg = contract["legs"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|leg| leg["leg_id"] == leg_id)
+                .unwrap();
+            leg["verifier_digest"] = json!("ff".repeat(32));
+            return;
+        }
+        FundingResolutionMutation::Valid
+        | FundingResolutionMutation::WrongSwap
+        | FundingResolutionMutation::WrongLeg => unreachable!(),
+    }
+    refresh_leg_verifier_digest(contract, leg_id);
+}
+
+fn refresh_leg_verifier_digest(terms: &mut Value, leg_id: &str) {
+    let verifier = terms["verifier_inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|verifier| verifier["leg_id"] == leg_id)
+        .unwrap();
+    let digest = lower_hex(&sha256(&canonical_json_test(verifier)));
+    let leg = terms["legs"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|leg| leg["leg_id"] == leg_id)
+        .unwrap();
+    leg["verifier_digest"] = json!(digest);
 }
 
 fn provider_quote_profile(fixture: &Value, reservation_expires_at: u64) -> Value {
@@ -4281,6 +4633,13 @@ fn tag_value_test<'a>(event: &'a immortal_client::domain::Event, name: &str) -> 
 fn fixture() -> Value {
     serde_json::from_str(include_str!(
         "../../../tests/fixtures/nipmkt/swp-client-engine-v1.json"
+    ))
+    .unwrap()
+}
+
+fn verification_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nipmkt/swp-verification.json"
     ))
     .unwrap()
 }

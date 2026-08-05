@@ -22,12 +22,15 @@ The products:
   transport, and the optional no-spend swap coordination handler. It
   never holds funds, spend keys, or unreleased preimages.
 - **The provider daemon** (`immortal-provider`): the runnable
-  liquidity-provider daemon for the swap network. Its no-spend mode publishes
-  Offerings, receives RFQs, signs complete Quotes and bilateral contracts,
-  persists recovery history, and closes mutually cancelled sessions without
-  funding. Issue #25 adds settlement against the operator's bitcoind and
-  Lightning node. That funded mode holds the operator's money and remains a
-  different program run by a different party than the relay.
+  liquidity-provider daemon for the swap network. Its no-spend mode rehearses
+  complete sessions without rail effects. Funded mode reserves operator-owned
+  Bitcoin and Lightning capacity, drives bitcoind and Core Lightning, and
+  executes script-path claim/refund recovery. Reverse Quotes bind the exact
+  reserve-selected funding transaction before either contract is signed;
+  signed action deadlines, durable competing-path watches, and signer-local
+  terminal Close records bound the resulting execution. That mode holds the
+  operator's money and remains a different program run by a different party
+  than the relay.
 - **The client engine** (library): the verify-before-fund swap engine
   wallets embed, and the source of the generated TypeScript SDK.
 
@@ -35,8 +38,8 @@ The virtual Cargo workspace makes those roles explicit:
 `crates/immortal-core` owns shared pure primitives,
 `crates/immortal-client` owns wallet-embedded client engines,
 `crates/immortal-relay` builds the existing `immortal` binary, and
-`crates/immortal-provider` owns the provider session engine and no-spend
-daemon; the funded rail executors land in the next provider packet.
+`crates/immortal-provider` owns the provider session engine, no-spend mode,
+funded rail executors, wallet boundary, provider database, and watchtower.
 
 The expansion from single relay to this monorepo is a recorded owner
 decision with a full migration analysis: see
@@ -129,6 +132,13 @@ reservation timeouts, Status gaps/forks, and public observation-not-authority
 evidence. The executable-profile set remains empty. See `docs/ROADMAP.md`,
 `docs/conformance/`, and `docs/deployment/`.
 
+The funded-provider #25 implementation is still under its final local
+acceptance gate. Its production-helper runtime fixture, deterministic provider
+contract, and client verify-before-fund/`ExitPackage`/terminal-Close harness
+are present, but the disposable three-journey bitcoind/CLN funded smoke remains
+pending. No live-funded or deployment-conformance claim follows until that
+command passes.
+
 The current feature list is a deployment snapshot, not Immortal's scope
 ceiling. The immediate protocol-totality program targets **every specification
 currently pinned in all three lanes** under `nips/`: official, Block, and
@@ -211,6 +221,15 @@ through Close between two throwaway actors, and
 `scripts/test-dev-market-provider.sh` proves the separate no-spend provider
 through restart and all three swap shapes. See the
 [`local development runbook`](docs/deployment/runbook-local-dev.md).
+`scripts/test-provider-funded.sh` is the separate manual regtest gate for the
+normal funded daemon: Bitcoin Core, two Core Lightning nodes, the hold plugin,
+separate product databases, and submarine, reverse, and noncooperative refund
+journeys. Its topology and public evidence contract are documented in
+[`provider-funded-smoke.md`](docs/conformance/provider-funded-smoke.md).
+Operators should follow the
+[`immortal-provider` Debian runbook](docs/deployment/runbook-provider-debian.md)
+for its separate database, wallet file, bitcoind, CLN hold plugin, health,
+backup, and upgrade boundaries.
 
 ## Quick start
 

@@ -71,9 +71,18 @@ names the NIP that owns the behavior.
   settlement cases that Immortal deliberately does not claim to enforce.
 - `nipmkt/swp-verification.json` pins the MKT-SWP client/handler verification
   foundation to primary BIP-341, BIP-327, and BOLT-11 vectors plus bounded
-  transaction, preimage, and timelock cases. The module verifies public
-  artifacts only and never accepts wallet keys, preimages for storage, node
-  credentials, or broadcast authority.
+  transaction, preimage, and timelock cases. It also fixes the one permitted
+  post-Order Quote-to-Contract resolution: a submarine requester adds the
+  exact source funding transaction, digest, and output index while every
+  quoted script, amount, other verifier, and other leg byte stays frozen. The
+  module verifies public artifacts only and never accepts wallet keys,
+  preimages for storage, node credentials, or broadcast authority.
+- `provider/settlement-construction-v1.json` is a synthetic public provider
+  authoring vector, not operator custody material. It binds the pinned
+  BIP-341/342 and BOLT-11/payment-hash source boundary and fixes claim/refund
+  unsigned bytes, signature messages, sighashes, deterministic signatures,
+  witnesses, signed bytes, transaction IDs, fees, weights, and virtual sizes.
+  The provider contract exports its exact digest.
 - `nipmkt/swp-profile-v1.json` pins the relay-observable MKT-SWP v1 adoption
   at OpenAgents commit `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`:
   Offering grammar, kind-39610 profile binding and immutable wrapped

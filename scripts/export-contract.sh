@@ -38,9 +38,12 @@ for path in sorted(fixture_root.rglob("*.json"), key=lambda item: item.relative_
         relative = resolved.relative_to(root).as_posix()
     except ValueError as error:
         raise SystemExit(f"fixture escapes repository root: {path}") from error
+    if relative.startswith("tests/fixtures/provider/"):
+        continue
     data = path.read_bytes()
     if (
         relative.endswith("nipmkt/swp-provider-engine-v1.json")
+        or relative.endswith("nipmkt/swp-pricing-v1.json")
     ):
         scope = "provider"
     elif (

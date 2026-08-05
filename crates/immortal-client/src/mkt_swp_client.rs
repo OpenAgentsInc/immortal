@@ -2521,6 +2521,23 @@ impl<State> SwapSession<State> {
                 "local rail evidence view or identifier is unbounded",
             ));
         }
+        if observation_request.evidence_class == "bitcoin_spend" {
+            let verifier = verifier_for_leg(object(&bound.contract, "Swap Contract")?, leg_id)?;
+            let funding_artifact = require_string(
+                verifier,
+                "funding_transaction_sha256",
+                None,
+                "swp_unresolved_loss",
+            )?;
+            if observation.artifact_sha256 == funding_artifact
+                || observation.external_identifier == observation_request.reference
+            {
+                return Err(SwapClientError::new(
+                    "swp_external_effect_conflict",
+                    "Bitcoin spend evidence reuses only the funding artifact identity",
+                ));
+            }
+        }
         let view_sha256 = lower_hex(&sha256(observation.view.as_bytes()));
         let effect_id = effect_id(
             &bound.order.id,
@@ -3409,9 +3426,7 @@ impl<'a> BoundSession<'a> {
             "script_mode",
             "desired_completion_time",
             "clock_skew_seconds",
-            "legs",
             "timeout_ladder",
-            "verifier_inputs",
             "cancellation",
             "evidence_requirements",
             "recovery",
@@ -3425,6 +3440,7 @@ impl<'a> BoundSession<'a> {
                 ));
             }
         }
+        verify_quote_contract_execution_resolution(terms, contract)?;
         if !matches!(terms.get("price_feed"), None | Some(Value::Null)) {
             return Err(SwapClientError::new(
                 "swp_contract_terms_mismatch",
@@ -3679,6 +3695,210 @@ impl<'a> BoundSession<'a> {
     fn contract_ids(&self) -> [&str; 2] {
         [&self.requester_contract.id, &self.provider_contract.id]
     }
+}
+
+fn verify_quote_contract_execution_resolution(
+    quote: &Map<String, Value>,
+    contract: &Map<String, Value>,
+) -> Result<(), SwapClientError> {
+    if quote.get("legs") == contract.get("legs")
+        && quote.get("verifier_inputs") == contract.get("verifier_inputs")
+    {
+        return Ok(());
+    }
+    let mismatch = |detail| SwapClientError::new("swp_contract_terms_mismatch", detail);
+    if quote.get("swap_type").and_then(Value::as_str) != Some("submarine") {
+        return Err(mismatch(
+            "only a submarine requester-funded source leg may resolve funding after Order",
+        ));
+    }
+    let quote_verifiers = quote
+        .get("verifier_inputs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| mismatch("Quote verifier inputs are invalid"))?;
+    let contract_verifiers = contract
+        .get("verifier_inputs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| mismatch("Swap Contract verifier inputs are invalid"))?;
+    let quote_legs = quote
+        .get("legs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| mismatch("Quote legs are invalid"))?;
+    let contract_legs = contract
+        .get("legs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| mismatch("Swap Contract legs are invalid"))?;
+    if quote_verifiers.len() != contract_verifiers.len() || quote_legs.len() != contract_legs.len()
+    {
+        return Err(mismatch(
+            "Swap Contract changes the Quote leg or verifier count",
+        ));
+    }
+    let unique_index = |values: &[Value], label: &str| {
+        let indexes = values
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| {
+                (value.get("leg_id").and_then(Value::as_str) == Some("source")).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let [index] = indexes.as_slice() else {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                format!("{label} requires exactly one source leg binding"),
+            ));
+        };
+        Ok(*index)
+    };
+    let quote_verifier_index = unique_index(quote_verifiers, "Quote verifier inputs")?;
+    let contract_verifier_index =
+        unique_index(contract_verifiers, "Swap Contract verifier inputs")?;
+    let quote_leg_index = unique_index(quote_legs, "Quote legs")?;
+    let contract_leg_index = unique_index(contract_legs, "Swap Contract legs")?;
+    if quote_verifier_index != contract_verifier_index || quote_leg_index != contract_leg_index {
+        return Err(mismatch(
+            "Swap Contract reorders the requester-funded source binding",
+        ));
+    }
+    let quote_verifier = object(
+        &quote_verifiers[quote_verifier_index],
+        "Quote source verifier",
+    )?;
+    let contract_verifier = object(
+        &contract_verifiers[contract_verifier_index],
+        "Swap Contract source verifier",
+    )?;
+    let quote_leg = object(&quote_legs[quote_leg_index], "Quote source leg")?;
+    let contract_leg = object(
+        &contract_legs[contract_leg_index],
+        "Swap Contract source leg",
+    )?;
+    if quote_leg.get("rail").and_then(Value::as_str) != Some("bitcoin")
+        || quote_leg.get("funding_role").and_then(Value::as_str) != Some("requester")
+        || quote_leg.get("receiving_role").and_then(Value::as_str) != Some("provider")
+        || quote_verifier
+            .get("verifier_policy")
+            .and_then(Value::as_str)
+            != Some("mkt-swp-bitcoin-v1")
+    {
+        return Err(mismatch(
+            "post-Order funding resolution belongs only to the submarine requester source lock",
+        ));
+    }
+    const RESOLVED_MEMBERS: [&str; 3] = [
+        "funding_transaction",
+        "funding_transaction_sha256",
+        "output_index",
+    ];
+    if RESOLVED_MEMBERS
+        .iter()
+        .any(|member| quote_verifier.contains_key(*member))
+    {
+        return Err(mismatch(
+            "a Quote funding resolution must add fields that were previously absent",
+        ));
+    }
+    let mut unresolved_contract_verifier = contract_verifier.clone();
+    for member in RESOLVED_MEMBERS {
+        if unresolved_contract_verifier.remove(member).is_none() {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                format!("Swap Contract funding resolution omits {member}"),
+            ));
+        }
+    }
+    if &unresolved_contract_verifier != quote_verifier {
+        return Err(mismatch(
+            "Swap Contract changes source verifier bytes outside the funding resolution",
+        ));
+    }
+    let mut normalized_verifiers = contract_verifiers.clone();
+    normalized_verifiers[contract_verifier_index] = Value::Object(quote_verifier.clone());
+    if &normalized_verifiers != quote_verifiers {
+        return Err(mismatch(
+            "Swap Contract changes a verifier outside the requester source resolution",
+        ));
+    }
+    let mut normalized_legs = contract_legs.clone();
+    let normalized_leg = normalized_legs
+        .get_mut(contract_leg_index)
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| mismatch("Swap Contract source leg is invalid"))?;
+    normalized_leg.insert(
+        "verifier_digest".to_owned(),
+        quote_leg
+            .get("verifier_digest")
+            .cloned()
+            .ok_or_else(|| mismatch("Quote source leg omits its verifier digest"))?,
+    );
+    if &normalized_legs != quote_legs {
+        return Err(mismatch(
+            "Swap Contract changes source leg bytes outside the resolved verifier digest",
+        ));
+    }
+    let raw_transaction = require_string(
+        contract_verifier,
+        "funding_transaction",
+        None,
+        "swp_contract_terms_mismatch",
+    )?;
+    let raw = decode_hex(raw_transaction, "resolved funding transaction")?;
+    let declared_sha256 = require_string(
+        contract_verifier,
+        "funding_transaction_sha256",
+        None,
+        "swp_contract_terms_mismatch",
+    )?;
+    require_lower_hex_32(declared_sha256, "resolved funding transaction digest")?;
+    if lower_hex(&sha256(&raw)) != declared_sha256 {
+        return Err(mismatch(
+            "resolved funding transaction digest does not match its exact bytes",
+        ));
+    }
+    let transaction = Transaction::parse(&raw).map_err(|error| {
+        SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            format!("resolved funding transaction is invalid: {error}"),
+        )
+    })?;
+    let output_index = required_u32(contract_verifier, "output_index")?;
+    let output =
+        transaction
+            .outputs
+            .get(usize::try_from(output_index).map_err(|_| {
+                mismatch("resolved funding output index exceeds the local platform")
+            })?)
+            .ok_or_else(|| mismatch("resolved funding output index does not exist"))?;
+    let quoted_amount = canonical_amount(require_string(
+        quote_verifier,
+        "amount",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let quoted_script = decode_hex(
+        require_string(
+            quote_verifier,
+            "script_pubkey",
+            None,
+            "swp_contract_terms_mismatch",
+        )?,
+        "quoted source scriptPubKey",
+    )?;
+    if output.value_sat != quoted_amount || output.script_pubkey != quoted_script {
+        return Err(mismatch(
+            "resolved funding output does not pay the quoted source amount and scriptPubKey",
+        ));
+    }
+    let verifier_digest = lower_hex(&sha256(&canonical_json(&Value::Object(
+        contract_verifier.clone(),
+    ))?));
+    if contract_leg.get("verifier_digest").and_then(Value::as_str) != Some(verifier_digest.as_str())
+    {
+        return Err(mismatch(
+            "resolved source leg does not bind the canonical verifier digest",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4842,9 +5062,20 @@ fn validate_quote_against_rfq(
             })
         })
         .and_then(|verifier| verifier.get("invoice_sha256"));
-    let invoice_matches = match expected_invoice {
-        Some(invoice) => constraints.get("invoice_sha256") == Some(invoice),
-        None => matches!(constraints.get("invoice_sha256"), Some(Value::Null)),
+    let invoice_matches = match constraints.get("swap_type").and_then(Value::as_str) {
+        Some("submarine") => {
+            expected_invoice.is_some() && constraints.get("invoice_sha256") == expected_invoice
+        }
+        Some("reverse") => {
+            expected_invoice.is_some()
+                && (matches!(constraints.get("invoice_sha256"), None | Some(Value::Null))
+                    || constraints.get("invoice_sha256") == expected_invoice)
+        }
+        Some("chain") => match expected_invoice {
+            Some(invoice) => constraints.get("invoice_sha256") == Some(invoice),
+            None => matches!(constraints.get("invoice_sha256"), None | Some(Value::Null)),
+        },
+        _ => false,
     };
     let requester_public_keys = requester_public_keys_from_terms(terms)?;
     if !amount_allowed
@@ -4884,7 +5115,9 @@ fn validate_quote_against_rfq(
             )
         })?
         .iter()
-        .filter(|verifier| verifier.get("funding_transaction_sha256").is_some());
+        .filter(|verifier| {
+            verifier.get("verifier_policy").and_then(Value::as_str) == Some("mkt-swp-bitcoin-v1")
+        });
     for verifier in bitcoin_verifiers {
         if verifier.get("minimum_confirmations") != quoted_confirmation.get("minimum_confirmations")
             || verifier.get("replacement_policy") != quoted_confirmation.get("replacement")
@@ -6481,7 +6714,9 @@ fn validate_rail_evidence_request(
     if request.reference.is_empty()
         || request.reference.len() > 512
         || request.reference.chars().any(char::is_control)
-        || (request.rail == "bitcoin" && request.reference == request.source_reference)
+        || (request.rail == "bitcoin"
+            && request.evidence_class != "bitcoin_spend"
+            && request.reference == request.source_reference)
     {
         return Err(SwapClientError::new(
             "swp_external_effect_conflict",
@@ -9119,7 +9354,8 @@ fn transition_rank(swap_type: SwapType, state: &str) -> Option<u16> {
 fn state_allowed_for_role(role: ParticipantRole, state: &str) -> bool {
     if matches!(
         state,
-        "funding_observed"
+        "lightning_payment_pending"
+            | "funding_observed"
             | "funding_final"
             | "source_funding_observed"
             | "source_funding_final"
@@ -9162,7 +9398,6 @@ fn state_allowed_for_role(role: ParticipantRole, state: &str) -> bool {
         "provider_lock_terms_ready",
         "source_lock_terms_ready",
         "destination_lock_terms_ready",
-        "lightning_payment_pending",
         "lightning_htlcs_held",
         "lightning_settlement_pending",
         "lightning_paid",
@@ -9212,7 +9447,7 @@ fn base_state_for(state: &str) -> Option<&'static str> {
         || state.ends_with("claimed")
     {
         Some("executing")
-    } else if state == "completed" {
+    } else if matches!(state, "completed" | "lightning_paid") {
         Some("completed")
     } else if state == "cancelled" {
         Some("cancelled")
@@ -9320,39 +9555,43 @@ pub(crate) fn reject_custody_material(value: &Value) -> Result<(), SwapClientErr
                     .filter(|character| character.is_ascii_alphanumeric())
                     .flat_map(char::to_lowercase)
                     .collect::<String>();
-                if matches!(
+                let public_protocol_member = matches!(
                     normalized.as_str(),
-                    "seed"
-                        | "walletseed"
-                        | "mnemonic"
-                        | "xprv"
-                        | "privatekey"
-                        | "claimprivatekey"
-                        | "claimkey"
-                        | "claimsecret"
-                        | "refundprivatekey"
-                        | "refundkey"
-                        | "refundsecret"
-                        | "preimage"
-                        | "invoicepreimage"
-                        | "paymentpreimage"
-                        | "macaroon"
-                        | "lndmacaroon"
-                        | "adminmacaroon"
-                        | "invoicemacaroon"
-                        | "nwc"
-                        | "nwcstring"
-                        | "nwcconnectionstring"
-                        | "nwcuri"
-                        | "bearertoken"
-                        | "walletcredential"
-                        | "walletrpcpayload"
-                        | "musigsecretnonce"
-                        | "privkey"
-                        | "secretkey"
-                        | "secretnonce"
-                        | "signingnonce"
-                ) {
+                    "preimagerecoveryref" | "credentialexposure"
+                );
+                let contains_custody_name = !public_protocol_member
+                    && [
+                        "seed",
+                        "preimage",
+                        "privatekey",
+                        "spendkey",
+                        "claimkey",
+                        "refundkey",
+                        "macaroon",
+                        "credential",
+                    ]
+                    .iter()
+                    .any(|forbidden| normalized.contains(forbidden));
+                if contains_custody_name
+                    || matches!(
+                        normalized.as_str(),
+                        "mnemonic"
+                            | "xprv"
+                            | "claimsecret"
+                            | "refundsecret"
+                            | "nwc"
+                            | "nwcstring"
+                            | "nwcconnectionstring"
+                            | "nwcuri"
+                            | "bearertoken"
+                            | "walletrpcpayload"
+                            | "musigsecretnonce"
+                            | "privkey"
+                            | "secretkey"
+                            | "secretnonce"
+                            | "signingnonce"
+                    )
+                {
                     return Err(SwapClientError::new(
                         "swp_secret_material_forbidden",
                         format!("forbidden custody member {name:?}"),

@@ -167,9 +167,9 @@ claim needs:
 - **At least two operator-independent relays.** One Immortal deployment
   is useful infrastructure, not decentralization. Clients select relay
   sets (NIP-65); the coordination handler is per-relay and optional.
-- **At least two independently keyed providers**, each embedding the
-  provider library with its own nodes and funds. This is the acceptance
-  criterion written into the migration issue
+- **At least two independently operated and keyed provider daemons**, each
+  running `immortal-provider` with its own nodes and funds. This is the
+  acceptance criterion written into the migration issue
   ([#19](https://github.com/OpenAgentsInc/immortal/issues/19)).
 - **A client surface** people can actually use: the SDK plus at least
   one wallet/web integration.

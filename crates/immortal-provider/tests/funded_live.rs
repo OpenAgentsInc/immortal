@@ -1,0 +1,2532 @@
+use std::{
+    fs::{File, OpenOptions},
+    io::{Read, Write},
+    net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
+    os::unix::fs::OpenOptionsExt,
+    path::{Path, PathBuf},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+use immortal_client::mkt_swp_client::{
+    AwaitingVerification, ExitPackage, ExternalEffectRequest, ExternalEffectResult, FundingAction,
+    FundingAuthorized, FundingVerificationInput, InvoiceVerificationInput, LightningReadinessState,
+    LocalLightningReadiness, LocalRailEvidence, ParticipantRole, RailObservationRequest,
+    StatusState, SwapClientConfig, SwapContractReferences, SwapRecordFactory, SwapSession,
+    VerifyBeforeFundInput, provider_support,
+};
+use immortal_core::{
+    domain::{
+        Event, MKT_CLOSE_KIND, MKT_QUOTE_KIND, MKT_STATUS_KIND, MKT_SWP_PROFILE_ID,
+        MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND, MktProfileSupport, Tag,
+        validate_mkt_public_event,
+    },
+    market::{MarketSigner, WrapMaterial, unwrap_mkt_record, wrap_mkt_record},
+    mkt_swp_verify::{Transaction, TransactionInput, TransactionOutput, sha256},
+};
+use immortal_provider::{
+    bitcoind::{BitcoindAuth, BitcoindClient, BitcoindEndpoint, BitcoindLimits, RpcRequestId},
+    cln::{ClnClient, ClnEndpoint, ClnLimits, ClnRequestId, Millisatoshi, PaymentResult},
+    funding::{FundingInput, FundingRequest, SignedFundingTransaction, build_funding_transaction},
+    settlement::{ClaimPreimage, SettlementBridge, SettlementTemplate},
+    wallet::{BitcoinNetwork, ProviderWallet, WalletPath},
+};
+use serde_json::{Map, Value, json};
+use tokio::{runtime::Runtime, task::JoinHandle};
+use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message, WebSocket, client};
+
+const OFFERING_ID: &str = "immortal-funded-btc-lightning";
+const INPUT_AMOUNT_SAT: u64 = 100_000;
+const OUTPUT_AMOUNT_SAT: u64 = 98_400;
+const NETWORK_ID: &str = "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4";
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
+const JOURNEY_TIMEOUT: Duration = Duration::from_secs(180);
+const FULL_SESSION_FIXTURES: &str =
+    include_str!("../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json");
+
+type RelaySocket = WebSocket<TcpStream>;
+
+struct RelayClient {
+    websocket: RelaySocket,
+    challenge: String,
+}
+
+struct SmokeEnvironment {
+    relay_url: String,
+    health_url: String,
+    evidence_file: PathBuf,
+    requester: MarketSigner,
+    wallet: ProviderWallet,
+    bitcoind: BitcoindClient,
+    peer_cln: ClnClient,
+    terminal_confirmations: u64,
+}
+
+struct SessionContext {
+    reader: RelayClient,
+    publisher: RelayClient,
+    requester: MarketSigner,
+    provider_pubkey: String,
+    factory: SwapRecordFactory,
+    verifier: SwapSession<AwaitingVerification>,
+    order: Event,
+    contract: Value,
+    authorized_verifier: Option<SwapSession<FundingAuthorized>>,
+    requester_funding: Option<SignedFundingTransaction>,
+    requester_status: Option<(u64, String)>,
+}
+
+#[derive(Clone, Copy)]
+enum LightningTerminalCheck<'a> {
+    IncomingInvoice {
+        payment_hash: &'a str,
+    },
+    OutgoingPayment {
+        invoice: &'a str,
+        payment_hash: &'a str,
+        expected_status: &'static str,
+    },
+}
+
+struct TerminalRailCheck<'a> {
+    runtime: &'a Runtime,
+    environment: &'a SmokeEnvironment,
+    bitcoin_settlement_txid: &'a str,
+    lightning: LightningTerminalCheck<'a>,
+}
+
+#[derive(Clone, Copy)]
+struct NegotiationInput<'a> {
+    journey_name: &'a str,
+    swap_type: &'a str,
+    payment_hash: &'a str,
+    invoice: Option<&'a str>,
+    requester_key: [u8; 32],
+    requester_funding_input: Option<&'a FundingInput>,
+    exit_destination_script_pubkey: &'a [u8],
+}
+
+#[test]
+#[ignore = "requires the disposable funded regtest lab; run scripts/test-provider-funded.sh"]
+fn funded_provider_completes_submarine_reverse_and_refund() {
+    run_funded_smoke().expect("funded provider live smoke failed");
+}
+
+#[test]
+fn terminal_bitcoin_contract_reads_a_bounded_numeric_output_index() {
+    let numeric = Map::from_iter([("output_index".to_owned(), json!(7))]);
+    let string = Map::from_iter([("output_index".to_owned(), json!("7"))]);
+    let overflow = Map::from_iter([("output_index".to_owned(), json!(u64::from(u32::MAX) + 1))]);
+    assert_eq!(bounded_u32_member(&numeric, "output_index"), Ok(7));
+    assert!(bounded_u32_member(&string, "output_index").is_err());
+    assert!(bounded_u32_member(&overflow, "output_index").is_err());
+}
+
+fn run_funded_smoke() -> Result<(), String> {
+    let runtime =
+        Runtime::new().map_err(|error| format!("could not start smoke runtime: {error}"))?;
+    let environment = SmokeEnvironment::load()?;
+    verify_health(&environment.health_url)?;
+    let provider_pubkey = discover_provider(
+        &environment.relay_url,
+        &environment.requester,
+        JOURNEY_TIMEOUT,
+    )?;
+    let client_input = fund_client_wallet(&runtime, &environment)?;
+    let submarine = drive_submarine(&runtime, &environment, &provider_pubkey, client_input)?;
+    let reverse = drive_reverse(&runtime, &environment, &provider_pubkey, "reverse", false)?;
+    let reverse_refund = drive_reverse(
+        &runtime,
+        &environment,
+        &provider_pubkey,
+        "reverse_refund",
+        true,
+    )?;
+    verify_health(&environment.health_url)?;
+    write_evidence(
+        &environment.evidence_file,
+        &provider_pubkey,
+        submarine,
+        reverse,
+        reverse_refund,
+    )
+}
+
+impl SmokeEnvironment {
+    fn load() -> Result<Self, String> {
+        let relay_url = required_environment("IMMORTAL_PROVIDER_FUNDED_SMOKE_RELAY_URL")?;
+        let health_url =
+            required_environment("IMMORTAL_PROVIDER_FUNDED_SMOKE_PROVIDER_HEALTH_URL")?;
+        let evidence_file = PathBuf::from(required_environment(
+            "IMMORTAL_PROVIDER_FUNDED_SMOKE_EVIDENCE_FILE",
+        )?);
+        let mut requester_secret = decode_lower_hex_32(&required_environment(
+            "IMMORTAL_PROVIDER_FUNDED_SMOKE_CLIENT_IDENTITY_SECRET",
+        )?)?;
+        let requester = MarketSigner::from_secret_bytes(requester_secret)
+            .map_err(|error| format!("client identity key is invalid: {error}"));
+        requester_secret.fill(0);
+        let requester = requester?;
+        let wallet = ProviderWallet::load(
+            required_environment("IMMORTAL_PROVIDER_FUNDED_SMOKE_CLIENT_WALLET_SEED_FILE")?,
+            BitcoinNetwork::Regtest,
+        )
+        .map_err(|error| format!("could not load client smoke wallet: {error}"))?;
+        let port = required_environment("IMMORTAL_PROVIDER_FUNDED_SMOKE_BITCOIND_PORT")?
+            .parse::<u16>()
+            .map_err(|_| "smoke bitcoind port is invalid".to_owned())?;
+        let endpoint = BitcoindEndpoint::new(
+            required_environment("IMMORTAL_PROVIDER_FUNDED_SMOKE_BITCOIND_HOST")?,
+            port,
+        )
+        .map_err(|error| format!("smoke bitcoind endpoint is invalid: {error}"))?;
+        let auth = BitcoindAuth::new(
+            required_environment("IMMORTAL_PROVIDER_FUNDED_SMOKE_BITCOIND_RPC_USER")?,
+            required_environment("IMMORTAL_PROVIDER_FUNDED_SMOKE_BITCOIND_RPC_PASSWORD")?,
+        )
+        .map_err(|error| format!("smoke bitcoind credentials are invalid: {error}"))?;
+        let bitcoind = BitcoindClient::new(endpoint, auth, BitcoindLimits::default())
+            .map_err(|error| format!("could not initialize smoke bitcoind client: {error}"))?;
+        let peer_cln = ClnClient::new(
+            ClnEndpoint::new(required_environment(
+                "IMMORTAL_PROVIDER_FUNDED_SMOKE_CLN_RPC_PATH",
+            )?)
+            .map_err(|error| format!("smoke CLN endpoint is invalid: {error}"))?,
+            ClnLimits {
+                io_timeout: JOURNEY_TIMEOUT,
+                ..ClnLimits::default()
+            },
+        )
+        .map_err(|error| format!("could not initialize smoke CLN client: {error}"))?;
+        let terminal_confirmations =
+            required_environment("IMMORTAL_PROVIDER_FUNDED_SMOKE_TERMINAL_CONFIRMATIONS")?
+                .parse::<u64>()
+                .map_err(|_| "smoke terminal confirmation count is invalid".to_owned())?;
+        if !(1..=288).contains(&terminal_confirmations) {
+            return Err("smoke terminal confirmation count is outside its bound".to_owned());
+        }
+        Ok(Self {
+            relay_url,
+            health_url,
+            evidence_file,
+            requester,
+            wallet,
+            bitcoind,
+            peer_cln,
+            terminal_confirmations,
+        })
+    }
+}
+
+fn drive_submarine(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    client_input: FundingInput,
+) -> Result<Value, String> {
+    let invoice = runtime
+        .block_on(
+            environment.peer_cln.invoice(
+                &cln_id("submarine-invoice")?,
+                Millisatoshi::from_satoshis(OUTPUT_AMOUNT_SAT)
+                    .map_err(|error| format!("submarine invoice amount is invalid: {error}"))?,
+                "immortal-funded-submarine",
+                "Immortal funded smoke submarine",
+                86_400,
+            ),
+        )
+        .map_err(|error| format!("could not create submarine invoice: {error}"))?;
+    let refund_path = WalletPath::new(2, false, 0)
+        .map_err(|error| format!("submarine refund path is invalid: {error}"))?;
+    let requester_key = environment
+        .wallet
+        .derive_address(refund_path)
+        .map_err(|error| format!("could not derive submarine refund key: {error}"))?
+        .internal_key;
+    let exit_destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 10)
+                .map_err(|error| format!("submarine exit destination path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive submarine exit destination: {error}"))?;
+    let mut session = negotiate(
+        environment,
+        provider_pubkey,
+        NegotiationInput {
+            journey_name: "submarine",
+            swap_type: "submarine",
+            payment_hash: &invoice.payment_hash,
+            invoice: Some(&invoice.bolt11),
+            requester_key,
+            requester_funding_input: Some(&client_input),
+            exit_destination_script_pubkey: &exit_destination.script_pubkey,
+        },
+    )?;
+    session.wait_provider_state("accepted")?;
+    session.wait_provider_state("lock_terms_ready")?;
+    let funding = session
+        .requester_funding
+        .take()
+        .ok_or_else(|| "submarine session has no contract-bound funding transaction".to_owned())?;
+    let authorized = verify_submarine_before_fund(&session, &invoice.bolt11, &funding)?;
+    session.set_authorized_verifier(authorized)?;
+    session.publish_requester_status("requester_verification_passed", Map::new())?;
+    let lockup_txid = runtime
+        .block_on(environment.bitcoind.broadcast(
+            &rpc_id("submarine-funding")?,
+            &funding.raw_transaction,
+            None,
+        ))
+        .map_err(|error| format!("could not broadcast submarine funding: {error}"))?;
+    if lockup_txid != funding.txid {
+        return Err("bitcoind returned another submarine funding transaction ID".to_owned());
+    }
+    session.record_funding_effect(
+        lockup_txid.clone(),
+        sha256(funding.raw_transaction.as_bytes()),
+    )?;
+    let mut funding_extra = Map::new();
+    funding_extra.insert(
+        "transaction_id".to_owned(),
+        Value::String(lockup_txid.clone()),
+    );
+    funding_extra.insert("output_index".to_owned(), json!(0));
+    session.publish_requester_status("requester_funding_broadcast", funding_extra)?;
+    mine_blocks(runtime, &environment.bitcoind, 1, "submarine-funding")?;
+    session.wait_provider_state("funding_observed")?;
+    session.wait_provider_state("funding_final")?;
+    session.wait_provider_state("lightning_payment_pending")?;
+    session.wait_provider_state("lightning_paid")?;
+    let claim_pending = session.wait_provider_state("provider_claim_pending")?;
+    let claim_txid = status_transaction_id(&claim_pending)?;
+    mine_blocks(
+        runtime,
+        &environment.bitcoind,
+        environment.terminal_confirmations,
+        "submarine-claim",
+    )?;
+    session.wait_provider_state("provider_claimed")?;
+    session.wait_provider_state("completed")?;
+    session.wait_provider_close(
+        "completed",
+        TerminalRailCheck {
+            runtime,
+            environment,
+            bitcoin_settlement_txid: &claim_txid,
+            lightning: LightningTerminalCheck::IncomingInvoice {
+                payment_hash: &invoice.payment_hash,
+            },
+        },
+    )?;
+    Ok(json!({
+        "order_id":session.order.id,
+        "lockup_txid":lockup_txid,
+        "lockup_vout":0,
+        "claim_txid":claim_txid,
+        "payment_hash":invoice.payment_hash,
+        "result":"claimed"
+    }))
+}
+
+fn drive_reverse(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    journey_name: &str,
+    refund: bool,
+) -> Result<Value, String> {
+    let mut preimage = random_32()?;
+    let payment_hash = lower_hex(&sha256(&preimage));
+    let claim_index = if refund { 2 } else { 1 };
+    let claim_path = WalletPath::new(2, false, claim_index)
+        .map_err(|error| format!("reverse claim path is invalid: {error}"))?;
+    let requester_key = environment
+        .wallet
+        .derive_address(claim_path)
+        .map_err(|error| format!("could not derive reverse claim key: {error}"))?
+        .internal_key;
+    let destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 1)
+                .map_err(|error| format!("reverse destination path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive reverse destination: {error}"))?;
+    let mut session = negotiate(
+        environment,
+        provider_pubkey,
+        NegotiationInput {
+            journey_name,
+            swap_type: "reverse",
+            payment_hash: &payment_hash,
+            invoice: None,
+            requester_key,
+            requester_funding_input: None,
+            exit_destination_script_pubkey: &destination.script_pubkey,
+        },
+    )?;
+    session.wait_provider_state("accepted")?;
+    let invoice_status = session.wait_provider_state("hold_invoice_ready")?;
+    let invoice = record_profile(&invoice_status)?
+        .get("invoice")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "provider hold-invoice Status has no invoice".to_owned())?
+        .to_owned();
+    let authorized = verify_reverse_before_fund(runtime, environment, &session, &invoice)?;
+    session.set_authorized_verifier(authorized)?;
+    session.publish_requester_status("requester_invoice_verified", Map::new())?;
+    let payment_task = spawn_reverse_payment(
+        runtime,
+        &environment.peer_cln,
+        journey_name,
+        invoice.clone(),
+    )?;
+    session.record_funding_effect(payment_hash.clone(), sha256(payment_hash.as_bytes()))?;
+    session.publish_requester_status("lightning_payment_pending", Map::new())?;
+    session.wait_provider_state("lightning_htlcs_held")?;
+    session.wait_provider_state("provider_lock_terms_ready")?;
+    session.publish_requester_status("requester_lock_verified", Map::new())?;
+    let funding_status = session.wait_provider_state("provider_funding_broadcast")?;
+    let (lockup_txid, output_index) = status_outpoint(&funding_status)?;
+    mine_blocks(runtime, &environment.bitcoind, 1, journey_name)?;
+    session.wait_provider_state("funding_observed")?;
+    session.wait_provider_state("funding_final")?;
+
+    if refund {
+        preimage.fill(0);
+        let refund_height = reverse_refund_height(&session.contract)?;
+        let tip = runtime
+            .block_on(environment.bitcoind.chain_tip(&rpc_id("refund-height")?))
+            .map_err(|error| format!("could not read refund chain height: {error}"))?;
+        let current_height =
+            u32::try_from(tip.height).map_err(|_| "refund chain height exceeds u32".to_owned())?;
+        if current_height < refund_height {
+            mine_blocks(
+                runtime,
+                &environment.bitcoind,
+                u64::from(refund_height - current_height),
+                "reverse-refund-maturity",
+            )?;
+        }
+        session.wait_provider_state("provider_refund_prepared")?;
+        let refund_pending = session.wait_provider_state("provider_refund_pending")?;
+        let refund_txid = status_transaction_id(&refund_pending)?;
+        mine_blocks(
+            runtime,
+            &environment.bitcoind,
+            environment.terminal_confirmations,
+            "reverse-refund-confirm",
+        )?;
+        session.wait_provider_state("provider_refunded")?;
+        session.wait_provider_state("invoice_cancelled")?;
+        session.wait_provider_state("refunded")?;
+        let payment_result = runtime
+            .block_on(payment_task)
+            .map_err(|error| format!("reverse refund payment task failed: {error}"))?;
+        if payment_result.is_ok() {
+            return Err("noncooperative reverse payment released a preimage".to_owned());
+        }
+        session.wait_provider_close(
+            "refunded",
+            TerminalRailCheck {
+                runtime,
+                environment,
+                bitcoin_settlement_txid: &refund_txid,
+                lightning: LightningTerminalCheck::OutgoingPayment {
+                    invoice: &invoice,
+                    payment_hash: &payment_hash,
+                    expected_status: "failed",
+                },
+            },
+        )?;
+        return Ok(json!({
+            "order_id":session.order.id,
+            "lockup_txid":lockup_txid,
+            "lockup_vout":output_index,
+            "refund_txid":refund_txid,
+            "payment_hash":payment_hash,
+            "result":"refunded",
+            "preimage_released":false
+        }));
+    }
+
+    let bitcoin = bitcoin_terms(&session.contract, "destination")?;
+    session.publish_requester_status("requester_claim_pending", Map::new())?;
+    let destination_value_sat = bitcoin
+        .amount_sat
+        .checked_sub(bitcoin.miner_fee_budget_sat)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "reverse claim fee consumes its output".to_owned())?;
+    let claim = SettlementBridge::new(&environment.wallet)
+        .claim(
+            &SettlementTemplate {
+                wallet_path: claim_path,
+                previous_txid_wire: display_txid_wire(&lockup_txid)?,
+                previous_output: output_index,
+                prevout_value_sat: bitcoin.amount_sat,
+                prevout_script_pubkey: bitcoin.script_pubkey,
+                destination_value_sat,
+                destination_script_pubkey: destination.script_pubkey.to_vec(),
+                transaction_version: 2,
+                input_sequence: 0xffff_fffe,
+                lock_time: 0,
+                taproot_script: bitcoin.claim_script,
+                taproot_control_block: bitcoin.claim_control_block,
+                maximum_fee_sat: bitcoin.miner_fee_budget_sat,
+                maximum_fee_rate_sat_per_vbyte: 10_000,
+                maximum_weight: 1_600,
+                dust_relay_fee_sat_per_kilobyte: 3_000,
+            },
+            ClaimPreimage::new(preimage),
+        )
+        .map_err(|error| format!("could not construct reverse claim: {error}"))?;
+    preimage.fill(0);
+    let raw_claim = lower_hex(claim.broadcast_bytes());
+    let claim_txid = lower_hex(&claim.transaction_id());
+    let broadcast_txid = runtime
+        .block_on(
+            environment
+                .bitcoind
+                .broadcast(&rpc_id("reverse-claim")?, &raw_claim, None),
+        )
+        .map_err(|error| format!("could not broadcast reverse claim: {error}"))?;
+    if broadcast_txid != claim_txid {
+        return Err("bitcoind returned another reverse claim transaction ID".to_owned());
+    }
+    let mut claim_extra = Map::new();
+    claim_extra.insert(
+        "transaction_id".to_owned(),
+        Value::String(claim_txid.clone()),
+    );
+    session.publish_requester_status("requester_claimed", claim_extra)?;
+    mine_blocks(
+        runtime,
+        &environment.bitcoind,
+        environment.terminal_confirmations,
+        "reverse-claim",
+    )?;
+    session.wait_provider_state("lightning_settlement_pending")?;
+    session.wait_provider_state("lightning_paid")?;
+    session.wait_provider_state("completed")?;
+    let payment = runtime
+        .block_on(payment_task)
+        .map_err(|error| format!("reverse payment task failed: {error}"))?
+        .map_err(|error| format!("reverse payment did not settle: {error}"))?;
+    if payment.status != "complete" || payment.payment_hash != payment_hash {
+        return Err("reverse Lightning payment completed with another result".to_owned());
+    }
+    session.wait_provider_close(
+        "completed",
+        TerminalRailCheck {
+            runtime,
+            environment,
+            bitcoin_settlement_txid: &claim_txid,
+            lightning: LightningTerminalCheck::OutgoingPayment {
+                invoice: &invoice,
+                payment_hash: &payment_hash,
+                expected_status: "complete",
+            },
+        },
+    )?;
+    Ok(json!({
+        "order_id":session.order.id,
+        "lockup_txid":lockup_txid,
+        "lockup_vout":output_index,
+        "claim_txid":claim_txid,
+        "payment_hash":payment_hash,
+        "result":"claimed"
+    }))
+}
+
+fn spawn_reverse_payment(
+    runtime: &Runtime,
+    cln: &ClnClient,
+    journey_name: &str,
+    invoice: String,
+) -> Result<JoinHandle<Result<PaymentResult, immortal_provider::cln::ClnError>>, String> {
+    let client = cln.clone();
+    let request_id = cln_id(&format!("{journey_name}-pay"))?;
+    let maximum_fee = Millisatoshi::from_satoshis(100)
+        .map_err(|error| format!("reverse routing fee is invalid: {error}"))?;
+    Ok(runtime.spawn(async move { client.pay(&request_id, &invoice, Some(maximum_fee)).await }))
+}
+
+fn negotiate(
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    input: NegotiationInput<'_>,
+) -> Result<SessionContext, String> {
+    let session_id = digest(&format!("funded-smoke:{}", input.journey_name));
+    let config = SwapClientConfig {
+        session_id: session_id.clone(),
+        requester_pubkey: environment.requester.pubkey().to_owned(),
+        provider_pubkey: provider_pubkey.to_owned(),
+        offering_address: format!("39601:{provider_pubkey}:{OFFERING_ID}"),
+    };
+    let factory = SwapRecordFactory::new(config.clone())
+        .map_err(|error| format!("could not initialize funded requester: {error}"))?;
+    let now = unix_now()?;
+    let mut reader = connect(&environment.relay_url)?;
+    authenticate(
+        &mut reader,
+        &environment.requester,
+        &environment.relay_url,
+        now,
+    )?;
+    subscribe(&mut reader, environment.requester.pubkey())?;
+    drain_history(&mut reader, JOURNEY_TIMEOUT)?;
+    let mut publisher = connect(&environment.relay_url)?;
+    authenticate(
+        &mut publisher,
+        &environment.requester,
+        &environment.relay_url,
+        now,
+    )?;
+    let rfq = sign_request(
+        factory
+            .rfq(
+                now,
+                &digest(&format!("rfq:{session_id}")),
+                now.saturating_add(600),
+                funded_rfq_profile(input, now)?,
+            )
+            .map_err(|error| format!("could not construct funded RFQ: {error}"))?,
+        &environment.requester,
+    )?;
+    let mut records = vec![rfq.clone()];
+    publish_private(
+        &mut publisher,
+        &rfq,
+        &environment.requester,
+        provider_pubkey,
+    )?;
+    let quote = receive_matching_private(
+        &mut reader,
+        &environment.requester,
+        &session_id,
+        JOURNEY_TIMEOUT,
+        |event| event.kind == MKT_QUOTE_KIND,
+    )?;
+    quote
+        .validate_crypto()
+        .map_err(|error| format!("funded Quote signature is invalid: {error}"))?;
+    records.push(quote.clone());
+    let order = sign_request(
+        factory
+            .order(
+                next_created_at_records(&records)?,
+                &digest(&format!("order:{session_id}")),
+                &quote.id,
+                json!({"accepted_quote_id":quote.id}),
+            )
+            .map_err(|error| format!("could not construct funded Order: {error}"))?,
+        &environment.requester,
+    )?;
+    records.push(order.clone());
+    publish_private(
+        &mut publisher,
+        &order,
+        &environment.requester,
+        provider_pubkey,
+    )?;
+    let mut contract = complete_contract(input.swap_type, &session_id, &rfq, &quote, &order)?;
+    let requester_funding = match input.requester_funding_input {
+        Some(funding_input) if input.swap_type == "submarine" => Some(bind_requester_funding(
+            environment,
+            &mut contract,
+            funding_input,
+        )?),
+        None if input.swap_type == "reverse" => None,
+        _ => return Err("funded smoke requester funding input has the wrong shape".to_owned()),
+    };
+    let exit_package_seed = bind_requester_exit_package(
+        &mut contract,
+        input.swap_type,
+        &order.id,
+        &quote.id,
+        input.exit_destination_script_pubkey,
+    )?;
+    let requester_contract = sign_request(
+        factory
+            .swap_contract(
+                ParticipantRole::Requester,
+                next_created_at_records(&records)?,
+                &digest(&format!("requester-contract:{session_id}")),
+                SwapContractReferences {
+                    order_id: &order.id,
+                    quote_id: &quote.id,
+                    accepted_status_id: None,
+                },
+                contract.clone(),
+            )
+            .map_err(|error| format!("could not construct funded contract: {error}"))?,
+        &environment.requester,
+    )?;
+    records.push(requester_contract.clone());
+    publish_private(
+        &mut publisher,
+        &requester_contract,
+        &environment.requester,
+        provider_pubkey,
+    )?;
+    let provider_contract = receive_matching_private(
+        &mut reader,
+        &environment.requester,
+        &session_id,
+        JOURNEY_TIMEOUT,
+        |event| event.kind == MKT_SWP_SWAP_CONTRACT_KIND && event.pubkey == provider_pubkey,
+    )?;
+    if record_profile(&provider_contract)?.get("contract") != Some(&contract) {
+        return Err("provider countersigned different funded contract terms".to_owned());
+    }
+    provider_contract
+        .validate_crypto()
+        .map_err(|error| format!("funded provider contract signature is invalid: {error}"))?;
+    let requester_contract_sha256 = exact_tag_value(&requester_contract, "x")?;
+    if exact_tag_value(&provider_contract, "x")? != requester_contract_sha256 {
+        return Err("provider contract digest differs from requester contract digest".to_owned());
+    }
+    let exit_package = finalize_requester_exit_package(
+        &exit_package_seed,
+        [&requester_contract.id, &provider_contract.id],
+        requester_contract_sha256,
+    )?;
+    records.push(provider_contract);
+    let verifier = SwapSession::from_signed_records(config, records, vec![exit_package])
+        .map_err(|error| format!("funded verifier rejected negotiated session: {error}"))?;
+    Ok(SessionContext {
+        reader,
+        publisher,
+        requester: environment.requester.clone(),
+        provider_pubkey: provider_pubkey.to_owned(),
+        factory,
+        verifier,
+        order,
+        contract,
+        authorized_verifier: None,
+        requester_funding,
+        requester_status: None,
+    })
+}
+
+impl SessionContext {
+    fn set_authorized_verifier(
+        &mut self,
+        authorized: SwapSession<FundingAuthorized>,
+    ) -> Result<(), String> {
+        if authorized.signed_records() != self.verifier.signed_records()
+            || authorized.config().session_id != self.verifier.config().session_id
+        {
+            return Err("funding authorization belongs to another signed session view".to_owned());
+        }
+        self.authorized_verifier = Some(authorized);
+        Ok(())
+    }
+
+    fn record_funding_effect(
+        &mut self,
+        external_identifier: String,
+        result_digest: [u8; 32],
+    ) -> Result<(), String> {
+        let authorized = self
+            .authorized_verifier
+            .as_mut()
+            .ok_or_else(|| "funded session has no preserved funding authorization".to_owned())?;
+        let request = ExternalEffectRequest::Funding(
+            authorized
+                .funding_request()
+                .map_err(|error| format!("funded session has no funding request: {error}"))?
+                .clone(),
+        );
+        let result = ExternalEffectResult {
+            order_id: self.order.id.clone(),
+            effect_id: request.effect_id().to_owned(),
+            request_sha256: request
+                .sha256()
+                .map_err(|error| format!("could not bind funded execution request: {error}"))?,
+            external_identifier,
+            result_sha256: lower_hex(&result_digest),
+        };
+        authorized
+            .record_external_effect(&request, result)
+            .map_err(|error| format!("could not persist funded execution effect: {error}"))?;
+        Ok(())
+    }
+
+    fn wait_provider_state(&mut self, expected: &str) -> Result<Event, String> {
+        let session_id = self.verifier.config().session_id.clone();
+        let event = receive_matching_private(
+            &mut self.reader,
+            &self.requester,
+            &session_id,
+            JOURNEY_TIMEOUT,
+            |event| {
+                event.kind == MKT_STATUS_KIND
+                    && event.pubkey == self.provider_pubkey
+                    && record_profile(event)
+                        .ok()
+                        .and_then(|profile| profile.get("swp_state").cloned())
+                        .and_then(|state| state.as_str().map(str::to_owned))
+                        .as_deref()
+                        == Some(expected)
+            },
+        )?;
+        self.ingest_synchronized(event.clone(), &format!("provider {expected}"))?;
+        Ok(event)
+    }
+
+    fn wait_provider_close(
+        &mut self,
+        expected_outcome: &str,
+        check: TerminalRailCheck<'_>,
+    ) -> Result<Event, String> {
+        let session_id = self.verifier.config().session_id.clone();
+        let event = receive_matching_private(
+            &mut self.reader,
+            &self.requester,
+            &session_id,
+            JOURNEY_TIMEOUT,
+            |event| {
+                event.kind == MKT_CLOSE_KIND
+                    && event.pubkey == self.provider_pubkey
+                    && event
+                        .tag_values("outcome")
+                        .eq(std::iter::once(expected_outcome))
+            },
+        )?;
+        let leg_ids = contract_leg_ids(&self.contract)?;
+        let mut authorized = self
+            .authorized_verifier
+            .as_ref()
+            .ok_or_else(|| {
+                "provider Close arrived without a preserved funding authorization".to_owned()
+            })?
+            .clone();
+        for leg_id in leg_ids {
+            let verified = authorized
+                .verify_terminal_rail_evidence_with(&leg_id, expected_outcome, |request| {
+                    local_terminal_rail_evidence(&event, request, &check, &self.contract)
+                })
+                .map_err(|error| {
+                    format!(
+                        "local {leg_id} terminal evidence rejected before provider Close: {error}"
+                    )
+                })?;
+            authorized
+                .record_external_effect(&verified.request, verified.result)
+                .map_err(|error| {
+                    format!("could not persist local {leg_id} terminal evidence: {error}")
+                })?;
+        }
+        authorized
+            .ingest_signed_record(event.clone())
+            .map_err(|error| {
+                format!("funded verifier rejected provider {expected_outcome} Close: {error}")
+            })?;
+        self.authorized_verifier = Some(authorized);
+        Ok(event)
+    }
+
+    fn publish_requester_status(
+        &mut self,
+        state: &'static str,
+        extra: Map<String, Value>,
+    ) -> Result<Event, String> {
+        let (sequence, previous) = match &self.requester_status {
+            Some((sequence, previous)) => (
+                sequence
+                    .checked_add(1)
+                    .ok_or_else(|| "requester Status sequence overflowed".to_owned())?,
+                Some(previous.as_str()),
+            ),
+            None => (0, None),
+        };
+        let event = sign_request(
+            self.factory
+                .status(
+                    ParticipantRole::Requester,
+                    next_created_at(&self.verifier)?,
+                    &digest(&format!(
+                        "requester-status:{state}:{}",
+                        self.verifier.config().session_id
+                    )),
+                    &self.order.id,
+                    StatusState {
+                        sequence,
+                        previous,
+                        base_state: base_state(state)?,
+                        swp_state: state,
+                    },
+                    extra,
+                )
+                .map_err(|error| format!("could not construct requester {state}: {error}"))?,
+            &self.requester,
+        )?;
+        self.ingest_synchronized(event.clone(), &format!("requester {state}"))?;
+        publish_private(
+            &mut self.publisher,
+            &event,
+            &self.requester,
+            &self.provider_pubkey,
+        )?;
+        self.requester_status = Some((sequence, event.id.clone()));
+        Ok(event)
+    }
+
+    fn ingest_synchronized(&mut self, event: Event, label: &str) -> Result<(), String> {
+        let mut verifier = self.verifier.clone();
+        verifier
+            .ingest_signed_record(event.clone())
+            .map_err(|error| format!("funded verifier rejected {label}: {error}"))?;
+        let authorized = self
+            .authorized_verifier
+            .as_ref()
+            .map(|authorized| {
+                let mut authorized = authorized.clone();
+                authorized
+                    .ingest_signed_record(event)
+                    .map(|_| authorized)
+                    .map_err(|error| {
+                        format!("funding-authorized verifier rejected {label}: {error}")
+                    })
+            })
+            .transpose()?;
+        self.verifier = verifier;
+        self.authorized_verifier = authorized;
+        Ok(())
+    }
+}
+
+fn contract_leg_ids(contract: &Value) -> Result<Vec<String>, String> {
+    let legs = contract
+        .get("legs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "funded contract has no legs".to_owned())?;
+    let mut leg_ids = Vec::with_capacity(legs.len());
+    for leg in legs {
+        let leg_id = leg
+            .get("leg_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "funded contract leg has no identifier".to_owned())?;
+        if leg_ids.iter().any(|existing| existing == leg_id) {
+            return Err("funded contract duplicates a leg identifier".to_owned());
+        }
+        leg_ids.push(leg_id.to_owned());
+    }
+    Ok(leg_ids)
+}
+
+fn local_terminal_rail_evidence(
+    close: &Event,
+    request: &RailObservationRequest,
+    check: &TerminalRailCheck<'_>,
+    contract: &Value,
+) -> Result<LocalRailEvidence, String> {
+    let references = close_evidence_references(close)?;
+    let matching = references
+        .iter()
+        .filter_map(Value::as_object)
+        .filter(|evidence| {
+            evidence.get("rail").and_then(Value::as_str) == Some(request.rail.as_str())
+                && evidence.get("class").and_then(Value::as_str)
+                    == Some(request.evidence_class.as_str())
+                && evidence.get("rung").and_then(Value::as_str) == Some(request.rung.as_str())
+                && evidence.get("verifier_policy").and_then(Value::as_str)
+                    == Some(request.verifier_policy.as_str())
+        })
+        .collect::<Vec<_>>();
+    let [evidence] = matching.as_slice() else {
+        return Err(format!(
+            "provider Close does not carry one exact {} terminal reference",
+            request.rail
+        ));
+    };
+    let settlement_reference = required_string(evidence, "reference")?;
+    let external_identifier = match request.rail.as_str() {
+        "bitcoin" => verify_local_bitcoin_terminal(request, settlement_reference, check, contract)?,
+        "lightning" => verify_local_lightning_terminal(request, settlement_reference, check)?,
+        _ => return Err("terminal evidence requested an unsupported local rail".to_owned()),
+    };
+    let producer_pubkey = required_string(evidence, "producer_pubkey")?;
+    if producer_pubkey != close.pubkey {
+        return Err("provider Close evidence names another producer".to_owned());
+    }
+    let verifier_pubkey = match evidence.get("verifier_pubkey") {
+        Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.clone()),
+        _ => return Err("provider Close evidence has an invalid verifier key".to_owned()),
+    };
+    Ok(LocalRailEvidence {
+        artifact_sha256: required_string(evidence, "artifact_sha256")?.to_owned(),
+        observed_at: evidence
+            .get("observed_at")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "provider Close evidence has no observation time".to_owned())?,
+        view: required_string(evidence, "view")?.to_owned(),
+        settlement_reference: settlement_reference.to_owned(),
+        verifier_pubkey,
+        producer_pubkey: producer_pubkey.to_owned(),
+        external_identifier,
+    })
+}
+
+fn close_evidence_references(close: &Event) -> Result<Vec<Value>, String> {
+    record_profile(close)?
+        .get("loss_accounting")
+        .and_then(Value::as_object)
+        .and_then(|accounting| accounting.get("evidence_refs"))
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| "provider Close has no terminal evidence references".to_owned())
+}
+
+fn verify_local_bitcoin_terminal(
+    request: &RailObservationRequest,
+    settlement_reference: &str,
+    check: &TerminalRailCheck<'_>,
+    contract: &Value,
+) -> Result<String, String> {
+    let verifier = verifier_for_leg(contract, &request.leg_id)?;
+    let raw_funding = required_string(verifier, "funding_transaction")
+        .and_then(decode_hex)
+        .map_err(|error| format!("contract funding transaction is invalid: {error}"))?;
+    let funding = Transaction::parse(&raw_funding)
+        .map_err(|error| format!("contract funding transaction is invalid: {error}"))?;
+    let funding_txid =
+        lower_hex(&funding.txid().map_err(|error| {
+            format!("could not derive contract funding transaction ID: {error}")
+        })?);
+    let funding_vout = bounded_u32_member(verifier, "output_index")?;
+    let funding_outpoint = format!("{funding_txid}:{funding_vout}");
+    match request.evidence_class.as_str() {
+        "bitcoin_spend"
+            if request.reference == funding_outpoint
+                && settlement_reference == funding_outpoint => {}
+        "refund" if settlement_reference == check.bitcoin_settlement_txid => {}
+        _ => {
+            return Err(
+                "provider Close Bitcoin reference differs from the locally bound settlement"
+                    .to_owned(),
+            );
+        }
+    }
+    let transaction = check
+        .runtime
+        .block_on(check.environment.bitcoind.raw_transaction(
+            &rpc_id("terminal-bitcoin-transaction")?,
+            check.bitcoin_settlement_txid,
+            true,
+        ))
+        .map_err(|error| format!("could not inspect terminal Bitcoin transaction: {error}"))?;
+    let transaction = transaction
+        .as_object()
+        .ok_or_else(|| "terminal Bitcoin transaction response is not an object".to_owned())?;
+    if transaction.get("txid").and_then(Value::as_str) != Some(check.bitcoin_settlement_txid)
+        || transaction.get("confirmations").and_then(Value::as_u64)
+            < Some(check.environment.terminal_confirmations)
+    {
+        return Err("terminal Bitcoin transaction is not final in the local node view".to_owned());
+    }
+    let raw = decode_hex(
+        transaction
+            .get("hex")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "terminal Bitcoin response has no raw transaction".to_owned())?,
+    )?;
+    let parsed = Transaction::parse(&raw)
+        .map_err(|error| format!("terminal Bitcoin transaction is invalid: {error}"))?;
+    let funding_txid_wire = display_txid_wire(&funding_txid)?;
+    if lower_hex(
+        &parsed.txid().map_err(|error| {
+            format!("could not derive terminal Bitcoin transaction ID: {error}")
+        })?,
+    ) != check.bitcoin_settlement_txid
+        || !parsed.inputs.iter().any(|input| {
+            input.previous_txid == funding_txid_wire && input.previous_output == funding_vout
+        })
+    {
+        return Err("terminal Bitcoin transaction does not spend the contract outpoint".to_owned());
+    }
+    let unspent = check
+        .runtime
+        .block_on(check.environment.bitcoind.transaction_output(
+            &rpc_id("terminal-bitcoin-outpoint")?,
+            &funding_txid,
+            funding_vout,
+            true,
+        ))
+        .map_err(|error| format!("could not inspect terminal Bitcoin outpoint: {error}"))?;
+    if unspent.is_some() {
+        return Err("contract Bitcoin outpoint remains unspent in the local node view".to_owned());
+    }
+    Ok(format!(
+        "bitcoind:{}:{}",
+        check.bitcoin_settlement_txid, check.environment.terminal_confirmations
+    ))
+}
+
+fn verify_local_lightning_terminal(
+    request: &RailObservationRequest,
+    settlement_reference: &str,
+    check: &TerminalRailCheck<'_>,
+) -> Result<String, String> {
+    let (response, collection, payment_hash, expected_status, direction) = match check.lightning {
+        LightningTerminalCheck::IncomingInvoice { payment_hash } => (
+            check
+                .runtime
+                .block_on(
+                    check
+                        .environment
+                        .peer_cln
+                        .list_invoices(&cln_id("terminal-invoice")?, None),
+                )
+                .map_err(|error| format!("could not inspect local terminal invoice: {error}"))?,
+            "invoices",
+            payment_hash,
+            "paid",
+            "incoming",
+        ),
+        LightningTerminalCheck::OutgoingPayment {
+            invoice,
+            payment_hash,
+            expected_status,
+        } => (
+            check
+                .runtime
+                .block_on(
+                    check
+                        .environment
+                        .peer_cln
+                        .list_pays(&cln_id("terminal-payment")?, Some(invoice)),
+                )
+                .map_err(|error| format!("could not inspect local terminal payment: {error}"))?,
+            "pays",
+            payment_hash,
+            expected_status,
+            "outgoing",
+        ),
+    };
+    if request.reference != payment_hash || settlement_reference != payment_hash {
+        return Err("provider Close Lightning reference differs from the bound payment".to_owned());
+    }
+    let matching = response
+        .get(collection)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.get("payment_hash").and_then(Value::as_str) == Some(payment_hash))
+        .filter(|entry| entry.get("status").and_then(Value::as_str) == Some(expected_status))
+        .count();
+    if matching == 0 {
+        return Err("peer CLN does not report the bound terminal Lightning state".to_owned());
+    }
+    Ok(format!("cln:{direction}:{payment_hash}:{expected_status}"))
+}
+
+fn funded_rfq_profile(input: NegotiationInput<'_>, now: u64) -> Result<Value, String> {
+    let (asset_pair, leg_id, path) = match input.swap_type {
+        "submarine" => (
+            json!([
+                format!("swp:1:{NETWORK_ID}:btc:chain"),
+                format!("swp:1:{NETWORK_ID}:btc:lightning")
+            ]),
+            "source",
+            "refund",
+        ),
+        "reverse" => (
+            json!([
+                format!("swp:1:{NETWORK_ID}:btc:lightning"),
+                format!("swp:1:{NETWORK_ID}:btc:chain")
+            ]),
+            "destination",
+            "claim",
+        ),
+        _ => return Err("funded smoke requested an unsupported swap type".to_owned()),
+    };
+    let mut constraints = json!({
+        "allowed_script_modes":["taproot-musig2-script-exit"],
+        "asset_pair":asset_pair,
+        "confirmation_policy":{
+            "minimum_confirmations":"1",
+            "reorg_safety_blocks":"2",
+            "zero_confirmation":"forbidden",
+            "rbf":"reject",
+            "replacement":"reject"
+        },
+        "desired_completion_time":now.saturating_add(86_400),
+        "firm_quote_required":true,
+        "input_amount":INPUT_AMOUNT_SAT.to_string(),
+        "invoice_sha256":input.invoice.map(|invoice| lower_hex(&sha256(invoice.as_bytes()))),
+        "maximum_total_fee":"5000",
+        "payment_hash":input.payment_hash,
+        "requester_public_keys":[{
+            "leg_id":leg_id,
+            "path":path,
+            "public_key":lower_hex(&input.requester_key)
+        }],
+        "swap_type":input.swap_type
+    });
+    if input.swap_type == "reverse" {
+        constraints
+            .as_object_mut()
+            .ok_or_else(|| "reverse constraints are not an object".to_owned())?
+            .remove("invoice_sha256");
+    }
+    let mut profile = json!({"constraints":constraints});
+    if let Some(invoice) = input.invoice {
+        profile
+            .as_object_mut()
+            .ok_or_else(|| "submarine RFQ profile is not an object".to_owned())?
+            .insert("invoice".to_owned(), Value::String(invoice.to_owned()));
+    }
+    Ok(profile)
+}
+
+fn complete_contract(
+    swap_type: &str,
+    session_id: &str,
+    rfq: &Event,
+    quote: &Event,
+    order: &Event,
+) -> Result<Value, String> {
+    let mut contract = fixture_profile(swap_type, 39_610, Some("requester"))?
+        .get("contract")
+        .cloned()
+        .ok_or_else(|| "fixture requester contract has no contract".to_owned())?;
+    let quote_profile = record_profile(quote)?;
+    let terms = quote_profile
+        .get("terms")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "funded Quote has no terms".to_owned())?;
+    for member in [
+        "swap_type",
+        "asset_pair",
+        "payment_hash",
+        "fee_bps",
+        "provider_fee",
+        "miner_fee_budget",
+        "lightning_routing_fee_budget",
+        "maximum_total_fee",
+        "amount_equation",
+        "rounding",
+        "script_mode",
+        "desired_completion_time",
+        "clock_skew_seconds",
+        "legs",
+        "timeout_ladder",
+        "verifier_inputs",
+        "cancellation",
+        "evidence_requirements",
+        "recovery",
+        "price_feed",
+        "evm_leg",
+        "input_amount",
+        "output_amount",
+        "fee_payer",
+        "confirmation_policy",
+    ] {
+        contract[member] = terms
+            .get(member)
+            .cloned()
+            .ok_or_else(|| format!("funded Quote terms omit {member}"))?;
+    }
+    contract["order_id"] = Value::String(order.id.clone());
+    contract["quote_id"] = Value::String(quote.id.clone());
+    let reservation = quote_profile
+        .get("reservation_terms")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "funded Quote has no reservation terms".to_owned())?;
+    let proof_ref = reservation
+        .get("proof_ref")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "funded Quote reservation has no proof reference".to_owned())?;
+    let proof_class = reservation
+        .get("proof_class")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "funded Quote reservation has no proof class".to_owned())?;
+    let proof_strength = match proof_class {
+        "lightning_liquidity" => 50,
+        "utxo_control" => 60,
+        _ => return Err("funded Quote used an unsupported proof class".to_owned()),
+    };
+    contract["reservation_commitment"] = json!({
+        "session_id":session_id,
+        "rfq_id":rfq.id,
+        "quote_id":quote.id,
+        "reservation_id":reservation["reservation_id"],
+        "reservation_class":"hard",
+        "capacity_bucket_id":reservation["capacity_bucket_id"],
+        "reserved_asset_id":reservation["reserved_asset_id"],
+        "reserved_amount":reservation["reserved_amount"],
+        "handler_committed_capacity":reservation["handler_committed_capacity"],
+        "allocation_sequence":reservation["allocation_sequence"],
+        "proof_class":proof_class,
+        "proof_strength":proof_strength,
+        "proof_ref_sha256":lower_hex(&sha256(proof_ref.as_bytes())),
+        "capacity_commitment_sha256":reservation["capacity_commitment_sha256"],
+        "reservation_expires_at":reservation["reservation_expires_at"],
+        "profile_timeout_at":null,
+        "covenant_commitment":null
+    });
+    Ok(contract)
+}
+
+fn bind_requester_funding(
+    environment: &SmokeEnvironment,
+    contract: &mut Value,
+    funding_input: &FundingInput,
+) -> Result<SignedFundingTransaction, String> {
+    let bitcoin = bitcoin_terms(contract, "source")?;
+    let funding = build_funding_transaction(
+        &environment.wallet,
+        std::slice::from_ref(funding_input),
+        &FundingRequest {
+            destination_script_pubkey: bitcoin.script_pubkey,
+            amount_sat: bitcoin.amount_sat,
+            fee_rate_sat_per_vbyte: 2,
+            change_path: WalletPath::new(0, true, 0)
+                .map_err(|error| format!("client funding change path is invalid: {error}"))?,
+            lock_time: 0,
+        },
+    )
+    .map_err(|error| format!("could not construct submarine funding: {error}"))?;
+    let raw = decode_hex(&funding.raw_transaction)?;
+    let verifiers = contract
+        .get_mut("verifier_inputs")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "submarine contract has no mutable verifier inputs".to_owned())?;
+    let verifier = verifiers
+        .iter_mut()
+        .find(|verifier| verifier.get("leg_id").and_then(Value::as_str) == Some("source"))
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "submarine contract has no source verifier".to_owned())?;
+    verifier.insert(
+        "funding_transaction".to_owned(),
+        Value::String(funding.raw_transaction.clone()),
+    );
+    verifier.insert(
+        "funding_transaction_sha256".to_owned(),
+        Value::String(lower_hex(&sha256(&raw))),
+    );
+    verifier.insert("output_index".to_owned(), json!(0));
+    let verifier_digest = lower_hex(&sha256(
+        &provider_support::canonical_json(&Value::Object(verifier.clone()))
+            .map_err(|error| format!("could not canonicalize source verifier: {error}"))?,
+    ));
+    let legs = contract
+        .get_mut("legs")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "submarine contract has no mutable legs".to_owned())?;
+    let leg = legs
+        .iter_mut()
+        .find(|leg| leg.get("leg_id").and_then(Value::as_str) == Some("source"))
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "submarine contract has no source leg".to_owned())?;
+    leg.insert("verifier_digest".to_owned(), Value::String(verifier_digest));
+    Ok(funding)
+}
+
+fn bind_requester_exit_package(
+    contract: &mut Value,
+    swap_type: &str,
+    order_id: &str,
+    quote_id: &str,
+    destination_script_pubkey: &[u8],
+) -> Result<ExitPackage, String> {
+    let (leg_id, path, funding_role, funding_leg_id) = match swap_type {
+        "submarine" => ("source", "refund", "chain_fund", "source"),
+        "reverse" => ("destination", "claim", "invoice_pay", "lightning"),
+        _ => return Err("funded smoke cannot bind exits for this swap type".to_owned()),
+    };
+    let document = requester_exit_document(
+        contract,
+        order_id,
+        quote_id,
+        leg_id,
+        path,
+        destination_script_pubkey,
+    )?;
+    let package = ExitPackage::parse(document)
+        .map_err(|error| format!("dynamic requester exit package is invalid: {error}"))?;
+    let package_sha256 = package
+        .commitment_sha256()
+        .map_err(|error| format!("could not commit requester exit package: {error}"))?;
+    let root = contract
+        .as_object_mut()
+        .ok_or_else(|| "funded contract is not an object".to_owned())?;
+    root.insert(
+        "effect_bindings".to_owned(),
+        json!([
+            {"role":funding_role,"leg_id":funding_leg_id},
+            {"role":format!("chain_{path}"),"leg_id":leg_id}
+        ]),
+    );
+    root.insert(
+        "exit_package_commitments".to_owned(),
+        json!([{
+            "participant_role":"requester",
+            "leg_id":leg_id,
+            "path":path,
+            "package_mode":"wallet_sign",
+            "package_sha256":package_sha256
+        }]),
+    );
+    Ok(package)
+}
+
+fn requester_exit_document(
+    contract: &Value,
+    order_id: &str,
+    quote_id: &str,
+    leg_id: &str,
+    path: &str,
+    destination_script_pubkey: &[u8],
+) -> Result<Value, String> {
+    let verifier = verifier_for_leg(contract, leg_id)?;
+    let leg = contract
+        .get("legs")
+        .and_then(Value::as_array)
+        .and_then(|legs| {
+            legs.iter()
+                .find(|leg| leg.get("leg_id").and_then(Value::as_str) == Some(leg_id))
+        })
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("funded contract has no {leg_id} leg"))?;
+    let funding_transaction = required_string(verifier, "funding_transaction")?;
+    let funding_bytes = decode_hex(funding_transaction)?;
+    let funding = Transaction::parse(&funding_bytes)
+        .map_err(|error| format!("committed funding transaction is invalid: {error}"))?;
+    let funding_transaction_id = lower_hex(
+        &funding
+            .txid()
+            .map_err(|error| format!("could not derive funding transaction ID: {error}"))?,
+    );
+    let output_index = verifier
+        .get("output_index")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "funded verifier has no bounded output index".to_owned())?;
+    let amount = canonical_u64(required_string(verifier, "amount")?)?;
+    let recovery = contract
+        .get("recovery")
+        .and_then(Value::as_object)
+        .and_then(|recovery| recovery.get("exit_policy"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| "funded contract has no exit policy".to_owned())?;
+    let maximum_fee = canonical_u64(required_string(recovery, "maximum_fee")?)?;
+    let destination_value = amount
+        .checked_sub(maximum_fee)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "requester exit fee consumes the funding output".to_owned())?;
+    let lock_time = match path {
+        "claim" => 0,
+        "refund" => u32::try_from(canonical_u64(required_string(
+            verifier,
+            "exit_lock_value",
+        )?)?)
+        .map_err(|_| "requester refund height exceeds u32".to_owned())?,
+        _ => return Err("requester exit path is unsupported".to_owned()),
+    };
+    let mut previous_txid = decode_lower_hex_32(&funding_transaction_id)?;
+    previous_txid.reverse();
+    let unsigned_exit = Transaction::new(
+        2,
+        vec![TransactionInput {
+            previous_txid,
+            previous_output: output_index,
+            script_sig: Vec::new(),
+            sequence: 0xffff_fffe,
+            witness: Vec::new(),
+        }],
+        vec![TransactionOutput {
+            value_sat: destination_value,
+            script_pubkey: destination_script_pubkey.to_vec(),
+        }],
+        lock_time,
+    )
+    .serialize(false)
+    .map_err(|error| format!("could not serialize requester exit template: {error}"))?;
+    let confirmation_policy = leg
+        .get("confirmation_policy")
+        .ok_or_else(|| "funded Bitcoin leg has no confirmation policy".to_owned())?;
+    let confirmation_policy_sha256 = json_digest(confirmation_policy)?;
+    let verifier_sha256 = json_digest(&Value::Object(verifier.clone()))?;
+    let effect_id = requester_effect_id(order_id, &format!("chain_{path}"), leg_id)?;
+    Ok(json!({
+        "schema":"openagents.mkt-swp.exit.v1",
+        "profile":MKT_SWP_PROFILE_ID,
+        "profile_version":MKT_SWP_PROFILE_VERSION,
+        "order_id":order_id,
+        "swap_contract_ids":["01".repeat(32),"02".repeat(32)],
+        "contract_sha256":"03".repeat(32),
+        "participant_role":"requester",
+        "leg_id":leg_id,
+        "network_id":leg.get("network_id").cloned().ok_or_else(|| "Bitcoin leg has no network ID".to_owned())?,
+        "asset_id":leg.get("asset_id").cloned().ok_or_else(|| "Bitcoin leg has no asset ID".to_owned())?,
+        "effect_id":effect_id,
+        "funding":{
+            "transaction_id":funding_transaction_id,
+            "transaction_template_sha256":required_string(verifier,"funding_transaction_sha256")?,
+            "transaction_template":funding_transaction,
+            "output_index":output_index,
+            "amount":required_string(verifier,"amount")?,
+            "script_pubkey":required_string(verifier,"script_pubkey")?,
+            "confirmation_policy_sha256":confirmation_policy_sha256
+        },
+        "exit":{
+            "mode":"wallet_sign",
+            "path":path,
+            "transaction_template_sha256":lower_hex(&sha256(&unsigned_exit)),
+            "signed_transaction":null,
+            "signer_ref":format!("funded-smoke-wallet:{leg_id}:{path}"),
+            "transaction_version":2,
+            "lock_time":lock_time,
+            "input_sequence":0xffff_fffe_u32,
+            "sighash_type":"DEFAULT",
+            "destination_script_pubkey":lower_hex(destination_script_pubkey),
+            "earliest_broadcast_height":required_string(recovery,"earliest_broadcast_height")?,
+            "latest_safe_broadcast_height":required_string(recovery,"latest_safe_broadcast_height")?,
+            "fee_policy":{
+                "target_blocks":recovery.get("target_blocks").cloned().ok_or_else(|| "exit policy has no target blocks".to_owned())?,
+                "maximum_fee":required_string(recovery,"maximum_fee")?,
+                "bump_mode":required_string(recovery,"bump_mode")?
+            }
+        },
+        "verification":{
+            "swap_tree_sha256":required_string(verifier,"swap_tree_sha256")?,
+            "quote_id":quote_id,
+            "verifier_digest":verifier_sha256,
+            "taproot_script":required_string(verifier,"taproot_script")?,
+            "taproot_control_block":required_string(verifier,"taproot_control_block")?,
+            "taproot_tree":verifier.get("taproot_tree").cloned().ok_or_else(|| "funded verifier has no Taproot tree".to_owned())?
+        },
+        "secret_commitments":{
+            "payment_hash":contract.get("payment_hash").cloned().ok_or_else(|| "funded contract has no payment hash".to_owned())?,
+            "preimage_recovery_ref":null
+        },
+        "broadcast":{
+            "esplora_urls":["https://localhost.invalid/api"],
+            "minimum_agreeing_sources":1
+        }
+    }))
+}
+
+fn finalize_requester_exit_package(
+    seed: &ExitPackage,
+    contract_ids: [&String; 2],
+    contract_sha256: &str,
+) -> Result<ExitPackage, String> {
+    let mut document = seed.document().clone();
+    document["swap_contract_ids"] = json!(contract_ids);
+    document["contract_sha256"] = Value::String(contract_sha256.to_owned());
+    ExitPackage::parse(document)
+        .map_err(|error| format!("bound requester exit package is invalid: {error}"))
+}
+
+fn verify_submarine_before_fund(
+    session: &SessionContext,
+    invoice: &str,
+    funding: &SignedFundingTransaction,
+) -> Result<SwapSession<FundingAuthorized>, String> {
+    let input = verify_before_fund_input(session, invoice)?;
+    let authorized = session
+        .verifier
+        .clone()
+        .verify_before_fund(input, |request| match &request.action {
+            FundingAction::BroadcastBitcoin {
+                leg_id,
+                raw_transaction,
+                ..
+            } if leg_id == "source" && raw_transaction == &funding.raw_transaction => Ok(()),
+            _ => Err("client authorized another submarine funding action".to_owned()),
+        })
+        .map_err(|error| format!("client rejected submarine before funding: {error}"))?;
+    match &authorized
+        .funding_request()
+        .map_err(|error| format!("submarine authorization has no funding request: {error}"))?
+        .action
+    {
+        FundingAction::BroadcastBitcoin {
+            leg_id,
+            raw_transaction,
+            ..
+        } if leg_id == "source" && raw_transaction == &funding.raw_transaction => Ok(authorized),
+        _ => Err("client returned another submarine funding request".to_owned()),
+    }
+}
+
+fn verify_reverse_before_fund(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    session: &SessionContext,
+    invoice: &str,
+) -> Result<SwapSession<FundingAuthorized>, String> {
+    let input = verify_before_fund_input(session, invoice)?;
+    let readiness_id = cln_id(&format!(
+        "reverse-readiness:{}",
+        session.verifier.config().session_id
+    ))?;
+    let authorized = session
+        .verifier
+        .clone()
+        .verify_before_fund_with_lightning(
+            input,
+            |request| {
+                let info = runtime
+                    .block_on(environment.peer_cln.node_info(&readiness_id))
+                    .map_err(|error| {
+                        format!("could not inspect requester CLN readiness: {error}")
+                    })?;
+                let minimum_outgoing_expiry = info
+                    .block_height
+                    .checked_add(
+                        u32::try_from(request.minimum_final_cltv_delta)
+                            .map_err(|_| "invoice final CLTV delta exceeds u32".to_owned())?,
+                    )
+                    .ok_or_else(|| "requester CLN expiry calculation overflowed".to_owned())?;
+                if info.network != request.network
+                    || !request.hold_invoice_required
+                    || info.block_height >= request.hold_expiry_height
+                    || minimum_outgoing_expiry < request.hold_expiry_height
+                {
+                    return Err(
+                        "requester CLN cannot satisfy the bound hold-invoice timing".to_owned()
+                    );
+                }
+                Ok(LocalLightningReadiness {
+                    invoice_sha256: request.invoice_sha256.clone(),
+                    payment_hash: request.payment_hash.clone(),
+                    observed_at: unix_now()?,
+                    state: LightningReadinessState::Acceptable,
+                })
+            },
+            |request| match &request.action {
+                FundingAction::PayLightningInvoice {
+                    leg_id,
+                    invoice: authorized_invoice,
+                    hold_invoice_required,
+                    ..
+                } if leg_id == "lightning"
+                    && authorized_invoice == invoice
+                    && *hold_invoice_required =>
+                {
+                    Ok(())
+                }
+                _ => Err("client authorized another reverse funding action".to_owned()),
+            },
+        )
+        .map_err(|error| format!("client rejected reverse before funding: {error}"))?;
+    match &authorized
+        .funding_request()
+        .map_err(|error| format!("reverse authorization has no funding request: {error}"))?
+        .action
+    {
+        FundingAction::PayLightningInvoice {
+            leg_id,
+            invoice: authorized_invoice,
+            hold_invoice_required,
+            ..
+        } if leg_id == "lightning" && authorized_invoice == invoice && *hold_invoice_required => {
+            Ok(authorized)
+        }
+        _ => Err("client returned another reverse funding request".to_owned()),
+    }
+}
+
+fn verify_before_fund_input(
+    session: &SessionContext,
+    invoice: &str,
+) -> Result<VerifyBeforeFundInput, String> {
+    let swap_type = session
+        .contract
+        .get("swap_type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "funded contract has no swap type".to_owned())?;
+    let bitcoin_leg_id = match swap_type {
+        "submarine" => "source",
+        "reverse" => "destination",
+        _ => return Err("funded contract has an unsupported verification flow".to_owned()),
+    };
+    let verifier = verifier_for_leg(&session.contract, bitcoin_leg_id)?;
+    let lightning = verifier_for_leg(&session.contract, "lightning")?;
+    let output_index = verifier
+        .get("output_index")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "funded verifier has no bounded output index".to_owned())?;
+    let observed_at = unix_now()?;
+    let minimum_confirmations = u32::try_from(canonical_u64(required_string(
+        verifier,
+        "minimum_confirmations",
+    )?)?)
+    .map_err(|_| "minimum confirmation count exceeds u32".to_owned())?;
+    let minimum_final_cltv = canonical_u64(required_string(
+        lightning,
+        "invoice_minimum_final_cltv_delta",
+    )?)?;
+    let timeout_ladder = serde_json::from_value(
+        session
+            .contract
+            .get("timeout_ladder")
+            .cloned()
+            .ok_or_else(|| "funded contract has no timeout ladder".to_owned())?,
+    )
+    .map_err(|error| format!("funded timeout ladder is invalid: {error}"))?;
+    Ok(VerifyBeforeFundInput {
+        observed_at,
+        payment_hash: session
+            .contract
+            .get("payment_hash")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "funded contract has no payment hash".to_owned())?
+            .to_owned(),
+        funding: FundingVerificationInput {
+            raw_transaction: required_string(verifier, "funding_transaction")?.to_owned(),
+            output_index,
+            expected_amount: required_string(verifier, "amount")?.to_owned(),
+            expected_script_pubkey: required_string(verifier, "script_pubkey")?.to_owned(),
+            taproot_output_key: required_string(verifier, "taproot_output_key")?.to_owned(),
+            taproot_script: required_string(verifier, "taproot_script")?.to_owned(),
+            taproot_control_block: required_string(verifier, "taproot_control_block")?.to_owned(),
+        },
+        invoice: Some(InvoiceVerificationInput {
+            invoice: invoice.to_owned(),
+            expected_network: required_string(lightning, "invoice_network")?.to_owned(),
+            expected_amount_msat: required_string(lightning, "invoice_amount_msat")?.to_owned(),
+            observed_at,
+            required_minimum_final_cltv_delta: minimum_final_cltv,
+        }),
+        timeout_ladder,
+        minimum_confirmations,
+        replacement_policy: required_string(verifier, "replacement_policy")?.to_owned(),
+    })
+}
+
+fn verifier_for_leg<'a>(
+    contract: &'a Value,
+    leg_id: &str,
+) -> Result<&'a Map<String, Value>, String> {
+    contract
+        .get("verifier_inputs")
+        .and_then(Value::as_array)
+        .and_then(|verifiers| {
+            verifiers
+                .iter()
+                .find(|verifier| verifier.get("leg_id").and_then(Value::as_str) == Some(leg_id))
+        })
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("funded contract has no {leg_id} verifier"))
+}
+
+fn requester_effect_id(order_id: &str, role: &str, leg_id: &str) -> Result<String, String> {
+    let mut preimage = b"openagents.mkt-swp.v1".to_vec();
+    preimage.push(0);
+    preimage.extend_from_slice(&decode_hex(order_id)?);
+    preimage.push(0);
+    preimage.extend_from_slice(role.as_bytes());
+    preimage.push(0);
+    preimage.extend_from_slice(leg_id.as_bytes());
+    Ok(lower_hex(&sha256(&preimage)))
+}
+
+fn json_digest(value: &Value) -> Result<String, String> {
+    serde_json::to_vec(value)
+        .map(|bytes| lower_hex(&sha256(&bytes)))
+        .map_err(|error| format!("could not serialize committed JSON: {error}"))
+}
+
+fn exact_tag_value<'a>(event: &'a Event, name: &'a str) -> Result<&'a str, String> {
+    let values = event.tag_values(name).collect::<Vec<_>>();
+    let [value] = values.as_slice() else {
+        return Err(format!("event does not have exactly one {name} tag"));
+    };
+    Ok(*value)
+}
+
+struct BitcoinTerms {
+    amount_sat: u64,
+    miner_fee_budget_sat: u64,
+    script_pubkey: Vec<u8>,
+    claim_script: Vec<u8>,
+    claim_control_block: Vec<u8>,
+}
+
+fn bitcoin_terms(contract: &Value, leg_id: &str) -> Result<BitcoinTerms, String> {
+    let verifier = contract
+        .get("verifier_inputs")
+        .and_then(Value::as_array)
+        .and_then(|verifiers| {
+            verifiers
+                .iter()
+                .find(|verifier| verifier.get("leg_id").and_then(Value::as_str) == Some(leg_id))
+        })
+        .and_then(Value::as_object)
+        .ok_or_else(|| "funded contract has no Bitcoin verifier".to_owned())?;
+    Ok(BitcoinTerms {
+        amount_sat: canonical_u64(required_string(verifier, "amount")?)?,
+        miner_fee_budget_sat: canonical_u64(
+            contract
+                .get("miner_fee_budget")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "funded contract has no miner fee budget".to_owned())?,
+        )?,
+        script_pubkey: decode_hex(required_string(verifier, "script_pubkey")?)?,
+        claim_script: decode_hex(required_string(verifier, "claim_script")?)?,
+        claim_control_block: decode_hex(required_string(verifier, "taproot_claim_control_block")?)?,
+    })
+}
+
+fn reverse_refund_height(contract: &Value) -> Result<u32, String> {
+    let value = contract
+        .get("timeout_ladder")
+        .and_then(|ladder| ladder.get("provider_refund_first"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "reverse contract has no provider refund height".to_owned())?;
+    u32::try_from(value).map_err(|_| "reverse refund height exceeds u32".to_owned())
+}
+
+fn fund_client_wallet(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+) -> Result<FundingInput, String> {
+    let path = WalletPath::new(0, false, 0)
+        .map_err(|error| format!("client wallet funding path is invalid: {error}"))?;
+    let address = environment
+        .wallet
+        .derive_address(path)
+        .map_err(|error| format!("could not derive client funding address: {error}"))?;
+    let transaction_id = runtime
+        .block_on(environment.bitcoind.call(
+            &rpc_id("client-wallet-fund")?,
+            "sendtoaddress",
+            json!([address.address, 1.0]),
+        ))
+        .map_err(|error| format!("could not fund client smoke wallet: {error}"))?
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "client wallet funding returned no transaction ID".to_owned())?;
+    mine_blocks(runtime, &environment.bitcoind, 2, "client-wallet-fund")?;
+    let transaction = runtime
+        .block_on(environment.bitcoind.raw_transaction(
+            &rpc_id("client-wallet-transaction")?,
+            &transaction_id,
+            true,
+        ))
+        .map_err(|error| format!("could not inspect client wallet funding: {error}"))?;
+    let outputs = transaction
+        .get("vout")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "client wallet funding has no outputs".to_owned())?;
+    let script = lower_hex(&address.script_pubkey);
+    let matching = outputs
+        .iter()
+        .filter(|output| {
+            output
+                .get("scriptPubKey")
+                .and_then(|script| script.get("hex"))
+                .and_then(Value::as_str)
+                == Some(script.as_str())
+        })
+        .collect::<Vec<_>>();
+    let [output] = matching.as_slice() else {
+        return Err("client wallet funding did not contain one derived output".to_owned());
+    };
+    let output_index = output
+        .get("n")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "client wallet funding output index is invalid".to_owned())?;
+    let amount = output
+        .get("value")
+        .ok_or_else(|| "client wallet funding output has no amount".to_owned())?;
+    if btc_value_to_sat(amount)? != 100_000_000 {
+        return Err("client wallet funding output has another amount".to_owned());
+    }
+    Ok(FundingInput {
+        txid: transaction_id,
+        vout: output_index,
+        value_sat: 100_000_000,
+        path,
+    })
+}
+
+fn mine_blocks(
+    runtime: &Runtime,
+    bitcoind: &BitcoindClient,
+    count: u64,
+    label: &str,
+) -> Result<(), String> {
+    if count == 0 || count > 1_000 {
+        return Err("smoke mining count is outside bounds".to_owned());
+    }
+    let address = runtime
+        .block_on(bitcoind.call(
+            &rpc_id(&format!("{label}-mine-address"))?,
+            "getnewaddress",
+            json!([]),
+        ))
+        .map_err(|error| format!("could not derive mining address: {error}"))?
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "bitcoind returned no mining address".to_owned())?;
+    let blocks = runtime
+        .block_on(bitcoind.call(
+            &rpc_id(&format!("{label}-mine"))?,
+            "generatetoaddress",
+            json!([count, address]),
+        ))
+        .map_err(|error| format!("could not mine smoke blocks: {error}"))?;
+    if blocks.as_array().map(Vec::len) != usize::try_from(count).ok() {
+        return Err("bitcoind returned another mined-block count".to_owned());
+    }
+    Ok(())
+}
+
+fn discover_provider(
+    relay_url: &str,
+    requester: &MarketSigner,
+    timeout: Duration,
+) -> Result<String, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let mut relay = connect(relay_url)?;
+        authenticate(&mut relay, requester, relay_url, unix_now()?)?;
+        send_json(
+            &mut relay.websocket,
+            json!(["REQ", "funded-provider-discovery", {
+                "kinds":[39601],
+                "#d":[OFFERING_ID],
+                "limit":8
+            }]),
+        )?;
+        while Instant::now() < deadline {
+            let Some(message) = read_json_until(&mut relay.websocket, deadline)? else {
+                break;
+            };
+            if message == json!(["EOSE", "funded-provider-discovery"]) {
+                break;
+            }
+            let Some(value) = message
+                .as_array()
+                .filter(|fields| fields.first().and_then(Value::as_str) == Some("EVENT"))
+                .and_then(|fields| fields.get(2))
+            else {
+                continue;
+            };
+            let event: Event = serde_json::from_value(value.clone())
+                .map_err(|error| format!("provider discovery event is invalid: {error}"))?;
+            if event.kind == 39_601 && event.tag_values("d").any(|value| value == OFFERING_ID) {
+                event
+                    .validate_structure()
+                    .and_then(|()| event.validate_crypto())
+                    .map_err(|error| format!("provider Offering signature is invalid: {error}"))?;
+                validate_mkt_public_event(&event)
+                    .map_err(|error| format!("provider Offering is invalid: {error}"))?;
+                return Ok(event.pubkey);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err("funded provider Offering did not appear before timeout".to_owned());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+fn verify_health(url: &str) -> Result<(), String> {
+    let remainder = url
+        .strip_prefix("http://")
+        .ok_or_else(|| "smoke health URL must use plaintext loopback HTTP".to_owned())?;
+    let (authority, path) = remainder
+        .split_once('/')
+        .map(|(authority, path)| (authority, format!("/{path}")))
+        .unwrap_or((remainder, "/".to_owned()));
+    let addresses = authority
+        .to_socket_addrs()
+        .map_err(|error| format!("could not resolve provider health endpoint: {error}"))?
+        .filter(|address| address.ip().is_loopback())
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err("smoke health endpoint is not loopback".to_owned());
+    }
+    let mut stream = TcpStream::connect_timeout(
+        addresses
+            .first()
+            .ok_or_else(|| "provider health endpoint has no address".to_owned())?,
+        IO_TIMEOUT,
+    )
+    .map_err(|error| format!("could not connect to provider health endpoint: {error}"))?;
+    stream
+        .set_read_timeout(Some(IO_TIMEOUT))
+        .map_err(|error| format!("could not bound provider health read: {error}"))?;
+    stream
+        .set_write_timeout(Some(IO_TIMEOUT))
+        .map_err(|error| format!("could not bound provider health write: {error}"))?;
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("could not request provider health: {error}"))?;
+    let mut response = Vec::new();
+    stream
+        .take(16 * 1024)
+        .read_to_end(&mut response)
+        .map_err(|error| format!("could not read provider health: {error}"))?;
+    let response = std::str::from_utf8(&response)
+        .map_err(|_| "provider health response is not UTF-8".to_owned())?;
+    if !response.starts_with("HTTP/1.1 200 OK\r\n") || !response.ends_with("\r\n\r\nready\n") {
+        return Err("provider health endpoint did not report ready".to_owned());
+    }
+    Ok(())
+}
+
+fn write_evidence(
+    path: &Path,
+    provider_pubkey: &str,
+    submarine: Value,
+    reverse: Value,
+    reverse_refund: Value,
+) -> Result<(), String> {
+    let evidence = json!({
+        "schema":"openagents.immortal.provider-funded-smoke-evidence.v1",
+        "daemon":{
+            "health_ready":true,
+            "provider_pubkey":provider_pubkey
+        },
+        "journeys":{
+            "submarine":submarine,
+            "reverse":reverse,
+            "reverse_refund":reverse_refund
+        }
+    });
+    let bytes = serde_json::to_vec_pretty(&evidence)
+        .map_err(|error| format!("could not serialize funded evidence: {error}"))?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| format!("could not create private funded evidence: {error}"))?;
+    file.write_all(&bytes)
+        .map_err(|error| format!("could not write private funded evidence: {error}"))?;
+    file.write_all(b"\n")
+        .map_err(|error| format!("could not terminate private funded evidence: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("could not sync private funded evidence: {error}"))
+}
+
+fn connect(relay_url: &str) -> Result<RelayClient, String> {
+    let addresses = loopback_addresses(relay_url)?;
+    let mut last_error = None;
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, IO_TIMEOUT) {
+            Ok(stream) => {
+                stream
+                    .set_read_timeout(Some(IO_TIMEOUT))
+                    .map_err(|error| format!("could not set relay read timeout: {error}"))?;
+                stream
+                    .set_write_timeout(Some(IO_TIMEOUT))
+                    .map_err(|error| format!("could not set relay write timeout: {error}"))?;
+                let (mut websocket, _) = client(relay_url, stream)
+                    .map_err(|error| format!("could not open relay WebSocket: {error}"))?;
+                let challenge_message =
+                    read_json_until(&mut websocket, Instant::now() + IO_TIMEOUT)?.ok_or_else(
+                        || "relay did not send an authentication challenge".to_owned(),
+                    )?;
+                let challenge = challenge_message
+                    .as_array()
+                    .filter(|fields| fields.first().and_then(Value::as_str) == Some("AUTH"))
+                    .and_then(|fields| fields.get(1))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "relay did not send NIP-42 challenge".to_owned())?
+                    .to_owned();
+                return Ok(RelayClient {
+                    websocket,
+                    challenge,
+                });
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(format!(
+        "could not connect to relay: {}",
+        last_error.map_or_else(|| "no address".to_owned(), |error| error.to_string())
+    ))
+}
+
+fn authenticate(
+    client: &mut RelayClient,
+    signer: &MarketSigner,
+    relay_url: &str,
+    now: u64,
+) -> Result<(), String> {
+    let event = signer.sign(
+        now,
+        22_242,
+        vec![
+            Tag::new(vec!["relay".into(), relay_url.into()]),
+            Tag::new(vec!["challenge".into(), client.challenge.clone()]),
+        ],
+        String::new(),
+    );
+    send_json(&mut client.websocket, json!(["AUTH", event]))?;
+    expect_ok(
+        &mut client.websocket,
+        &event.id,
+        Instant::now() + IO_TIMEOUT,
+    )
+}
+
+fn subscribe(client: &mut RelayClient, recipient: &str) -> Result<(), String> {
+    send_json(
+        &mut client.websocket,
+        json!(["REQ", "funded-requester", {"kinds":[1059],"#p":[recipient],"limit":512}]),
+    )
+}
+
+fn drain_history(client: &mut RelayClient, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let message = read_json_until(&mut client.websocket, deadline)?
+            .ok_or_else(|| "funded requester history did not reach EOSE".to_owned())?;
+        if message == json!(["EOSE", "funded-requester"]) {
+            return Ok(());
+        }
+    }
+}
+
+fn publish_private(
+    publisher: &mut RelayClient,
+    event: &Event,
+    sender: &MarketSigner,
+    recipient: &str,
+) -> Result<(), String> {
+    let raw = serde_json::to_vec(event)
+        .map_err(|error| format!("could not serialize private event: {error}"))?;
+    let wrap = wrap_mkt_record(&raw, sender, recipient, random_wrap_material()?)?;
+    send_json(&mut publisher.websocket, json!(["EVENT", wrap.event]))?;
+    expect_ok(
+        &mut publisher.websocket,
+        &wrap.event.id,
+        Instant::now() + IO_TIMEOUT,
+    )
+}
+
+fn receive_matching_private<F>(
+    reader: &mut RelayClient,
+    recipient: &MarketSigner,
+    session_id: &str,
+    timeout: Duration,
+    matches: F,
+) -> Result<Event, String>
+where
+    F: Fn(&Event) -> bool,
+{
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        let Some(message) = read_json_until(&mut reader.websocket, deadline)? else {
+            break;
+        };
+        let Some(value) = message
+            .as_array()
+            .filter(|fields| fields.first().and_then(Value::as_str) == Some("EVENT"))
+            .and_then(|fields| fields.get(2))
+        else {
+            continue;
+        };
+        let wrap: Event = serde_json::from_value(value.clone())
+            .map_err(|error| format!("funded subscription payload is not an event: {error}"))?;
+        let delivered = unwrap_mkt_record(&wrap, recipient, &swp_profiles())?;
+        if delivered.record.envelope.session_id == session_id && matches(&delivered.record.event) {
+            return Ok(delivered.record.event);
+        }
+    }
+    Err(format!(
+        "no matching provider record arrived for session {session_id}"
+    ))
+}
+
+fn expect_ok(websocket: &mut RelaySocket, event_id: &str, deadline: Instant) -> Result<(), String> {
+    loop {
+        let response = read_json_until(websocket, deadline)?
+            .ok_or_else(|| format!("relay did not acknowledge event {event_id}"))?;
+        let Some(fields) = response.as_array() else {
+            continue;
+        };
+        if fields.first().and_then(Value::as_str) != Some("OK")
+            || fields.get(1).and_then(Value::as_str) != Some(event_id)
+        {
+            continue;
+        }
+        return if fields.get(2).and_then(Value::as_bool) == Some(true) {
+            Ok(())
+        } else {
+            Err(format!("relay rejected event {event_id}: {response}"))
+        };
+    }
+}
+
+fn send_json(websocket: &mut RelaySocket, value: Value) -> Result<(), String> {
+    websocket
+        .send(Message::text(value.to_string()))
+        .map_err(|error| format!("could not write relay message: {error}"))
+}
+
+fn read_json_until(
+    websocket: &mut RelaySocket,
+    deadline: Instant,
+) -> Result<Option<Value>, String> {
+    loop {
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        match websocket.read() {
+            Ok(Message::Text(text)) => {
+                return serde_json::from_str(text.as_str())
+                    .map(Some)
+                    .map_err(|error| format!("relay message is invalid JSON: {error}"));
+            }
+            Ok(Message::Ping(payload)) => websocket
+                .send(Message::Pong(payload))
+                .map_err(|error| format!("could not answer relay ping: {error}"))?,
+            Ok(Message::Pong(_)) => {}
+            Ok(Message::Close(frame)) => {
+                return Err(format!("relay closed the smoke subscription: {frame:?}"));
+            }
+            Ok(message) => return Err(format!("unexpected relay frame: {message:?}")),
+            Err(WebSocketError::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(format!("could not read relay message: {error}")),
+        }
+    }
+}
+
+fn loopback_addresses(relay_url: &str) -> Result<Vec<SocketAddr>, String> {
+    let authority = relay_url
+        .strip_prefix("ws://")
+        .ok_or_else(|| "funded smoke accepts only ws:// relay URLs".to_owned())?
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    let authority = if authority.contains(':') {
+        authority.to_owned()
+    } else {
+        format!("{authority}:80")
+    };
+    let addresses = authority
+        .to_socket_addrs()
+        .map_err(|error| format!("could not resolve relay: {error}"))?
+        .filter(|address| is_loopback(address.ip()))
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err("funded smoke refuses non-loopback relay addresses".to_owned());
+    }
+    Ok(addresses)
+}
+
+fn is_loopback(address: IpAddr) -> bool {
+    address.is_loopback()
+}
+
+fn sign_request(
+    request: immortal_client::mkt_swp_client::MktSigningRequest,
+    signer: &MarketSigner,
+) -> Result<Event, String> {
+    let event = signer.sign(
+        request.created_at,
+        request.kind,
+        request.tags.clone(),
+        request.content.clone(),
+    );
+    request
+        .verify_signed(event)
+        .map_err(|error| format!("request signature failed: {error}"))
+}
+
+fn fixture_profile(swap_type: &str, kind: u64, signer_role: Option<&str>) -> Result<Value, String> {
+    let fixtures: Value = serde_json::from_str(FULL_SESSION_FIXTURES)
+        .map_err(|error| format!("full-session fixture is invalid: {error}"))?;
+    let records = fixtures
+        .get("flows")
+        .and_then(|flows| flows.get(swap_type))
+        .and_then(|flow| flow.get("snapshot"))
+        .and_then(|snapshot| snapshot.get("signed_records"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("full-session fixture has no {swap_type} records"))?;
+    let content = records
+        .iter()
+        .find(|record| {
+            record.get("kind").and_then(Value::as_u64) == Some(kind)
+                && signer_role.is_none_or(|role| {
+                    record
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .and_then(|content| serde_json::from_str::<Value>(content).ok())
+                        .and_then(|content| {
+                            content
+                                .get("mkt_swp")
+                                .and_then(|profile| profile.get("signer_role"))
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .as_deref()
+                        == Some(role)
+                })
+        })
+        .and_then(|record| record.get("content"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("full-session fixture has no kind {kind} record"))?;
+    serde_json::from_str::<Value>(content)
+        .map_err(|error| format!("fixture record is invalid JSON: {error}"))?
+        .get("mkt_swp")
+        .cloned()
+        .ok_or_else(|| "fixture record has no MKT-SWP profile".to_owned())
+}
+
+fn record_profile(event: &Event) -> Result<Map<String, Value>, String> {
+    serde_json::from_str::<Value>(&event.content)
+        .map_err(|error| format!("record content is invalid JSON: {error}"))?
+        .get("mkt_swp")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| "record has no MKT-SWP profile".to_owned())
+}
+
+fn next_created_at(session: &SwapSession<AwaitingVerification>) -> Result<u64, String> {
+    next_created_at_records(session.signed_records())
+}
+
+fn next_created_at_records(records: &[Event]) -> Result<u64, String> {
+    let newest = records
+        .iter()
+        .map(|record| record.created_at)
+        .max()
+        .unwrap_or(unix_now()?);
+    Ok(unix_now()?.max(newest.saturating_add(1)))
+}
+
+fn base_state(state: &str) -> Result<&'static str, String> {
+    match state {
+        "requester_verification_passed"
+        | "requester_invoice_verified"
+        | "requester_lock_verified" => Ok("awaiting_input"),
+        "requester_funding_broadcast" => Ok("funding_observed"),
+        "lightning_payment_pending" | "requester_claim_pending" | "requester_claimed" => {
+            Ok("executing")
+        }
+        _ => Err("requester state has no smoke base-state mapping".to_owned()),
+    }
+}
+
+fn status_outpoint(status: &Event) -> Result<(String, u32), String> {
+    let profile = record_profile(status)?;
+    let transaction_id = profile
+        .get("transaction_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "provider funding Status has no transaction ID".to_owned())?;
+    require_lower_hex_32(transaction_id, "provider funding transaction ID")?;
+    let output_index = profile
+        .get("output_index")
+        .or_else(|| profile.get("vout"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "provider funding Status has no output index".to_owned())?;
+    Ok((transaction_id.to_owned(), output_index))
+}
+
+fn status_transaction_id(status: &Event) -> Result<String, String> {
+    let transaction_id = record_profile(status)?
+        .get("transaction_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| "provider settlement Status has no transaction ID".to_owned())?;
+    require_lower_hex_32(&transaction_id, "provider settlement transaction ID")?;
+    Ok(transaction_id)
+}
+
+fn btc_value_to_sat(value: &Value) -> Result<u64, String> {
+    let encoded = value
+        .as_number()
+        .map(ToString::to_string)
+        .ok_or_else(|| "Bitcoin amount is not numeric".to_owned())?;
+    let (whole, fraction) = encoded.split_once('.').unwrap_or((&encoded, ""));
+    if fraction.len() > 8
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err("Bitcoin amount is not a bounded decimal".to_owned());
+    }
+    let whole = whole
+        .parse::<u64>()
+        .map_err(|_| "Bitcoin whole amount exceeds u64".to_owned())?;
+    let mut padded = fraction.to_owned();
+    padded.extend(std::iter::repeat_n('0', 8 - fraction.len()));
+    let fractional = padded
+        .parse::<u64>()
+        .map_err(|_| "Bitcoin fractional amount is invalid".to_owned())?;
+    whole
+        .checked_mul(100_000_000)
+        .and_then(|amount| amount.checked_add(fractional))
+        .ok_or_else(|| "Bitcoin amount exceeds u64 satoshis".to_owned())
+}
+
+fn swp_profiles() -> [MktProfileSupport<'static>; 1] {
+    [MktProfileSupport {
+        profile_id: MKT_SWP_PROFILE_ID,
+        version: MKT_SWP_PROFILE_VERSION,
+        critical_members: &[],
+        understood_members: &[],
+    }]
+}
+
+fn random_wrap_material() -> Result<WrapMaterial, String> {
+    let now = unix_now()?;
+    Ok(WrapMaterial {
+        seal_created_at: now.saturating_sub(u64::from(random_32()?[0]) * 10),
+        wrap_created_at: now.saturating_sub(u64::from(random_32()?[0]) * 10),
+        seal_nonce: random_32()?,
+        wrap_nonce: random_32()?,
+        wrap_secret: random_secret()?,
+    })
+}
+
+fn random_secret() -> Result<[u8; 32], String> {
+    for _ in 0..32 {
+        let bytes = random_32()?;
+        if MarketSigner::from_secret_bytes(bytes).is_ok() {
+            return Ok(bytes);
+        }
+    }
+    Err("could not generate one-time wrapping key".to_owned())
+}
+
+fn random_32() -> Result<[u8; 32], String> {
+    let mut bytes = [0_u8; 32];
+    File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .map_err(|error| format!("could not read operating-system randomness: {error}"))?;
+    Ok(bytes)
+}
+
+fn required_environment(name: &str) -> Result<String, String> {
+    std::env::var(name).map_err(|_| format!("{name} is required for the funded smoke"))
+}
+
+fn rpc_id(label: &str) -> Result<RpcRequestId, String> {
+    let bounded = if label.len() > 80 {
+        &label[..80]
+    } else {
+        label
+    };
+    RpcRequestId::new(format!("funded-smoke:{bounded}"))
+        .map_err(|error| format!("smoke bitcoind request ID is invalid: {error}"))
+}
+
+fn cln_id(label: &str) -> Result<ClnRequestId, String> {
+    let bounded = if label.len() > 80 {
+        &label[..80]
+    } else {
+        label
+    };
+    ClnRequestId::new(format!("funded-smoke:{bounded}"))
+        .map_err(|error| format!("smoke CLN request ID is invalid: {error}"))
+}
+
+fn required_string<'a>(object: &'a Map<String, Value>, member: &str) -> Result<&'a str, String> {
+    object
+        .get(member)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("contract member {member} is missing"))
+}
+
+fn bounded_u32_member(object: &Map<String, Value>, member: &str) -> Result<u32, String> {
+    object
+        .get(member)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| format!("contract member {member} is not a bounded unsigned integer"))
+}
+
+fn canonical_u64(value: &str) -> Result<u64, String> {
+    if value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || value.len() > 1 && value.starts_with('0')
+    {
+        return Err("amount is not canonical decimal".to_owned());
+    }
+    value
+        .parse::<u64>()
+        .map_err(|_| "amount exceeds u64".to_owned())
+}
+
+fn decode_lower_hex_32(value: &str) -> Result<[u8; 32], String> {
+    if value.len() != 64 {
+        return Err("identity key is not 32-byte lowercase hex".to_owned());
+    }
+    let decoded = decode_hex(value)?;
+    decoded
+        .try_into()
+        .map_err(|_| "identity key is not 32 bytes".to_owned())
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if value.is_empty() || value.len() % 2 != 0 || value.len() > 2_000_000 {
+        return Err("hexadecimal artifact is empty, odd, or unbounded".to_owned());
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| Ok(hex_nibble(pair[0])? << 4 | hex_nibble(pair[1])?))
+        .collect()
+}
+
+fn hex_nibble(value: u8) -> Result<u8, String> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        _ => Err("hexadecimal artifact is not lowercase".to_owned()),
+    }
+}
+
+fn display_txid_wire(value: &str) -> Result<[u8; 32], String> {
+    require_lower_hex_32(value, "transaction ID")?;
+    let mut bytes: [u8; 32] = decode_hex(value)?
+        .try_into()
+        .map_err(|_| "transaction ID is not 32 bytes".to_owned())?;
+    bytes.reverse();
+    Ok(bytes)
+}
+
+fn require_lower_hex_32(value: &str, label: &str) -> Result<(), String> {
+    if value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err(format!("{label} is not lowercase 32-byte hex"))
+    }
+}
+
+fn digest(value: &str) -> String {
+    lower_hex(&sha256(value.as_bytes()))
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+fn unix_now() -> Result<u64, String> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|error| format!("system clock is before Unix epoch: {error}"))
+}

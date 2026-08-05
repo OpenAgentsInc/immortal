@@ -1,7 +1,10 @@
 # Deployment Documentation
 
-This folder tells you how to deploy Immortal: one Rust binary and one
-Postgres database, behind a reverse proxy that terminates TLS.
+This folder tells you how to deploy Immortal products: one Rust binary and one
+Postgres database per product. The relay sits behind a reverse proxy that
+terminates TLS. The custody-bearing provider is a separate product with its
+own database and connects to operator-owned Bitcoin Core and Core Lightning
+nodes.
 
 The material adapts the production practices from *Zero To Production In
 Rust* by Luca Palmieri (2024-09-03 edition) to Immortal's constraints. The
@@ -28,6 +31,7 @@ cache, no sync engine. Postgres does all the storage work.
 | [`runbook-digitalocean.md`](runbook-digitalocean.md) | DigitalOcean: the supported Debian 13 Droplet path and the explicit managed-platform boundary. |
 | [`runbook-google-cloud.md`](runbook-google-cloud.md) | Google Cloud: Cloud Run + Cloud SQL + Secret Manager + Artifact Registry, and a GCE VM alternative. |
 | [`runbook-local-dev.md`](runbook-local-dev.md) | Disposable local Postgres and relay plus the two-actor wrapped NIP-MKT smoke. |
+| [`runbook-provider-debian.md`](runbook-provider-debian.md) | The funded `immortal-provider` v1 prerequisites, custody boundary, separate Postgres, CLN hold plugin, service, health, funding, backup, and upgrade procedure. |
 | [`swap-network-infrastructure.md`](swap-network-infrastructure.md) | Role-by-role infrastructure for the decentralized Boltz-replacement swap network: relay, liquidity provider, client, and the minimum honest network. |
 
 ## Reading order
@@ -41,7 +45,9 @@ cache, no sync engine. Postgres does all the storage work.
 
 ## Invariants that apply to every runbook
 
-- One binary and one Postgres database. Nothing else runs.
+- One binary and one Postgres database per product. The provider's declared
+  bitcoind, CLN, and hold-plugin rail prerequisites remain separate
+  operator-owned systems; they do not enter the relay product.
 - TLS terminates at the reverse proxy (Caddy, nginx, or a cloud load
   balancer). The binary speaks plain HTTP/WebSocket on a private address.
 - Prepared SQL statements only.

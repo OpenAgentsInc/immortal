@@ -152,6 +152,75 @@ binary is directly reachable.
 | `IMMORTAL_LOG_LEVEL` | no | `info` | One of `error`, `warn`, `info`, `debug`. Logs are single-line JSON on stdout. |
 | `IMMORTAL_SHUTDOWN_GRACE_SECONDS` | no | `10` | On SIGTERM: stop accepting, drain in-flight admissions, close connections, exit within this bound. |
 
+## Provider product
+
+`immortal-provider` has a separate environment contract and a separate
+Postgres database. Provider variables use the `IMMORTAL_PROVIDER_` prefix;
+relay variables are neither read nor inherited. The canonical machine form,
+including byte bounds and secret classifications, is exported by
+`immortal-provider contract` and documented in
+[`provider-contract.md`](../protocol/provider-contract.md).
+
+The funded v1 process connects only to a `ws://` relay whose resolved and
+connected peer is loopback, a loopback bitcoind JSON-RPC endpoint, and an
+absolute CLN Unix socket. This keeps the seven-dependency build free of a TLS
+stack. A provider operator can run a separately configured local relay product
+on the same host; public `wss://` provider transport requires the approved TLS
+feature path and is not claimed by v1.
+
+### Provider required variables
+
+| Variable | Modes | Meaning |
+| --- | --- | --- |
+| `IMMORTAL_PROVIDER_DATABASE_URL` | funded | Provider-owned Postgres URL, bounded to 4,096 bytes. It must name a database separate from every relay database. |
+| `IMMORTAL_PROVIDER_RELAY_URL` | funded, no-spend | Bounded `ws://` loopback relay URL. Userinfo, query strings, fragments, public peers, and TLS URLs are rejected. |
+| `IMMORTAL_PROVIDER_IDENTITY_SECRET` | funded, no-spend | Provider Nostr identity as exactly 64 lowercase hexadecimal characters. |
+| `IMMORTAL_PROVIDER_BITCOIN_NETWORK` | funded | One of `mainnet`, `testnet`, `signet`, or `regtest`; there is no implicit default. |
+| `IMMORTAL_PROVIDER_BITCOIND_HOST` | funded | Host that resolves and connects only to loopback. |
+| `IMMORTAL_PROVIDER_BITCOIND_PORT` | funded | JSON-RPC port, 1–65,535. |
+| `IMMORTAL_PROVIDER_BITCOIND_RPC_USER` | funded | Basic-auth username, 1–256 bytes. |
+| `IMMORTAL_PROVIDER_BITCOIND_RPC_PASSWORD` | funded | Basic-auth password, 1–1,024 bytes. |
+| `IMMORTAL_PROVIDER_CLN_RPC_PATH` | funded | Absolute CLN Unix-socket path, 1–4,096 bytes. Startup probes `help` for every required standard and hold-plugin command. |
+| `IMMORTAL_PROVIDER_WALLET_SEED_FILE` | funded | Absolute UTF-8 path, 1–4,096 bytes, to a nonsymlink regular file owned by the operator and mode `0600`. The file contains exactly 32 lowercase-hex bytes with an optional final newline. |
+
+The identity, database credential, RPC credentials, CLN socket path, and
+wallet seed path are sensitive. They must not appear in argv, logs, fixtures,
+provider Postgres, relay state, or the contract artifact.
+
+### Provider optional variables
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `IMMORTAL_PROVIDER_HEALTH_BIND` | `127.0.0.1:9091` | Private or loopback health/metrics listener. Public addresses fail startup. |
+| `IMMORTAL_PROVIDER_ALERT_URL` | disabled | Bounded plaintext HTTP URL on a private numeric or loopback address. HTTPS is outside the v1 dependency profile. |
+| `IMMORTAL_PROVIDER_CHAIN_POLL_SECONDS` | `5` | Chain polling interval, 1–300 seconds. |
+| `IMMORTAL_PROVIDER_CHAIN_STALE_SECONDS` | `30` | Maximum time without a successful chain observation, 5–3,600 seconds and greater than the poll interval. |
+| `IMMORTAL_PROVIDER_MINIMUM_CONFIRMATIONS` | `1` | Base finality requirement, 1–144 confirmations. |
+| `IMMORTAL_PROVIDER_REORG_SAFETY_BLOCKS` | `6` | Additional confirmation safety window, 1–144 blocks. |
+
+`GET /healthz` returns `200 ready` only when startup completed and there are
+no pending effects, unresolved effects, or unresolved watch jobs. `GET
+/metrics` exposes only public execution counters. A non-ready provider must be
+treated as unavailable for new swaps.
+
+### Provider signed execution policy
+
+There is no environment override for a negotiated transaction, timeout, exit
+package, or terminal outcome. In reverse swaps, a durable hard reservation
+selects the funding inputs before the Quote binds the exact signed funding
+transaction, its digest, and output index. The provider rebuilds and compares
+those bytes before broadcast. Funding, claim, and reverse-lock heights are
+exclusive signed deadlines: the action is refused at the exact height and
+after it.
+
+Wallet clients must complete the client engine's verify-before-fund transition
+with the bilateral contracts and required `ExitPackage` before authorizing
+funding. Cooperative reverse settlement retires the competing persisted refund
+watch; noncooperative expiry executes it. Provider reservations are released
+only by provider-authorized terminal handling, and each funded completion or
+refund ends in a provider-signed Close. These rules are contract/session state,
+not operator-tunable configuration.
+
 ### NIP-11 identity (optional, advertised only)
 
 | Variable | Required | Default | Meaning |

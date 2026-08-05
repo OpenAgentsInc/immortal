@@ -5,20 +5,48 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "MKT-SWP provider sessions and no-spend daemon for the Immortal swap network"
+description = "MKT-SWP provider daemon for the Immortal swap network"
 
 [lib]
 path = "src/provider.rs"
 
 [features]
-default = ["no-spend"]
+default = ["funded", "no-spend"]
+funded = ["dep:tokio", "dep:tokio-postgres", "dep:tokio-tungstenite"]
 no-spend = ["dep:tokio", "dep:tokio-tungstenite"]
 mkt-swp-fixture-probe = []
 
 [[bin]]
 name = "immortal-provider"
 path = "src/main.rs"
+
+[[test]]
+name = "funded_live"
+required-features = ["funded"]
+
+[[test]]
+name = "no_spend_live"
 required-features = ["no-spend"]
+
+[[test]]
+name = "provider_liquidity"
+required-features = ["funded"]
+
+[[test]]
+name = "provider_quote"
+required-features = ["funded"]
+
+[[test]]
+name = "provider_settlement"
+required-features = ["funded"]
+
+[[test]]
+name = "provider_store_postgres"
+required-features = ["funded"]
+
+[[test]]
+name = "rail_clients"
+required-features = ["funded"]
 
 # Owner-approved allowlist: tokio, tokio-tungstenite, tokio-postgres,
 # secp256k1, sha2, serde, serde_json.
@@ -30,5 +58,7 @@ serde_json.workspace = true
 sha2.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+secp256k1.workspace = true
 tokio = { workspace = true, optional = true }
+tokio-postgres = { workspace = true, optional = true, features = ["with-serde_json-1"] }
 tokio-tungstenite = { workspace = true, optional = true }

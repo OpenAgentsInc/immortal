@@ -1,0 +1,40 @@
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS fetch
+
+ARG TARGETARCH
+ARG HOLD_VERSION=0.3.3
+
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+        amd64) \
+            archive_arch=amd64; \
+            archive_sha256=f9d916430fb70a3d75089f2d1b88d5d71d4987ef79933035978c1f44aab84be5 \
+            ;; \
+        arm64) \
+            archive_arch=arm64; \
+            archive_sha256=f01bf778e60742269376b7461e03d02ef274b82b886fce799924a84f2c8e391f \
+            ;; \
+        *) \
+            echo "unsupported hold-plugin target architecture" >&2; \
+            exit 1 \
+            ;; \
+    esac; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates curl; \
+    archive="hold-linux-${archive_arch}.tar.gz"; \
+    curl --fail --location --silent --show-error \
+        "https://github.com/BoltzExchange/hold/releases/download/v${HOLD_VERSION}/${archive}" \
+        --output "/tmp/${archive}"; \
+    printf '%s  %s\n' "${archive_sha256}" "/tmp/${archive}" | sha256sum --check --strict; \
+    tar --extract --gzip --file "/tmp/${archive}" --directory /tmp; \
+    install -D -m 0755 "/tmp/build/hold-linux-${archive_arch}" /out/hold
+
+FROM elementsproject/lightningd:v26.06.6@sha256:094be3630f865c795649d6063a8796afa0f78e82a0c311bb34f2b0bd570c819a
+
+USER root
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        libpq5 libsqlite3-0 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=fetch /out/hold /usr/local/bin/hold
+

@@ -1,0 +1,205 @@
+{
+  "schema": "openagents.immortal.provider-runtime-fixtures.v1",
+  "manifest_version": 1,
+  "cases": [
+    {
+      "name": "provider-v1-funded-prerequisites",
+      "mode": "funded",
+      "requires": ["postgres", "bitcoind", "cln", "cln_hold_plugin"]
+    },
+    {
+      "name": "provider-v1-no-spend-prerequisites",
+      "mode": "no_spend",
+      "requires": ["relay"]
+    },
+    {
+      "name": "provider-v1-script-path-only",
+      "taproot_script_path": true,
+      "musig2_key_path": false
+    },
+    {
+      "name": "provider-v1-wallet-discovery",
+      "address_command": "bip86_receive_address",
+      "utxo_discovery": "scantxoutset",
+      "database_access": false,
+      "rail_mutation": false
+    },
+    {
+      "name": "provider-v1-chain-observation",
+      "polling_methods": [
+        "getbestblockhash",
+        "getblockheader",
+        "getrawmempool",
+        "gettxout"
+      ],
+      "quote_and_safety_height": "getblockchaininfo",
+      "transaction_observation": [
+        "getrawtransaction",
+        "gettxspendingprevout"
+      ],
+      "wallet_discovery": "scantxoutset",
+      "execution": "sendrawtransaction",
+      "bounded_backoff": true,
+      "staleness_is_failure": true,
+      "zmq": false
+    },
+    {
+      "name": "provider-v1-cln-methods",
+      "startup_probe_method": "help",
+      "required_capabilities": [
+        "holdinvoice",
+        "listholdinvoices",
+        "settleholdinvoice",
+        "cancelholdinvoice",
+        "invoice",
+        "pay",
+        "listinvoices",
+        "listpays",
+        "listfunds",
+        "getinfo"
+      ]
+    },
+    {
+      "name": "provider-v1-quote-rail-synchronization",
+      "attempts_per_pass": 40,
+      "delay_milliseconds": 250,
+      "maximum_cln_lag": "configured_reorg_safety_blocks",
+      "cln_ahead": "defer_quote",
+      "cln_sync_warning": "defer_quote",
+      "network_mismatch": "fail_closed"
+    },
+    {
+      "name": "provider-v1-invalid-held-htlc-disposition",
+      "verified_requires": [
+        "accepted_invoice_state",
+        "bounded_accepted_htlc_set",
+        "exact_contract_amount",
+        "signed_minimum_expiry",
+        "live_recovery_margin"
+      ],
+      "pre_funding_path": [
+        "invoice_cancel_pending",
+        "invoice_cancelled",
+        "expired"
+      ],
+      "reservation_release_after_invoice_cancellation": true,
+      "cancelled_before_funding": "cancel_and_expire_session",
+      "settled_before_funding": "unresolved",
+      "unresolved_session_disposition": "exclude_from_active_recovery_and_retain_reservation"
+    },
+    {
+      "name": "provider-v1-held-htlc-validation",
+      "runtime_assertion": "validate_held_htlcs",
+      "terms": {
+        "lightning_amount_sat": 10000,
+        "refund_height": 140,
+        "hold_expiry_height": 180,
+        "lightning_settlement_blocks": 18,
+        "broadcast_safety_blocks": 2
+      },
+      "current_height": 120,
+      "invalid_cases": [
+        {
+          "name": "amount",
+          "invoice": {
+            "state": "accepted",
+            "htlcs": [
+              {
+                "state": "accepted",
+                "msat": 9999999,
+                "cltv_expiry": 181
+              }
+            ]
+          },
+          "expected_error": "held HTLC amount differs from the bilateral contract"
+        },
+        {
+          "name": "state",
+          "invoice": {
+            "state": "accepted",
+            "htlcs": [
+              {
+                "state": "settled",
+                "msat": 10000000,
+                "cltv_expiry": 181
+              }
+            ]
+          },
+          "expected_error": "reverse invoice contains an HTLC outside the accepted state"
+        },
+        {
+          "name": "expiry",
+          "invoice": {
+            "state": "accepted",
+            "htlcs": [
+              {
+                "state": "accepted",
+                "msat": 10000000,
+                "cltv_expiry": 179
+              }
+            ]
+          },
+          "expected_error": "held HTLC expires before the signed recovery margin"
+        }
+      ]
+    },
+    {
+      "name": "provider-v1-signed-height-deadline-boundary",
+      "runtime_assertion": "execute_before_exclusive_deadline",
+      "exclusive_deadline": 120,
+      "irreversible_effects": [
+        "submarine_invoice_pay_and_claim",
+        "reverse_chain_fund"
+      ],
+      "observations": [
+        {
+          "current_height": 119,
+          "effect_executed": true
+        },
+        {
+          "current_height": 120,
+          "effect_executed": false
+        },
+        {
+          "current_height": 121,
+          "effect_executed": false
+        }
+      ]
+    },
+    {
+      "name": "provider-v1-held-invoice-cancellation",
+      "runtime_assertion": "hold_state_decision",
+      "invoice_state": "cancelled",
+      "expected_decision": "cancel",
+      "expected_failure_code": "hold_invoice_cancelled"
+    },
+    {
+      "name": "provider-v1-cooperative-reverse-refund-watch-retirement",
+      "runtime_assertion": "reverse_spend_decision",
+      "spending_transaction_id": "4444444444444444444444444444444444444444444444444444444444444444",
+      "refund_broadcast_transaction_id": "5555555555555555555555555555555555555555555555555555555555555555",
+      "refund_replacement_transaction_id": "6666666666666666666666666666666666666666666666666666666666666666",
+      "claim_is_final": true,
+      "expected_decision": "settle_claim_and_retire_refund_watch",
+      "expected_watch_completion_reason": "claim_settled"
+    },
+    {
+      "name": "provider-v1-private-operations",
+      "health_scope": "private_or_loopback",
+      "metrics_scope": "private_or_loopback",
+      "alert_transport": "private_plaintext_http"
+    },
+    {
+      "name": "provider-v1-custody-exclusions",
+      "database_excludes": [
+        "wallet_seed",
+        "spend_key",
+        "claim_key",
+        "refund_key",
+        "unreleased_preimage",
+        "node_credential",
+        "rpc_password"
+      ]
+    }
+  ]
+}

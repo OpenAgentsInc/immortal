@@ -355,10 +355,12 @@ version = "0.0.1"
 dependencies = [
  "immortal-client",
  "immortal-core",
+ "secp256k1",
  "serde",
  "serde_json",
  "sha2",
  "tokio",
+ "tokio-postgres",
  "tokio-tungstenite",
 ]
 
@@ -555,6 +557,8 @@ dependencies = [
  "bytes",
  "fallible-iterator",
  "postgres-protocol",
+ "serde_core",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,38 @@
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS fetch
+
+ARG TARGETARCH
+ARG BITCOIN_VERSION=31.1
+
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+        amd64) \
+            archive_arch=x86_64; \
+            archive_sha256=b80d9c3e04da78fb6f0569685673418cf686fadba9042d926d13fb87ff503f9e \
+            ;; \
+        arm64) \
+            archive_arch=aarch64; \
+            archive_sha256=dcf1873f2208ba4f962f3398d47e154c39c0084be8f4553e05c940d0ace3d004 \
+            ;; \
+        *) \
+            echo "unsupported Bitcoin Core target architecture" >&2; \
+            exit 1 \
+            ;; \
+    esac; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates curl; \
+    archive="bitcoin-${BITCOIN_VERSION}-${archive_arch}-linux-gnu.tar.gz"; \
+    curl --fail --location --silent --show-error \
+        "https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/${archive}" \
+        --output "/tmp/${archive}"; \
+    printf '%s  %s\n' "${archive_sha256}" "/tmp/${archive}" | sha256sum --check --strict; \
+    tar --extract --gzip --file "/tmp/${archive}" --directory /tmp; \
+    install -D -m 0755 "/tmp/bitcoin-${BITCOIN_VERSION}/bin/bitcoind" /out/bitcoind; \
+    install -D -m 0755 "/tmp/bitcoin-${BITCOIN_VERSION}/bin/bitcoin-cli" /out/bitcoin-cli
+
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+
+COPY --from=fetch /out/bitcoind /usr/local/bin/bitcoind
+COPY --from=fetch /out/bitcoin-cli /usr/local/bin/bitcoin-cli
+
+ENTRYPOINT ["/usr/local/bin/bitcoind"]

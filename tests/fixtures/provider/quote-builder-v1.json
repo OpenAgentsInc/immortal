@@ -1,0 +1,64 @@
+{
+  "schema": "openagents.mkt-swp.provider-quote-builder.v1",
+  "network_id": "bip122:000000000019d6689c085ae165831e93",
+  "invoice": "lnbc10u1p3unwfusp5t9r3yymhpfqculx78u027lxspgxcr2n2987mx2j55nnfs95nxnzqpp5jmrh92pfld78spqs78v9euf2385t83uvpwk9ldrlvf6ch7tpascqhp5zvkrmemgth3tufcvflmzjzfvjt023nazlhljz2n9hattj4f8jq8qxqyjw5qcqpjrzjqtc4fc44feggv7065fqe5m4ytjarg3repr5j9el35xhmtfexc42yczarjuqqfzqqqqqqqqlgqqqqqqgq9q9qxpqysgq079nkq507a5tw7xgttmj4u990j7wfggtrasah5gd4ywfr2pjcn29383tphp4t48gquelz9z78p4cq7ml3nrrphw5w6eckhjwmhezhnqpy6gyf0",
+  "invoice_sha256": "b0a570bb4ee56b4c1a2dfa43e1238af4be827e9bee7b17dd5ab85e27f01fead6",
+  "payment_hash": "96c772a829fb7c780410f1d85cf12a89e8b3c78c0bac5fb47f62758bf961ec30",
+  "now": 1674164600,
+  "chain_tip": {
+    "hash": "7f3abca6643c6adf4e25b70b3e35e7b9744dff336632b98a3c154c7f36f9b71a",
+    "height": 100
+  },
+  "lightning_height": 99,
+  "cases": [
+    {
+      "name": "submarine_dynamic_quote",
+      "swap_type": "submarine",
+      "input_amount": "2000",
+      "maximum_total_fee": "1000",
+      "fee_bps": 1000,
+      "miner_fee_budget_sat": 800,
+      "lightning_routing_fee_budget_sat": 0,
+      "expected_output_amount": "1000",
+      "expected_profile_sha256": "cc81c2be328524bed50fe00fd0658385373dc659263a6908391934ce9960b7e6",
+      "expected_script_pubkey": "5120cd180cc038bffe02845abad2c108c9867dc1adcb62c2c22c12b53c94f9c4877b",
+      "expected_output_key": "cd180cc038bffe02845abad2c108c9867dc1adcb62c2c22c12b53c94f9c4877b",
+      "expected_claim_public_key": "b8c060d74e250203333457e33b160e990c06dd5c1efcb0c73139ea2b6da664cf",
+      "expected_refund_public_key": "552c630b64b54bf50210c9e253d38bd4949c72e22873500f6285c2bede312a84",
+      "expected_refund_height": "107"
+    },
+    {
+      "name": "reverse_dynamic_quote",
+      "swap_type": "reverse",
+      "input_amount": "1000",
+      "maximum_total_fee": "110",
+      "fee_bps": 100,
+      "miner_fee_budget_sat": 100,
+      "lightning_routing_fee_budget_sat": 0,
+      "expected_output_amount": "890",
+      "expected_profile_sha256": "5948f9f4c7e65a15fbb283005e77ff3c8bc56bd9d3c5eb53a47ec5ef7be650c7",
+      "expected_script_pubkey": "51201f55ee864bf7c59274172bb0740064a5ece752d4ef1e30dd255ccdae62ec0305",
+      "expected_output_key": "1f55ee864bf7c59274172bb0740064a5ece752d4ef1e30dd255ccdae62ec0305",
+      "expected_claim_public_key": "552c630b64b54bf50210c9e253d38bd4949c72e22873500f6285c2bede312a84",
+      "expected_refund_public_key": "b8c060d74e250203333457e33b160e990c06dd5c1efcb0c73139ea2b6da664cf",
+      "expected_refund_height": "107"
+    }
+  ],
+  "negative_cases": [
+    {"name": "raw_invoice_digest_mismatch", "expected_error": "swp_invoice_invalid"},
+    {"name": "rfq_invoice_mismatch", "expected_error": "swp_invoice_invalid"},
+    {"name": "invoice_network_mismatch", "expected_error": "swp_invoice_invalid"},
+    {"name": "invoice_amount_mismatch", "expected_error": "swp_invoice_invalid"},
+    {"name": "expired_invoice", "expected_error": "swp_invoice_invalid"},
+    {"name": "payment_hash_mismatch", "expected_error": "swp_payment_hash_mismatch"},
+    {"name": "invalid_requester_key", "expected_error": "swp_terms_mismatch"},
+    {"name": "unsafe_deadline", "expected_error": "swp_timeout_ladder_unsafe"},
+    {"name": "invoice_expires_within_acceptance_ladder", "expected_error": "swp_timeout_ladder_unsafe"},
+    {"name": "reverse_invoice_expires_before_quote", "expected_error": "swp_invoice_invalid"},
+    {"name": "lightning_height_stale", "expected_error": "swp_timeout_ladder_unsafe"},
+    {"name": "lightning_height_ahead", "expected_error": "swp_timeout_ladder_unsafe"},
+    {"name": "unsupported_extension", "expected_error": "swp_unsupported_extension"},
+    {"name": "fee_amount_underflow", "expected_error": "swp_invalid_amount"},
+    {"name": "unsupported_chain", "expected_error": "swp_unsupported_extension"}
+  ]
+}

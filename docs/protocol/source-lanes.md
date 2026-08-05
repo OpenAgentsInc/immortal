@@ -542,3 +542,124 @@ operate channels. The contract lists `mkt-lsp:1` as `relay_observable_only`,
 keeps executable profiles empty, and advertises `nip-mkt-lsp:1` only under
 the authenticated relay URL gate after the complete local relay-observable
 conformance gate passes.
+## M12 funded provider-runtime decision (2026-08-04)
+
+Issue #25 executes the provider side of OpenAgents MKT-SWP v1, originally
+adopted at `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682` and clarified by
+`f091fd7242651eba5e3eb38c358d0d89d6a78368` as recorded in the post-provider
+sync review below. It allocates no event kind, changes no source-lane
+precedence, and leaves the issue #11 collision result unchanged. The relay
+contract, relay Postgres schema, NIP-11 document, and relay
+executable-profile set are unaffected.
+
+The #25 `immortal-provider` funded-mode packet adopts Bitcoin Core JSON-RPC
+over bounded loopback HTTP/1.1 and Core Lightning JSON-RPC over a bounded Unix
+socket. Bitcoin state is polled with bounded backoff; ZMQ is not adopted.
+Core Lightning is the only v1 Lightning implementation, with the Boltz hold
+plugin declared as an operator prerequisite. LND and its TLS dependency chain
+remain deferred. Dynamic Bitcoin/Lightning Quotes require no external price
+feed: submarine RFQs carry the requester invoice, while reverse Quotes carry
+the provider-created hold invoice and its digest. A reverse Quote derives its
+minimum acceptable shortest incoming-HTLC expiry from CLN's synchronized
+`getinfo.blockheight` plus the invoice's minimum final CLTV delta; the payer
+may construct a later expiry. Bitcoind remains the chain and refund authority.
+The provider does not construct a Quote if CLN reports either sync warning,
+names another network, is ahead of bitcoind, or lags it by more than the signed
+reorg-safety margin. A temporary height or sync-warning mismatch defers Quote
+construction through bounded polling instead of rejecting the RFQ. BOLT11
+wall-clock expiry bounds payment initiation while the observed incoming HTLC's
+CLTV independently bounds settlement and cancellation.
+
+Provider wallet construction uses the existing in-repo BIP-341/342 verifier
+and the pinned `secp256k1` Schnorr primitive. Wallet funding inputs use a
+locktime-enabled non-RBF sequence matching the signed `rbf=reject` and
+`replacement=reject` policy. Settlement is script-path only in v1; MuSig2
+cooperative key-path execution is not claimed. Hard chain reservations bind
+controlled UTXOs, hard Lightning reservations bind observed node capacity,
+and both are durable before a firm Quote is signed. Reserved UTXOs,
+transactions, public commitments, watch jobs, and rail result digests may be
+persisted; seeds, private keys, unreleased preimages, and node credentials may
+not.
+
+The reverse hard-Quote callback first durably reserves exact controlled UTXOs,
+then constructs the signed funding transaction and binds its complete bytes,
+digest, output index, and recomputed verifier digest into the Quote. Bilateral
+contracts therefore commit to the transaction before requester authorization.
+The provider rebuilds the transaction from its recovered reserve immediately
+before broadcast and refuses any byte change; subsequent bitcoind observations
+must return the same committed transaction and output. The funded external
+actor reconstructs both contracts with the production client engine, parses
+the requester `ExitPackage`, completes verify-before-fund, and accepts each
+provider terminal Close before a journey can finish.
+
+The provider does not publish `lightning_htlcs_held` until every observed HTLC
+is accepted, the bounded set sums to the bilateral amount, and its shortest
+expiry satisfies both the signed minimum and live recovery margin. A
+deterministically invalid pre-funding hold follows the durable
+`invoice_cancel_pending` → `invoice_cancelled` → `expired` path and releases
+capacity only after cancellation. If the invalid invoice has already settled,
+the reservation and session remain unresolved for operator recovery.
+
+Signed chain heights are exclusive action deadlines: reaching the exact
+funding, claim, or reverse-lock height stops the irreversible action. A final
+cooperative reverse claim settles or reconciles the hold invoice and retires
+the competing refund watch with `claim_settled`; provider refund and
+replacement transactions remain on the refund branch. Provider-authored
+`completed`, `refunded`, and effective-cancellation paths end in signer-local
+Close records and durable reservation release. Counterparty terminal records
+do not terminate the provider actor or its recovery state.
+
+The provider has its own migration ledger, database, deterministic contract,
+and fixture manifest. Its contract names exact commands, configuration
+bounds, rail methods, operational scopes, custody exclusions, and v1
+limitations. The local funded gate runs the normal binary against disposable
+regtest bitcoind, two CLN nodes, the hold plugin, a relay, and separate
+provider/relay Postgres databases. Its prerequisite runtime fixture replays
+held-HTLC amount/state/expiry rejection, exact and one-past signed deadline
+behavior, held-invoice cancellation, and cooperative refund-watch retirement
+through production helpers; the provider contract binds its exact digest. The
+process gate is specified to prove submarine claim, reverse claim, and
+noncooperative reverse refund while retaining only public transaction and
+invoice-state evidence. Its three-journey result is pending. No GitHub workflow
+or billed automation is added.
+
+## Post-provider source sync review (2026-08-05)
+
+The post-#25 sync records these current inputs in `nips/manifest.json`:
+
+| Lane | Current revision | Review result |
+| --- | --- | --- |
+| Official NIPs | `c53877571f96eb423661fc23c620d629d37b8f19` | The revision and 99 Markdown files are unchanged; only `synced_at` advanced. |
+| Block NIPs | `8342dfcc5890b81a269a8ec3db73a8a56f76ce79` | The branch tip advanced from `540b58920cef205b838da8be8442aae62bceaaa5` by 24 unrelated Buzz commits. The upstream compare contains no `docs/nips/` path. All 15 Markdown path, Git blob SHA, and size tuples are byte-identical at both revisions; the sorted tuple listing has SHA-256 `820b4746d1f33f55dc51291235c475c9c253cd520a26b3337b7f52ab588ec240` at each pin. No Block specification bytes changed. |
+| OpenAgents NIPs | `c579a75bcba6d799941efff4dfbf82bd090e88c1` | The lane contains the four M13 drafts from `33eb9ad428e83f3da877204fe710dcfff00f4f8d`, the MKT-SWP hold-expiry correction from `f091fd7242651eba5e3eb38c358d0d89d6a78368`, and the submarine funding-resolution correction at the pinned tip. Comparing the preceding Immortal pin `cad192988c0deba1fd4181370242e5d579bc863c` with this revision changes only `docs/nips/MKT-SWP.md`, adding the 14-line funding-resolution rule. |
+
+The `f091fd7242` MKT-SWP correction makes
+`timeout_ladder.hold_expiry_height`, written as `H_hold_expiry`, the signed
+minimum acceptable value of the shortest incoming Lightning HTLC expiry. It
+is not the provider's observation. Before funding a reverse-swap chain lock,
+the provider observes the complete held-payment part set, computes
+`H_observed_shortest`, and requires
+`H_observed_shortest >= H_hold_expiry`. Equality and greater-than are positive
+fixture boundaries; a below-minimum observation keeps funding disabled and
+reports `swp_timeout_ladder_unsafe`. This meaning matches the #25 provider
+decision above: the Quote signs the minimum and the live CLN observation may
+be later.
+
+The `c579a75bcb` MKT-SWP correction permits one fail-closed Quote-to-Contract
+resolution. A submarine requester chooses its source-chain inputs and change
+after Order, so the Quote may omit `funding_transaction`,
+`funding_transaction_sha256`, and `output_index` from that requester-funded
+source verifier. The bilateral Contract adds exactly those fields, proves the
+decoded transaction digest and quoted output amount/script, and changes only
+the matching source-leg verifier digest. Immortal adopts this correction with
+one positive vector and eight mutation refusals. Reverse, chain,
+provider-funded, non-source, reordered, and additional-field changes remain
+invalid.
+
+The pinned M13 files remain drafts and optional protocol inputs. MKT-P2P,
+MKT-MINT, and MKT-LSP were subsequently adopted for their relay-observable
+subsets under the fresh collision reviews recorded above; their client and
+rail authorities remain external. MKT-INTENT and `39660-39669` remain
+unadopted and unallocated. Advancing the source pin for the two MKT-SWP
+corrections changes none of those three adoption decisions and adds no new
+kind allocation or NIP-11 advertisement.

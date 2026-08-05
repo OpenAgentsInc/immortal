@@ -1,0 +1,75 @@
+{
+  "schema": "openagents.immortal.provider-funded-smoke-manifest.v1",
+  "evidence_schema": "openagents.immortal.provider-funded-smoke-evidence.v1",
+  "durable_evidence_schema": "openagents.immortal.provider-funded-smoke-durable-evidence.v1",
+  "confirmation_policy": {
+    "minimum_confirmations": 1,
+    "reorg_safety_blocks": 2,
+    "terminal_confirmations": 3
+  },
+  "forbidden_evidence_fields": [
+    "claim_key",
+    "macaroon",
+    "password",
+    "preimage",
+    "private_key",
+    "raw_transaction",
+    "refund_key",
+    "seed",
+    "secret"
+  ],
+  "durable_state": {
+    "session_dispositions": {
+      "submarine": "provider_close_completed",
+      "reverse": "provider_close_completed",
+      "reverse_refund": "provider_close_refunded"
+    },
+    "reservation": {
+      "count_per_journey": 1,
+      "state": "released",
+      "release_cause": "terminal_close"
+    },
+    "effect": {
+      "minimum_count_per_journey": 1,
+      "state": "applied"
+    },
+    "watches": {
+      "reverse": {
+        "job_kind": "refund_broadcast",
+        "state": "completed",
+        "disposition": "claim_settled",
+        "minimum_confirmations": 0
+      },
+      "reverse_refund": {
+        "job_kind": "refund_broadcast",
+        "state": "confirmed",
+        "disposition": "confirmation",
+        "minimum_confirmations": 3
+      }
+    }
+  },
+  "journeys": {
+    "submarine": {
+      "chain_terminal_field": "claim_txid",
+      "result": "claimed",
+      "lightning_owner": "peer",
+      "lightning_kind": "ordinary",
+      "lightning_terminal_state": "paid"
+    },
+    "reverse": {
+      "chain_terminal_field": "claim_txid",
+      "result": "claimed",
+      "lightning_owner": "provider",
+      "lightning_kind": "hold",
+      "lightning_terminal_state": "paid"
+    },
+    "reverse_refund": {
+      "chain_terminal_field": "refund_txid",
+      "result": "refunded",
+      "lightning_owner": "provider",
+      "lightning_kind": "hold",
+      "lightning_terminal_state": "cancelled",
+      "preimage_released": false
+    }
+  }
+}
