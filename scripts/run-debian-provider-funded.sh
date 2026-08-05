@@ -68,6 +68,8 @@ case "$(basename "${controller_directory}")" in
 esac
 chmod 0700 "${controller_directory}"
 controller_log="${controller_directory}/container.log"
+controller_cidfile="${controller_directory}/container.id"
+controller_excerpt="${controller_directory}/failure-excerpt.log"
 failure_log="${receipt_directory}/failure.log"
 outer_container_name="immortal-debian-provider-$(LC_ALL=C od -An -N 8 -tx1 /dev/urandom | tr -d ' \n')"
 outer_container_id=""
@@ -75,28 +77,67 @@ failure_reason="Debian gate failed"
 
 cleanup() {
     exit_status=$?
+    set +e
     trap - 0 HUP INT TERM
     cleanup_failed=false
-    if test "${exit_status}" -ne 0; then
-        if test -n "${outer_container_id}" \
-            && ! docker rm --force "${outer_container_id}" >>"${controller_log}" 2>&1; then
+    if test -z "${outer_container_id}" && test -f "${controller_cidfile}"; then
+        if ! recovered_container_id="$(cat "${controller_cidfile}" 2>>"${controller_log}")"; then
+            cleanup_failed=true
+        elif printf '%s\n' "${recovered_container_id}" | grep -Eq '^[0-9a-f]{64}$'; then
+            outer_container_id="${recovered_container_id}"
+        else
             cleanup_failed=true
         fi
-        rm -f "${receipt_pending_path}"
-        if test -n "${receipt_directory}" && test -d "${receipt_directory}"; then
-            rm -f "${receipt_directory}/result.json"
-            : >"${failure_log}"
-            if test -f "${controller_log}"; then
-                head -c 65536 "${controller_log}" | sed -n '1,200p' >"${failure_log}"
+    fi
+    if test "${exit_status}" -ne 0; then
+        if test -n "${outer_container_id}"; then
+            if ! printf '%s\n' "${outer_container_id}" | grep -Eq '^[0-9a-f]{64}$'; then
+                cleanup_failed=true
+            elif ! docker rm --force "${outer_container_id}" >>"${controller_log}" 2>&1; then
+                cleanup_failed=true
+            elif ! remaining_container_ids="$(docker ps -a --no-trunc --filter "id=${outer_container_id}" --format '{{.ID}}' 2>>"${controller_log}")"; then
+                cleanup_failed=true
+            elif test -n "${remaining_container_ids}"; then
+                cleanup_failed=true
             fi
-            chmod 0600 "${failure_log}"
-            sed -n '1,200p' "${failure_log}" >&2
+        fi
+        if ! rm -f "${receipt_pending_path}"; then
+            cleanup_failed=true
+        fi
+        if test -n "${receipt_directory}" && test -d "${receipt_directory}"; then
+            if ! rm -f "${receipt_directory}/result.json"; then
+                cleanup_failed=true
+            fi
+            if ! : >"${failure_log}"; then
+                cleanup_failed=true
+            fi
+            if test -f "${controller_log}"; then
+                if ! head -c 65536 "${controller_log}" >"${controller_excerpt}"; then
+                    cleanup_failed=true
+                fi
+                if test -f "${controller_excerpt}" \
+                    && ! sed -n '1,200p' "${controller_excerpt}" >"${failure_log}"; then
+                    cleanup_failed=true
+                fi
+            fi
+            if ! chmod 0600 "${failure_log}"; then
+                cleanup_failed=true
+            fi
+            if ! sed -n '1,200p' "${failure_log}" >&2; then
+                cleanup_failed=true
+            fi
             echo "run-debian-provider-funded: ${failure_reason}; retained bounded console ${failure_log}" >&2
         else
             echo "run-debian-provider-funded: ${failure_reason}; receipt directory was removed before failure cleanup" >&2
         fi
     fi
-    if test -n "${controller_directory}" && ! rm -f "${controller_log}"; then
+    if ! rm -f "${controller_cidfile}"; then
+        cleanup_failed=true
+    fi
+    if ! rm -f "${controller_excerpt}"; then
+        cleanup_failed=true
+    fi
+    if ! rm -f "${controller_log}"; then
         cleanup_failed=true
     fi
     if test -n "${controller_directory}" && ! rmdir "${controller_directory}"; then
@@ -116,7 +157,8 @@ handle_signal() {
 trap cleanup 0
 trap handle_signal HUP INT TERM
 
-if ! outer_container_id="$(docker create \
+if ! docker create \
+    --cidfile "${controller_cidfile}" \
     --name "${outer_container_name}" \
     --privileged \
     --cpus 4 \
@@ -169,8 +211,16 @@ if ! outer_container_id="$(docker create \
         done
         cd /work
         scripts/test-debian-provider-funded.sh
-    ' 2>"${controller_log}")"; then
+    ' >"${controller_log}" 2>&1; then
     failure_reason="Debian gate container creation failed"
+    exit 1
+fi
+if ! test -f "${controller_cidfile}"; then
+    failure_reason="Debian gate created no container identity file"
+    exit 1
+fi
+if ! outer_container_id="$(cat "${controller_cidfile}" 2>>"${controller_log}")"; then
+    failure_reason="Debian gate container identity could not be read"
     exit 1
 fi
 if ! printf '%s\n' "${outer_container_id}" | grep -Eq '^[0-9a-f]{64}$'; then
@@ -191,7 +241,11 @@ if ! docker rm "${outer_container_id}" >>"${controller_log}" 2>&1; then
     failure_reason="Debian gate exact container cleanup failed"
     exit 1
 fi
-if docker inspect "${outer_container_id}" >/dev/null 2>&1; then
+if ! remaining_container_ids="$(docker ps -a --no-trunc --filter "id=${outer_container_id}" --format '{{.ID}}' 2>>"${controller_log}")"; then
+    failure_reason="Debian gate exact container cleanup could not be verified"
+    exit 1
+fi
+if test -n "${remaining_container_ids}"; then
     failure_reason="Debian gate exact container remains after cleanup"
     exit 1
 fi
@@ -205,6 +259,14 @@ if ! rmdir "${receipt_directory}"; then
     exit 1
 fi
 receipt_directory=""
+if ! rm -f "${controller_cidfile}"; then
+    failure_reason="Debian gate controller identity cleanup failed"
+    exit 1
+fi
+if ! rm -f "${controller_excerpt}"; then
+    failure_reason="Debian gate controller excerpt cleanup failed"
+    exit 1
+fi
 if ! rm -f "${controller_log}"; then
     failure_reason="Debian gate controller log cleanup failed"
     exit 1
@@ -214,4 +276,5 @@ if ! rmdir "${controller_directory}"; then
     exit 1
 fi
 controller_directory=""
+trap '' HUP INT TERM
 mv "${receipt_pending_path}" "${receipt_path}"
