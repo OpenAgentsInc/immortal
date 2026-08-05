@@ -54,6 +54,7 @@ enum ProofPlan {
     CustodyRefusal {
         member: &'static str,
     },
+    RbfConflict,
     Unsupported {
         reason: &'static str,
     },
@@ -265,6 +266,14 @@ fn execute_proof(selected: &SelectedCase) -> Result<Value, String> {
             topology_proof(&result)
         }
         ProofPlan::CustodyRefusal { member } => prove_custody_refusal(member),
+        ProofPlan::RbfConflict => {
+            let result = funded::run_adversarial_funded_journey(
+                0,
+                FundedJourney::Submarine,
+                Some("rbf_conflict"),
+            )?;
+            rbf_conflict_proof(&result)
+        }
         ProofPlan::Unsupported { reason } => Err(format!(
             "unsupported adversarial proof for {}: {reason}",
             selected.manifest.case_id
@@ -395,7 +404,11 @@ fn journey_proof(
         object.insert("injection".to_owned(), Value::String(injection.to_owned()));
         if matches!(
             injection,
-            "relay_loss" | "provider_crash" | "provider_noncooperative"
+            "relay_loss"
+                | "provider_crash"
+                | "provider_noncooperative"
+                | "funding_reorg"
+                | "claim_reorg"
         ) {
             let control = result
                 .get("external_control")
@@ -409,12 +422,15 @@ fn journey_proof(
                 "provider_noncooperative" => {
                     format!("provider-{}", if provider_index == 0 { "a" } else { "b" })
                 }
+                "funding_reorg" | "claim_reorg" => "provider-a".to_owned(),
                 _ => return Err("external process injection is unsupported".to_owned()),
             };
-            let expected_transition = if injection == "provider_noncooperative" {
-                "process_stopped"
-            } else {
-                "process_replaced_and_ready"
+            let expected_transition = match injection {
+                "relay_loss" | "provider_crash" => "process_replaced_and_ready",
+                "provider_noncooperative" => "process_stopped",
+                "funding_reorg" => "funding_reorg_waited_and_resumed",
+                "claim_reorg" => "claim_watch_reorged_and_reconfirmed",
+                _ => return Err("external injection has no transition".to_owned()),
             };
             let expected_restored = injection != "provider_noncooperative";
             if control.get("schema").and_then(Value::as_str)
@@ -437,6 +453,23 @@ fn journey_proof(
                     "external process control proof does not bind the selected target".to_owned(),
                 );
             }
+            if matches!(injection, "funding_reorg" | "claim_reorg") {
+                let controlled_transaction = control
+                    .get("evidence")
+                    .and_then(Value::as_object)
+                    .and_then(|evidence| evidence.get("transaction_id"))
+                    .and_then(Value::as_str);
+                let expected_transaction = if injection == "funding_reorg" {
+                    object.get("lockup_txid").and_then(Value::as_str)
+                } else {
+                    object.get(terminal_member).and_then(Value::as_str)
+                };
+                if controlled_transaction != expected_transaction {
+                    return Err(
+                        "chain control proof does not bind the journey transaction".to_owned()
+                    );
+                }
+            }
             object.insert(
                 "external_control".to_owned(),
                 Value::Object(control.clone()),
@@ -444,6 +477,71 @@ fn journey_proof(
         }
     }
     Ok(proof)
+}
+
+fn rbf_conflict_proof(result: &Value) -> Result<Value, String> {
+    if result.get("step").and_then(Value::as_str) != Some("submarine") {
+        return Err("RBF conflict did not run the submarine funding boundary".to_owned());
+    }
+    provider_support::reject_custody_material(result)
+        .map_err(|error| format!("RBF conflict result contains custody material: {error}"))?;
+    let provider_pubkey = required_hash(result, "/provider_pubkey", "RBF provider pubkey")?;
+    let order_id = required_hash(result, "/journey/order_id", "RBF order ID")?;
+    let committed_txid = required_hash(
+        result,
+        "/journey/committed_txid",
+        "RBF committed transaction ID",
+    )?;
+    let conflict_txid = required_hash(
+        result,
+        "/journey/conflict_txid",
+        "RBF conflict transaction ID",
+    )?;
+    let input_txid = required_hash(result, "/journey/input_txid", "RBF input transaction ID")?;
+    let input_vout = result
+        .pointer("/journey/input_vout")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "RBF conflict input vout is not a u32".to_owned())?;
+    if committed_txid == conflict_txid
+        || result
+            .pointer("/journey/expected_code")
+            .and_then(Value::as_str)
+            != Some("swp_rbf_policy_violation")
+        || result.pointer("/journey/outcome").and_then(Value::as_str)
+            != Some("rejected_before_effect")
+        || result
+            .pointer("/journey/conflict_in_mempool")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || result
+            .pointer("/journey/committed_broadcast_rejected")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || result
+            .pointer("/journey/external_settlement_effects")
+            .and_then(Value::as_u64)
+            != Some(0)
+    {
+        return Err("RBF conflict did not prove exact fail-closed policy handling".to_owned());
+    }
+    Ok(json!({
+        "proof_class":"real_same_input_conflict",
+        "provider_pubkey":provider_pubkey,
+        "order_id":order_id,
+        "committed_txid":committed_txid,
+        "conflict_txid":conflict_txid,
+        "input_txid":input_txid,
+        "input_vout":input_vout,
+        "expected_code":"swp_rbf_policy_violation",
+        "outcome":"rejected_before_effect",
+        "checks":{
+            "same_input":true,
+            "conflict_broadcast_to_regtest":true,
+            "committed_broadcast_rejected":true,
+            "external_settlement_effects":0,
+        }
+    }))
 }
 
 fn topology_proof(result: &Value) -> Result<Value, String> {
@@ -647,12 +745,19 @@ fn proof_plan(case_id: &str) -> ProofPlan {
             expected_code: "swp_status_fork",
             outcome: "rejected_before_effect",
         },
-        "funding-reorg" | "claim-reorg" => ProofPlan::Unsupported {
-            reason: "the funded harness has no case-bound regtest reorg controller",
+        "funding-reorg" => ProofPlan::Journey {
+            provider_index: 0,
+            journey: FundedJourney::Submarine,
+            injection: Some("funding_reorg"),
+            outcome: JourneyOutcome::Claimed,
         },
-        "rbf-conflict" => ProofPlan::Unsupported {
-            reason: "the funded harness has no conflicting replacement transaction driver",
+        "claim-reorg" => ProofPlan::Journey {
+            provider_index: 0,
+            journey: FundedJourney::Submarine,
+            injection: Some("claim_reorg"),
+            outcome: JourneyOutcome::Claimed,
         },
+        "rbf-conflict" => ProofPlan::RbfConflict,
         "wrong-claim-key" => ProofPlan::ExpectedJourneyError {
             provider_index: 0,
             journey: FundedJourney::ReverseClaim,
@@ -819,7 +924,7 @@ mod tests {
             .keys()
             .filter(|case_id| !matches!(proof_plan(case_id), ProofPlan::Unsupported { .. }))
             .count();
-        assert_eq!(supported, 21);
+        assert_eq!(supported, 24);
         for case_id in cases.keys() {
             if let ProofPlan::Unsupported { reason } = proof_plan(case_id) {
                 assert!(
@@ -1043,6 +1148,93 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn journey_proof_retains_exact_chain_recovery_lineage() {
+        let result = json!({
+            "step":"submarine",
+            "provider_pubkey":hash("1"),
+            "external_control":{
+                "schema":"openagents.immortal.lab-injection-ack.v1",
+                "run_id":"run-1",
+                "checkpoint":"submarine:funding_reorg_control",
+                "injection":"funding_reorg",
+                "restored":true,
+                "evidence":{
+                    "target":"provider-a",
+                    "transaction_id":hash("3"),
+                    "orphaned_block_hash":hash("6"),
+                    "competing_tip_hash":hash("7"),
+                    "reconfirmed_block_hash":hash("8"),
+                    "transition":"funding_reorg_waited_and_resumed",
+                    "wait_state":"funding_observed_without_finality",
+                    "recovery_state":"funding_final_after_reconfirmation",
+                }
+            },
+            "journey":{
+                "order_id":hash("2"),
+                "lockup_txid":hash("3"),
+                "lockup_vout":0,
+                "payment_hash":hash("4"),
+                "claim_txid":hash("5"),
+                "result":"claimed",
+            }
+        });
+        let proof = journey_proof(
+            &result,
+            0,
+            FundedJourney::Submarine,
+            Some("funding_reorg"),
+            JourneyOutcome::Claimed,
+        )
+        .expect("funding reorg proof should bind provider A");
+        assert_eq!(
+            proof.pointer("/external_control/evidence/orphaned_block_hash"),
+            Some(&Value::String(hash("6")))
+        );
+        let mut wrong_transaction = result;
+        wrong_transaction["external_control"]["evidence"]["transaction_id"] =
+            Value::String(hash("9"));
+        assert!(
+            journey_proof(
+                &wrong_transaction,
+                0,
+                FundedJourney::Submarine,
+                Some("funding_reorg"),
+                JourneyOutcome::Claimed,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rbf_proof_requires_distinct_real_conflict_and_no_effect() {
+        let result = json!({
+            "step":"submarine",
+            "provider_pubkey":hash("1"),
+            "journey":{
+                "order_id":hash("2"),
+                "payment_hash":hash("3"),
+                "committed_txid":hash("4"),
+                "conflict_txid":hash("5"),
+                "input_txid":hash("6"),
+                "input_vout":1,
+                "expected_code":"swp_rbf_policy_violation",
+                "outcome":"rejected_before_effect",
+                "conflict_in_mempool":true,
+                "committed_broadcast_rejected":true,
+                "external_settlement_effects":0,
+            }
+        });
+        let proof = rbf_conflict_proof(&result).expect("real conflict proof should pass");
+        assert_eq!(
+            proof.get("proof_class").and_then(Value::as_str),
+            Some("real_same_input_conflict")
+        );
+        let mut same_transaction = result;
+        same_transaction["journey"]["conflict_txid"] = Value::String(hash("4"));
+        assert!(rbf_conflict_proof(&same_transaction).is_err());
     }
 
     #[test]

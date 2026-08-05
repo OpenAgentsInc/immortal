@@ -13,9 +13,9 @@ use immortal_client::mkt_swp_client::{
     AwaitingVerification, Cancellation, ChainRecoveryState, DeliveryProvenance, ExitPackage,
     ExitSigningOutcome, ExternalEffectRequest, FundingAction, FundingAuthorized,
     FundingVerificationInput, InvoiceVerificationInput, LightningProgressState,
-    LightningReadinessState, LightningRecoveryState, LocalLightningProgress,
-    LocalLightningReadiness, LocalRailEvidence, LocalRecoveryObservation, ParticipantRole,
-    RailObservationRequest, RecoveryAction, RequesterContractLocalInputs,
+    LightningReadinessState, LightningRecoveryState, LocalBitcoinObservation,
+    LocalLightningProgress, LocalLightningReadiness, LocalRailEvidence, LocalRecoveryObservation,
+    ParticipantRole, RailObservationRequest, RecoveryAction, RequesterContractLocalInputs,
     RequesterContractSigningInput, RequesterOrderInput, RequesterQuoteView, RequesterSessionView,
     RequesterVerificationState, SignedRecordDelivery, StatusState, SwapClientConfig,
     SwapRecordFactory, SwapSession, SwapType, VerifyBeforeFundInput, provider_support,
@@ -182,6 +182,9 @@ enum HarnessInjection {
     RelayLoss,
     ProviderCrash,
     ProviderNoncooperative,
+    FundingReorg,
+    ClaimReorg,
+    RbfConflict,
     StatusGap,
     StatusFork,
     WrongClaimKey,
@@ -197,6 +200,9 @@ impl HarnessInjection {
             "relay_loss" => Ok(Self::RelayLoss),
             "provider_crash" => Ok(Self::ProviderCrash),
             "provider_noncooperative" => Ok(Self::ProviderNoncooperative),
+            "funding_reorg" => Ok(Self::FundingReorg),
+            "claim_reorg" => Ok(Self::ClaimReorg),
+            "rbf_conflict" => Ok(Self::RbfConflict),
             "status_gap" => Ok(Self::StatusGap),
             "status_fork" => Ok(Self::StatusFork),
             "wrong_claim_key" => Ok(Self::WrongClaimKey),
@@ -213,6 +219,9 @@ impl HarnessInjection {
             Self::RelayLoss => "relay_loss",
             Self::ProviderCrash => "provider_crash",
             Self::ProviderNoncooperative => "provider_noncooperative",
+            Self::FundingReorg => "funding_reorg",
+            Self::ClaimReorg => "claim_reorg",
+            Self::RbfConflict => "rbf_conflict",
             Self::StatusGap => "status_gap",
             Self::StatusFork => "status_fork",
             Self::WrongClaimKey => "wrong_claim_key",
@@ -222,7 +231,11 @@ impl HarnessInjection {
     const fn requires_external_control(self) -> bool {
         matches!(
             self,
-            Self::RelayLoss | Self::ProviderCrash | Self::ProviderNoncooperative
+            Self::RelayLoss
+                | Self::ProviderCrash
+                | Self::ProviderNoncooperative
+                | Self::FundingReorg
+                | Self::ClaimReorg
         )
     }
 }
@@ -395,51 +408,134 @@ fn validate_injection_acknowledgement(
     {
         return Err("injection continuation does not bind the requested recovery".to_owned());
     }
-    {
-        let evidence = value
-            .get("evidence")
-            .and_then(Value::as_object)
-            .ok_or_else(|| "injection evidence is absent or is not an object".to_owned())?;
-        let target = evidence
-            .get("target")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "injection evidence has no target".to_owned())?;
-        let transition = evidence
-            .get("transition")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "injection evidence has no transition".to_owned())?;
-        let before_pid = evidence.get("before_pid").and_then(Value::as_u64);
-        let valid_shape = if provider_stopped {
-            evidence.len() == 3
-                && evidence
-                    .keys()
-                    .all(|name| matches!(name.as_str(), "target" | "before_pid" | "transition"))
-                && matches!(target, "provider-a" | "provider-b")
-                && transition == "process_stopped"
-                && before_pid.is_some_and(|pid| pid > 0 && pid <= i32::MAX as u64)
-        } else {
-            let after_pid = evidence.get("after_pid").and_then(Value::as_u64);
-            evidence.len() == 4
-                && evidence.keys().all(|name| {
-                    matches!(
-                        name.as_str(),
-                        "target" | "before_pid" | "after_pid" | "transition"
-                    )
-                })
-                && matches!(target, "relay-a" | "relay-b" | "provider-a" | "provider-b")
-                && transition == "process_replaced_and_ready"
-                && before_pid.is_some_and(|pid| pid > 0 && pid <= i32::MAX as u64)
-                && after_pid.is_some_and(|pid| pid > 0 && pid <= i32::MAX as u64)
-                && before_pid != after_pid
-        };
-        if !valid_shape {
-            return Err(
-                "injection evidence does not prove the requested bounded process transition"
-                    .to_owned(),
-            );
+    let evidence = value
+        .get("evidence")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "injection evidence is not an object".to_owned())?;
+    match injection {
+        HarnessInjection::RelayLoss | HarnessInjection::ProviderCrash => {
+            validate_process_replacement_evidence(evidence)?;
         }
+        HarnessInjection::ProviderNoncooperative => {
+            validate_process_stopped_evidence(evidence)?;
+        }
+        HarnessInjection::FundingReorg | HarnessInjection::ClaimReorg => {
+            validate_chain_recovery_evidence(evidence, injection)?;
+        }
+        _ => return Err("pre-fund injection cannot carry external acknowledgement".to_owned()),
     }
     Ok(value)
+}
+
+fn validate_process_stopped_evidence(evidence: &Map<String, Value>) -> Result<(), String> {
+    if evidence.len() != 3
+        || evidence
+            .keys()
+            .any(|name| !matches!(name.as_str(), "target" | "before_pid" | "transition"))
+        || !matches!(
+            evidence.get("target").and_then(Value::as_str),
+            Some("provider-a" | "provider-b")
+        )
+        || evidence.get("transition").and_then(Value::as_str) != Some("process_stopped")
+        || evidence
+            .get("before_pid")
+            .and_then(Value::as_u64)
+            .is_none_or(|pid| pid == 0 || pid > i32::MAX as u64)
+    {
+        return Err("provider stop evidence has another shape".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_process_replacement_evidence(evidence: &Map<String, Value>) -> Result<(), String> {
+    if evidence.len() != 4
+        || evidence.keys().any(|name| {
+            !matches!(
+                name.as_str(),
+                "target" | "before_pid" | "after_pid" | "transition"
+            )
+        })
+    {
+        return Err("process injection evidence has another shape".to_owned());
+    }
+    let target = evidence
+        .get("target")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "process injection evidence has no target".to_owned())?;
+    let transition = evidence
+        .get("transition")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "process injection evidence has no transition".to_owned())?;
+    let before_pid = evidence.get("before_pid").and_then(Value::as_u64);
+    let after_pid = evidence.get("after_pid").and_then(Value::as_u64);
+    if !matches!(target, "relay-a" | "relay-b" | "provider-a" | "provider-b")
+        || transition != "process_replaced_and_ready"
+        || before_pid.is_none_or(|pid| pid == 0 || pid > i32::MAX as u64)
+        || after_pid.is_none_or(|pid| pid == 0 || pid > i32::MAX as u64)
+        || before_pid == after_pid
+    {
+        return Err("injection evidence does not prove one bounded process replacement".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_chain_recovery_evidence(
+    evidence: &Map<String, Value>,
+    injection: HarnessInjection,
+) -> Result<(), String> {
+    let expected_transition = match injection {
+        HarnessInjection::FundingReorg => "funding_reorg_waited_and_resumed",
+        HarnessInjection::ClaimReorg => "claim_watch_reorged_and_reconfirmed",
+        _ => return Err("chain recovery validator received another injection".to_owned()),
+    };
+    if evidence.len() != 8
+        || evidence.keys().any(|name| {
+            !matches!(
+                name.as_str(),
+                "target"
+                    | "transition"
+                    | "transaction_id"
+                    | "orphaned_block_hash"
+                    | "competing_tip_hash"
+                    | "reconfirmed_block_hash"
+                    | "wait_state"
+                    | "recovery_state"
+            )
+        })
+        || evidence.get("target").and_then(Value::as_str) != Some("provider-a")
+        || evidence.get("transition").and_then(Value::as_str) != Some(expected_transition)
+    {
+        return Err("chain recovery evidence has another shape or transition".to_owned());
+    }
+    for member in [
+        "transaction_id",
+        "orphaned_block_hash",
+        "competing_tip_hash",
+        "reconfirmed_block_hash",
+    ] {
+        let hash = evidence
+            .get(member)
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("chain recovery evidence has no {member}"))?;
+        require_lower_hex_32(hash, member)?;
+    }
+    let (expected_wait, expected_recovery) = match injection {
+        HarnessInjection::FundingReorg => (
+            "funding_observed_without_finality",
+            "funding_final_after_reconfirmation",
+        ),
+        HarnessInjection::ClaimReorg => (
+            "claim_watch_confirmed",
+            "claim_watch_reorg_then_reconfirmed",
+        ),
+        _ => return Err("chain recovery state validator received another injection".to_owned()),
+    };
+    if evidence.get("wait_state").and_then(Value::as_str) != Some(expected_wait)
+        || evidence.get("recovery_state").and_then(Value::as_str) != Some(expected_recovery)
+    {
+        return Err("chain recovery evidence does not prove wait and recovery states".to_owned());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1674,6 +1770,16 @@ fn drive_submarine(
         .ok_or_else(|| "submarine session has no contract-bound funding transaction".to_owned())?;
     let authorized = verify_submarine_before_fund(&session, &invoice.bolt11, &funding)?;
     session.set_authorized_verifier(authorized)?;
+    if environment.control.injection == Some(HarnessInjection::RbfConflict) {
+        return prove_rbf_conflict_before_settlement(
+            runtime,
+            environment,
+            &session,
+            &client_input,
+            &funding,
+            &invoice.payment_hash,
+        );
+    }
     continue_submarine(
         runtime,
         environment,
@@ -1811,6 +1917,130 @@ fn reject_wrong_claim_key(
     }
 }
 
+fn prove_rbf_conflict_before_settlement(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    session: &SessionContext,
+    funding_input: &FundingInput,
+    committed_funding: &SignedFundingTransaction,
+    payment_hash: &str,
+) -> Result<Value, String> {
+    let conflict_destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 11)
+                .map_err(|error| format!("conflict destination path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive conflict destination: {error}"))?;
+    let conflict = build_funding_transaction(
+        &environment.wallet,
+        std::slice::from_ref(funding_input),
+        &FundingRequest {
+            destination_script_pubkey: conflict_destination.script_pubkey.to_vec(),
+            amount_sat: 50_000,
+            fee_rate_sat_per_vbyte: 4,
+            change_path: WalletPath::new(0, true, 12)
+                .map_err(|error| format!("conflict change path is invalid: {error}"))?,
+            lock_time: 0,
+        },
+    )
+    .map_err(|error| format!("could not construct same-input conflict: {error}"))?;
+    if conflict.txid == committed_funding.txid {
+        return Err("same-input conflict did not change the transaction ID".to_owned());
+    }
+    let committed = Transaction::parse(&decode_hex(&committed_funding.raw_transaction)?)
+        .map_err(|error| format!("committed funding transaction is invalid: {error}"))?;
+    let conflicting = Transaction::parse(&decode_hex(&conflict.raw_transaction)?)
+        .map_err(|error| format!("conflicting funding transaction is invalid: {error}"))?;
+    let committed_input = committed
+        .inputs
+        .first()
+        .ok_or_else(|| "committed funding transaction has no input".to_owned())?;
+    let conflicting_input = conflicting
+        .inputs
+        .first()
+        .ok_or_else(|| "conflicting funding transaction has no input".to_owned())?;
+    if committed.inputs.len() != 1
+        || conflicting.inputs.len() != 1
+        || committed_input.previous_txid != conflicting_input.previous_txid
+        || committed_input.previous_output != conflicting_input.previous_output
+    {
+        return Err("conflicting transaction does not spend the exact committed input".to_owned());
+    }
+    let broadcast_conflict = runtime
+        .block_on(environment.bitcoind.broadcast(
+            &rpc_id("rbf-conflict-broadcast")?,
+            &conflict.raw_transaction,
+            None,
+        ))
+        .map_err(|error| format!("could not broadcast same-input conflict: {error}"))?;
+    if broadcast_conflict != conflict.txid {
+        return Err("bitcoind returned another conflict transaction ID".to_owned());
+    }
+    let mempool = runtime
+        .block_on(
+            environment
+                .bitcoind
+                .raw_mempool(&rpc_id("rbf-conflict-mempool")?, false),
+        )
+        .map_err(|error| format!("could not inspect conflict mempool: {error}"))?;
+    if !mempool.as_array().is_some_and(|transactions| {
+        transactions
+            .iter()
+            .any(|value| value.as_str() == Some(&conflict.txid))
+    }) {
+        return Err("same-input conflict is absent from the real regtest mempool".to_owned());
+    }
+    match runtime.block_on(environment.bitcoind.broadcast(
+        &rpc_id("rbf-committed-rejected")?,
+        &committed_funding.raw_transaction,
+        None,
+    )) {
+        Err(BitcoindError::Rpc { code: -26 }) => {}
+        Err(error) => {
+            return Err(format!(
+                "committed transaction returned another conflict refusal: {error}"
+            ));
+        }
+        Ok(_) => return Err("bitcoind accepted both same-input transactions".to_owned()),
+    }
+    let authorized = session
+        .authorized_verifier
+        .as_ref()
+        .ok_or_else(|| "RBF conflict session lost funding authorization".to_owned())?;
+    let error = match authorized.observe_bitcoin_funding_with("source", |_| {
+        Ok(LocalBitcoinObservation {
+            raw_transaction: committed_funding.raw_transaction.clone(),
+            confirmations: 1,
+            replacement_detected: true,
+            competing_spend_detected: false,
+        })
+    }) {
+        Err(error) => error,
+        Ok(_) => return Err("replacement-reject policy accepted a real conflict".to_owned()),
+    };
+    if error.code != "swp_rbf_policy_violation" {
+        return Err(format!(
+            "same-input conflict returned another client refusal: {error}"
+        ));
+    }
+    let mut input_txid_wire = committed_input.previous_txid;
+    input_txid_wire.reverse();
+    Ok(json!({
+        "order_id":session.order.id,
+        "payment_hash":payment_hash,
+        "committed_txid":committed_funding.txid,
+        "conflict_txid":conflict.txid,
+        "input_txid":lower_hex(&input_txid_wire),
+        "input_vout":committed_input.previous_output,
+        "expected_code":"swp_rbf_policy_violation",
+        "outcome":"rejected_before_effect",
+        "conflict_in_mempool":true,
+        "committed_broadcast_rejected":true,
+        "external_settlement_effects":0,
+    }))
+}
+
 fn continue_submarine(
     runtime: &Runtime,
     environment: &SmokeEnvironment,
@@ -1901,13 +2131,28 @@ fn finish_submarine(
     );
     funding_extra.insert("output_index".to_owned(), json!(0));
     session.publish_requester_status("requester_funding_broadcast", funding_extra)?;
-    mine_blocks(runtime, &environment.bitcoind, 1, "submarine-funding")?;
+    if environment.control.injection == Some(HarnessInjection::FundingReorg) {
+        session.persist_authorized_details(
+            "funding_reorg_control",
+            false,
+            json!({"external_identifier":lockup_txid.clone()}),
+        )?;
+    } else {
+        mine_blocks(runtime, &environment.bitcoind, 1, "submarine-funding")?;
+    }
     session.wait_provider_state("funding_observed")?;
     session.wait_provider_state("funding_final")?;
     session.wait_provider_state("lightning_payment_pending")?;
     session.wait_provider_state("lightning_paid")?;
     let claim_pending = session.wait_provider_state("provider_claim_pending")?;
     let claim_txid = status_transaction_id(&claim_pending)?;
+    if environment.control.injection == Some(HarnessInjection::ClaimReorg) {
+        session.persist_authorized_details(
+            "claim_reorg_control",
+            false,
+            json!({"external_identifier":claim_txid.clone()}),
+        )?;
+    }
     mine_blocks(
         runtime,
         &environment.bitcoind,
@@ -3163,7 +3408,13 @@ impl SessionContext {
                 Ok(())
             }
             Some(HarnessInjection::StaleQuote)
-            | Some(HarnessInjection::RelayLoss | HarnessInjection::ProviderCrash)
+            | Some(
+                HarnessInjection::RelayLoss
+                | HarnessInjection::ProviderCrash
+                | HarnessInjection::FundingReorg
+                | HarnessInjection::ClaimReorg
+                | HarnessInjection::RbfConflict,
+            )
             | None => Ok(()),
         }
     }
@@ -5993,6 +6244,43 @@ mod tests {
                 "run-2",
                 "submarine_refund:funding_effect_recorded",
                 HarnessInjection::ProviderNoncooperative,
+            )
+            .is_err()
+        );
+
+        let chain_recovery = json!({
+            "schema":"openagents.immortal.lab-injection-ack.v1",
+            "run_id":"run-2",
+            "checkpoint":"submarine:claim_reorg_control",
+            "injection":"claim_reorg",
+            "restored":true,
+            "evidence":{
+                "target":"provider-a",
+                "transaction_id":"11".repeat(32),
+                "orphaned_block_hash":"22".repeat(32),
+                "competing_tip_hash":"33".repeat(32),
+                "reconfirmed_block_hash":"44".repeat(32),
+                "transition":"claim_watch_reorged_and_reconfirmed",
+                "wait_state":"claim_watch_confirmed",
+                "recovery_state":"claim_watch_reorg_then_reconfirmed",
+            }
+        });
+        validate_injection_acknowledgement(
+            chain_recovery.to_string().as_bytes(),
+            "run-2",
+            "submarine:claim_reorg_control",
+            HarnessInjection::ClaimReorg,
+        )
+        .expect("exact chain recovery acknowledgement should pass");
+        let mut wrong_transition = chain_recovery;
+        wrong_transition["evidence"]["transition"] =
+            Value::String("funding_reorg_waited_and_resumed".to_owned());
+        assert!(
+            validate_injection_acknowledgement(
+                wrong_transition.to_string().as_bytes(),
+                "run-2",
+                "submarine:claim_reorg_control",
+                HarnessInjection::ClaimReorg,
             )
             .is_err()
         );

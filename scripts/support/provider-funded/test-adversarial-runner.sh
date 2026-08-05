@@ -34,6 +34,13 @@ for required in \
   'holdinvoiceimmortalregtest' \
   'bitcoin-cli -rpcconnect=bitcoin-b -rpcport=18443' \
   'bitcoin-cli -rpcconnect=bitcoin-a -rpcport=18443' \
+  'external_checkpoint=submarine:funding_reorg_control' \
+  'external_checkpoint=submarine:claim_reorg_control' \
+  'generateblock "${miner_address}"' \
+  'bitcoin_cli a invalidateblock "${orphaned_block_hash}"' \
+  "WHERE job_kind = 'claim_broadcast'" \
+  'funding_reorg_waited_and_resumed' \
+  'claim_watch_reorged_and_reconfirmed' \
   'docker volume ls --quiet --filter "label=com.docker.compose.project=${project_name}"' \
   'docker image ls --quiet --filter "label=com.docker.compose.project=${project_name}"' \
   'maximum = min(32768, fixture["evidence"]["retained_record"]["maximum_bytes"])'; do

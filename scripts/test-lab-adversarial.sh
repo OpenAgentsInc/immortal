@@ -165,6 +165,16 @@ run_case() (
       external_checkpoint=submarine_refund:funding_effect_recorded
       external_target=provider-a
       ;;
+    funding-reorg)
+      external_injection=funding_reorg
+      external_checkpoint=submarine:funding_reorg_control
+      external_target=provider-a
+      ;;
+    claim-reorg)
+      external_injection=claim_reorg
+      external_checkpoint=submarine:claim_reorg_control
+      external_target=provider-a
+      ;;
   esac
   maximum_seconds="$(python3 - "${fixture}" <<'PY'
 import json, pathlib, sys
@@ -354,6 +364,102 @@ PY
       "http://127.0.0.1:${port}/healthz"
   }
 
+  provider_status_exists() {
+    local state="$1" count
+    count="$(compose exec -T provider-a-postgres psql -X -A -t \
+      -U immortal_provider -d immortal_provider -v state="${state}" <<'SQL'
+SELECT EXISTS (
+    SELECT 1
+    FROM provider_session_record
+    WHERE kind = 39607
+      AND (signed_event ->> 'content')::jsonb #>> '{mkt_swp,swp_state}' = :'state'
+)::integer;
+SQL
+)"
+    test "$(printf '%s' "${count}" | tr -d '\r\n ')" = 1
+  }
+
+  provider_claim_watch_matches() {
+    local expected_state="$1" minimum_confirmations="$2" expected_event="$3" row
+    row="$(compose exec -T provider-a-postgres psql -X -A -t -F $'\t' \
+      -U immortal_provider -d immortal_provider <<'SQL'
+SELECT state, confirmations, COALESCE(last_chain_event, '')
+FROM provider_watch_job
+WHERE job_kind = 'claim_broadcast'
+ORDER BY updated_at DESC, job_id
+LIMIT 1;
+SQL
+)"
+    python3 - "${expected_state}" "${minimum_confirmations}" "${expected_event}" \
+      "${row}" <<'PY'
+import sys
+
+fields = sys.argv[4].strip().split("\t")
+if len(fields) != 3:
+    raise SystemExit(1)
+state, confirmations, event = fields
+if state != sys.argv[1] or not confirmations.isdigit():
+    raise SystemExit(1)
+if int(confirmations) < int(sys.argv[2]) or event != sys.argv[3]:
+    raise SystemExit(1)
+PY
+  }
+
+  disconnect_bitcoin_peers() {
+    local peer_id
+    while IFS= read -r peer_id; do
+      test -n "${peer_id}" || continue
+      bitcoin_cli a -named disconnectnode nodeid="${peer_id}" >/dev/null
+    done < <(bitcoin_cli a getpeerinfo | jq -er '.[].id')
+    wait_for "Bitcoin peer disconnection" bitcoin_disconnected a
+    wait_for "reciprocal Bitcoin peer disconnection" bitcoin_disconnected b
+  }
+
+  bitcoin_disconnected() {
+    test "$(bitcoin_cli "$1" getconnectioncount)" = 0
+  }
+
+  reconnect_bitcoin_peers() {
+    bitcoin_cli a addnode bitcoin-b:18444 onetry >/dev/null
+    wait_for "Bitcoin competing-branch convergence" chains_synced
+  }
+
+  generate_controlled_block() {
+    local node="$1" transaction_id="${2:-}" result
+    if test -n "${transaction_id}"; then
+      result="$(bitcoin_cli "${node}" generateblock "${miner_address}" \
+        "[\"${transaction_id}\"]")"
+    else
+      result="$(bitcoin_cli "${node}" generateblock "${miner_address}" '[]')"
+    fi
+    jq -er 'if type == "string" then . else .hash end' <<<"${result}"
+  }
+
+  checkpoint_transaction_id() {
+    local request_file="$1" checkpoint_file="${private_root}/state/funded-checkpoint.json"
+    python3 - "${request_file}" "${checkpoint_file}" "${external_injection}" \
+      "${external_checkpoint}" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+request = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+checkpoint = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+transaction_id = checkpoint.get("details", {}).get("external_identifier")
+if (
+    request.get("run_id") != checkpoint.get("run_id")
+    or request.get("injection") != sys.argv[3]
+    or request.get("checkpoint") != sys.argv[4]
+    or checkpoint.get("label") != sys.argv[4].split(":", 1)[1]
+    or not isinstance(transaction_id, str)
+    or re.fullmatch(r"[0-9a-f]{64}", transaction_id) is None
+):
+    raise SystemExit("chain checkpoint does not bind one transaction")
+print(transaction_id)
+PY
+  }
+
   container_pid() {
     local service="$1" container
     container="$(compose ps --quiet "${service}")"
@@ -372,6 +478,154 @@ PY
     done
     echo "test-lab-adversarial: ${case_id}: injection request did not arrive" >&2
     return 1
+  }
+
+  controlled_block_contains() {
+    local node="$1" block_hash="$2" transaction_id="$3"
+    bitcoin_cli "${node}" getblock "${block_hash}" 1 \
+      | jq -e --arg transaction_id "${transaction_id}" \
+        '.tx | index($transaction_id) != null' >/dev/null
+  }
+
+  block_is_invalidated() {
+    local node="$1" block_hash="$2"
+    bitcoin_cli "${node}" getblockheader "${block_hash}" \
+      | jq -e '.confirmations == -1' >/dev/null
+  }
+
+  write_chain_injection_acknowledgement() {
+    local request_file="$1" acknowledgement_file="$2" request_run_id="$3"
+    local request_sha256="$4" transaction_id="$5" orphaned_block_hash="$6"
+    local competing_tip_hash="$7" reconfirmed_block_hash="$8" transition="$9"
+    local wait_state="${10}" recovery_state="${11}"
+    python3 - "${request_file}" "${acknowledgement_file}" "${request_run_id}" \
+      "${request_sha256}" "${external_injection}" "${external_checkpoint}" \
+      "${external_target}" "${transaction_id}" "${orphaned_block_hash}" \
+      "${competing_tip_hash}" "${reconfirmed_block_hash}" "${transition}" \
+      "${wait_state}" "${recovery_state}" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import sys
+
+request_path = pathlib.Path(sys.argv[1])
+acknowledgement_path = pathlib.Path(sys.argv[2])
+encoded = request_path.read_bytes()
+if hashlib.sha256(encoded).hexdigest() != sys.argv[4]:
+    raise SystemExit("injection request changed during chain recovery")
+request = json.loads(encoded)
+if (
+    request.get("schema") != "openagents.immortal.lab-injection.v1"
+    or request.get("run_id") != sys.argv[3]
+    or request.get("injection") != sys.argv[5]
+    or request.get("checkpoint") != sys.argv[6]
+):
+    raise SystemExit("injection request no longer binds the chain recovery")
+acknowledgement = {
+    "schema": "openagents.immortal.lab-injection-ack.v1",
+    "run_id": sys.argv[3],
+    "checkpoint": sys.argv[6],
+    "injection": sys.argv[5],
+    "restored": True,
+    "evidence": {
+        "target": sys.argv[7],
+        "transaction_id": sys.argv[8],
+        "orphaned_block_hash": sys.argv[9],
+        "competing_tip_hash": sys.argv[10],
+        "reconfirmed_block_hash": sys.argv[11],
+        "transition": sys.argv[12],
+        "wait_state": sys.argv[13],
+        "recovery_state": sys.argv[14],
+    },
+}
+output = json.dumps(acknowledgement, separators=(",", ":")).encode()
+if len(output) > 4096:
+    raise SystemExit("chain recovery acknowledgement exceeds its bound")
+temporary = acknowledgement_path.with_name(acknowledgement_path.name + ".tmp")
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(output)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, acknowledgement_path)
+    os.chmod(acknowledgement_path, 0o600)
+except BaseException:
+    try:
+        temporary.unlink()
+    except FileNotFoundError:
+        pass
+    raise
+PY
+  }
+
+  perform_funding_reorg() {
+    local request_file="$1" acknowledgement_file="$2" request_run_id="$3" request_sha256="$4"
+    local transaction_id before_pid after_pid orphaned_block_hash competing_tip_hash
+    local reconfirmed_block_hash
+    transaction_id="$(checkpoint_transaction_id "${request_file}")"
+    before_pid="$(container_pid provider-a)"
+    compose stop provider-a >/dev/null 2>&1
+    disconnect_bitcoin_peers
+    orphaned_block_hash="$(generate_controlled_block a "${transaction_id}")"
+    controlled_block_contains a "${orphaned_block_hash}" "${transaction_id}"
+    generate_controlled_block b >/dev/null
+    competing_tip_hash="$(generate_controlled_block b)"
+    bitcoin_cli a invalidateblock "${orphaned_block_hash}" >/dev/null
+    block_is_invalidated a "${orphaned_block_hash}"
+    reconnect_bitcoin_peers
+    test "$(bitcoin_cli a getbestblockhash)" = "${competing_tip_hash}"
+    compose up --detach provider-a >/dev/null 2>&1
+    wait_for "provider A after funding reorg" provider_ready a 9091
+    after_pid="$(container_pid provider-a)"
+    test "${before_pid}" != "${after_pid}"
+    wait_for "provider funding wait state" provider_status_exists funding_observed
+    if provider_status_exists funding_final; then
+      echo "test-lab-adversarial: funding reorg advanced before reconfirmation" >&2
+      return 1
+    fi
+    reconfirmed_block_hash="$(generate_controlled_block a "${transaction_id}")"
+    controlled_block_contains a "${reconfirmed_block_hash}" "${transaction_id}"
+    wait_for "funding reconfirmation synchronization" chains_synced
+    wait_for "provider funding resume state" provider_status_exists funding_final
+    write_chain_injection_acknowledgement \
+      "${request_file}" "${acknowledgement_file}" "${request_run_id}" \
+      "${request_sha256}" "${transaction_id}" "${orphaned_block_hash}" \
+      "${competing_tip_hash}" "${reconfirmed_block_hash}" \
+      funding_reorg_waited_and_resumed funding_observed_without_finality \
+      funding_final_after_reconfirmation
+  }
+
+  perform_claim_reorg() {
+    local request_file="$1" acknowledgement_file="$2" request_run_id="$3" request_sha256="$4"
+    local transaction_id orphaned_block_hash competing_tip_hash reconfirmed_block_hash
+    transaction_id="$(checkpoint_transaction_id "${request_file}")"
+    disconnect_bitcoin_peers
+    orphaned_block_hash="$(generate_controlled_block a "${transaction_id}")"
+    controlled_block_contains a "${orphaned_block_hash}" "${transaction_id}"
+    wait_for "provider claim watch confirmation" \
+      provider_claim_watch_matches confirmed 1 confirmation
+    generate_controlled_block b >/dev/null
+    competing_tip_hash="$(generate_controlled_block b)"
+    bitcoin_cli a invalidateblock "${orphaned_block_hash}" >/dev/null
+    block_is_invalidated a "${orphaned_block_hash}"
+    reconnect_bitcoin_peers
+    test "$(bitcoin_cli a getbestblockhash)" = "${competing_tip_hash}"
+    wait_for "provider claim watch reorg" \
+      provider_claim_watch_matches broadcast 0 reorg
+    reconfirmed_block_hash="$(generate_controlled_block a "${transaction_id}")"
+    controlled_block_contains a "${reconfirmed_block_hash}" "${transaction_id}"
+    bitcoin_cli a -rpcwallet=adversarial-miner generatetoaddress 2 "${miner_address}" >/dev/null
+    wait_for "claim reconfirmation synchronization" chains_synced
+    wait_for "provider claim watch reconfirmation" \
+      provider_claim_watch_matches confirmed 3 confirmation
+    write_chain_injection_acknowledgement \
+      "${request_file}" "${acknowledgement_file}" "${request_run_id}" \
+      "${request_sha256}" "${transaction_id}" "${orphaned_block_hash}" \
+      "${competing_tip_hash}" "${reconfirmed_block_hash}" \
+      claim_watch_reorged_and_reconfirmed claim_watch_confirmed \
+      claim_watch_reorg_then_reconfirmed
   }
 
   acknowledge_external_injection() {
@@ -412,8 +666,25 @@ if (
     raise SystemExit("injection request has an invalid run id")
 print(run_id, hashlib.sha256(encoded).hexdigest(), sep="\t")
 PY
-)"
+    )"
     IFS=$'\t' read -r request_run_id request_sha256 <<<"${request_metadata}"
+
+    case "${external_injection}" in
+      funding_reorg)
+        current_phase=funding-reorg-control
+        perform_funding_reorg "${request_file}" "${acknowledgement_file}" \
+          "${request_run_id}" "${request_sha256}"
+        current_phase=injection-acknowledgement
+        return
+        ;;
+      claim_reorg)
+        current_phase=claim-reorg-control
+        perform_claim_reorg "${request_file}" "${acknowledgement_file}" \
+          "${request_run_id}" "${request_sha256}"
+        current_phase=injection-acknowledgement
+        return
+        ;;
+    esac
 
     before_pid="$(container_pid "${external_target}")"
     [[ "${before_pid}" =~ ^[1-9][0-9]*$ ]]
