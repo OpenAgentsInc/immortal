@@ -4,6 +4,7 @@ members = [
     "crates/immortal-client",
     "crates/immortal-relay",
     "crates/immortal-provider",
+    "crates/immortal-lab",
 ]
 default-members = ["crates/immortal-relay"]
 resolver = "2"

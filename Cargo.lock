@@ -339,6 +339,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "immortal-lab"
+version = "0.0.1"
+dependencies = [
+ "immortal-client",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "immortal-provider"
 version = "0.0.1"
 dependencies = [

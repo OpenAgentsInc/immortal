@@ -1,0 +1,28 @@
+[package]
+name = "immortal-lab"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Dev-only adversarial-lab wallet harness (immortal#32). Never deployed."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "immortal-lab"
+path = "src/main.rs"
+
+# Owner-approved allowlist: the workspace's seven external crates. This lab
+# harness currently needs only four of them (tokio-tungstenite for the
+# blocking tungstenite client it re-exports, serde, serde_json, sha2) plus
+# the workspace client crate; tokio, tokio-postgres, and direct secp256k1 are
+# unused so far and must not be added without the funded rail work (#25).
+[dependencies]
+immortal-client.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio-tungstenite.workspace = true
