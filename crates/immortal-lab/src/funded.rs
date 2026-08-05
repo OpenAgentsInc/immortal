@@ -4563,6 +4563,32 @@ fn adversarial_peer_bitcoind() -> Result<BitcoindClient, String> {
         .map_err(|error| format!("could not initialize adversarial Bitcoin B client: {error}"))
 }
 
+fn wait_for_adversarial_transaction_propagation(
+    runtime: &Runtime,
+    primary: &BitcoindClient,
+    transaction_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let peer_environment = [
+        "IMMORTAL_LAB_ADVERSARIAL_BITCOIND_B_HOST",
+        "IMMORTAL_LAB_ADVERSARIAL_BITCOIND_B_PORT",
+        "IMMORTAL_LAB_ADVERSARIAL_BITCOIND_B_RPC_USER",
+        "IMMORTAL_LAB_ADVERSARIAL_BITCOIND_B_RPC_PASSWORD",
+    ];
+    let configured = peer_environment
+        .iter()
+        .filter(|name| std::env::var_os(name).is_some())
+        .count();
+    if configured == 0 {
+        return Ok(());
+    }
+    if configured != peer_environment.len() {
+        return Err("adversarial Bitcoin B propagation configuration is partial".to_owned());
+    }
+    let peer = adversarial_peer_bitcoind()?;
+    wait_for_exact_transaction_on_both_nodes(runtime, [primary, &peer], transaction_id, label)
+}
+
 fn cooperative_action_name(action: CooperativeSigningAction) -> &'static str {
     match action {
         CooperativeSigningAction::NonceCommitment => "nonce_commitment",
@@ -4944,6 +4970,12 @@ fn finish_submarine(
             json!({"external_identifier":claim_txid.clone()}),
         )?;
     }
+    wait_for_adversarial_transaction_propagation(
+        runtime,
+        &environment.bitcoind,
+        &claim_txid,
+        "submarine-claim",
+    )?;
     mine_blocks(
         runtime,
         &environment.bitcoind,
@@ -5385,6 +5417,12 @@ fn continue_reverse_after_funding_effect(
     session.publish_requester_status("requester_lock_verified", Map::new())?;
     let funding_status = session.wait_provider_state("provider_funding_broadcast")?;
     let (lockup_txid, output_index) = status_outpoint(&funding_status)?;
+    wait_for_adversarial_transaction_propagation(
+        runtime,
+        &environment.bitcoind,
+        &lockup_txid,
+        "reverse-funding",
+    )?;
     mine_blocks(runtime, &environment.bitcoind, 1, journey_name)?;
     session.wait_provider_state("funding_observed")?;
     let funding_final = session.wait_provider_state("funding_final")?;
@@ -7997,7 +8035,7 @@ fn wait_for_exact_transaction_on_both_nodes(
                 Err(BitcoindError::Rpc { code: -5 }) if Instant::now() < deadline => break,
                 Err(error) => {
                     return Err(format!(
-                        "Bitcoin node {index} did not receive the cooperative transaction: {error}"
+                        "Bitcoin node {index} did not receive the settlement transaction: {error}"
                     ));
                 }
             }
@@ -8005,25 +8043,25 @@ fn wait_for_exact_transaction_on_both_nodes(
         if let [first, second] = transactions.as_slice() {
             if first != second {
                 return Err(
-                    "Bitcoin nodes received different cooperative transaction bytes".to_owned(),
+                    "Bitcoin nodes received different settlement transaction bytes".to_owned(),
                 );
             }
             let transaction = Transaction::parse(&decode_hex(first)?).map_err(|error| {
-                format!("propagated cooperative transaction is invalid: {error}")
+                format!("propagated settlement transaction is invalid: {error}")
             })?;
             if lower_hex(
                 &transaction
                     .txid()
-                    .map_err(|error| format!("cooperative transaction txid failed: {error}"))?,
+                    .map_err(|error| format!("settlement transaction txid failed: {error}"))?,
             ) != transaction_id
             {
-                return Err("propagated cooperative transaction has another txid".to_owned());
+                return Err("propagated settlement transaction has another txid".to_owned());
             }
             return Ok(());
         }
         if Instant::now() >= deadline {
             return Err(
-                "cooperative transaction did not propagate to both Bitcoin nodes before mining"
+                "settlement transaction did not propagate to both Bitcoin nodes before mining"
                     .to_owned(),
             );
         }

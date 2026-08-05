@@ -209,3 +209,24 @@ if mode == "--list":
 else:
     print(f"test-lab-adversarial-manifest: {len(case_ids)} closed-world scenarios passed")
 PY
+
+if ! grep -Fqx "while IFS=\$'\\t' read -r -u 3 case_id group expected provider; do" \
+    scripts/test-lab-adversarial.sh \
+  || ! grep -Fqx 'done 3<"${case_file}"' scripts/test-lab-adversarial.sh; then
+  echo "test-lab-adversarial-manifest: aggregate runner does not isolate manifest input" >&2
+  exit 1
+fi
+
+python3 - scripts/test-lab-adversarial.sh <<'PY'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+branch = source.split("      cooperative_crash_cut)\n", 1)[1].split(
+    "      provider_noncooperative)\n", 1
+)[0]
+if 'before_pid="$(container_pid "${external_target}")"' not in branch:
+    raise SystemExit(
+        "test-lab-adversarial-manifest: cooperative crash cut does not bind the replaced process"
+    )
+PY

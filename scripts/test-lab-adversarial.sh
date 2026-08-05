@@ -951,6 +951,8 @@ PY
         ;;
       cooperative_crash_cut)
         current_phase="${external_target}-cooperative-crash-cut"
+        before_pid="$(container_pid "${external_target}")"
+        [[ "${before_pid}" =~ ^[1-9][0-9]*$ ]]
         before_state_boundary="$(provider_state_boundary_digest "${external_target}")"
         compose kill "${external_target}" >/dev/null
         if compose ps --services --status running | grep -Fx "${external_target}" >/dev/null; then
@@ -1982,7 +1984,7 @@ if test "${selection}" = case; then
   done <"${case_file}"
 fi
 
-while IFS=$'\t' read -r case_id group expected provider; do
+while IFS=$'\t' read -r -u 3 case_id group expected provider; do
   run_case "${case_id}" "${group}" "${expected}" "${provider}"
-done <"${case_file}"
+done 3<"${case_file}"
 aggregate_records
