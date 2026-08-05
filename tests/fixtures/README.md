@@ -96,6 +96,13 @@ rail, invoice, transaction, key, or preimage material.
   and hook-only LND/elementsd/arkd extension boundaries.
   It contains no node credentials or custody material and does not claim the
   owning rail issues are implemented.
+- `lab/funded-checkpoints-v1.json` pins the wallet driver's restart labels,
+  exact Bitcoin/Lightning recovery rules, bounded failure vocabulary, and
+  custody-free request/acknowledgement control. `lab/funded-matrix-v1.json`
+  requires the manual process runner to select every one of those restart
+  labels and injections on a fresh disposable topology. Its exclusions keep
+  clean-machine, full three-node/two-provider, and chain-to-chain evidence out
+  of a local scripted result.
 - `nipmkt/swp-profile-v1.json` pins the relay-observable MKT-SWP v1 adoption
   at OpenAgents commit `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`:
   Offering grammar, kind-39610 profile binding and immutable wrapped

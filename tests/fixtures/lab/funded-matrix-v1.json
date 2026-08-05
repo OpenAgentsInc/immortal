@@ -1,0 +1,55 @@
+{
+  "schema": "openagents.immortal.lab-funded-matrix.v1",
+  "checkpoint_manifest": "tests/fixtures/lab/funded-checkpoints-v1.json",
+  "runner": "scripts/test-provider-funded-matrix.sh",
+  "smoke_runner": "scripts/test-provider-funded.sh",
+  "selection": {
+    "restart_cases": "every_restartable_checkpoint",
+    "injection_cases": "every_bounded_injection",
+    "fresh_disposable_topology_per_case": true,
+    "github_automation": false
+  },
+  "default_case": {
+    "restart_at": "submarine:funding_execution_ready"
+  },
+  "injection_cases": {
+    "stale_quote": {
+      "driver_outcome": "expected_rejection",
+      "expected_driver_error": "swp_quote_expired"
+    },
+    "duplicate_message": {
+      "driver_outcome": "complete"
+    },
+    "conflicting_message": {
+      "driver_outcome": "expected_rejection",
+      "expected_driver_error": "injected conflicting message rejected before funding"
+    },
+    "secret_leak": {
+      "driver_outcome": "expected_rejection",
+      "expected_driver_error": "injected custody material rejected before persistence or funding"
+    },
+    "relay_loss": {
+      "driver_outcome": "complete",
+      "inject_at": "submarine:funding_execution_ready"
+    },
+    "provider_crash": {
+      "driver_outcome": "complete",
+      "inject_at": "reverse:funding_effect_recorded"
+    }
+  },
+  "limits": {
+    "maximum_cases": 32,
+    "maximum_case_id_bytes": 128,
+    "maximum_request_bytes": 4096,
+    "maximum_acknowledgement_bytes": 4096,
+    "maximum_injection_wait_seconds": 3600
+  },
+  "completion_claim": "local_process_evidence_only",
+  "excluded_claims": [
+    "clean_macos",
+    "clean_debian",
+    "two_provider_quote_comparison",
+    "full_three_node_funded_execution",
+    "chain_to_chain"
+  ]
+}

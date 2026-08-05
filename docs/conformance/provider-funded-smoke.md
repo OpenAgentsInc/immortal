@@ -258,3 +258,41 @@ This packet is a harness/unit conformance record until the expanded checkpoint
 and failure matrix is run through the disposable funded topology. The existing
 2026-08-04 process record proves only the
 `submarine:funding_authorized` replacement drill.
+
+## Manual funded process matrix
+
+`tests/fixtures/lab/funded-matrix-v1.json` closes the orchestration gap between
+the checkpoint contract and the disposable smoke. It requires one case for
+every restartable label and one case for every bounded injection in
+`funded-checkpoints-v1.json`. List or run cases explicitly:
+
+```sh
+scripts/test-provider-funded-matrix.sh --list
+scripts/test-provider-funded-matrix.sh --case restart-submarine-funding_effect_recorded
+scripts/test-provider-funded-matrix.sh --case injection-relay-loss
+scripts/test-provider-funded-matrix.sh --all
+```
+
+Each selected case invokes `scripts/test-provider-funded.sh` from an empty
+mode-0700 private root, so Bitcoin, Lightning, relay, provider, Postgres,
+wallet, logs, and evidence are never reused between cases. Cleanup retains the
+smoke's identity-checked Compose project and temporary-directory guards on
+success, refusal, failure, or interruption.
+
+Restart cases stop the wallet process at the selected manifest label, verify
+the exact safe checkpoint and journey snapshot, and replace the process before
+running the independent chain, Lightning, metrics, and prepared-Postgres
+evidence checks. Harness-owned injection cases either finish with no duplicate
+logical record or produce their fixture-pinned refusal while the Bitcoin
+mempool, provider payment list, and funded-checkpoint surface remain empty.
+Relay loss and provider crash are driven only after the harness writes its
+bounded mode-0600 request. The smoke stops or kills the named disposable
+process, restores its health, then writes an atomic mode-0600 acknowledgement
+whose run id, checkpoint, injection, and restored state exactly match the
+request.
+
+This runner has static fixture and shell coverage in this packet. Its live
+cases are not recorded here until they are executed. A local `--all` success
+would remain local process evidence: it does not establish a clean macOS or
+Debian run, full funded execution through the reusable three-node/two-provider
+topology, multi-provider Quote comparison, or chain-to-chain support.

@@ -84,6 +84,12 @@
       "scope": "client"
     },
     {
+      "path": "tests/fixtures/lab/funded-matrix-v1.json",
+      "sha256": "71dc0b09fd2ca43d4c0c70bc70768b37111de688d9699a24cf0313a6c53e9573",
+      "bytes": 1739,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/lab/provisioning-v1.json",
       "sha256": "4c925828030ec0b00a0429f0a2fbcb95a88bf845c720085eeca7c4e3eaeae661",
       "bytes": 3364,

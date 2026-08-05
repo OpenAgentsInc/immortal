@@ -3824,6 +3824,7 @@ mod tests {
 
     const CHECKPOINT_FIXTURE: &str =
         include_str!("../../../tests/fixtures/lab/funded-checkpoints-v1.json");
+    const MATRIX_FIXTURE: &str = include_str!("../../../tests/fixtures/lab/funded-matrix-v1.json");
 
     #[test]
     fn checkpoint_fixture_names_exactly_the_implemented_restart_surface() {
@@ -3896,6 +3897,99 @@ mod tests {
                     .name(),
                 name
             );
+        }
+    }
+
+    #[test]
+    fn matrix_fixture_selects_every_checkpoint_and_injection() {
+        let checkpoints: Value =
+            serde_json::from_str(CHECKPOINT_FIXTURE).expect("checkpoint fixture should parse");
+        let matrix: Value =
+            serde_json::from_str(MATRIX_FIXTURE).expect("matrix fixture should parse");
+        assert_eq!(
+            matrix.get("schema").and_then(Value::as_str),
+            Some("openagents.immortal.lab-funded-matrix.v1")
+        );
+        assert_eq!(
+            matrix
+                .pointer("/selection/restart_cases")
+                .and_then(Value::as_str),
+            Some("every_restartable_checkpoint")
+        );
+        assert_eq!(
+            matrix
+                .pointer("/selection/injection_cases")
+                .and_then(Value::as_str),
+            Some("every_bounded_injection")
+        );
+
+        let restartable = checkpoints
+            .get("journeys")
+            .and_then(Value::as_object)
+            .expect("checkpoint fixture should name journeys")
+            .iter()
+            .flat_map(|(journey, contract)| {
+                contract
+                    .get("restartable")
+                    .and_then(Value::as_array)
+                    .expect("journey should name restartable checkpoints")
+                    .iter()
+                    .map(move |label| {
+                        format!(
+                            "{journey}:{}",
+                            label.as_str().expect("checkpoint label should be text")
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert!(restartable.iter().all(|checkpoint| checkpoint.len() <= 128));
+        assert_eq!(
+            checkpoints
+                .get("smoke_restart_checkpoint")
+                .and_then(Value::as_str),
+            matrix
+                .pointer("/default_case/restart_at")
+                .and_then(Value::as_str)
+        );
+        assert!(
+            restartable.contains(
+                &matrix
+                    .pointer("/default_case/restart_at")
+                    .and_then(Value::as_str)
+                    .expect("matrix should name its default restart")
+                    .to_owned()
+            )
+        );
+
+        let injection_names = checkpoints
+            .get("injections")
+            .and_then(Value::as_array)
+            .expect("checkpoint fixture should name injections")
+            .iter()
+            .map(|injection| {
+                injection
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .expect("injection should have a name")
+            })
+            .collect::<Vec<_>>();
+        let matrix_injections = matrix
+            .get("injection_cases")
+            .and_then(Value::as_object)
+            .expect("matrix should name injection cases");
+        assert_eq!(matrix_injections.len(), injection_names.len());
+        assert!(
+            injection_names
+                .iter()
+                .all(|name| matrix_injections.contains_key(*name))
+        );
+        for name in ["relay_loss", "provider_crash"] {
+            let checkpoint = matrix_injections
+                .get(name)
+                .and_then(|case| case.get("inject_at"))
+                .and_then(Value::as_str)
+                .expect("external injection should select a checkpoint");
+            assert!(restartable.iter().any(|candidate| candidate == checkpoint));
         }
     }
 

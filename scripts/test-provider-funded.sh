@@ -5,11 +5,19 @@ cd "$(dirname "$0")/.."
 support_dir="scripts/support/provider-funded"
 compose_file="${support_dir}/compose.yaml"
 manifest_file="tests/fixtures/provider/funded-smoke-v1.json"
+checkpoint_manifest_file="tests/fixtures/lab/funded-checkpoints-v1.json"
+matrix_manifest_file="tests/fixtures/lab/funded-matrix-v1.json"
 private_root="$(mktemp -d "${TMPDIR:-/tmp}/immortal-provider-funded.XXXXXX")"
 project_name=""
 compose_ready=false
 compose_prefix=()
 current_phase=initialization
+restart_at="${IMMORTAL_PROVIDER_FUNDED_RESTART_AT:-}"
+injection="${IMMORTAL_PROVIDER_FUNDED_INJECTION:-}"
+inject_at="${IMMORTAL_PROVIDER_FUNDED_INJECT_AT:-}"
+driver_outcome=complete
+expected_driver_error=""
+injection_timeout_seconds="${IMMORTAL_PROVIDER_FUNDED_INJECTION_TIMEOUT_SECONDS:-300}"
 
 cleanup() {
   local exit_status=$?
@@ -51,6 +59,79 @@ random_hex() {
   local byte_count="$1"
   LC_ALL=C od -An -N "${byte_count}" -tx1 /dev/urandom | tr -d ' \n'
 }
+
+if test -n "${restart_at}" && test -n "${injection}"; then
+  echo "test-provider-funded: restart and injection cases are mutually exclusive" >&2
+  exit 1
+fi
+if [[ ! "${injection_timeout_seconds}" =~ ^[0-9]{1,4}$ ]] \
+  || test "${injection_timeout_seconds}" -lt 1 \
+  || test "${injection_timeout_seconds}" -gt 3600; then
+  echo "test-provider-funded: injection timeout is outside 1..=3600 seconds" >&2
+  exit 1
+fi
+if test -z "${restart_at}" && test -z "${injection}"; then
+  restart_at="$(python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    manifest = json.load(source)
+print(manifest["default_case"]["restart_at"])
+' "${matrix_manifest_file}")"
+fi
+
+control_metadata="$(python3 -c '
+import json, sys
+
+checkpoint_path, matrix_path, restart_at, injection, inject_at = sys.argv[1:]
+with open(checkpoint_path, encoding="utf-8") as source:
+    checkpoints = json.load(source)
+with open(matrix_path, encoding="utf-8") as source:
+    matrix = json.load(source)
+
+restartable = {
+    f"{journey}:{label}"
+    for journey, contract in checkpoints.get("journeys", {}).items()
+    for label in contract.get("restartable", [])
+}
+injection_contracts = {
+    contract.get("name"): contract
+    for contract in checkpoints.get("injections", [])
+}
+matrix_injections = matrix.get("injection_cases", {})
+
+if restart_at:
+    if inject_at:
+        raise SystemExit("restart cases cannot set an injection checkpoint")
+    if restart_at not in restartable:
+        raise SystemExit("restart checkpoint is absent from the checkpoint manifest")
+    print("complete\t")
+elif injection:
+    contract = injection_contracts.get(injection)
+    matrix_case = matrix_injections.get(injection)
+    if contract is None or matrix_case is None:
+        raise SystemExit("injection is absent from the checkpoint or matrix manifest")
+    if contract.get("owner") == "external_script":
+        if inject_at not in restartable:
+            raise SystemExit("external injection requires a restartable checkpoint")
+    elif inject_at:
+        raise SystemExit("harness-owned injection cannot set an external checkpoint")
+    outcome = matrix_case.get("driver_outcome")
+    error = matrix_case.get("expected_driver_error", "")
+    if outcome not in {"complete", "expected_rejection"}:
+        raise SystemExit("matrix injection has an unsupported driver outcome")
+    if outcome == "expected_rejection" and not error:
+        raise SystemExit("rejection case has no expected driver error")
+    if any(character in error for character in "\t\r\n"):
+        raise SystemExit("expected driver error is not one bounded line")
+    print(f"{outcome}\t{error}")
+else:
+    raise SystemExit("no funded smoke control was selected")
+' "${checkpoint_manifest_file}" "${matrix_manifest_file}" \
+  "${restart_at}" "${injection}" "${inject_at}")" || {
+  echo "test-provider-funded: invalid matrix control" >&2
+  exit 1
+}
+IFS=$'\t' read -r driver_outcome expected_driver_error <<<"${control_metadata}"
 
 confirmation_policy="$(python3 -c '
 import json, sys
@@ -294,6 +375,182 @@ wait_for_provider() {
   return 1
 }
 
+wait_for_injection_request() {
+  local request_file="$1"
+  local maximum_attempts=$((injection_timeout_seconds * 5))
+  local attempt
+  for ((attempt = 0; attempt < maximum_attempts; attempt += 1)); do
+    if test -f "${request_file}"; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "test-provider-funded: funded injection request did not arrive" >&2
+  return 1
+}
+
+assert_no_swap_rail_effects() {
+  if ! bitcoin_cli getrawmempool | python3 -c '
+import json, sys
+transactions = json.load(sys.stdin)
+raise SystemExit(0 if transactions == [] else 1)
+'; then
+    echo "test-provider-funded: rejected injection left a Bitcoin transaction in the mempool" >&2
+    return 1
+  fi
+  if ! cln_cli cln-provider listpays | python3 -c '
+import json, sys
+pays = json.load(sys.stdin).get("pays")
+raise SystemExit(0 if pays == [] else 1)
+'; then
+    echo "test-provider-funded: rejected injection started a provider Lightning payment" >&2
+    return 1
+  fi
+  if test -e "${private_root}/state/funded-checkpoint.json"; then
+    echo "test-provider-funded: rejected injection crossed a funded checkpoint" >&2
+    return 1
+  fi
+}
+
+acknowledge_external_injection() {
+  local request_file="${private_root}/state/funded-injection.json"
+  local acknowledgement_file="${private_root}/state/funded-continue"
+  local request_metadata
+  local request_run_id
+  local request_sha256
+  if ! wait_for_injection_request "${request_file}"; then
+    return 1
+  fi
+
+  request_metadata="$(python3 - "${request_file}" "${injection}" "${inject_at}" <<'PY'
+import hashlib
+import json
+import pathlib
+import stat
+import sys
+
+request_path = pathlib.Path(sys.argv[1])
+expected_injection = sys.argv[2]
+expected_checkpoint = sys.argv[3]
+request_bytes = request_path.read_bytes()
+if not request_bytes or len(request_bytes) > 4096:
+    raise SystemExit("injection request is empty or unbounded")
+if stat.S_IMODE(request_path.stat().st_mode) != 0o600:
+    raise SystemExit("injection request is not mode 0600")
+request = json.loads(request_bytes)
+if set(request) != {
+    "schema", "run_id", "journey", "checkpoint", "injection", "requested_at"
+}:
+    raise SystemExit("injection request has another shape")
+if (
+    request["schema"] != "openagents.immortal.lab-injection.v1"
+    or request["checkpoint"] != expected_checkpoint
+    or request["injection"] != expected_injection
+    or request["journey"] != expected_checkpoint.split(":", 1)[0]
+    or not isinstance(request["requested_at"], int)
+):
+    raise SystemExit("injection request does not bind the selected case")
+run_id = request["run_id"]
+if (
+    not isinstance(run_id, str)
+    or not 1 <= len(run_id) <= 128
+    or any(not (character.isascii() and (character.isalnum() or character in "-_")) for character in run_id)
+):
+    raise SystemExit("injection request has an invalid run id")
+print(run_id, hashlib.sha256(request_bytes).hexdigest(), sep="\t")
+PY
+)" || {
+    echo "test-provider-funded: funded injection request failed validation" >&2
+    return 1
+  }
+  IFS=$'\t' read -r request_run_id request_sha256 <<<"${request_metadata}"
+
+  case "${injection}" in
+    relay_loss)
+      current_phase=relay-loss-injection
+      compose stop relay >/dev/null
+      if compose ps --services --status running | grep -qx relay; then
+        echo "test-provider-funded: relay remained running during relay-loss injection" >&2
+        return 1
+      fi
+      compose up --detach relay >/dev/null
+      wait_for "restored relay" compose run --rm --no-deps --entrypoint /usr/bin/curl provider \
+        --fail --silent --show-error http://127.0.0.1:18080/health
+      compose up --detach --force-recreate provider >/dev/null
+      wait_for_provider
+      ;;
+    provider_crash)
+      current_phase=provider-crash-injection
+      compose kill provider >/dev/null
+      if compose ps --services --status running | grep -qx provider; then
+        echo "test-provider-funded: provider remained running after the crash injection" >&2
+        return 1
+      fi
+      compose up --detach provider >/dev/null
+      wait_for_provider
+      ;;
+    *)
+      echo "test-provider-funded: external acknowledgement requested for another injection" >&2
+      return 1
+      ;;
+  esac
+
+  current_phase=injection-acknowledgement
+  python3 - "${request_file}" "${acknowledgement_file}" \
+    "${request_run_id}" "${request_sha256}" "${injection}" "${inject_at}" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import sys
+
+request_path = pathlib.Path(sys.argv[1])
+acknowledgement_path = pathlib.Path(sys.argv[2])
+expected_run_id = sys.argv[3]
+expected_sha256 = sys.argv[4]
+expected_injection = sys.argv[5]
+expected_checkpoint = sys.argv[6]
+request_bytes = request_path.read_bytes()
+if hashlib.sha256(request_bytes).hexdigest() != expected_sha256:
+    raise SystemExit("injection request changed during process recovery")
+request = json.loads(request_bytes)
+if (
+    request["schema"] != "openagents.immortal.lab-injection.v1"
+    or request["run_id"] != expected_run_id
+    or request["checkpoint"] != expected_checkpoint
+    or request["injection"] != expected_injection
+):
+    raise SystemExit("injection request no longer binds the selected case")
+acknowledgement = {
+    "schema": "openagents.immortal.lab-injection-ack.v1",
+    "run_id": expected_run_id,
+    "checkpoint": expected_checkpoint,
+    "injection": expected_injection,
+    "restored": True,
+}
+encoded = json.dumps(acknowledgement, separators=(",", ":")).encode()
+temporary_path = acknowledgement_path.with_name(acknowledgement_path.name + ".tmp")
+descriptor = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(encoded)
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary_path, acknowledgement_path)
+    directory_descriptor = os.open(acknowledgement_path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
+except BaseException:
+    try:
+        temporary_path.unlink()
+    except FileNotFoundError:
+        pass
+    raise
+PY
+}
+
 if ! compose config --quiet; then
   echo "test-provider-funded: disposable compose configuration is invalid" >&2
   exit 1
@@ -398,37 +655,95 @@ if ! grep -qx 'immortal_provider_ready 1' "${private_root}/evidence/metrics-befo
   exit 1
 fi
 
-current_phase=harness-controlled-stop
-if compose run --rm --no-deps \
-  --env IMMORTAL_LAB_STOP_AFTER=submarine:funding_authorized \
-  driver >"${private_root}/driver-stop.log" 2>&1; then
-  echo "test-provider-funded: harness ignored the controlled stop" >&2
-  exit 1
-fi
-if ! python3 -c '
+if test -n "${injection}"; then
+  driver_arguments=(
+    run --rm --no-deps
+    --env "IMMORTAL_LAB_INJECTION=${injection}"
+  )
+  if test -n "${inject_at}"; then
+    driver_arguments+=(
+      --env "IMMORTAL_LAB_INJECT_AT=${inject_at}"
+      --env "IMMORTAL_LAB_INJECTION_TIMEOUT_SECONDS=${injection_timeout_seconds}"
+    )
+  fi
+  driver_arguments+=(driver)
+
+  if test "${driver_outcome}" = expected_rejection; then
+    current_phase=harness-injection-rejection
+    assert_no_swap_rail_effects
+    if compose "${driver_arguments[@]}" >"${private_root}/driver-injection.log" 2>&1; then
+      echo "test-provider-funded: harness accepted a rejection injection" >&2
+      exit 1
+    fi
+    if ! grep -F -- "${expected_driver_error}" "${private_root}/driver-injection.log" >/dev/null; then
+      echo "test-provider-funded: harness returned another injection refusal" >&2
+      exit 1
+    fi
+    assert_no_swap_rail_effects
+    current_phase=complete
+    echo "test-provider-funded: ${injection} rejected before swap rail effects"
+    exit 0
+  fi
+
+  if test -n "${inject_at}"; then
+    current_phase=harness-external-injection
+    compose "${driver_arguments[@]}" >"${private_root}/driver-injection.log" 2>&1 &
+    driver_process=$!
+    if ! acknowledge_external_injection; then
+      if kill -TERM "${driver_process}" >/dev/null 2>&1; then
+        if wait "${driver_process}" >/dev/null 2>&1; then
+          echo "test-provider-funded: driver exited cleanly while fault recovery failed" >&2
+        fi
+      elif wait "${driver_process}" >/dev/null 2>&1; then
+        echo "test-provider-funded: driver exited before fault recovery failed" >&2
+      fi
+      exit 1
+    fi
+    if ! wait "${driver_process}"; then
+      echo "test-provider-funded: driver failed after the acknowledged external injection" >&2
+      exit 1
+    fi
+  else
+    current_phase=harness-injection
+    if ! compose "${driver_arguments[@]}" >"${private_root}/driver-injection.log" 2>&1; then
+      echo "test-provider-funded: funded driver failed during the bounded injection" >&2
+      exit 1
+    fi
+  fi
+else
+  current_phase=harness-controlled-stop
+  if compose run --rm --no-deps \
+    --env "IMMORTAL_LAB_STOP_AFTER=${restart_at}" \
+    driver >"${private_root}/driver-stop.log" 2>&1; then
+    echo "test-provider-funded: harness ignored the controlled stop" >&2
+    exit 1
+  fi
+  if ! python3 -c '
 import json, pathlib, sys
 state = pathlib.Path(sys.argv[1])
+journey, label = sys.argv[2].split(":", 1)
 with (state / "funded-checkpoint.json").open(encoding="utf-8") as source:
     checkpoint = json.load(source)
-if checkpoint.get("journey") != "submarine":
+if checkpoint.get("journey") != journey:
     raise SystemExit("controlled-stop checkpoint has another journey")
-if checkpoint.get("label") != "funding_authorized":
+if checkpoint.get("label") != label:
     raise SystemExit("controlled-stop checkpoint has another label")
 if checkpoint.get("safe_to_stop") is not True:
     raise SystemExit("controlled-stop checkpoint is not money-safe")
-snapshot = state / "funded-submarine-session.json"
+snapshot = state / f"funded-{journey}-session.json"
 if not snapshot.is_file():
     raise SystemExit("controlled-stop session snapshot is absent")
-' "${private_root}/state"; then
-  echo "test-provider-funded: harness did not persist its safe restart boundary" >&2
-  exit 1
-fi
+' "${private_root}/state" "${restart_at}"; then
+    echo "test-provider-funded: harness did not persist its safe restart boundary" >&2
+    exit 1
+  fi
 
-current_phase=harness-restart
-if ! compose run --rm --no-deps driver \
-  >"${private_root}/driver.log" 2>&1; then
-  echo "test-provider-funded: external funded-swap driver failed" >&2
-  exit 1
+  current_phase=harness-restart
+  if ! compose run --rm --no-deps driver \
+    >"${private_root}/driver.log" 2>&1; then
+    echo "test-provider-funded: external funded-swap driver failed" >&2
+    exit 1
+  fi
 fi
 
 evidence_file="${private_root}/evidence/funded-smoke.json"

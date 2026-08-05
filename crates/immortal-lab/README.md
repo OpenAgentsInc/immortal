@@ -76,6 +76,29 @@ write a bound acknowledgement to `funded-continue`:
 The harness rejects stale, mismatched, oversized, malformed, or
 custody-bearing acknowledgements.
 
+The funded process wrapper accepts one bounded outer control at a time:
+`IMMORTAL_PROVIDER_FUNDED_RESTART_AT`, or
+`IMMORTAL_PROVIDER_FUNDED_INJECTION` with
+`IMMORTAL_PROVIDER_FUNDED_INJECT_AT` for an external-process fault. The
+manual matrix runner derives every restart case and every injection case from
+the two lab fixtures and gives each case a fresh disposable topology:
+
+```sh
+scripts/test-provider-funded-matrix.sh --list
+scripts/test-provider-funded-matrix.sh --case restart-reverse-claim_broadcast_ready
+scripts/test-provider-funded-matrix.sh --case injection-provider-crash
+scripts/test-provider-funded-matrix.sh --all
+```
+
+The ordinary `scripts/test-provider-funded.sh` invocation remains one smoke
+with one replacement process. The matrix is opt-in because every case builds,
+funds, verifies, and removes its own rail topology. Relay-loss and
+provider-crash cases wait for the exact mode-0600 request, restore the affected
+disposable processes, verify readiness, and atomically write the bound
+mode-0600 acknowledgement. Harness-owned rejection cases additionally require
+an empty Bitcoin mempool, no provider Lightning payment, and no funded
+checkpoint before and after the refusal.
+
 ## Safety rails
 
 - Only `ws://` loopback relay URLs are accepted (same refusal as
