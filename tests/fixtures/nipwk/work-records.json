@@ -1,0 +1,190 @@
+{
+  "comment": "NIP-WK (kinds 32170-32173) and NIP-PI (kind 32200) structural fixtures. Valid cases include unknown tags and deployment-declared vocabulary values, which the relay must preserve. Invalid cases mutate the first valid case of the same kind. The relay validates structure only; authority-key resolution is a client rule.",
+  "valid": [
+    {
+      "kind": 32170,
+      "tags": [
+        ["d", "work-9f31854f"],
+        ["org", "org-openagents"],
+        ["domain", "development"],
+        ["state", "active"],
+        ["revision", "7"],
+        ["title", "Add lane READMEs to the NIP source directories"],
+        ["class", "class-repository-task"],
+        ["p", "1111111111111111111111111111111111111111111111111111111111111111", "", "owner"],
+        ["p", "2222222222222222222222222222222222222222222222222222222222222222", "", "delegate"],
+        ["a", "32172:1111111111111111111111111111111111111111111111111111111111111111:work-9f31854f:obj:3", "", "objective"],
+        ["e", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "", "head"],
+        ["published_at", "1786500000"],
+        ["t", "allwork"],
+        ["future_extension", "preserved"]
+      ]
+    },
+    {
+      "kind": 32170,
+      "tags": [
+        ["d", "work-open-vocab"],
+        ["org", "org-openagents"],
+        ["domain", "chip_design"],
+        ["state", "awaiting-vendor"],
+        ["revision", "1"],
+        ["p", "1111111111111111111111111111111111111111111111111111111111111111", "", "owner"],
+        ["published_at", "1786500000"]
+      ]
+    },
+    {
+      "kind": 32171,
+      "tags": [
+        ["d", "work-9f31854f:evt:1"],
+        ["work", "work-9f31854f"],
+        ["seq", "1"],
+        ["event", "created"],
+        ["p", "1111111111111111111111111111111111111111111111111111111111111111", "", "actor"],
+        ["occurred_at", "1786500000"],
+        ["admitted_at", "1786500001"],
+        ["revision", "1"],
+        ["e", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "", "intent"],
+        ["reason", "work.create"],
+        ["unknown_tag", "preserved"]
+      ]
+    },
+    {
+      "kind": 32171,
+      "tags": [
+        ["d", "work-9f31854f:evt:9"],
+        ["work", "work-9f31854f"],
+        ["seq", "9"],
+        ["event", "vendor_escalated"],
+        ["p", "1111111111111111111111111111111111111111111111111111111111111111", "", "actor"],
+        ["occurred_at", "1786500300"],
+        ["admitted_at", "1786500301"]
+      ]
+    },
+    {
+      "kind": 32172,
+      "tags": [
+        ["d", "work-9f31854f:obj:3"],
+        ["work", "work-9f31854f"],
+        ["revision", "3"],
+        ["x", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"],
+        ["published_at", "1786500000"]
+      ]
+    },
+    {
+      "kind": 32173,
+      "tags": [
+        ["d", "work-9f31854f"],
+        ["work", "work-9f31854f"],
+        ["state", "open"],
+        ["revision", "2"],
+        ["e", "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "", "evidence"],
+        ["a", "32172:1111111111111111111111111111111111111111111111111111111111111111:work-9f31854f:obj:3", "", "objective"]
+      ]
+    },
+    {
+      "kind": 32200,
+      "tags": [
+        ["d", "work-9f31854f"],
+        ["org", "org-openagents"],
+        ["team", "team-core"],
+        ["identifier", "CORE-142"],
+        ["title", "Add lane READMEs to the NIP source directories"],
+        ["state", "active"],
+        ["priority", "high"],
+        ["estimate", "3"],
+        ["due", "1786600000"],
+        ["revision", "7"],
+        ["p", "1111111111111111111111111111111111111111111111111111111111111111", "", "assignee"],
+        ["label", "32216:1111111111111111111111111111111111111111111111111111111111111111:docs"],
+        ["identifier_alias", "OLD-9"],
+        ["e", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "", "head"],
+        ["published_at", "1786500000"],
+        ["future_extension", "preserved"]
+      ]
+    },
+    {
+      "kind": 32200,
+      "tags": [
+        ["d", "work-ws-state"],
+        ["org", "org-openagents"],
+        ["team", "team-core"],
+        ["identifier", "CORE2-7"],
+        ["title", "Workflow-state address form"],
+        ["state", "32215:1111111111111111111111111111111111111111111111111111111111111111:team-core:started"],
+        ["revision", "1"],
+        ["published_at", "1786500000"]
+      ]
+    }
+  ],
+  "invalid": [
+    {"name": "work record missing d", "kind": 32170, "remove": "d"},
+    {"name": "work record whitespace d", "kind": 32170, "set": ["d", "work ref"]},
+    {"name": "work record duplicate d", "kind": 32170, "add": ["d", "work-other"]},
+    {"name": "work record missing org", "kind": 32170, "remove": "org"},
+    {"name": "work record missing domain", "kind": 32170, "remove": "domain"},
+    {"name": "work record uppercase domain", "kind": 32170, "set": ["domain", "Development"]},
+    {"name": "work record missing state", "kind": 32170, "remove": "state"},
+    {"name": "work record whitespace state", "kind": 32170, "set": ["state", "in review"]},
+    {"name": "work record missing revision", "kind": 32170, "remove": "revision"},
+    {"name": "work record zero revision", "kind": 32170, "set": ["revision", "0"]},
+    {"name": "work record non-canonical revision", "kind": 32170, "set": ["revision", "07"]},
+    {"name": "work record missing owner", "kind": 32170, "remove": "p"},
+    {"name": "work record short owner pubkey", "kind": 32170, "set_tag": ["p", "beef", "", "owner"]},
+    {"name": "work record missing published_at", "kind": 32170, "remove": "published_at"},
+    {"name": "work record invalid published_at", "kind": 32170, "set": ["published_at", "12ab"]},
+    {"name": "work record control title", "kind": 32170, "set": ["title", "line\nbreak"]},
+    {"name": "work record invalid address ref", "kind": 32170, "set_tag": ["a", "not-an-address", "", "objective"]},
+    {"name": "work record invalid event ref", "kind": 32170, "set_tag": ["e", "xyz", "", "head"]},
+    {"name": "work record oversize content", "kind": 32170, "content_bytes": 16385},
+
+    {"name": "work event missing d", "kind": 32171, "remove": "d"},
+    {"name": "work event d without evt segment", "kind": 32171, "set": ["d", "work-9f31854f"]},
+    {"name": "work event seq mismatch", "kind": 32171, "set": ["seq", "2"]},
+    {"name": "work event zero seq", "kind": 32171, "sets": [["d", "work-9f31854f:evt:0"], ["seq", "0"]]},
+    {"name": "work event non-canonical seq", "kind": 32171, "sets": [["d", "work-9f31854f:evt:01"], ["seq", "01"]]},
+    {"name": "work event missing work", "kind": 32171, "remove": "work"},
+    {"name": "work event work mismatch", "kind": 32171, "set": ["work", "work-other"]},
+    {"name": "work event missing seq", "kind": 32171, "remove": "seq"},
+    {"name": "work event missing kind label", "kind": 32171, "remove": "event"},
+    {"name": "work event malformed kind label", "kind": 32171, "set": ["event", "Created!"]},
+    {"name": "work event missing actor", "kind": 32171, "remove": "p"},
+    {"name": "work event short actor pubkey", "kind": 32171, "set_tag": ["p", "beef", "", "actor"]},
+    {"name": "work event missing occurred_at", "kind": 32171, "remove": "occurred_at"},
+    {"name": "work event missing admitted_at", "kind": 32171, "remove": "admitted_at"},
+    {"name": "work event zero revision", "kind": 32171, "set": ["revision", "0"]},
+
+    {"name": "objective missing d", "kind": 32172, "remove": "d"},
+    {"name": "objective d without obj segment", "kind": 32172, "set": ["d", "work-9f31854f"]},
+    {"name": "objective revision mismatch", "kind": 32172, "set": ["revision", "4"]},
+    {"name": "objective zero revision", "kind": 32172, "sets": [["d", "work-9f31854f:obj:0"], ["revision", "0"]]},
+    {"name": "objective missing work", "kind": 32172, "remove": "work"},
+    {"name": "objective work mismatch", "kind": 32172, "set": ["work", "work-other"]},
+    {"name": "objective missing digest", "kind": 32172, "remove": "x"},
+    {"name": "objective short digest", "kind": 32172, "set": ["x", "beef"]},
+    {"name": "objective missing published_at", "kind": 32172, "remove": "published_at"},
+
+    {"name": "outcome missing d", "kind": 32173, "remove": "d"},
+    {"name": "outcome work mismatch", "kind": 32173, "set": ["work", "work-other"]},
+    {"name": "outcome uppercase state", "kind": 32173, "set": ["state", "Open"]},
+    {"name": "outcome zero revision", "kind": 32173, "set": ["revision", "0"]},
+
+    {"name": "projection missing d", "kind": 32200, "remove": "d"},
+    {"name": "projection missing org", "kind": 32200, "remove": "org"},
+    {"name": "projection missing team", "kind": 32200, "remove": "team"},
+    {"name": "projection missing identifier", "kind": 32200, "remove": "identifier"},
+    {"name": "projection lowercase identifier", "kind": 32200, "set": ["identifier", "core-142"]},
+    {"name": "projection identifier without number", "kind": 32200, "set": ["identifier", "CORE"]},
+    {"name": "projection identifier leading zero", "kind": 32200, "set": ["identifier", "CORE-01"]},
+    {"name": "projection missing title and content", "kind": 32200, "remove": "title", "content": ""},
+    {"name": "projection missing state", "kind": 32200, "remove": "state"},
+    {"name": "projection missing revision", "kind": 32200, "remove": "revision"},
+    {"name": "projection zero revision", "kind": 32200, "set": ["revision", "0"]},
+    {"name": "projection missing published_at", "kind": 32200, "remove": "published_at"},
+    {"name": "projection unknown priority", "kind": 32200, "set": ["priority", "critical"]},
+    {"name": "projection non-decimal estimate", "kind": 32200, "set": ["estimate", "x1"]},
+    {"name": "projection non-decimal due", "kind": 32200, "set": ["due", "later"]},
+    {"name": "projection whitespace label", "kind": 32200, "set": ["label", "bad label"]},
+    {"name": "projection invalid identifier alias", "kind": 32200, "set": ["identifier_alias", "bad"]},
+    {"name": "projection short assignee pubkey", "kind": 32200, "set_tag": ["p", "beef", "", "assignee"]}
+  ]
+}

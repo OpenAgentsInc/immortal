@@ -30,13 +30,13 @@ async fn m2_store_contract_against_postgres() {
     let (initial_store, report) = Store::connect_with_report(&database_url).await.unwrap();
     assert_eq!(
         report.applied_versions,
-        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     );
     drop(initial_store);
     seed_pre_gateway_and_swp_rows(&database_url).await;
 
     let (mut store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![9, 10, 12, 13]);
+    assert_eq!(report.applied_versions, vec![9, 10, 12, 13, 14]);
     assert_pre_adoption_rows_are_private_immutable_and_preserved(&database_url).await;
     assert!(store.is_current());
 
@@ -92,7 +92,7 @@ async fn m2_store_contract_against_postgres() {
     );
 
     let tag_filter = Filter {
-        tags: BTreeMap::from([('e', vec!["indexed-value".to_owned()])]),
+        tags: BTreeMap::from([("e".to_owned(), vec!["indexed-value".to_owned()])]),
         ..Filter::default()
     };
     assert_eq!(
@@ -104,7 +104,7 @@ async fn m2_store_contract_against_postgres() {
         1
     );
     let ignored_filter = Filter {
-        tags: BTreeMap::from([('e', vec!["ignored".to_owned()])]),
+        tags: BTreeMap::from([("e".to_owned(), vec!["ignored".to_owned()])]),
         ..Filter::default()
     };
     assert!(
@@ -236,6 +236,14 @@ DELETE FROM mkt_immutable_coordinate WHERE kind = 39620;
 DELETE FROM schema_migrations WHERE version = 12;
 DELETE FROM mkt_immutable_coordinate WHERE kind = 39650;
 DELETE FROM schema_migrations WHERE version = 13;
+DELETE FROM nostr_indexed_tag WHERE tag_name = 'work';
+ALTER TABLE nostr_indexed_tag
+    DROP CONSTRAINT nostr_indexed_tag_name;
+ALTER TABLE nostr_indexed_tag
+    ADD CONSTRAINT nostr_indexed_tag_name CHECK (
+        octet_length(tag_name) = 1 AND tag_name ~ '^[A-Za-z]$'
+    );
+DELETE FROM schema_migrations WHERE version = 14;
 "#,
         )
         .await
@@ -284,6 +292,16 @@ INSERT INTO nostr_event (
         39_650,
         vec![Tag::new(vec!["d".into(), "a".repeat(64)])],
         "pre-v13 MKT-LSP searchable marker",
+    );
+    let work_event = signed_event(
+        95,
+        13,
+        32_171,
+        vec![
+            Tag::new(vec!["d".into(), "work-pre14:evt:1".into()]),
+            Tag::new(vec!["work".into(), "work-pre14".into()]),
+        ],
+        "pre-v14 work event marker",
     );
     transaction
         .execute(
@@ -365,6 +383,22 @@ INSERT INTO nostr_event (
         )
         .await
         .unwrap();
+    transaction
+        .execute(
+            &insert,
+            &[
+                &work_event.id,
+                &work_event.pubkey,
+                &i64::try_from(work_event.created_at).unwrap(),
+                &32_171_i32,
+                &serde_json::to_string(&work_event.tags).unwrap(),
+                &work_event.content,
+                &work_event.sig,
+                &Some("work-pre14:evt:1".to_owned()),
+            ],
+        )
+        .await
+        .unwrap();
     for (kind, event, identifier) in [
         (39_610_i32, &swap_contract, "e".repeat(64)),
         (39_620_i32, &p2p_resolution, "f".repeat(64)),
@@ -395,7 +429,7 @@ VALUES ($1, $2, $3, $4, $5)
         .await
         .unwrap()
         .get::<_, i64>(0);
-    assert_eq!(indexed, 5);
+    assert_eq!(indexed, 6);
     transaction.commit().await.unwrap();
 }
 
@@ -409,12 +443,21 @@ async fn assert_pre_adoption_rows_are_private_immutable_and_preserved(database_u
         )
         .await
         .unwrap();
-    assert_eq!(row.get::<_, i64>(0), 5, "migrations preserve all rows");
+    assert_eq!(row.get::<_, i64>(0), 6, "migrations preserve all rows");
     assert_eq!(
         row.get::<_, i64>(1),
         5,
         "migrations recalculate all private search vectors to NULL"
     );
+    let work_index = client
+        .query_one(
+            "SELECT count(*) FROM nostr_indexed_tag WHERE tag_name = 'work' AND tag_value = 'work-pre14'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get::<_, i64>(0);
+    assert_eq!(work_index, 1, "v14 backfills the work tag index");
     for (kind, profile) in [
         (39_610, "MKT-SWP"),
         (39_620, "MKT-P2P"),
@@ -598,7 +641,7 @@ async fn replacement_race(database_url: &str, store: &mut Store) {
 
     let filter = Filter {
         kinds: Some(vec![30_000]),
-        tags: BTreeMap::from([('d', vec!["race".to_owned()])]),
+        tags: BTreeMap::from([("d".to_owned(), vec!["race".to_owned()])]),
         ..Filter::default()
     };
     let events = store.query_filter(&filter, NOW, 10).await.unwrap();

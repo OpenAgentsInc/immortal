@@ -11,6 +11,7 @@ if cargo tree --locked -p immortal-relay --edges normal --prefix none | grep -Eq
 fi
 cargo check --locked --workspace --all-targets
 cargo test --locked -p immortal-core --test mkt_fixtures
+cargo test --locked -p immortal-core --test allwork_fixtures
 cargo test --locked -p immortal-core --test mkt_immutability_model
 cargo test --locked -p immortal-core --test mkt_common_fixtures
 cargo test --locked -p immortal-core --test mkt_closing_fixtures

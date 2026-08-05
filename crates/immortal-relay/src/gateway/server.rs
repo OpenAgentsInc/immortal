@@ -1646,7 +1646,7 @@ fn owner_scoped_filter_denial(filters: &[Filter], read_pubkeys: &[String]) -> Op
             return Some("auth-required: private Block NIP reads require authentication");
         }
         let kinds = filter.kinds.as_deref().unwrap_or_default();
-        let p_scoped = filter.tags.get(&'p').is_some_and(|values| {
+        let p_scoped = filter.tags.get("p").is_some_and(|values| {
             !values.is_empty()
                 && values
                     .iter()
@@ -1761,7 +1761,7 @@ fn validate_and_clamp_filters(
             return Err("invalid: filter arrays must not be empty".to_owned());
         }
         for (name, values) in &filter.tags {
-            if matches!(name, 'e' | 'p')
+            if matches!(name.as_str(), "e" | "p")
                 && values.iter().any(|value| {
                     value.len() != 64
                         || !value
@@ -1978,7 +1978,7 @@ mod tests {
             fixture["gift_wrap_read_refusals"]["not_self_scoped"].as_str()
         );
         let scoped = Filter {
-            tags: BTreeMap::from([('p', vec![recipient.clone()])]),
+            tags: BTreeMap::from([("p".to_owned(), vec![recipient.clone()])]),
             ..unscoped
         };
         assert_eq!(owner_scoped_filter_denial(&[scoped], &[recipient]), None);

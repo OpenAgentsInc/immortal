@@ -81,7 +81,7 @@ enum IndexKey {
     Id(String),
     Author(String),
     Kind(u16),
-    Tag(char, String),
+    Tag(String, String),
     Broad,
 }
 
@@ -624,7 +624,7 @@ fn subscription_index_keys(filters: &[Filter]) -> HashSet<IndexKey> {
                 values
                     .iter()
                     .cloned()
-                    .map(|value| IndexKey::Tag(*name, value)),
+                    .map(|value| IndexKey::Tag(name.clone(), value)),
             );
         }
         if !indexed {
@@ -644,7 +644,7 @@ fn event_index_keys(event: &Event) -> HashSet<IndexKey> {
     keys.extend(
         event
             .indexed_tags()
-            .map(|(name, value)| IndexKey::Tag(name, value.to_owned())),
+            .map(|(name, value)| IndexKey::Tag(name.to_owned(), value.to_owned())),
     );
     keys
 }
@@ -761,7 +761,7 @@ mod tests {
         let mut wrap_connection = hub.add_connection(4, 8).await.unwrap();
         let wrap_filter = Filter {
             kinds: Some(vec![1_059]),
-            tags: BTreeMap::from([('p', vec![recipient.clone()])]),
+            tags: BTreeMap::from([("p".to_owned(), vec![recipient.clone()])]),
             ..Filter::default()
         };
         assert!(
@@ -899,14 +899,14 @@ mod tests {
             ids: Some(vec!["a".repeat(64)]),
             authors: Some(vec!["c".repeat(64)]),
             kinds: Some(vec![1]),
-            tags: BTreeMap::from([('p', vec!["d".repeat(64)])]),
+            tags: BTreeMap::from([("p".to_owned(), vec!["d".repeat(64)])]),
             ..Filter::default()
         };
         let keys = subscription_index_keys(&[filter]);
         assert!(keys.contains(&IndexKey::Id("a".repeat(64))));
         assert!(keys.contains(&IndexKey::Author("c".repeat(64))));
         assert!(keys.contains(&IndexKey::Kind(1)));
-        assert!(keys.contains(&IndexKey::Tag('p', "d".repeat(64))));
+        assert!(keys.contains(&IndexKey::Tag("p".to_owned(), "d".repeat(64))));
         assert!(!keys.contains(&IndexKey::Broad));
         assert_eq!(
             subscription_index_keys(&[Filter::default()]),
@@ -920,7 +920,7 @@ mod tests {
         assert!(event_keys.contains(&IndexKey::Id("a".repeat(64))));
         assert!(event_keys.contains(&IndexKey::Author("c".repeat(64))));
         assert!(event_keys.contains(&IndexKey::Kind(1)));
-        assert!(event_keys.contains(&IndexKey::Tag('p', "d".repeat(64))));
+        assert!(event_keys.contains(&IndexKey::Tag("p".to_owned(), "d".repeat(64))));
     }
 
     async fn receive_json(receiver: &mut tokio::sync::mpsc::Receiver<String>) -> Value {

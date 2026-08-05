@@ -31,7 +31,7 @@ use crate::domain::{
     IDENTITY_ARCHIVED_KIND, IDENTITY_UNARCHIVED_KIND, IdentityArchiveRequest, MktImmutableDecision,
     RelaySigner, ReplacementDecision, Tag, compare_replacement_order,
     decide_mkt_immutable_admission, is_mkt_private_kind, search_terms, validate_block_ingest,
-    validate_mkt_private_base, validate_mkt_public_event,
+    validate_mkt_private_base, validate_mkt_public_event, validate_openagents_work_event,
 };
 use crate::mkt_swp_coordination::{
     MKT_SWP_MAX_ACTIVE_RESERVATIONS_PER_BUCKET, MKT_SWP_MAX_FORKS_PER_SEQUENCE,
@@ -382,6 +382,8 @@ impl Store {
             event.validate_crypto()?;
             validate_block_ingest(event, now).map_err(crate::domain::DomainError::InvalidEvent)?;
             validate_mkt_public_event(event).map_err(crate::domain::DomainError::InvalidEvent)?;
+            validate_openagents_work_event(event)
+                .map_err(crate::domain::DomainError::InvalidEvent)?;
         } else {
             // Compatibility imports retain the exact signed preimage, but do
             // not retroactively impose server-side extensions adopted after

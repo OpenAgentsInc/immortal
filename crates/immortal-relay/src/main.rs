@@ -37,6 +37,7 @@ async fn run() -> Result<(), GatewayError> {
         return match command.as_str() {
             "contract" => operations::print_contract(),
             "dev-market-seed" => operations::dev_market_seed(),
+            "dev-work-seed" => operations::dev_work_seed(),
             "sign-openagents-project-events" => operations::sign_openagents_project_events(),
             _ => Err(GatewayError::Config(format!(
                 "unknown operator command: {command}"

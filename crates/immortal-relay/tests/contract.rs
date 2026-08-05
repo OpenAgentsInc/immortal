@@ -26,7 +26,13 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     assert_eq!(descriptor.identity.contract_version, CONTRACT_VERSION);
     assert_eq!(descriptor.fixture_manifest, FIXTURE_MANIFEST_PATH);
     assert_eq!(descriptor.identity.nips.len(), 3);
-    assert_eq!(descriptor.kinds.len(), 15);
+    assert_eq!(descriptor.kinds.len(), 20);
+    assert!(descriptor.kinds.iter().any(|kind| {
+        kind.kind == 32_170 && kind.identifier == "NIP-WK" && kind.enforcement_scope == "relay"
+    }));
+    assert!(descriptor.kinds.iter().any(|kind| {
+        kind.kind == 32_200 && kind.identifier == "NIP-PI" && kind.enforcement_scope == "relay"
+    }));
     assert!(
         descriptor
             .kinds

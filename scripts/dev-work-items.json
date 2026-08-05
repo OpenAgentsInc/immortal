@@ -1,0 +1,103 @@
+{
+  "schema": "openagents.immortal.dev-work-items.v1",
+  "source_repo": "OpenAgentsInc/omega",
+  "snapshot_date": "2026-08-04",
+  "command": "gh issue list -R OpenAgentsInc/omega --state open --json number,title,state,labels,url",
+  "issues": [
+    {
+      "number": 208,
+      "title": "[OAW-000] Make Omega the first-class All Work client",
+      "state": "OPEN",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/OpenAgentsInc/omega/issues/208"
+    },
+    {
+      "number": 214,
+      "title": "[OAW-007] Separate Assignee, Agent Delegate, Thread, Session, and Run in Omega",
+      "state": "OPEN",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/OpenAgentsInc/omega/issues/214"
+    },
+    {
+      "number": 215,
+      "title": "[OAW-008] Add Linear-class portfolio, planning, triage, and review UI for any Work Domain",
+      "state": "OPEN",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/OpenAgentsInc/omega/issues/215"
+    },
+    {
+      "number": 216,
+      "title": "[OAW-011] Integrate signed Work and Workroom activity into Omega",
+      "state": "OPEN",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/OpenAgentsInc/omega/issues/216"
+    },
+    {
+      "number": 218,
+      "title": "[OAW-013] Show effective principal and Organization identity in Omega",
+      "state": "OPEN",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/OpenAgentsInc/omega/issues/218"
+    },
+    {
+      "number": 223,
+      "title": "[OAW-018] Refresh the dogfood planning graph through the owned All Work client",
+      "state": "OPEN",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/OpenAgentsInc/omega/issues/223"
+    },
+    {
+      "number": 224,
+      "title": "[OAW-019] Move Repository Work Claims and work packets into Omega",
+      "state": "OPEN",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/OpenAgentsInc/omega/issues/224"
+    },
+    {
+      "number": 225,
+      "title": "[OAW-020] Cut internal Work and Repository Work Claims over from GitHub to Omega",
+      "state": "OPEN",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/OpenAgentsInc/omega/issues/225"
+    },
+    {
+      "number": 240,
+      "title": "[OAW-022] Run the Omega and GitHub claim ledgers in parallel before any cutover",
+      "state": "OPEN",
+      "labels": [
+        "enhancement"
+      ],
+      "url": "https://github.com/OpenAgentsInc/omega/issues/240"
+    },
+    {
+      "number": 244,
+      "title": "Market panel: NIP-MKT client on the Immortal transport-neutral core",
+      "state": "OPEN",
+      "labels": [],
+      "url": "https://github.com/OpenAgentsInc/omega/issues/244"
+    },
+    {
+      "number": 245,
+      "title": "Work items demo: NIP-WK/NIP-PI read surface over the Immortal relay in the openagents.com web app (wgpui)",
+      "state": "OPEN",
+      "labels": [],
+      "url": "https://github.com/OpenAgentsInc/omega/issues/245"
+    }
+  ]
+}

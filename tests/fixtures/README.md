@@ -162,6 +162,15 @@ names the NIP that owns the behavior.
   degradation, race-free standard relay semantics, the no-relay-handler Git
   signature case, and NIP-PL's fail-closed unadvertised executor posture.
 
+- `nipwk/work-records.json` pins NIP-WK (kinds 32170-32173) and NIP-PI
+  (kind 32200) structural validation: required tags, the
+  `<work_ref>:evt:<seq>` and `<work_ref>:obj:<revision>` address grammars,
+  canonical decimals, the owner/actor principal markers, open state/domain/
+  event vocabularies with preserved unknown tags, and the closed Issue
+  priority list. Authority-key resolution is a client rule and is
+  intentionally absent. Consumed by
+  `crates/immortal-core/tests/allwork_fixtures.rs`.
+
 Fixture data is committed rather than generated so a specification or
 implementation change produces a reviewable diff.
 

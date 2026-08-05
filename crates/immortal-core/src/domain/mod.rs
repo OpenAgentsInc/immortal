@@ -5,6 +5,7 @@
 //! deterministic and fixture-testable.
 
 mod agent;
+mod allwork;
 mod block;
 mod deletion;
 mod error;
@@ -22,6 +23,13 @@ pub use agent::{
     OwnerAttestation, agent_observer_route, agent_turn_metric_owner, validate_nip44_v2_content,
     verify_agent_auth_attestation, verify_owner_attestation, verify_owner_binding,
 };
+pub use allwork::{
+    ISSUE_PRIORITIES, OPENAGENTS_ISSUE_PROJECTION_KIND, OPENAGENTS_OUTCOME_RECORD_KIND,
+    OPENAGENTS_WORK_EVENT_KIND, OPENAGENTS_WORK_OBJECTIVE_KIND, OPENAGENTS_WORK_RECORD_KIND,
+    WORK_BASELINE_DOMAINS, WORK_BASELINE_EVENT_KINDS, WORK_BASELINE_STATES, WORK_MAX_CONTENT_BYTES,
+    WORK_MAX_TAGS, WORK_MAX_TITLE_BYTES, WORK_OUTCOME_STATES, WORK_VOCAB_MAX_BYTES,
+    is_openagents_work_kind, validate_openagents_work_event,
+};
 pub use block::{
     AGENT_ENGRAM_KIND, AGENT_PERSONA_KIND, BLOCK_GLOBAL_ONLY_KINDS, DM_HIDE_KIND, DM_OPEN_KIND,
     DM_VISIBILITY_KIND, EVENT_REMINDER_KIND, IDENTITY_ARCHIVE_LIST_KIND,
@@ -33,7 +41,7 @@ pub use block::{
 };
 pub use deletion::{DeletionRequest, DeletionTombstone};
 pub use error::DomainError;
-pub use event::{Event, Tag};
+pub use event::{EXTENDED_INDEXED_TAG_NAMES, Event, Tag, is_indexed_tag_name};
 pub use expanded::{
     GroupAction, GroupMetadata, HttpAuth, RelaySigner, parse_http_authorization,
     parse_http_authorization_hash,

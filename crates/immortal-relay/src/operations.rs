@@ -28,6 +28,23 @@ pub fn dev_market_seed() -> Result<(), GatewayError> {
     Ok(())
 }
 
+pub fn dev_work_seed() -> Result<(), GatewayError> {
+    let emit_only = std::env::var("IMMORTAL_DEV_WORK_EMIT").as_deref() == Ok("1");
+    let relay_url = std::env::var("IMMORTAL_DEV_RELAY_URL")
+        .unwrap_or_else(|_| "ws://127.0.0.1:18080".to_owned());
+    let authority_secret = std::env::var("IMMORTAL_DEV_WORK_AUTHORITY_SECRET").ok();
+    let trace = immortal::dev_work::seed(
+        (!emit_only).then_some(relay_url.as_str()),
+        authority_secret.as_deref(),
+    )
+    .map_err(GatewayError::Config)?;
+    serde_json::to_writer_pretty(std::io::stdout().lock(), &trace).map_err(|error| {
+        GatewayError::Internal(format!("could not serialize work seed trace: {error}"))
+    })?;
+    std::io::stdout().lock().write_all(b"\n")?;
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UnsignedEvent {

@@ -6,6 +6,7 @@ use serde::{
 };
 use serde_json::Value;
 
+use super::event::is_indexed_tag_name;
 use super::hex::decode_lower_hex;
 use super::{DomainError, Event};
 
@@ -16,7 +17,7 @@ pub struct Filter {
     pub ids: Option<Vec<String>>,
     pub authors: Option<Vec<String>>,
     pub kinds: Option<Vec<u16>>,
-    pub tags: BTreeMap<char, Vec<String>>,
+    pub tags: BTreeMap<String, Vec<String>>,
     pub since: Option<u64>,
     pub until: Option<u64>,
     pub limit: Option<usize>,
@@ -46,9 +47,9 @@ impl Filter {
                 })?;
             }
         }
-        if self.tags.keys().any(|key| !key.is_ascii_alphabetic()) {
+        if self.tags.keys().any(|key| !is_indexed_tag_name(key)) {
             return Err(DomainError::InvalidFilter(
-                "tag selectors must be one ASCII letter".to_owned(),
+                "tag selectors must be one ASCII letter or an indexed extension name".to_owned(),
             ));
         }
         if let Some(search) = &self.search {
@@ -77,7 +78,7 @@ impl Filter {
             && self.until.is_none_or(|until| event.created_at <= until)
             && self.tags.iter().all(|(key, values)| {
                 event.indexed_tags().any(|(event_key, event_value)| {
-                    event_key == *key && values.iter().any(|v| v == event_value)
+                    event_key == key && values.iter().any(|v| v == event_value)
                 })
             })
             && self.search.as_ref().is_none_or(|search| {
@@ -142,15 +143,17 @@ impl<'de> Deserialize<'de> for Filter {
         );
         let mut tags = BTreeMap::new();
         for (field, value) in raw.extra {
-            let bytes = field.as_bytes();
-            if bytes.len() != 2 || bytes[0] != b'#' || !bytes[1].is_ascii_alphabetic() {
+            let selector = field
+                .strip_prefix('#')
+                .filter(|name| is_indexed_tag_name(name));
+            let Some(selector) = selector else {
                 return Err(serde::de::Error::custom(format!(
                     "unsupported filter field {field:?}"
                 )));
-            }
+            };
             let values =
                 serde_json::from_value::<Vec<String>>(value).map_err(serde::de::Error::custom)?;
-            tags.insert(char::from(bytes[1]), values);
+            tags.insert(selector.to_owned(), values);
         }
         Ok(Self {
             ids: raw.ids,
@@ -189,8 +192,10 @@ impl Serialize for Filter {
             map.serialize_entry("kinds", kinds)?;
         }
         for (key, values) in &self.tags {
-            if !key.is_ascii_alphabetic() {
-                return Err(S::Error::custom("tag selector must be one ASCII letter"));
+            if !is_indexed_tag_name(key) {
+                return Err(S::Error::custom(
+                    "tag selector must be one ASCII letter or an indexed extension name",
+                ));
             }
             map.serialize_entry(&format!("#{key}"), values)?;
         }

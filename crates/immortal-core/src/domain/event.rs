@@ -6,6 +6,19 @@ use super::expanded::validate_expanded_event;
 use super::hex::{decode_lower_hex, encode_lower_hex};
 use super::{DomainError, EventClass, ReplacementAddress, TimestampPolicy};
 
+/// Tag names beyond single ASCII letters that this relay indexes for
+/// filtering. NIP-WK Work Events (kind 32171) are enumerated through the
+/// `work` tag per the pinned `nips/openagents/WK.md` rendering contract.
+pub const EXTENDED_INDEXED_TAG_NAMES: &[&str] = &["work"];
+
+/// True when a tag name participates in the relay's tag index: one ASCII
+/// letter per NIP-01, or an extended indexed name.
+pub fn is_indexed_tag_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    (bytes.len() == 1 && bytes[0].is_ascii_alphabetic())
+        || EXTENDED_INDEXED_TAG_NAMES.contains(&name)
+}
+
 /// A NIP-01 tag. The first element is its name and the second, when present,
 /// is its first value.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -29,12 +42,12 @@ impl Tag {
         self.0.get(1).map(String::as_str)
     }
 
-    /// Return the NIP-01 index key and first value for an ASCII-letter tag.
-    pub fn indexed_pair(&self) -> Option<(char, &str)> {
+    /// Return the index key and first value for an ASCII-letter tag or an
+    /// extended indexed tag name.
+    pub fn indexed_pair(&self) -> Option<(&str, &str)> {
         let name = self.name()?;
-        let bytes = name.as_bytes();
-        if bytes.len() == 1 && bytes[0].is_ascii_alphabetic() {
-            self.value().map(|value| (char::from(bytes[0]), value))
+        if is_indexed_tag_name(name) {
+            self.value().map(|value| (name, value))
         } else {
             None
         }
@@ -157,7 +170,7 @@ impl Event {
         )
     }
 
-    pub fn indexed_tags(&self) -> impl Iterator<Item = (char, &str)> {
+    pub fn indexed_tags(&self) -> impl Iterator<Item = (&str, &str)> {
         self.tags.iter().filter_map(Tag::indexed_pair)
     }
 

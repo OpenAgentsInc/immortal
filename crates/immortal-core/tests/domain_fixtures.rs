@@ -83,7 +83,7 @@ fn nip01_tags_are_nonempty_and_only_single_letters_are_indexed() {
     ];
     assert_eq!(
         event.indexed_tags().collect::<Vec<_>>(),
-        vec![('e', "first"), ('P', "uppercase")]
+        vec![("e", "first"), ("P", "uppercase")]
     );
 
     event.tags.push(Tag::new(Vec::new()));

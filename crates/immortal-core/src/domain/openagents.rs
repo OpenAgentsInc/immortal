@@ -318,7 +318,7 @@ fn address_for(event: &Event, distinct: &str) -> NostrAddress {
     }
 }
 
-fn required_value<'a>(event: &'a Event, name: &str) -> Result<&'a str, String> {
+pub(super) fn required_value<'a>(event: &'a Event, name: &str) -> Result<&'a str, String> {
     let mut tags = event.tags.iter().filter(|tag| tag.name() == Some(name));
     let tag = tags
         .next()
@@ -330,7 +330,7 @@ fn required_value<'a>(event: &'a Event, name: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("event {name} tag requires a value"))
 }
 
-fn optional_value<'a>(event: &'a Event, name: &str) -> Result<Option<&'a str>, String> {
+pub(super) fn optional_value<'a>(event: &'a Event, name: &str) -> Result<Option<&'a str>, String> {
     let tags = event
         .tags
         .iter()
@@ -343,7 +343,7 @@ fn optional_value<'a>(event: &'a Event, name: &str) -> Result<Option<&'a str>, S
     }
 }
 
-fn required_marked_value<'a>(
+pub(super) fn required_marked_value<'a>(
     event: &'a Event,
     name: &'a str,
     marker: &'a str,
@@ -357,7 +357,7 @@ fn required_marked_value<'a>(
     }
 }
 
-fn marked_values<'a>(
+pub(super) fn marked_values<'a>(
     event: &'a Event,
     name: &'a str,
     marker: &'a str,
@@ -378,11 +378,11 @@ fn marked_pubkeys(event: &Event, marker: &str) -> Result<Vec<String>, String> {
         .collect()
 }
 
-fn required_decimal(event: &Event, name: &str) -> Result<u64, String> {
+pub(super) fn required_decimal(event: &Event, name: &str) -> Result<u64, String> {
     parse_decimal(required_value(event, name)?, u64::MAX, name)
 }
 
-fn required_positive_decimal(event: &Event, name: &str) -> Result<u64, String> {
+pub(super) fn required_positive_decimal(event: &Event, name: &str) -> Result<u64, String> {
     let value = required_decimal(event, name)?;
     if value == 0 {
         return Err(format!("{name} must be positive"));
@@ -390,13 +390,13 @@ fn required_positive_decimal(event: &Event, name: &str) -> Result<u64, String> {
     Ok(value)
 }
 
-fn optional_decimal(event: &Event, name: &str) -> Result<Option<u64>, String> {
+pub(super) fn optional_decimal(event: &Event, name: &str) -> Result<Option<u64>, String> {
     optional_value(event, name)?
         .map(|value| parse_decimal(value, u64::MAX, name))
         .transpose()
 }
 
-fn parse_decimal(value: &str, max: u64, field: &str) -> Result<u64, String> {
+pub(super) fn parse_decimal(value: &str, max: u64, field: &str) -> Result<u64, String> {
     if value.is_empty()
         || (value.len() > 1 && value.starts_with('0'))
         || !value.bytes().all(|byte| byte.is_ascii_digit())
@@ -436,7 +436,7 @@ fn parse_update_ref(value: &str) -> Result<(&str, u64), String> {
     Ok((subject_ref, revision))
 }
 
-fn validate_ref(value: &str, field: &str) -> Result<(), String> {
+pub(super) fn validate_ref(value: &str, field: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > MAX_REF_BYTES
         || value.chars().any(char::is_control)
@@ -447,18 +447,18 @@ fn validate_ref(value: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_name(value: &str, field: &str) -> Result<(), String> {
+pub(super) fn validate_name(value: &str, field: &str) -> Result<(), String> {
     if value.is_empty() || value.len() > MAX_NAME_BYTES || value.chars().any(char::is_control) {
         return Err(format!("{field} must be bounded display text"));
     }
     Ok(())
 }
 
-fn validate_pubkey(value: &str, field: &str) -> Result<(), String> {
+pub(super) fn validate_pubkey(value: &str, field: &str) -> Result<(), String> {
     validate_lower_hex(value, 64, field)
 }
 
-fn validate_lower_hex(value: &str, length: usize, field: &str) -> Result<(), String> {
+pub(super) fn validate_lower_hex(value: &str, length: usize, field: &str) -> Result<(), String> {
     if value.len() != length
         || !value
             .bytes()

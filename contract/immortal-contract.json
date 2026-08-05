@@ -405,6 +405,56 @@
       "publication": "private_wrapped",
       "immutability": "exact_signed_coordinate",
       "enforcement_scope": "client_and_internal_store"
+    },
+    {
+      "kind": 32170,
+      "lane": "openagents",
+      "identifier": "NIP-WK",
+      "name": "work_record",
+      "classification": "addressable",
+      "publication": "public_head",
+      "immutability": "nip01_addressable",
+      "enforcement_scope": "relay"
+    },
+    {
+      "kind": 32171,
+      "lane": "openagents",
+      "identifier": "NIP-WK",
+      "name": "work_event",
+      "classification": "addressable",
+      "publication": "public_append_only_unique_d",
+      "immutability": "nip01_addressable",
+      "enforcement_scope": "relay"
+    },
+    {
+      "kind": 32172,
+      "lane": "openagents",
+      "identifier": "NIP-WK",
+      "name": "work_objective",
+      "classification": "addressable",
+      "publication": "public_append_only_unique_d",
+      "immutability": "nip01_addressable",
+      "enforcement_scope": "relay"
+    },
+    {
+      "kind": 32173,
+      "lane": "openagents",
+      "identifier": "NIP-WK",
+      "name": "outcome_record",
+      "classification": "addressable",
+      "publication": "public_head",
+      "immutability": "nip01_addressable",
+      "enforcement_scope": "relay"
+    },
+    {
+      "kind": 32200,
+      "lane": "openagents",
+      "identifier": "NIP-PI",
+      "name": "issue_projection",
+      "classification": "addressable",
+      "publication": "public_head",
+      "immutability": "nip01_addressable",
+      "enforcement_scope": "relay"
     }
   ],
   "limits": {

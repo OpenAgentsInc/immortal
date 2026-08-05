@@ -47,9 +47,9 @@ pub struct DevMarketStep {
     pub recovery_wrap_id: String,
 }
 
-struct RelayClient {
-    websocket: WebSocket<TcpStream>,
-    challenge: String,
+pub(crate) struct RelayClient {
+    pub(crate) websocket: WebSocket<TcpStream>,
+    pub(crate) challenge: String,
 }
 
 pub fn seed(relay_url: &str) -> Result<DevMarketTrace, String> {
@@ -340,7 +340,7 @@ fn private_record(
     Ok(event)
 }
 
-fn connect(relay_url: &str) -> Result<RelayClient, String> {
+pub(crate) fn connect(relay_url: &str) -> Result<RelayClient, String> {
     let addresses = loopback_addresses(relay_url)?;
     let mut last_error = None;
     for address in addresses {
@@ -411,7 +411,7 @@ fn subscribe(client: &mut RelayClient, subscription: &str, recipient: &str) -> R
     }
 }
 
-fn publish(client: &mut RelayClient, event: &Event) -> Result<(), String> {
+pub(crate) fn publish(client: &mut RelayClient, event: &Event) -> Result<(), String> {
     send_json(&mut client.websocket, json!(["EVENT", event]))?;
     expect_ok(&mut client.websocket, &event.id)
 }
@@ -458,13 +458,13 @@ fn receive_exact(
     Ok(())
 }
 
-fn send_json(websocket: &mut WebSocket<TcpStream>, value: Value) -> Result<(), String> {
+pub(crate) fn send_json(websocket: &mut WebSocket<TcpStream>, value: Value) -> Result<(), String> {
     websocket
         .send(Message::text(value.to_string()))
         .map_err(|error| format!("could not write relay message: {error}"))
 }
 
-fn read_json(websocket: &mut WebSocket<TcpStream>) -> Result<Value, String> {
+pub(crate) fn read_json(websocket: &mut WebSocket<TcpStream>) -> Result<Value, String> {
     loop {
         match websocket.read() {
             Ok(Message::Text(text)) => {
@@ -478,7 +478,7 @@ fn read_json(websocket: &mut WebSocket<TcpStream>) -> Result<Value, String> {
     }
 }
 
-fn close_socket(websocket: &mut WebSocket<TcpStream>) {
+pub(crate) fn close_socket(websocket: &mut WebSocket<TcpStream>) {
     if let Err(error) = websocket.close(None) {
         eprintln!("dev-market-seed: WebSocket close failed: {error}");
     }
@@ -558,7 +558,7 @@ fn random_32() -> Result<[u8; 32], String> {
     Ok(bytes)
 }
 
-fn random_hex_32() -> Result<String, String> {
+pub(crate) fn random_hex_32() -> Result<String, String> {
     Ok(lower_hex(&random_32()?))
 }
 
@@ -566,7 +566,7 @@ fn lower_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn unix_now() -> Result<u64, String> {
+pub(crate) fn unix_now() -> Result<u64, String> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -577,6 +577,6 @@ fn reference(id: &str, marker: &str) -> Tag {
     Tag::new(vec!["e".into(), id.into(), String::new(), marker.into()])
 }
 
-fn tag(values: &[&str]) -> Tag {
+pub(crate) fn tag(values: &[&str]) -> Tag {
     Tag::new(values.iter().map(|value| (*value).to_owned()).collect())
 }

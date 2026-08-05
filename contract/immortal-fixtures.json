@@ -462,6 +462,12 @@
       "scope": "relay"
     },
     {
+      "path": "tests/fixtures/nipwk/work-records.json",
+      "sha256": "f794105c7c917fdf335aa8a63b3c3358a0e78f1d625c38f8ef4e501e8cb3741c",
+      "bytes": 10080,
+      "scope": "relay"
+    },
+    {
       "path": "tests/fixtures/nipwp/server.json",
       "sha256": "1b4965991ad9c14c106d30b1a794da9a96f0175e97a8393fd187b178bc103179",
       "bytes": 198,

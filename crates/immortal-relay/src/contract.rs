@@ -27,6 +27,8 @@ use crate::{
         MKT_PUBLIC_RECEIPT_KIND, MKT_PUBLIC_RECEIPT_OUTCOMES, MKT_QUOTE_CLASSES, MKT_QUOTE_KIND,
         MKT_RELAY_PROFILES, MKT_RESERVATION_CLASSES, MKT_RFQ_KIND, MKT_STATUS_KIND,
         MKT_STATUS_STATES, MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND,
+        OPENAGENTS_ISSUE_PROJECTION_KIND, OPENAGENTS_OUTCOME_RECORD_KIND,
+        OPENAGENTS_WORK_EVENT_KIND, OPENAGENTS_WORK_OBJECTIVE_KIND, OPENAGENTS_WORK_RECORD_KIND,
     },
     gateway::{
         GatewayLimits, MKT_GIFT_WRAP_RECIPIENT_RATE_EXCEEDED, MKT_PRIVATE_REQUIRES_GIFT_WRAP,
@@ -381,7 +383,7 @@ pub fn contract() -> Result<ImmortalContract, String> {
             nips: nip_sources()?,
         },
         supported_protocols: supported_protocols(),
-        kinds: mkt_kinds(),
+        kinds: kinds(),
         limits: limits(),
         mkt: mkt_grammar(),
         reasons: reasons(),
@@ -547,6 +549,59 @@ const fn protocol(
         advertisement,
         status,
     }
+}
+
+fn kinds() -> Vec<KindDescriptor> {
+    let mut kinds = mkt_kinds();
+    kinds.extend(work_kinds());
+    kinds
+}
+
+fn work_kinds() -> Vec<KindDescriptor> {
+    [
+        (
+            OPENAGENTS_WORK_RECORD_KIND,
+            "NIP-WK",
+            "work_record",
+            "public_head",
+        ),
+        (
+            OPENAGENTS_WORK_EVENT_KIND,
+            "NIP-WK",
+            "work_event",
+            "public_append_only_unique_d",
+        ),
+        (
+            OPENAGENTS_WORK_OBJECTIVE_KIND,
+            "NIP-WK",
+            "work_objective",
+            "public_append_only_unique_d",
+        ),
+        (
+            OPENAGENTS_OUTCOME_RECORD_KIND,
+            "NIP-WK",
+            "outcome_record",
+            "public_head",
+        ),
+        (
+            OPENAGENTS_ISSUE_PROJECTION_KIND,
+            "NIP-PI",
+            "issue_projection",
+            "public_head",
+        ),
+    ]
+    .into_iter()
+    .map(|(kind, identifier, name, publication)| KindDescriptor {
+        kind,
+        lane: "openagents",
+        identifier,
+        name,
+        classification: "addressable",
+        publication,
+        immutability: "nip01_addressable",
+        enforcement_scope: "relay",
+    })
+    .collect()
 }
 
 fn mkt_kinds() -> Vec<KindDescriptor> {
