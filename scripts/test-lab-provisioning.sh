@@ -147,6 +147,8 @@ grep -Fqx 'if ! boltz_published_endpoint="$(compose port bitcoin 19093)"; then' 
 grep -Fqx '  "${boltz_publish_host}":*)' scripts/test-provider-funded.sh
 grep -Fqx '      - "${IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST:?Boltz publish host is required}::19093"' \
   scripts/support/provider-funded/compose.yaml
+grep -Fqx 'IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST=127.0.0.1' \
+  scripts/test-lab-topology-funded.sh
 if grep -Eq '^docker\(\)' scripts/test-provider-funded.sh; then
   echo "test-lab-provisioning: funded provider harness must not wrap docker" >&2
   exit 1

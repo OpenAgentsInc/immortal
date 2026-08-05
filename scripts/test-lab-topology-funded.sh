@@ -234,6 +234,7 @@ EOF
 cp "${private_root}/driver-topology.env" "${private_root}/driver.env"
 cat >"${private_root}/compose.env" <<EOF
 IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR=${private_root}
+IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST=127.0.0.1
 EOF
 
 if docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
