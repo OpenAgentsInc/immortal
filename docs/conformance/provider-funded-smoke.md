@@ -211,6 +211,12 @@ It binds the current harness digest to a fresh Debian 13 process and Docker
 daemon, all three journeys, the forced requester replacement, and verified
 zero private-runtime retention.
 
+The current remote-Docker process-gate harness passed the Debian gate at
+commit `bd5d94ff79cacef21e261d13d487daf2c08b9315`. Its additive receipt is
+`docs/conformance/records/2026-08-05-funded-smoke-debian-remote-boltz-v3.json`.
+It covers the internal and caller-visible Boltz readiness checks, both adapted
+client process gates, all funded journeys, forced replacement, and cleanup.
+
 ## Pinned rail software
 
 The test images support Linux `amd64` and `arm64`, including Docker Desktop on
