@@ -10,16 +10,17 @@ use immortal_client::{
     mkt_swp_client::{
         AwaitingVerification, BitcoinObservationRequest, Cancellation, ChainRecoveryState,
         CloseOutcome, CooperativePrevout, CooperativeSigningContext, CooperativeSigningMessage,
-        CooperativeTweak, ExitPackage, ExitSigningOutcome, ExternalEffectRequest,
-        ExternalEffectResult, FundingAction, FundingAuthorized, FundingVerificationInput,
-        InvoiceVerificationInput, KeylessEsploraExecutor, LightningDispositionState,
-        LightningProgressRequest, LightningProgressState, LightningReadinessRequest,
-        LightningReadinessState, LightningRecoveryState, LocalBitcoinObservation,
-        LocalLightningDisposition, LocalLightningProgress, LocalLightningReadiness,
-        LocalRailEvidence, LocalRecoveryObservation, MktSigningRequest, ParticipantRole,
-        QuotePolicy, RecoveryAction, StatusState, SwapClientConfig, SwapContractReferences,
-        SwapRecordFactory, SwapSession, SwapType, TimeoutLadder, VerifyBeforeFundInput,
-        provider_support, validate_cooperative_signing_exchange,
+        CooperativeTweak, DeliveryProvenance, ExitPackage, ExitSigningOutcome,
+        ExternalEffectRequest, ExternalEffectResult, FundingAction, FundingAuthorized,
+        FundingVerificationInput, InvoiceVerificationInput, KeylessEsploraExecutor,
+        LightningDispositionState, LightningProgressRequest, LightningProgressState,
+        LightningReadinessRequest, LightningReadinessState, LightningRecoveryState,
+        LocalBitcoinObservation, LocalLightningDisposition, LocalLightningProgress,
+        LocalLightningReadiness, LocalRailEvidence, LocalRecoveryObservation, MktSigningRequest,
+        ParticipantRole, QuotePolicy, RecoveryAction, RequesterPriceFeedView, RequesterSessionView,
+        RequesterVerificationState, SignedRecordDelivery, StatusState, SwapClientConfig,
+        SwapContractReferences, SwapRecordFactory, SwapSession, SwapType, TimeoutLadder,
+        VerifyBeforeFundInput, provider_support, validate_cooperative_signing_exchange,
     },
     mkt_swp_verify::{
         Transaction, TransactionInput, TransactionOutput, musig2_aggregate_key, musig2_nonce_gen,
@@ -84,6 +85,239 @@ fn fixture_manifest_is_complete_and_unique() {
         .map(|case| case["member"].as_str().unwrap())
         .collect::<BTreeSet<_>>();
     assert_eq!(members.len(), tripwires.len());
+}
+
+#[test]
+fn requester_api_fixture_projects_terms_and_refuses_unsafe_signing() {
+    let fixture = fixture();
+    let api_fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nipmkt/swp-requester-api-v1.json"
+    ))
+    .unwrap();
+    let setup = Setup::new(&fixture);
+    let session = build_session(&fixture, SwapType::Submarine, true);
+    let records = session.signed_records();
+    let quote_only =
+        RequesterSessionView::from_signed_records(&setup.config, &records[..2], Vec::new())
+            .unwrap();
+    assert_eq!(
+        quote_only.verification.state,
+        RequesterVerificationState::QuoteVerified
+    );
+    let view =
+        RequesterSessionView::from_signed_records(&setup.config, records, Vec::new()).unwrap();
+    let expected = &api_fixture["submarine_quote"];
+    assert_eq!(view.schema, api_fixture["view_schema"]);
+    assert_eq!(view.quote.swap_type, SwapType::Submarine);
+    assert_eq!(view.quote.input_amount, expected["input_amount"]);
+    assert_eq!(view.quote.output_amount, expected["output_amount"]);
+    assert_eq!(view.quote.fees.fee_bps, expected["fee_bps"]);
+    assert_eq!(view.quote.fees.provider_fee, expected["provider_fee"]);
+    assert_eq!(
+        view.quote.fees.miner_fee_budget,
+        expected["miner_fee_budget"]
+    );
+    assert_eq!(
+        view.quote.fees.lightning_routing_fee_budget,
+        expected["lightning_routing_fee_budget"]
+    );
+    assert_eq!(
+        view.quote.fees.maximum_total_fee,
+        expected["maximum_total_fee"]
+    );
+    assert_eq!(view.quote.fees.fee_payer, expected["fee_payer"]);
+    assert_eq!(view.quote.amount_equation, expected["amount_equation"]);
+    assert_eq!(view.quote.rounding, expected["rounding"]);
+    assert_eq!(
+        view.quote.clock_skew_seconds,
+        expected["clock_skew_seconds"]
+    );
+    assert_eq!(
+        view.quote.effective_acceptance_deadline,
+        expected["effective_acceptance_deadline"].as_u64().unwrap()
+    );
+    assert!(view.quote.price_feed.is_none());
+    let feed = RequesterPriceFeedView::from_pinned_terms(&api_fixture["price_feed_projection"])
+        .unwrap()
+        .unwrap();
+    assert_eq!(feed.url, api_fixture["price_feed_projection"]["url"]);
+    assert_eq!(
+        feed.value_pointer,
+        api_fixture["price_feed_projection"]["value_pointer"]
+    );
+    assert_eq!(
+        feed.observed_value,
+        api_fixture["price_feed_projection"]["observed_value"]
+    );
+    assert_eq!(
+        feed.response_sha256,
+        api_fixture["price_feed_projection"]["response_sha256"]
+    );
+    assert_eq!(
+        feed.observed_at,
+        api_fixture["price_feed_projection"]["observed_at"]
+            .as_u64()
+            .unwrap()
+    );
+    assert_eq!(
+        feed.max_age_seconds,
+        api_fixture["price_feed_projection"]["max_age_seconds"]
+            .as_u64()
+            .unwrap()
+    );
+    assert_eq!(
+        view.verification.state,
+        RequesterVerificationState::ContractTermsVerified
+    );
+    assert!(view.verification.local_verification_required);
+    assert!(!view.verification.funding_authorized);
+
+    let rfq = records.iter().find(|event| event.kind == 39_604).unwrap();
+    let quote = records.iter().find(|event| event.kind == 39_605).unwrap();
+    let order = records.iter().find(|event| event.kind == 39_606).unwrap();
+    let requester_contract = records
+        .iter()
+        .find(|event| event.kind == 39_610 && event.pubkey == setup.config.requester_pubkey)
+        .unwrap();
+    let factory = SwapRecordFactory::new(setup.config.clone()).unwrap();
+    factory
+        .requester_order(rfq, quote, order.created_at, &"13".repeat(32), None)
+        .unwrap()
+        .verify_signed(order.clone())
+        .unwrap();
+    let local_contract =
+        serde_json::from_str::<Value>(&requester_contract.content).unwrap()["mkt_swp"]["contract"]
+            .clone();
+    let contract = factory
+        .requester_contract_draft(rfq, quote, order, local_contract)
+        .unwrap();
+    factory
+        .requester_contract(
+            rfq,
+            quote,
+            order,
+            requester_contract.created_at,
+            &"14".repeat(32),
+            contract,
+        )
+        .unwrap()
+        .verify_signed(requester_contract.clone())
+        .unwrap();
+    assert_eq!(
+        factory
+            .requester_order(rfq, quote, 901, &"91".repeat(32), None)
+            .unwrap_err()
+            .code,
+        "swp_quote_expired"
+    );
+    assert_eq!(
+        factory
+            .requester_contract(
+                rfq,
+                quote,
+                order,
+                901,
+                &"94".repeat(32),
+                serde_json::from_str::<Value>(&requester_contract.content).unwrap()["mkt_swp"]
+                    ["contract"]
+                    .clone(),
+            )
+            .unwrap_err()
+            .code,
+        "swp_quote_expired"
+    );
+
+    let mut timeline_records = records.to_vec();
+    let first_status = signed(
+        factory
+            .status(
+                ParticipantRole::Provider,
+                1_000,
+                &"92".repeat(32),
+                &order.id,
+                StatusState {
+                    sequence: 0,
+                    previous: None,
+                    base_state: "accepted",
+                    swp_state: "accepted",
+                },
+                Default::default(),
+            )
+            .unwrap(),
+        &setup.provider,
+    );
+    let second_status = signed(
+        factory
+            .status(
+                ParticipantRole::Provider,
+                999,
+                &"93".repeat(32),
+                &order.id,
+                StatusState {
+                    sequence: 1,
+                    previous: Some(&first_status.id),
+                    base_state: "awaiting_input",
+                    swp_state: "lock_terms_ready",
+                },
+                Default::default(),
+            )
+            .unwrap(),
+        &setup.provider,
+    );
+    timeline_records.extend([second_status, first_status]);
+    let timeline =
+        RequesterSessionView::from_signed_records(&setup.config, &timeline_records, Vec::new())
+            .unwrap();
+    let status_sequences = timeline
+        .timeline
+        .iter()
+        .filter_map(|entry| entry.sequence)
+        .collect::<Vec<_>>();
+    assert_eq!(status_sequences, [0, 1]);
+}
+
+#[test]
+fn requester_delivery_archive_rejects_mutation_and_duplicate_members() {
+    let fixture = fixture();
+    let setup = Setup::new(&fixture);
+    let session = build_session(&fixture, SwapType::Submarine, true);
+    let event = session.signed_records().first().unwrap();
+    let raw = serde_json::to_vec(event).unwrap();
+    let evidence = SignedRecordDelivery {
+        event_id: event.id.clone(),
+        raw_signed_event: raw.clone(),
+        wrap_event_id: None,
+        provenance: DeliveryProvenance::Direct,
+    };
+    evidence.validate(event).unwrap();
+
+    let mut mutated = evidence.clone();
+    let event_id = event.id.as_bytes();
+    let offset = mutated
+        .raw_signed_event
+        .windows(event_id.len())
+        .position(|window| window == event_id)
+        .unwrap();
+    mutated.raw_signed_event[offset] ^= 1;
+    assert!(mutated.validate(event).is_err());
+
+    let raw_text = String::from_utf8(raw).unwrap();
+    let duplicate = raw_text.replacen('{', &format!("{{\"id\":\"{}\",", event.id), 1);
+    let duplicate = SignedRecordDelivery {
+        event_id: event.id.clone(),
+        raw_signed_event: duplicate.into_bytes(),
+        wrap_event_id: None,
+        provenance: DeliveryProvenance::Direct,
+    };
+    assert!(duplicate.validate(event).is_err());
+    assert!(
+        RequesterSessionView::from_signed_records(
+            &setup.config,
+            session.signed_records(),
+            vec![evidence]
+        )
+        .is_ok()
+    );
 }
 
 #[test]

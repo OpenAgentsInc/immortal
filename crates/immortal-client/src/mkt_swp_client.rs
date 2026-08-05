@@ -37,6 +37,7 @@ const MAX_STATUS_SEQUENCE: u64 = 511;
 const MAX_EXIT_PACKAGES: usize = 16;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EXTERNAL_EFFECTS: usize = 64;
+const MAX_WIRE_EVENT_BYTES: usize = 512 * 1024;
 const COOPERATIVE_SIGNING_SCHEMA: &str = "openagents.mkt-swp.cooperative-signing.v1";
 const COOPERATIVE_COMMITMENT_FIELD: u8 = 1 << 0;
 const COOPERATIVE_PUBLIC_NONCE_FIELD: u8 = 1 << 1;
@@ -45,6 +46,7 @@ const COOPERATIVE_PARTIAL_FIELD: u8 = 1 << 3;
 const COOPERATIVE_PARTIALS_FIELD: u8 = 1 << 4;
 const COOPERATIVE_FINAL_FIELD: u8 = 1 << 5;
 const COOPERATIVE_ABORT_FIELDS: u8 = 1 << 6;
+pub const REQUESTER_SESSION_VIEW_SCHEMA: &str = "openagents.mkt-swp.requester-session-view.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwapClientError {
@@ -88,6 +90,242 @@ pub enum ParticipantRole {
 pub struct QuotePolicy<'a> {
     pub quote_class: &'a str,
     pub reservation: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryProvenance {
+    LocallySigned,
+    Direct,
+    GiftWrap,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedRecordDelivery {
+    pub event_id: String,
+    pub raw_signed_event: Vec<u8>,
+    pub wrap_event_id: Option<String>,
+    pub provenance: DeliveryProvenance,
+}
+
+impl SignedRecordDelivery {
+    pub fn from_delivered(
+        delivered: &crate::market::DeliveredMktRecord,
+    ) -> Result<Self, SwapClientError> {
+        let evidence = Self {
+            event_id: delivered.record.event.id.clone(),
+            raw_signed_event: delivered.record.raw_signed_event.clone(),
+            wrap_event_id: Some(delivered.wrap_event_id.clone()),
+            provenance: DeliveryProvenance::GiftWrap,
+        };
+        evidence.validate(&delivered.record.event)?;
+        Ok(evidence)
+    }
+
+    pub fn validate(&self, event: &Event) -> Result<(), SwapClientError> {
+        if self.raw_signed_event.is_empty() || self.raw_signed_event.len() > MAX_WIRE_EVENT_BYTES {
+            return Err(SwapClientError::new(
+                "swp_unresolved_loss",
+                "signed-record delivery bytes are empty or exceed their bound",
+            ));
+        }
+        let decoded = validate_mkt_private_raw(&self.raw_signed_event, &swp_profile_support())
+            .map_err(|error| {
+                SwapClientError::new(
+                    "swp_unresolved_loss",
+                    format!("signed-record delivery bytes violate MKT-SWP: {error}"),
+                )
+            })?
+            .event;
+        if &decoded != event || self.event_id != event.id {
+            return Err(SwapClientError::new(
+                "swp_idempotency_conflict",
+                "signed-record delivery bytes do not match the projected event",
+            ));
+        }
+        match (self.provenance, self.wrap_event_id.as_deref()) {
+            (DeliveryProvenance::GiftWrap, Some(wrap_event_id)) => {
+                require_lower_hex_32(wrap_event_id, "gift-wrap event ID")?;
+            }
+            (DeliveryProvenance::GiftWrap, None) => {
+                return Err(SwapClientError::new(
+                    "swp_unresolved_loss",
+                    "gift-wrap delivery evidence has no wrap event ID",
+                ));
+            }
+            (DeliveryProvenance::Direct | DeliveryProvenance::LocallySigned, None) => {}
+            (DeliveryProvenance::Direct | DeliveryProvenance::LocallySigned, Some(_)) => {
+                return Err(SwapClientError::new(
+                    "swp_unresolved_loss",
+                    "non-wrapped delivery evidence carries a wrap event ID",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequesterFeeView {
+    pub fee_bps: String,
+    pub provider_fee: String,
+    pub miner_fee_budget: String,
+    pub lightning_routing_fee_budget: String,
+    pub maximum_total_fee: String,
+    pub fee_payer: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequesterPriceFeedView {
+    pub url: String,
+    pub value_pointer: String,
+    pub observed_value: String,
+    pub response_sha256: String,
+    pub observed_at: u64,
+    pub max_age_seconds: u64,
+}
+
+impl RequesterPriceFeedView {
+    pub fn from_pinned_terms(value: &Value) -> Result<Option<Self>, SwapClientError> {
+        if value.is_null() {
+            return Ok(None);
+        }
+        let feed = object(value, "Quote price feed")?;
+        if feed.len() != 6 {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "price-feed pin has unknown or missing members",
+            ));
+        }
+        let url = require_string(feed, "url", None, "swp_contract_terms_mismatch")?;
+        let value_pointer =
+            require_string(feed, "value_pointer", None, "swp_contract_terms_mismatch")?;
+        let observed_value =
+            require_string(feed, "observed_value", None, "swp_contract_terms_mismatch")?;
+        let response_sha256 =
+            require_string(feed, "response_sha256", None, "swp_contract_terms_mismatch")?;
+        if !url.starts_with("https://")
+            || url.len() > 2_048
+            || !value_pointer.starts_with('/')
+            || value_pointer.len() > 512
+            || observed_value.is_empty()
+            || observed_value.len() > 128
+            || observed_value.chars().any(char::is_control)
+        {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "price-feed URL, pointer, or observed value is invalid",
+            ));
+        }
+        require_lower_hex_32(response_sha256, "price-feed response digest")?;
+        let observed_at = feed
+            .get("observed_at")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_contract_terms_mismatch",
+                    "price-feed observation time is invalid",
+                )
+            })?;
+        let max_age_seconds = feed
+            .get("max_age_seconds")
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_contract_terms_mismatch",
+                    "price-feed maximum age is invalid",
+                )
+            })?;
+        Ok(Some(Self {
+            url: url.to_owned(),
+            value_pointer: value_pointer.to_owned(),
+            observed_value: observed_value.to_owned(),
+            response_sha256: response_sha256.to_owned(),
+            observed_at,
+            max_age_seconds,
+        }))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequesterQuoteView {
+    pub rfq_id: String,
+    pub quote_id: String,
+    pub provider_pubkey: String,
+    pub quote_class: String,
+    pub reservation_class: String,
+    pub swap_type: SwapType,
+    pub input_asset_id: String,
+    pub output_asset_id: String,
+    pub input_amount: String,
+    pub output_amount: String,
+    pub amount_equation: String,
+    pub rounding: String,
+    pub clock_skew_seconds: String,
+    pub expires_at: u64,
+    pub effective_acceptance_deadline: u64,
+    pub fees: RequesterFeeView,
+    pub price_feed: Option<RequesterPriceFeedView>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequesterTimelineKind {
+    Rfq,
+    Quote,
+    Order,
+    Contract,
+    Status,
+    Cancel,
+    Close,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequesterTimelineEntry {
+    pub event_id: String,
+    pub author: ParticipantRole,
+    pub kind: RequesterTimelineKind,
+    pub created_at: u64,
+    pub sequence: Option<u64>,
+    pub state: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequesterVerificationState {
+    QuoteVerified,
+    OrderVerified,
+    AwaitingProviderContract,
+    ContractTermsVerified,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequesterVerificationView {
+    pub state: RequesterVerificationState,
+    pub local_verification_required: bool,
+    pub funding_authorized: bool,
+    pub status_gaps: Vec<String>,
+    pub status_forks: Vec<String>,
+    pub invalid_status_claims: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequesterSessionView {
+    pub schema: String,
+    pub session_id: String,
+    pub quote: RequesterQuoteView,
+    pub timeline: Vec<RequesterTimelineEntry>,
+    pub verification: RequesterVerificationView,
+    pub deliveries: Vec<SignedRecordDelivery>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -924,6 +1162,84 @@ impl SwapRecordFactory {
         )
     }
 
+    pub fn requester_order(
+        &self,
+        rfq: &Event,
+        quote: &Event,
+        created_at: u64,
+        distinct: &str,
+        selection: Option<Map<String, Value>>,
+    ) -> Result<MktSigningRequest, SwapClientError> {
+        let quote_profile = validate_requester_quote(&self.config, rfq, quote, created_at)?;
+        let mut order_profile = Map::from_iter([(
+            "accepted_quote_id".to_owned(),
+            Value::String(quote.id.clone()),
+        )]);
+        if let Some(selection) = selection {
+            order_profile.insert("selection".to_owned(), Value::Object(selection));
+        }
+        validate_order_selection(&quote_profile, &order_profile)?;
+        self.order(
+            created_at,
+            distinct,
+            &quote.id,
+            Value::Object(order_profile),
+        )
+    }
+
+    pub fn requester_contract(
+        &self,
+        rfq: &Event,
+        quote: &Event,
+        order: &Event,
+        created_at: u64,
+        distinct: &str,
+        contract: Value,
+    ) -> Result<MktSigningRequest, SwapClientError> {
+        let quote_profile = validate_requester_quote(&self.config, rfq, quote, created_at)?;
+        validate_composed_order(&self.config, quote, order, &quote_profile)?;
+        reject_custody_material(&contract)?;
+        let request = self.swap_contract(
+            ParticipantRole::Requester,
+            created_at,
+            distinct,
+            SwapContractReferences {
+                order_id: &order.id,
+                quote_id: &quote.id,
+                accepted_status_id: None,
+            },
+            contract.clone(),
+        )?;
+        let requester_contract = unsigned_event(&request);
+        let records = vec![
+            rfq.clone(),
+            quote.clone(),
+            order.clone(),
+            requester_contract,
+        ];
+        validate_provider_contract_candidate(&self.config, &records, &contract)?;
+        Ok(request)
+    }
+
+    pub fn requester_contract_draft(
+        &self,
+        rfq: &Event,
+        quote: &Event,
+        order: &Event,
+        local_contract: Value,
+    ) -> Result<Value, SwapClientError> {
+        let quote_profile = validate_requester_quote(&self.config, rfq, quote, order.created_at)?;
+        validate_composed_order(&self.config, quote, order, &quote_profile)?;
+        compose_requester_contract(
+            &self.config,
+            rfq,
+            quote,
+            order,
+            &quote_profile,
+            local_contract,
+        )
+    }
+
     pub fn status(
         &self,
         role: ParticipantRole,
@@ -1213,6 +1529,112 @@ impl SwapRecordFactory {
             ]),
             Tag::new(vec!["alt".into(), alt.into()]),
         ])
+    }
+}
+
+impl RequesterSessionView {
+    pub fn from_signed_records(
+        config: &SwapClientConfig,
+        records: &[Event],
+        deliveries: Vec<SignedRecordDelivery>,
+    ) -> Result<Self, SwapClientError> {
+        config.validate()?;
+        if records.len() < 2 || records.len() > MAX_SIGNED_RECORDS {
+            return Err(SwapClientError::new(
+                "swp_unresolved_loss",
+                "requester session view requires a bounded RFQ and Quote history",
+            ));
+        }
+        let mut event_ids = BTreeSet::new();
+        for event in records {
+            validate_composer_record(config, event)?;
+            if !event_ids.insert(event.id.clone()) {
+                return Err(SwapClientError::new(
+                    "swp_idempotency_conflict",
+                    "requester session view contains duplicate event IDs",
+                ));
+            }
+        }
+        let rfq = exactly_one(records, MKT_RFQ_KIND, "swp_unresolved_loss")?;
+        let quote = exactly_one(records, MKT_QUOTE_KIND, "swp_contract_terms_mismatch")?;
+        let quote_profile = validate_requester_quote(config, rfq, quote, quote.created_at)?;
+        let quote_view = requester_quote_view(rfq, quote, &quote_profile)?;
+
+        let mut delivery_ids = BTreeSet::new();
+        for delivery in &deliveries {
+            let event = records
+                .iter()
+                .find(|event| event.id == delivery.event_id)
+                .ok_or_else(|| {
+                    SwapClientError::new(
+                        "swp_unresolved_loss",
+                        "delivery evidence refers to an event outside the session",
+                    )
+                })?;
+            delivery.validate(event)?;
+            if !delivery_ids.insert(delivery.event_id.clone()) {
+                return Err(SwapClientError::new(
+                    "swp_idempotency_conflict",
+                    "session view has duplicate delivery evidence",
+                ));
+            }
+        }
+
+        let order = records.iter().find(|event| event.kind == MKT_ORDER_KIND);
+        if let Some(order) = order {
+            validate_composed_order(config, quote, order, &quote_profile)?;
+        }
+        let status = StatusProjection::from_records(config, records)?;
+        let requester_contract = records.iter().find(|event| {
+            event.kind == MKT_SWP_SWAP_CONTRACT_KIND && event.pubkey == config.requester_pubkey
+        });
+        let provider_contract = records.iter().find(|event| {
+            event.kind == MKT_SWP_SWAP_CONTRACT_KIND && event.pubkey == config.provider_pubkey
+        });
+        let state = if !status.close_records.is_empty() {
+            let bound = BoundSession::from_records(config, records)?;
+            bound.verify_contract_terms()?;
+            bound.verify_requester_topology()?;
+            RequesterVerificationState::Closed
+        } else {
+            match (order, requester_contract, provider_contract) {
+                (None, None, None) => RequesterVerificationState::QuoteVerified,
+                (Some(_), None, None) => RequesterVerificationState::OrderVerified,
+                (Some(_), Some(_), None) => RequesterVerificationState::AwaitingProviderContract,
+                (Some(_), Some(_), Some(_)) => {
+                    let bound = BoundSession::from_records(config, records)?;
+                    bound.verify_contract_terms()?;
+                    bound.verify_requester_topology()?;
+                    RequesterVerificationState::ContractTermsVerified
+                }
+                _ => {
+                    return Err(SwapClientError::new(
+                        "swp_contract_missing",
+                        "requester session has an invalid Order or Contract prefix",
+                    ));
+                }
+            }
+        };
+        let mut timeline = records
+            .iter()
+            .map(|event| requester_timeline_entry(config, event))
+            .collect::<Result<Vec<_>, _>>()?;
+        timeline.sort_by_key(timeline_sort_key);
+        Ok(Self {
+            schema: REQUESTER_SESSION_VIEW_SCHEMA.to_owned(),
+            session_id: config.session_id.clone(),
+            quote: quote_view,
+            timeline,
+            verification: RequesterVerificationView {
+                state,
+                local_verification_required: true,
+                funding_authorized: false,
+                status_gaps: status.gaps.keys().cloned().collect(),
+                status_forks: status.forks.keys().cloned().collect(),
+                invalid_status_claims: status.invalid_claims.keys().cloned().collect(),
+            },
+            deliveries,
+        })
     }
 }
 
@@ -5754,15 +6176,422 @@ fn verify_leg_execution_fields(
     Ok(())
 }
 
-fn validate_order_acceptance_deadline(
+fn validate_composer_record(
+    config: &SwapClientConfig,
+    event: &Event,
+) -> Result<(), SwapClientError> {
+    let raw = serde_json::to_vec(event).map_err(|error| {
+        SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            format!("could not serialize composer input: {error}"),
+        )
+    })?;
+    let validated = validate_mkt_private_raw(&raw, &swp_profile_support()).map_err(|error| {
+        SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            format!("composer input violates MKT-SWP: {error}"),
+        )
+    })?;
+    if validated.envelope.session_id != config.session_id {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "composer input belongs to another session",
+        ));
+    }
+    role_for_author(config, &event.pubkey)?;
+    Ok(())
+}
+
+fn validate_requester_quote(
+    config: &SwapClientConfig,
+    rfq: &Event,
+    quote: &Event,
+    order_created_at: u64,
+) -> Result<Map<String, Value>, SwapClientError> {
+    config.validate()?;
+    validate_composer_record(config, rfq)?;
+    validate_composer_record(config, quote)?;
+    if rfq.kind != MKT_RFQ_KIND
+        || rfq.pubkey != config.requester_pubkey
+        || quote.kind != MKT_QUOTE_KIND
+        || quote.pubkey != config.provider_pubkey
+    {
+        return Err(SwapClientError::new(
+            "swp_contract_signer_invalid",
+            "requester composer requires its configured RFQ and provider Quote",
+        ));
+    }
+    let offering_references = rfq
+        .tags
+        .iter()
+        .filter(|tag| {
+            tag.name() == Some("a") && tag.as_slice().get(3).map(String::as_str) == Some("offering")
+        })
+        .collect::<Vec<_>>();
+    if !matches!(offering_references.as_slice(), [reference] if reference.value() == Some(config.offering_address.as_str()))
+    {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "RFQ does not bind the configured Offering address",
+        ));
+    }
+    require_marked_reference(quote, "rfq", &rfq.id)?;
+    let content = parse_content(quote)?;
+    let profile = object(
+        content.get("mkt_swp").unwrap_or(&Value::Null),
+        "MKT-SWP Quote",
+    )?
+    .clone();
+    let reservation_class = tag_value(quote, "reservation")?;
+    validate_provider_quote_profile(&profile, reservation_class)?;
+    let expiration = tag_value(quote, "expiration")?
+        .parse::<u64>()
+        .map_err(|_| SwapClientError::new("swp_quote_expired", "Quote expiration is invalid"))?;
+    validate_quote_against_rfq(
+        rfq,
+        &profile,
+        tag_value(quote, "quote")?,
+        quote.created_at,
+        expiration,
+    )?;
+    validate_order_acceptance_deadline(&profile, expiration, order_created_at)?;
+    Ok(profile)
+}
+
+fn validate_composed_order(
+    config: &SwapClientConfig,
+    quote: &Event,
+    order: &Event,
+    quote_profile: &Map<String, Value>,
+) -> Result<(), SwapClientError> {
+    validate_composer_record(config, order)?;
+    if order.kind != MKT_ORDER_KIND || order.pubkey != config.requester_pubkey {
+        return Err(SwapClientError::new(
+            "swp_contract_signer_invalid",
+            "requester composer requires its configured Order",
+        ));
+    }
+    require_marked_reference(order, "quote", &quote.id)?;
+    let content = parse_content(order)?;
+    let profile = object(
+        content.get("mkt_swp").unwrap_or(&Value::Null),
+        "MKT-SWP Order",
+    )?;
+    if profile.get("accepted_quote_id").and_then(Value::as_str) != Some(quote.id.as_str()) {
+        return Err(SwapClientError::new(
+            "swp_order_selection_invalid",
+            "Order body does not accept the referenced Quote",
+        ));
+    }
+    validate_order_selection(quote_profile, profile)?;
+    let expiration = tag_value(quote, "expiration")?
+        .parse::<u64>()
+        .map_err(|_| SwapClientError::new("swp_quote_expired", "Quote expiration is invalid"))?;
+    validate_order_acceptance_deadline(quote_profile, expiration, order.created_at)
+}
+
+fn compose_requester_contract(
+    config: &SwapClientConfig,
+    rfq: &Event,
+    quote: &Event,
+    order: &Event,
+    quote_profile: &Map<String, Value>,
+    local_contract: Value,
+) -> Result<Value, SwapClientError> {
+    reject_custody_material(&local_contract)?;
+    let mut contract = object(&local_contract, "requester local Contract fields")?.clone();
+    let terms = object(
+        quote_profile.get("terms").unwrap_or(&Value::Null),
+        "MKT-SWP Quote terms",
+    )?;
+    for (name, value) in terms {
+        contract.insert(name.clone(), value.clone());
+    }
+    contract.insert("order_id".to_owned(), Value::String(order.id.clone()));
+    contract.insert("quote_id".to_owned(), Value::String(quote.id.clone()));
+
+    let reservation_class = tag_value(quote, "reservation")?;
+    let reservation = object(
+        quote_profile
+            .get("reservation_terms")
+            .unwrap_or(&Value::Null),
+        "Quote reservation terms",
+    )?;
+    let reservation_id = require_string(
+        reservation,
+        "reservation_id",
+        None,
+        "swp_contract_terms_mismatch",
+    )?;
+    let capacity_bucket_id = require_string(
+        reservation,
+        "capacity_bucket_id",
+        None,
+        "swp_contract_terms_mismatch",
+    )?;
+    let reserved_asset_id = require_string(
+        reservation,
+        "reserved_asset_id",
+        None,
+        "swp_contract_terms_mismatch",
+    )?;
+    let reserved_amount = canonical_amount(require_string(
+        reservation,
+        "reserved_amount",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let committed_capacity = canonical_amount(require_string(
+        reservation,
+        "handler_committed_capacity",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let allocation_sequence = canonical_amount(require_string(
+        reservation,
+        "allocation_sequence",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let proof_class = require_string(
+        reservation,
+        "proof_class",
+        None,
+        "swp_contract_terms_mismatch",
+    )?;
+    let proof_strength = reservation_proof_strength(reservation_class, proof_class)?;
+    let proof_ref = require_string(
+        reservation,
+        "proof_ref",
+        None,
+        "swp_contract_terms_mismatch",
+    )?;
+    let capacity_commitment_sha256 = require_string(
+        reservation,
+        "capacity_commitment_sha256",
+        None,
+        "swp_contract_terms_mismatch",
+    )?;
+    let reservation_expires_at = reservation
+        .get("reservation_expires_at")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "reservation expiration is invalid",
+            )
+        })?;
+    let profile_timeout_at = match reservation.get("profile_timeout_at") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_u64().ok_or_else(|| {
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "reservation profile timeout is invalid",
+            )
+        })?),
+    };
+    let covenant_commitment = if proof_class == "covenant_reserve" {
+        validate_covenant_reservation(reservation, reserved_amount, reservation_expires_at)?
+    } else {
+        Value::Null
+    };
+    contract.insert(
+        "reservation_commitment".to_owned(),
+        json!({
+            "session_id":config.session_id,
+            "rfq_id":rfq.id,
+            "quote_id":quote.id,
+            "reservation_id":reservation_id,
+            "reservation_class":reservation_class,
+            "capacity_bucket_id":capacity_bucket_id,
+            "reserved_asset_id":reserved_asset_id,
+            "reserved_amount":reserved_amount.to_string(),
+            "handler_committed_capacity":committed_capacity.to_string(),
+            "allocation_sequence":allocation_sequence.to_string(),
+            "proof_class":proof_class,
+            "proof_strength":proof_strength,
+            "proof_ref_sha256":lower_hex(&sha256(proof_ref.as_bytes())),
+            "capacity_commitment_sha256":capacity_commitment_sha256,
+            "reservation_expires_at":reservation_expires_at,
+            "profile_timeout_at":profile_timeout_at,
+            "covenant_commitment":covenant_commitment
+        }),
+    );
+    reject_custody_material(&Value::Object(contract.clone()))?;
+    Ok(Value::Object(contract))
+}
+
+fn requester_quote_view(
+    rfq: &Event,
+    quote: &Event,
+    profile: &Map<String, Value>,
+) -> Result<RequesterQuoteView, SwapClientError> {
+    let terms = object(
+        profile.get("terms").unwrap_or(&Value::Null),
+        "MKT-SWP Quote terms",
+    )?;
+    let assets = terms
+        .get("asset_pair")
+        .and_then(Value::as_array)
+        .filter(|assets| assets.len() == 2)
+        .ok_or_else(|| {
+            SwapClientError::new("swp_contract_terms_mismatch", "Quote has no asset pair")
+        })?;
+    let expires_at = tag_value(quote, "expiration")?
+        .parse::<u64>()
+        .map_err(|_| SwapClientError::new("swp_quote_expired", "Quote expiration is invalid"))?;
+    let effective_acceptance_deadline = effective_acceptance_deadline(profile, expires_at)?;
+    let swap_type = match terms.get("swap_type").and_then(Value::as_str) {
+        Some("submarine") => SwapType::Submarine,
+        Some("reverse") => SwapType::Reverse,
+        Some("chain") => SwapType::Chain,
+        _ => {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "Quote has an unsupported swap type",
+            ));
+        }
+    };
+    let string =
+        |name| require_string(terms, name, None, "swp_contract_terms_mismatch").map(str::to_owned);
+    let price_feed =
+        RequesterPriceFeedView::from_pinned_terms(terms.get("price_feed").unwrap_or(&Value::Null))?;
+    Ok(RequesterQuoteView {
+        rfq_id: rfq.id.clone(),
+        quote_id: quote.id.clone(),
+        provider_pubkey: quote.pubkey.clone(),
+        quote_class: tag_value(quote, "quote")?.to_owned(),
+        reservation_class: tag_value(quote, "reservation")?.to_owned(),
+        swap_type,
+        input_asset_id: assets[0]
+            .as_str()
+            .ok_or_else(|| {
+                SwapClientError::new("swp_contract_terms_mismatch", "input asset is invalid")
+            })?
+            .to_owned(),
+        output_asset_id: assets[1]
+            .as_str()
+            .ok_or_else(|| {
+                SwapClientError::new("swp_contract_terms_mismatch", "output asset is invalid")
+            })?
+            .to_owned(),
+        input_amount: string("input_amount")?,
+        output_amount: string("output_amount")?,
+        amount_equation: string("amount_equation")?,
+        rounding: string("rounding")?,
+        clock_skew_seconds: string("clock_skew_seconds")?,
+        expires_at,
+        effective_acceptance_deadline,
+        fees: RequesterFeeView {
+            fee_bps: string("fee_bps")?,
+            provider_fee: string("provider_fee")?,
+            miner_fee_budget: string("miner_fee_budget")?,
+            lightning_routing_fee_budget: string("lightning_routing_fee_budget")?,
+            maximum_total_fee: string("maximum_total_fee")?,
+            fee_payer: string("fee_payer")?,
+        },
+        price_feed,
+    })
+}
+
+fn requester_timeline_entry(
+    config: &SwapClientConfig,
+    event: &Event,
+) -> Result<RequesterTimelineEntry, SwapClientError> {
+    let kind = match event.kind {
+        MKT_RFQ_KIND => RequesterTimelineKind::Rfq,
+        MKT_QUOTE_KIND => RequesterTimelineKind::Quote,
+        MKT_ORDER_KIND => RequesterTimelineKind::Order,
+        MKT_SWP_SWAP_CONTRACT_KIND => RequesterTimelineKind::Contract,
+        MKT_STATUS_KIND => RequesterTimelineKind::Status,
+        MKT_CANCEL_KIND => RequesterTimelineKind::Cancel,
+        MKT_CLOSE_KIND => RequesterTimelineKind::Close,
+        _ => {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "requester session contains an unsupported record kind",
+            ));
+        }
+    };
+    let sequence =
+        if event.kind == MKT_STATUS_KIND {
+            Some(tag_value(event, "seq")?.parse::<u64>().map_err(|_| {
+                SwapClientError::new("swp_status_gap", "Status sequence is invalid")
+            })?)
+        } else {
+            None
+        };
+    let state = if matches!(
+        event.kind,
+        MKT_STATUS_KIND | MKT_CANCEL_KIND | MKT_CLOSE_KIND
+    ) {
+        let profile = parse_content(event)?;
+        let profile = object(
+            profile.get("mkt_swp").unwrap_or(&Value::Null),
+            "MKT-SWP timeline record",
+        )?;
+        match event.kind {
+            MKT_STATUS_KIND => profile.get("swp_state").and_then(Value::as_str),
+            MKT_CANCEL_KIND => tag_value(event, "action").ok(),
+            MKT_CLOSE_KIND => tag_value(event, "outcome").ok(),
+            _ => None,
+        }
+        .map(str::to_owned)
+    } else {
+        None
+    };
+    Ok(RequesterTimelineEntry {
+        event_id: event.id.clone(),
+        author: role_for_author(config, &event.pubkey)?,
+        kind,
+        created_at: event.created_at,
+        sequence,
+        state,
+    })
+}
+
+fn timeline_sort_key(entry: &RequesterTimelineEntry) -> (u8, u8, u64, String) {
+    let phase = match entry.kind {
+        RequesterTimelineKind::Rfq => 0,
+        RequesterTimelineKind::Quote => 1,
+        RequesterTimelineKind::Order => 2,
+        RequesterTimelineKind::Contract => 3,
+        RequesterTimelineKind::Status => 4,
+        RequesterTimelineKind::Cancel => 5,
+        RequesterTimelineKind::Close => 6,
+    };
+    let author = match entry.author {
+        ParticipantRole::Requester => 0,
+        ParticipantRole::Provider => 1,
+    };
+    (
+        phase,
+        author,
+        entry.sequence.unwrap_or_default(),
+        entry.event_id.clone(),
+    )
+}
+
+fn unsigned_event(request: &MktSigningRequest) -> Event {
+    Event {
+        id: request.expected_event_id.clone(),
+        pubkey: request.pubkey.clone(),
+        created_at: request.created_at,
+        kind: request.kind,
+        tags: request.tags.clone(),
+        content: request.content.clone(),
+        sig: String::new(),
+    }
+}
+
+fn effective_acceptance_deadline(
     quote: &Map<String, Value>,
     quote_expiration: u64,
-    order_created_at: u64,
-) -> Result<(), SwapClientError> {
+) -> Result<u64, SwapClientError> {
     let mut deadline = quote_expiration;
     if let Some(reservation) = quote.get("reservation_terms") {
         let reservation = object(reservation, "Quote reservation terms")?;
-        let reservation_expiration = reservation
+        let expiration = reservation
             .get("reservation_expires_at")
             .and_then(Value::as_u64)
             .ok_or_else(|| {
@@ -5771,23 +6600,25 @@ fn validate_order_acceptance_deadline(
                     "Quote reservation expiration is invalid",
                 )
             })?;
-        deadline = deadline.min(reservation_expiration);
+        deadline = deadline.min(expiration);
         match reservation.get("profile_timeout_at") {
             None | Some(Value::Null) => {}
-            Some(Value::Number(timeout)) => {
-                let timeout = timeout.as_u64().ok_or_else(|| {
+            Some(value) => {
+                deadline = deadline.min(value.as_u64().ok_or_else(|| {
                     SwapClientError::new("swp_quote_expired", "Quote profile timeout is invalid")
-                })?;
-                deadline = deadline.min(timeout);
-            }
-            Some(_) => {
-                return Err(SwapClientError::new(
-                    "swp_quote_expired",
-                    "Quote profile timeout is invalid",
-                ));
+                })?);
             }
         }
     }
+    Ok(deadline)
+}
+
+fn validate_order_acceptance_deadline(
+    quote: &Map<String, Value>,
+    quote_expiration: u64,
+    order_created_at: u64,
+) -> Result<(), SwapClientError> {
+    let deadline = effective_acceptance_deadline(quote, quote_expiration)?;
     if order_created_at > deadline {
         return Err(SwapClientError::new(
             "swp_quote_expired",

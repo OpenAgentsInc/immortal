@@ -402,6 +402,12 @@
       "scope": "provider"
     },
     {
+      "path": "tests/fixtures/nipmkt/swp-requester-api-v1.json",
+      "sha256": "f7d03efef717d841ba123a0a43c600e1c5b02d948bfa854728557210b52bb25d",
+      "bytes": 1326,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/nipmkt/swp-verification.json",
       "sha256": "cb8bda0b60674a94990391f26f19bc74f48dfc2a6d774529efb0f2994bbc961d",
       "bytes": 16320,

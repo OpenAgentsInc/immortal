@@ -14,8 +14,8 @@ use immortal_client::mkt_swp_client::{
     FundingVerificationInput, InvoiceVerificationInput, LightningProgressState,
     LightningReadinessState, LightningRecoveryState, LocalLightningProgress,
     LocalLightningReadiness, LocalRailEvidence, LocalRecoveryObservation, ParticipantRole,
-    RailObservationRequest, RecoveryAction, StatusState, SwapClientConfig, SwapContractReferences,
-    SwapRecordFactory, SwapSession, VerifyBeforeFundInput, provider_support,
+    RailObservationRequest, RecoveryAction, StatusState, SwapClientConfig, SwapRecordFactory,
+    SwapSession, VerifyBeforeFundInput, provider_support,
 };
 use immortal_core::{
     domain::{
@@ -1918,11 +1918,12 @@ fn prepare_negotiation(
     records.push(quote.clone());
     let order = sign_request(
         factory
-            .order(
+            .requester_order(
+                &rfq,
+                &quote,
                 next_created_at_records(&records)?,
                 &digest(&format!("order:{session_id}")),
-                &quote.id,
-                json!({"accepted_quote_id":quote.id}),
+                None,
             )
             .map_err(|error| format!("could not construct funded Order: {error}"))?,
         &environment.requester,
@@ -1934,7 +1935,13 @@ fn prepare_negotiation(
         &environment.requester,
         provider_pubkey,
     )?;
-    let mut contract = complete_contract(input.swap_type, &session_id, &rfq, &quote, &order)?;
+    let local_contract = fixture_profile(input.swap_type, 39_610, Some("requester"))?
+        .get("contract")
+        .cloned()
+        .ok_or_else(|| "fixture requester contract has no contract".to_owned())?;
+    let mut contract = factory
+        .requester_contract_draft(&rfq, &quote, &order, local_contract)
+        .map_err(|error| format!("could not compose funded contract: {error}"))?;
     let requester_funding = match input.requester_funding_input {
         Some(funding_input) if input.swap_type == "submarine" => Some(bind_requester_funding(
             environment,
@@ -1985,22 +1992,24 @@ fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, Strin
         control,
     } = pending;
     let session_id = config.session_id.clone();
-    let quote_id = records
+    let rfq = records
+        .iter()
+        .find(|event| event.kind == immortal_core::domain::MKT_RFQ_KIND)
+        .cloned()
+        .ok_or_else(|| "prepared funded session has no RFQ".to_owned())?;
+    let quote = records
         .iter()
         .find(|event| event.kind == MKT_QUOTE_KIND)
-        .map(|event| event.id.clone())
+        .cloned()
         .ok_or_else(|| "prepared funded session has no Quote".to_owned())?;
     let requester_contract = sign_request(
         factory
-            .swap_contract(
-                ParticipantRole::Requester,
+            .requester_contract(
+                &rfq,
+                &quote,
+                &order,
                 next_created_at_records(&records)?,
                 &digest(&format!("requester-contract:{session_id}")),
-                SwapContractReferences {
-                    order_id: &order.id,
-                    quote_id: &quote_id,
-                    accepted_status_id: None,
-                },
                 contract.clone(),
             )
             .map_err(|error| format!("could not construct funded contract: {error}"))?,
@@ -2702,96 +2711,6 @@ fn funded_rfq_profile(input: NegotiationInput<'_>, now: u64) -> Result<Value, St
             .insert("invoice".to_owned(), Value::String(invoice.to_owned()));
     }
     Ok(profile)
-}
-
-fn complete_contract(
-    swap_type: &str,
-    session_id: &str,
-    rfq: &Event,
-    quote: &Event,
-    order: &Event,
-) -> Result<Value, String> {
-    let mut contract = fixture_profile(swap_type, 39_610, Some("requester"))?
-        .get("contract")
-        .cloned()
-        .ok_or_else(|| "fixture requester contract has no contract".to_owned())?;
-    let quote_profile = record_profile(quote)?;
-    let terms = quote_profile
-        .get("terms")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "funded Quote has no terms".to_owned())?;
-    for member in [
-        "swap_type",
-        "asset_pair",
-        "payment_hash",
-        "fee_bps",
-        "provider_fee",
-        "miner_fee_budget",
-        "lightning_routing_fee_budget",
-        "maximum_total_fee",
-        "amount_equation",
-        "rounding",
-        "script_mode",
-        "musig2_execution",
-        "desired_completion_time",
-        "clock_skew_seconds",
-        "legs",
-        "timeout_ladder",
-        "verifier_inputs",
-        "cancellation",
-        "evidence_requirements",
-        "recovery",
-        "price_feed",
-        "evm_leg",
-        "input_amount",
-        "output_amount",
-        "fee_payer",
-        "confirmation_policy",
-    ] {
-        contract[member] = terms
-            .get(member)
-            .cloned()
-            .ok_or_else(|| format!("funded Quote terms omit {member}"))?;
-    }
-    contract["order_id"] = Value::String(order.id.clone());
-    contract["quote_id"] = Value::String(quote.id.clone());
-    let reservation = quote_profile
-        .get("reservation_terms")
-        .and_then(Value::as_object)
-        .ok_or_else(|| "funded Quote has no reservation terms".to_owned())?;
-    let proof_ref = reservation
-        .get("proof_ref")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "funded Quote reservation has no proof reference".to_owned())?;
-    let proof_class = reservation
-        .get("proof_class")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "funded Quote reservation has no proof class".to_owned())?;
-    let proof_strength = match proof_class {
-        "lightning_liquidity" => 50,
-        "utxo_control" => 60,
-        _ => return Err("funded Quote used an unsupported proof class".to_owned()),
-    };
-    contract["reservation_commitment"] = json!({
-        "session_id":session_id,
-        "rfq_id":rfq.id,
-        "quote_id":quote.id,
-        "reservation_id":reservation["reservation_id"],
-        "reservation_class":"hard",
-        "capacity_bucket_id":reservation["capacity_bucket_id"],
-        "reserved_asset_id":reservation["reserved_asset_id"],
-        "reserved_amount":reservation["reserved_amount"],
-        "handler_committed_capacity":reservation["handler_committed_capacity"],
-        "allocation_sequence":reservation["allocation_sequence"],
-        "proof_class":proof_class,
-        "proof_strength":proof_strength,
-        "proof_ref_sha256":lower_hex(&sha256(proof_ref.as_bytes())),
-        "capacity_commitment_sha256":reservation["capacity_commitment_sha256"],
-        "reservation_expires_at":reservation["reservation_expires_at"],
-        "profile_timeout_at":null,
-        "covenant_commitment":null
-    });
-    Ok(contract)
 }
 
 fn bind_requester_funding(

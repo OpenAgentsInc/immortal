@@ -40,6 +40,26 @@ view, policy, authority, finality, outcome, and effect-result digest. A funding
 template, outpoint, or invoice digest alone is not settlement evidence, and a
 Close must reference its signer's exact contiguous last-valid terminal Status.
 
+`SwapRecordFactory::requester_order` validates the signed Quote against the
+exact RFQ and applies the minimum of the Quote, reservation, and profile
+acceptance deadlines before returning bytes for an external signature.
+`requester_contract_draft` binds Quote terms, causal IDs, and the reservation
+proof commitment; the wallet adds its executable funding and exit bindings,
+then `requester_contract` revalidates the RFQ, Quote, Order, complete Contract,
+and requester topology before returning a signing request. The funded lab uses
+this public path rather than owning a private Contract composer.
+
+`RequesterSessionView` is the custody-free consumer projection. Its versioned
+schema exposes asset IDs, canonical amounts, fee equation and payer, rounding,
+the complete optional pinned-feed tuple, structural timeline, independent
+Status gap/fork lanes, and a Contract-terms verdict. Local verify-before-fund
+remains mandatory and the view never reports funding authorization. Timeline
+order follows protocol phase and per-author sequence with event-ID tie-breaks;
+`created_at` remains display data. `SignedRecordDelivery` retains the exact
+domain-validated signed bytes and direct, local, or gift-wrap provenance. A
+gift-wrap delivery also retains its outer event ID, so an SDK can persist the
+archive without reconstructing JSON.
+
 ## Verify before fund
 
 `SwapSession<AwaitingVerification>` is the only state produced by creation or

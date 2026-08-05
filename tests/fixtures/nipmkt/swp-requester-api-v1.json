@@ -1,0 +1,37 @@
+{
+  "schema": "openagents.mkt-swp.requester-api-fixture.v1",
+  "view_schema": "openagents.mkt-swp.requester-session-view.v1",
+  "submarine_quote": {
+    "swap_type": "submarine",
+    "input_amount": "100000",
+    "output_amount": "1000",
+    "fee_bps": "9800",
+    "provider_fee": "98000",
+    "miner_fee_budget": "1000",
+    "lightning_routing_fee_budget": "0",
+    "maximum_total_fee": "99000",
+    "fee_payer": "requester",
+    "amount_equation": "input_minus_provider_and_quoted_fees",
+    "rounding": "floor_output_sats",
+    "clock_skew_seconds": "60",
+    "effective_acceptance_deadline": 900,
+    "price_feed": null
+  },
+  "price_feed_projection": {
+    "url": "https://prices.example.test/btc-usd",
+    "value_pointer": "/data/price",
+    "observed_value": "6543210",
+    "response_sha256": "abababababababababababababababababababababababababababababababab",
+    "observed_at": 1700000000,
+    "max_age_seconds": 30
+  },
+  "laws": {
+    "order_validates_quote_against_rfq": true,
+    "order_uses_effective_reservation_deadline": true,
+    "contract_revalidates_before_signing": true,
+    "local_verification_required_after_contract": true,
+    "contract_terms_do_not_authorize_funding": true,
+    "timeline_uses_protocol_structure_not_created_at": true,
+    "delivery_preserves_exact_validated_raw_bytes": true
+  }
+}
