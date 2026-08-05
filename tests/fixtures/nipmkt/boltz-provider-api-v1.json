@@ -1,0 +1,109 @@
+{
+  "schema": "openagents.mkt-swp.boltz-provider-api.v1",
+  "mapping_revision": "openagents.mkt-swp.boltz-released-client.v2",
+  "activation": {
+    "enabled_by_default": false,
+    "bind_environment": "IMMORTAL_PROVIDER_BOLTZ_BIND",
+    "conformance_environment": "IMMORTAL_PROVIDER_BOLTZ_CONFORMANCE_SHA256",
+    "allowed_origin_environment": "IMMORTAL_PROVIDER_BOLTZ_ALLOWED_ORIGIN",
+    "exact_browser_origin_only": true,
+    "native_clients_may_omit_origin": true,
+    "private_or_loopback_bind_only": true,
+    "nip11_advertised": false
+  },
+  "process_gate": {
+    "listener_bind": "runtime private IPv4 address of the provider and Bitcoin shared network namespace",
+    "host_publication": "random host loopback port mapped to the shared namespace port 19093",
+    "readiness_route": "GET /v2/version",
+    "adapted_clients": ["go", "web"],
+    "dependent_call_union": 19
+  },
+  "native_session_binding": {
+    "creation_extension_member": "mktSessionId",
+    "creation_requires_existing_signed_rfq_and_provider_quote": true,
+    "finalize_requires_existing_order_and_requester_contract": true,
+    "provider_contract_is_exactly_equal_to_requester_contract": true,
+    "requester_script_path_exit_package_modes": ["presigned", "wallet_sign"],
+    "adapted_client_must_confirm_matching_package_is_persisted": true,
+    "finalize_response_returns_exact_exit_package_mode_and_sha256": true,
+    "api_signs_for_requester": false,
+    "api_persists_private_client_state": false
+  },
+  "limits": {
+    "connections": 64,
+    "requests_per_minute_per_ip": 120,
+    "http_head_bytes": 16384,
+    "json_body_bytes": 2000128,
+    "raw_transaction_bytes": 1000000,
+    "status_ids": 64,
+    "websocket_subscriptions": 64,
+    "websocket_frame_bytes": 16384,
+    "session_records": 512,
+    "request_timeout_seconds": 10
+  },
+  "released_calls": [
+    {"route":"GET /v2/version","source":"compiled mapping revision"},
+    {"route":"GET /v2/swap/submarine","source":"configured pricing policy and live provider limits"},
+    {"route":"POST /v2/swap/submarine","source":"signed native Quote named by mktSessionId"},
+    {"route":"POST /v2/swap/submarine/:id/finalize","source":"bilateral signed Contracts and requester exit commitment"},
+    {"route":"GET /v2/swap/reverse","source":"configured pricing policy and live provider limits"},
+    {"route":"POST /v2/swap/reverse","source":"signed native Quote named by mktSessionId"},
+    {"route":"GET /v2/swap/:id","source":"latest dense signed Status projection"},
+    {"route":"GET /v2/swap/status?ids=:id...","source":"bounded latest signed Status projection"},
+    {"route":"GET /v2/ws","source":"bounded polling projection of signed Status records"},
+    {"route":"GET /v2/swap/submarine/:id/transaction","source":"bilaterally committed requester funding transaction"},
+    {"route":"GET /v2/swap/reverse/:id/transaction","source":"bilaterally committed provider funding transaction"},
+    {"route":"GET /v2/swap/submarine/:id/preimage","source":"released preimage extracted from the public provider claim transaction"},
+    {"route":"GET /v2/swap/reverse/:invoice/bip21","source":"signed reverse session invoice and committed lockup output"},
+    {"route":"GET /v2/chain/fees","source":"live bitcoind estimate or configured fail-closed fallback"},
+    {"route":"GET /v2/chain/BTC/fee","source":"live bitcoind estimate or configured fail-closed fallback"},
+    {"route":"GET /v2/chain/BTC/height","source":"live bitcoind chain tip"},
+    {"route":"GET /v2/chain/BTC/transaction/:txid","source":"public bitcoind raw transaction"},
+    {"route":"POST /v2/chain/BTC/transaction","source":"session-bound exact funding or verified script-path spend"},
+    {"route":"GET /v2/nodes/stats","source":"provider Lightning rail capacity; channel, peer, and age fields are unavailable"}
+  ],
+  "status_projection": {
+    "accepted": "swap.created",
+    "lock_terms_ready": "swap.created",
+    "hold_invoice_ready": "swap.created",
+    "provider_lock_terms_ready": "swap.created",
+    "requester_funding_broadcast": "transaction.mempool",
+    "funding_seen": "transaction.mempool",
+    "funding_final": "transaction.confirmed",
+    "provider_funding_broadcast": "transaction.mempool",
+    "provider_funding_final": "transaction.confirmed",
+    "lightning_payment_pending": "invoice.pending",
+    "lightning_settlement_pending": "invoice.pending",
+    "lightning_paid": "invoice.settled",
+    "provider_claim_pending": "transaction.claim.pending",
+    "provider_claimed": "transaction.claimed",
+    "completed": "transaction.claimed",
+    "provider_refund_pending": "transaction.mempool",
+    "provider_refunded": "transaction.refunded",
+    "refunded": "transaction.refunded",
+    "expired": "swap.expired",
+    "unresolved": "transaction.failed"
+  },
+  "broadcast_law": {
+    "submarine_funding": "exact raw transaction and output index committed by both Contracts",
+    "reverse_claim": "spends the committed funding outpoint through the exact claim script and control block and reveals the contracted preimage",
+    "unknown_session": "refused",
+    "unbound_transaction": "refused",
+    "duplicate_bitcoind_broadcast": "idempotent only when getrawtransaction returns the same transaction"
+  },
+  "secret_law": {
+    "unreleased_preimage_in_database": false,
+    "preimage_in_logs": false,
+    "preimage_response_before_public_claim": false,
+    "node_credentials_in_response": false
+  },
+  "coverage": {
+    "backend_v2_route_denominator": 53,
+    "endpoint_surface_emulated_routes": 17,
+    "endpoint_surface_coverage_percent": "32.08",
+    "dependent_call_route_denominator": 19,
+    "dependent_call_emulated_routes": 19,
+    "dependent_call_coverage_percent": "100.00",
+    "provider_process_gate_required": true
+  }
+}

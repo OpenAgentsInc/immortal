@@ -5,7 +5,8 @@ released-client profile. It does not implement the provider API. Every
 recognized request receives `307 Temporary Redirect` to an independently
 deployed `immortal-provider` endpoint. The redirect preserves the method and
 body, and the relay responds from the HTTP head without reading or persisting
-the body.
+the body. The funded provider implements the corresponding off-by-default
+HTTP/WebSocket API from signed native MKT-SWP sessions.
 
 This split follows the workspace custody boundary in `docs/MONOREPO.md`.
 Wallet, preimage, signing, broadcast, Lightning-node, and rail effects belong
@@ -40,6 +41,29 @@ using a stale digest, or using plaintext HTTP to a non-loopback provider fails
 startup. It is never advertised in NIP-11. Handoffs share the bounded relay
 request rate and connection limit. Unsafe origin-form paths and traversal
 spellings fail closed before a `Location` header is constructed.
+
+The provider listener independently requires all three values:
+
+- `IMMORTAL_PROVIDER_BOLTZ_BIND` is a private or loopback numeric socket;
+- `IMMORTAL_PROVIDER_BOLTZ_CONFORMANCE_SHA256` equals
+  `operations.boltz_compatibility.conformance_sha256` in
+  `immortal-provider contract`; and
+- `IMMORTAL_PROVIDER_BOLTZ_ALLOWED_ORIGIN` is one exact bounded HTTP(S)
+browser origin, without wildcard, credentials, path, query, or fragment.
+
+All three absent disables the listener. A partial profile, stale digest,
+public bind, or invalid origin fails startup. Supplied browser origins must
+match exactly; native clients may omit `Origin`. The API applies 64 concurrent
+connection permits, 120 requests per minute per source address, bounded HTTP
+heads/bodies and WebSocket frames/subscriptions, and a bounded signed-record
+scan. It is never advertised in NIP-11.
+
+Submarine finalize returns the exact signed exit-package commitment mode with
+its SHA-256. `presigned` means a keyless package; `wallet_sign` means the
+persisted package still names the wallet signing callback. The compatibility
+response never treats those modes as equivalent, and each adapted client
+checks the returned mode and digest against its persisted package before
+broadcast.
 
 The external provider endpoint must be reachable by the client. A loopback
 provider URL is suitable only when the client is on that host. WebSocket
@@ -119,42 +143,43 @@ at the pinned call sites; a configuration flag alone is insufficient.
 `tests/fixtures/nipmkt/boltz-client-adapters-v1.json` pins the upstream source
 and blob identities, the 13-call Go subset, the 15-call web subset, and their
 exact 19-call union. `scripts/test-boltz-client-adapters.sh` runs both
-dependency-free unit suites. These are source/build seams; they do not answer
-provider routes or earn dependent-call coverage.
+dependency-free unit suites. The funded smoke also runs both adapter processes
+against the provider listener and the same signed sessions used for its native
+rail journeys.
 
 ## Endpoint matrix
 
 The denominator is the 53 routes registered by the pinned backend's Swap,
 Chain, Referral, Info, Nodes, and Commitment v2 routers. A relay redirect is
-not `emulated`. Rows marked `deferred` require a real handler in the external
-provider and a process conformance test. `refused` and
+not `emulated`. Rows marked `emulated` or `emulated-degraded` are served by the
+external provider and covered by its process conformance gate. `refused` and
 `not-applicable-single-operator` are product decisions.
 
 | Endpoint | Disposition | Reason or MKT equivalent |
 | --- | --- | --- |
-| `GET /v2/version` | deferred | External provider must report the released profile and implementation version. |
+| `GET /v2/version` | emulated | Provider reports the compiled mapping revision, released profile, and implementation version. |
 | `GET /v2/infos` | not-applicable-single-operator | Provider Profile `39600` and Offering `39601`. |
 | `GET /v2/warnings` | not-applicable-single-operator | Signed provider discovery and Status records. |
-| `GET /v2/swap/submarine` | deferred | Provider must project live signed Offering limits and fees. |
-| `POST /v2/swap/submarine` | deferred | Provider must create the provisional MKT-SWP session. |
+| `GET /v2/swap/submarine` | emulated | Provider projects configured pricing and live rail capacity. |
+| `POST /v2/swap/submarine` | emulated | Request names an existing signed RFQ/Quote session; the API signs nothing for the requester. |
 | `PATCH /v2/swap/:id/metadata` | refused | Recovery metadata remains client-local or in private signed records. |
 | `POST /v2/swap/submarine/:id/invoice` | refused | The released profile supplies the invoice at creation. |
 | `GET /v2/swap/submarine/:id/invoice/amount` | deferred | Provider-local session helper. |
-| `GET /v2/swap/submarine/:id/transaction` | deferred | Provider-local public transaction helper. |
-| `GET /v2/swap/submarine/:id/preimage` | deferred | Provider may return only a released preimage for that session. |
+| `GET /v2/swap/submarine/:id/transaction` | emulated | Returns the exact bilaterally committed funding transaction. |
+| `GET /v2/swap/submarine/:id/preimage` | emulated | Extracts the hash-bound value only from the public provider claim transaction. |
 | `GET /v2/swap/submarine/:id/refund` | deferred | EVM refund shape waits for an adopted EVM profile. |
 | `POST /v2/swap/submarine/:id/refund` | refused | Cooperative partial signatures are disabled. |
 | `POST /v2/swap/submarine/refund` | refused | Deprecated cooperative signing route. |
 | `POST /v2/swap/submarine/:id/refund/ark` | deferred | Ark waits for its adopted profile. |
 | `GET /v2/swap/submarine/:id/claim` | refused | Cooperative claim helper is outside script-path mode. |
 | `POST /v2/swap/submarine/:id/claim` | refused | Cooperative partial signatures are disabled. |
-| `GET /v2/swap/reverse` | deferred | Provider must project live signed Offering limits and fees. |
-| `POST /v2/swap/reverse` | deferred | Provider must create and bind the reverse session. |
+| `GET /v2/swap/reverse` | emulated | Provider projects configured pricing and live rail capacity. |
+| `POST /v2/swap/reverse` | emulated | Existing signed RFQ/Quote and bilateral Contract material binds the response. |
 | `GET /v2/swap/reverse/expiry` | deferred | Provider-local hold-expiry policy. |
-| `GET /v2/swap/reverse/:id/transaction` | deferred | Provider-local public transaction helper. |
+| `GET /v2/swap/reverse/:id/transaction` | emulated | Returns the exact provider funding transaction committed by both Contracts. |
 | `POST /v2/swap/reverse/:id/claim` | refused | Cooperative partial signatures are disabled; v1 claims through the script path and the chain broadcast route. |
 | `POST /v2/swap/reverse/claim` | refused | Deprecated unscoped custody-bearing route. |
-| `GET /v2/swap/reverse/:invoice/bip21` | deferred | Provider-local bounded session helper. |
+| `GET /v2/swap/reverse/:invoice/bip21` | emulated-degraded | BIP21 binds the signed invoice and output; `signature` is the signed Status Nostr signature because there is no single-operator BIP322 authority. |
 | `GET /v2/swap/chain` | deferred | Chain compatibility waits for the provider route and the #27 rail packet. |
 | `POST /v2/swap/chain` | deferred | Chain compatibility waits for the provider route and the #27 rail packet. |
 | `GET /v2/swap/chain/:id/transactions` | deferred | Provider-local public transaction helper. |
@@ -165,31 +190,31 @@ provider and a process conformance test. `refused` and
 | `POST /v2/swap/chain/:id/refund/ark` | deferred | Ark waits for its adopted profile. |
 | `GET /v2/swap/chain/:id/quote` | deferred | Provider-signed renegotiation Quote. |
 | `POST /v2/swap/chain/:id/quote` | deferred | Provider-side exact Quote acceptance. |
-| `GET /v2/swap/status` | deferred | Provider projection must preserve gap/fork and evidence limits. |
-| `GET /v2/swap/:id` | deferred | Provider projection must label claims and external evidence. |
-| `GET /v2/chain/fees` | deferred | Provider derives current bounded rail fees; no relay static pricing. |
+| `GET /v2/swap/status` | emulated | Bounded batch projects dense signed Status; gaps and forks fail closed. |
+| `GET /v2/swap/:id` | emulated | Latest dense signed Status is projected to the released vocabulary. |
+| `GET /v2/chain/fees` | emulated | Live bitcoind estimate or explicit bounded provider fallback. |
 | `GET /v2/chain/heights` | deferred | Provider-local rail observation. |
 | `GET /v2/chain/contracts` | deferred | EVM contracts wait for an adopted EVM profile. |
-| `GET /v2/chain/:currency/fee` | deferred | Provider-local rail observation. |
-| `GET /v2/chain/:currency/height` | deferred | Provider-local rail observation. |
-| `GET /v2/chain/:currency/transaction/:id` | deferred | Provider-local public transaction lookup. |
-| `POST /v2/chain/:currency/transaction` | deferred | Provider-local session-bound broadcast. |
+| `GET /v2/chain/:currency/fee` | emulated | BTC only; live bitcoind estimate or explicit bounded fallback. |
+| `GET /v2/chain/:currency/height` | emulated | BTC only; live bitcoind chain tip. |
+| `GET /v2/chain/:currency/transaction/:id` | emulated | BTC only; bounded public raw-transaction lookup. |
+| `POST /v2/chain/:currency/transaction` | emulated | BTC only; exact committed funding or verified reverse script-path claim, idempotent by public txid. |
 | `GET /v2/chain/:currency/contracts` | deferred | EVM contracts wait for an adopted EVM profile. |
 | `GET /v2/commitment/:currency/details` | deferred | Requires an adopted reservation-class decision. |
 | `POST /v2/commitment/:currency` | deferred | Requires an adopted reservation-class decision. |
 | `POST /v2/commitment/:currency/refund` | deferred | Requires an adopted reservation-class decision. |
 | `GET /v2/nodes` | deferred | Provider-scoped node projection, never market-wide authority. |
-| `GET /v2/nodes/stats` | deferred | Provider-scoped statistics, never market-wide authority. |
+| `GET /v2/nodes/stats` | emulated-degraded | Provider reports its live Lightning capacity; channel, peer, and market-age totals are unavailable in the narrow rail interface. |
 | `GET /v2/nodes/:currency/:node/hints` | not-applicable-single-operator | Provider endpoints are signed in discovery; routing is client-owned. |
 | `GET /v2/referral` | not-applicable-single-operator | No market-wide referral authority. |
 | `GET /v2/referral/fees` | not-applicable-single-operator | Fees are signed in each Offering and Quote. |
 | `GET /v2/referral/stats` | not-applicable-single-operator | No referral accounting authority. |
 | `GET /v2/referral/stats/extra` | not-applicable-single-operator | No referral accounting authority. |
 
-Endpoint-surface coverage is currently **0/53 (0%) emulated**. The relay has
-a redirect seam for the bounded namespace, but that is not API behavior and
-is not counted. The provider process gate must turn the applicable deferred
-rows into `emulated` or `emulated-degraded` before this issue can close.
+Endpoint-surface coverage is **17/53 (32.08%) emulated**. The relay redirect is
+not counted. The remaining routes are refused, single-operator-only, or
+deferred to named rail/profile work; raising this percentage by recreating
+Boltz operator authority is not a goal.
 
 ## Dependent-call gate
 
@@ -229,16 +254,12 @@ bounded `ids=` grammar. The reverse BIP21 route accepts ordinary-length BOLT11
 invoices only after parsing them. Other request targets retain the global
 cap and unsafe origin forms remain rejected.
 
-Dependent-call coverage is **0/19 (0%) emulated** because the current funded
-`immortal-provider` has health and Nostr/MKT-SWP rail actors but no Boltz HTTP
-server. The adapter source/unit gate is green, but source conformance does not
-change this count. This is separate from the **0/53 endpoint-surface** result
-above. The completion gate runs the adapted Go and web clients against the
-daemon and proves all 19 calls, including direct provider WebSocket status and
-submarine finalization. A relay `307`, `404`, `501`, or configuration promise
-counts as neither endpoint emulation nor dependent-call coverage.
+Dependent-call coverage is **19/19 (100%) emulated**. The completion gate runs
+the adapted Go and web clients against the separate funded provider daemon and
+proves all 19 calls, including direct provider WebSocket status, submarine
+finalization, unchanged-byte idempotent broadcast, reverse creation, and
+public-claim release. This is separate from the **17/53 endpoint-surface**
+result above. A relay `307`, `404`, or configuration promise earns no coverage.
 
-This ordering affects #18: the lab may test the relay handoff's custody and
-failure behavior now, but replacement scenarios should wait for the provider
-API and released-client conformance process. Public replacement remains gated
-on #18 and #19 deployment evidence.
+The process result makes the profile eligible for #18 replacement scenarios.
+Public replacement remains gated on #18 and #19 deployment evidence.

@@ -39,6 +39,7 @@ const approvalFor = (binding) => ({
     requesterContractEventId,
     providerContractEventId,
     exitPackageSha256,
+    exitPackageMode: "wallet_sign",
     exitPackagePersisted: true,
     scriptPathOnly: true,
 });
@@ -144,6 +145,13 @@ test("broadcast is unreachable without exact bilateral script approval", async (
                 approval.exitPackagePersisted = false;
             },
             code: "script_path_exit_not_persisted",
+        },
+        {
+            name: "exit package mode",
+            mutate: (approval) => {
+                approval.exitPackageMode = "external_signer";
+            },
+            code: "bilateral_contract_approval_mismatch",
         },
         {
             name: "cooperative exit",

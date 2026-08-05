@@ -81,6 +81,7 @@ type BilateralApproval struct {
 	RequesterContractEventID string
 	ProviderContractEventID  string
 	ExitPackageSHA256        string
+	ExitPackageMode          string
 	ExitPackagePersisted     bool
 	ScriptPathOnly           bool
 }
@@ -195,7 +196,8 @@ func validateApproval(binding FundingBinding, approval BilateralApproval) error 
 		!validLowerHex32(approval.RequesterContractEventID) ||
 		!validLowerHex32(approval.ProviderContractEventID) ||
 		approval.RequesterContractEventID == approval.ProviderContractEventID ||
-		!validLowerHex32(approval.ExitPackageSHA256) {
+		!validLowerHex32(approval.ExitPackageSHA256) ||
+		(approval.ExitPackageMode != "presigned" && approval.ExitPackageMode != "wallet_sign") {
 		return ErrBilateralApprovalMismatch
 	}
 	if !approval.ExitPackagePersisted || !approval.ScriptPathOnly {

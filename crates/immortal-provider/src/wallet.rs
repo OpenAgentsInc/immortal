@@ -91,7 +91,7 @@ impl BitcoinNetwork {
         }
     }
 
-    fn human_readable_part(self) -> &'static str {
+    pub(crate) fn human_readable_part(self) -> &'static str {
         match self {
             Self::Mainnet => "bc",
             Self::Testnet | Self::Signet => "tb",
@@ -613,7 +613,10 @@ fn validate_seed_permissions(_metadata: &fs::Metadata) -> Result<(), WalletError
     Err(WalletError::SeedPermissions)
 }
 
-fn encode_segwit_v1_address(hrp: &str, program: &[u8; 32]) -> Result<String, WalletError> {
+pub(crate) fn encode_segwit_v1_address(
+    hrp: &str,
+    program: &[u8; 32],
+) -> Result<String, WalletError> {
     let mut values = Vec::with_capacity(53);
     values.push(1);
     values.extend(convert_bits(program, 8, 5, true)?);

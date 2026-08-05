@@ -48,6 +48,12 @@ WHERE NOT EXISTS (
 ORDER BY record.session_id, record.created_at, record.event_id
 LIMIT $1
 "#;
+const SELECT_BOUNDED_SESSION_RECORDS_SQL: &str = r#"
+SELECT session_id, signed_event
+FROM provider_session_record
+ORDER BY session_id, created_at, event_id
+LIMIT $1
+"#;
 const INSERT_SESSION_DISPOSITION_SQL: &str = r#"
 INSERT INTO provider_session_disposition (session_id, reason_code, disposed_at)
 VALUES ($1, $2, $3)
@@ -755,6 +761,40 @@ impl ProviderStore {
             records,
             has_prior_records,
         })
+    }
+
+    pub async fn bounded_session_records(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<Event>, ProviderStoreError> {
+        self.ensure_current()?;
+        let limit = bounded_limit(limit, MAX_ACTIVE_SESSION_RECORD_QUERY)?;
+        let query_limit = limit.checked_add(1).ok_or_else(|| {
+            ProviderStoreError::InvalidInput("session record query limit overflows".to_owned())
+        })?;
+        let statement = self
+            .client
+            .prepare(SELECT_BOUNDED_SESSION_RECORDS_SQL)
+            .await?;
+        let rows = self.client.query(&statement, &[&query_limit]).await?;
+        if i64::try_from(rows.len()).unwrap_or(i64::MAX) > limit {
+            return Err(ProviderStoreError::InvalidInput(format!(
+                "session record bound {limit} reached"
+            )));
+        }
+        rows.into_iter()
+            .map(|row| {
+                let stored_session_id: String = row.get(0);
+                let event: Event = serde_json::from_value(row.get::<_, Value>(1))
+                    .map_err(|error| ProviderStoreError::InvalidInput(error.to_string()))?;
+                if exactly_one_tag(&event, "session")? != stored_session_id {
+                    return Err(ProviderStoreError::MigrationDrift(
+                        "stored session record is indexed under another session".to_owned(),
+                    ));
+                }
+                Ok(event)
+            })
+            .collect()
     }
 
     pub async fn dispose_session(

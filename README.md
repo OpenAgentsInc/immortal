@@ -150,14 +150,14 @@ The feature-gated LND provider repeated the same three-journey process gate on
 2026-08-05 on macOS 26.4 arm64. This is local eligibility for the #18 lab; it
 is not clean-host or live deployment evidence.
 
-The relay also contains the off-by-default Boltz released-client handoff
-described in `docs/protocol/boltz-facade.md`. It redirects bounded compatibility
-requests to the external provider without reading their bodies and adds the
-required submarine pre-broadcast finalize seam. Redirects are not counted as
-API implementation. The pinned, dependency-free Go/web adapter seams enforce
-prepare-before-broadcast and bilateral Contract/script-exit approval, but the
-provider HTTP surface and adapted-client process gate must still land before
-#15 or any replacement claim is complete.
+The relay contains the off-by-default Boltz released-client handoff described
+in `docs/protocol/boltz-facade.md`. It redirects bounded compatibility requests
+to the external provider without reading their bodies. The funded provider now
+serves the digest-gated HTTP/WebSocket profile and the required submarine
+pre-broadcast finalize seam. The dependency-free Go/web adapters pass their
+19-call union against that separate process in the disposable funded smoke.
+This is 17/53 backend endpoint coverage and 19/19 released dependent-call
+coverage; it is local conformance, not the #19 deployment replacement claim.
 
 The current feature list is a deployment snapshot, not Immortal's scope
 ceiling. The immediate protocol-totality program targets **every specification

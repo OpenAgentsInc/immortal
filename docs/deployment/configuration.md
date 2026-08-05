@@ -72,6 +72,9 @@ Platform + Managed Postgres unsupported for the current binary.
 | `IMMORTAL_MKT_SWP_COORDINATION_SWEEP_SECONDS` | no | `30` | Reservation-release sweep interval when coordination is active (1–3,600). The sweep releases reservation accounting only. |
 | `IMMORTAL_BOLTZ_FACADE_CONFORMANCE_SHA256` | to enable the Boltz handoff | — | Exact compiled digest at `.mkt.mkt_swp.boltz_facade.conformance_sha256` in `immortal contract`. A stale value fails startup. This does not advertise or claim a provider API. |
 | `IMMORTAL_BOLTZ_FACADE_PROVIDER_BASE_URL` | with the Boltz digest | — | External provider compatibility origin. It must be HTTPS, except loopback HTTP is accepted for local development. The relay issues bounded `307` handoffs without reading request bodies. |
+| `IMMORTAL_PROVIDER_BOLTZ_BIND` | with both provider Boltz variables | — | Private or loopback numeric socket address for the funded provider's compatibility listener. All three provider variables absent disables it. |
+| `IMMORTAL_PROVIDER_BOLTZ_CONFORMANCE_SHA256` | with both provider Boltz variables | — | Exact compiled digest at `operations.boltz_compatibility.conformance_sha256` in `immortal-provider contract`. A partial profile or stale digest fails provider startup. |
+| `IMMORTAL_PROVIDER_BOLTZ_ALLOWED_ORIGIN` | with both provider Boltz variables | — | One exact bounded HTTP(S) browser origin. Wildcards, credentials, paths, queries, and fragments are rejected. Native clients may omit `Origin`; supplied origins must match. |
 
 ### Media
 
@@ -108,7 +111,8 @@ in `docs/protocol/mkt-swp-coordination.md`.
 
 The Boltz compatibility handoff is never a NIP-11 extension. Its external
 provider origin must be reachable by the client, and direct provider
-WebSocket configuration is required. See `docs/protocol/boltz-facade.md`.
+WebSocket configuration is required. The provider listener is also never a
+NIP-11 extension. See `docs/protocol/boltz-facade.md`.
 
 The Block extension handlers need no additional service or database. NIP-AO
 uses the dedicated observer rates below. NIP-IA and NIP-DV require

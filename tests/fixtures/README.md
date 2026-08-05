@@ -5,8 +5,10 @@ names the NIP that owns the behavior.
 
 `nipmkt/boltz-facade-v2.json` pins the released-client handoff profile,
 Boltz source revisions, safe route classes, submarine finalize seam, activation
-law, custody boundary, exact 19-call inventory, and separate 0/53 endpoint and
-0/19 dependent-call coverage gates. It contains no provider, wallet, rail,
+law, custody boundary, exact 19-call inventory, and separate 53-route endpoint
+and 19-call dependent denominators. `nipmkt/boltz-provider-api-v1.json` binds
+the funded provider implementation and the resulting 17/53 endpoint and 19/19
+dependent-call process coverage. The facade fixture contains no wallet, rail,
 transaction, key, or preimage material; its BOLT11 is a public parser vector.
 `nipmkt/boltz-client-adapters-v1.json` pins the inspected Go/web source blobs,
 per-client route subsets, shared pre-broadcast funding law, forbidden stock

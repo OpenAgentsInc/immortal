@@ -180,6 +180,10 @@ relay_postgres_password="$(random_hex 32)"
 provider_identity_secret="$(random_hex 32)"
 provider_wallet_seed="$(random_hex 32)"
 client_wallet_seed="$(random_hex 32)"
+boltz_conformance_sha256="$(
+  cargo run --locked --quiet -p immortal-provider -- contract |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["operations"]["boltz_compatibility"]["conformance_sha256"])'
+)"
 
 printf '%s\n' "${provider_postgres_password}" >"${private_root}/provider-postgres-password"
 printf '%s\n' "${relay_postgres_password}" >"${private_root}/relay-postgres-password"
@@ -683,6 +687,28 @@ wait_for "provider Postgres" compose exec -T provider-postgres \
 wait_for "relay Postgres" compose exec -T relay-postgres \
   pg_isready -U immortal_relay -d immortal_relay
 wait_for "Bitcoin Core regtest" bitcoin_cli getblockchaininfo
+boltz_bind_address="$(compose exec -T bitcoin cat /etc/hosts | python3 -c '
+import ipaddress, sys
+for line in sys.stdin:
+    fields = line.split()
+    if not fields:
+        continue
+    try:
+        address = ipaddress.ip_address(fields[0])
+    except ValueError:
+        continue
+    if address.version == 4 and address.is_private and not address.is_loopback:
+        print(address)
+        raise SystemExit(0)
+raise SystemExit("shared provider namespace has no private IPv4 address")
+')"
+for provider_environment in provider.env provider-lnd.env; do
+  cat >>"${private_root}/${provider_environment}" <<EOF
+IMMORTAL_PROVIDER_BOLTZ_BIND=${boltz_bind_address}:19093
+IMMORTAL_PROVIDER_BOLTZ_CONFORMANCE_SHA256=${boltz_conformance_sha256}
+IMMORTAL_PROVIDER_BOLTZ_ALLOWED_ORIGIN=http://127.0.0.1
+EOF
+done
 current_phase=rail-startup
 lightning_services=(cln-peer)
 if test "${lightning_rail}" = cln; then
@@ -893,6 +919,24 @@ if not snapshot.is_file():
     echo "test-provider-funded: external funded-swap driver failed" >&2
     exit 1
   fi
+fi
+
+current_phase=boltz-provider-process-gate
+boltz_provider_url="http://$(compose port bitcoin 19093)"
+wait_for "Boltz provider compatibility listener" \
+  curl --fail --silent --show-error "${boltz_provider_url}/v2/version"
+if ! (cd adapters/boltz-client-go && \
+  IMMORTAL_BOLTZ_PROVIDER_PROCESS_URL="${boltz_provider_url}" \
+    IMMORTAL_BOLTZ_PROVIDER_PROCESS_STATE_DIR="${private_root}/state" \
+    go test -v ./... -run TestAdaptedGoClientAgainstProviderProcess -count=1); then
+  echo "test-provider-funded: adapted Go client failed against the provider process" >&2
+  exit 1
+fi
+if ! IMMORTAL_BOLTZ_PROVIDER_PROCESS_URL="${boltz_provider_url}" \
+  IMMORTAL_BOLTZ_PROVIDER_PROCESS_STATE_DIR="${private_root}/state" \
+  node --test adapters/boltz-web-app/provider-process.test.mjs; then
+  echo "test-provider-funded: adapted web client failed against the provider process" >&2
+  exit 1
 fi
 
 evidence_file="${private_root}/evidence/funded-smoke.json"

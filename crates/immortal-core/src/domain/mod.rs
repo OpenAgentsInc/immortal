@@ -72,11 +72,12 @@ pub use mkt::{
     MKT_RESERVATION_CLASSES, MKT_RFQ_KIND, MKT_STATUS_KIND, MKT_STATUS_STATES, MKT_SWP_PROFILE_ID,
     MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND, MktImmutableDecision, MktPrivateEnvelope,
     MktProfileSupport, MktValidatedPrivateRecord, MktValidationCode, MktValidationError,
-    decide_mkt_immutable_admission, is_mkt_private_kind, validate_mkt_lsp_source_reference,
-    validate_mkt_mint_evidence_reference, validate_mkt_p2p_resolution_evidence,
-    validate_mkt_p2p_source_reference, validate_mkt_pfi_evidence_reference,
-    validate_mkt_private_base, validate_mkt_private_raw, validate_mkt_private_with_profiles,
-    validate_mkt_public_event, validate_mkt_swp_evidence_reference,
+    decide_mkt_immutable_admission, is_mkt_private_kind, parse_unique_json,
+    validate_mkt_lsp_source_reference, validate_mkt_mint_evidence_reference,
+    validate_mkt_p2p_resolution_evidence, validate_mkt_p2p_source_reference,
+    validate_mkt_pfi_evidence_reference, validate_mkt_private_base, validate_mkt_private_raw,
+    validate_mkt_private_with_profiles, validate_mkt_public_event,
+    validate_mkt_swp_evidence_reference,
 };
 pub use openagents::{
     NostrAddress, OPENAGENTS_ORGANIZATION_KIND, OPENAGENTS_PROJECT_KIND,

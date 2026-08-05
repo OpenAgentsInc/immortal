@@ -2,6 +2,7 @@ use std::{env, fmt, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use crate::{
     bitcoind::{BitcoindAuth, BitcoindClient, BitcoindEndpoint, BitcoindLimits},
+    boltz::{BoltzConfig, BoltzConfigError},
     cln::{ClnClient, ClnEndpoint, ClnLimits},
     health::{AlertEndpoint, private_or_loopback},
     lightning::{ClnLightningRail, LightningRail},
@@ -28,6 +29,7 @@ pub enum ConfigError {
     Lnd,
     Wallet,
     Alert,
+    Boltz(BoltzConfigError),
     Pricing(PricingConfigError),
 }
 
@@ -41,6 +43,7 @@ impl fmt::Display for ConfigError {
             Self::Lnd => formatter.write_str("LND settings are invalid"),
             Self::Wallet => formatter.write_str("provider wallet settings are invalid"),
             Self::Alert => formatter.write_str("provider alert endpoint is invalid"),
+            Self::Boltz(error) => write!(formatter, "provider Boltz API {error}"),
             Self::Pricing(error) => write!(formatter, "provider {error}"),
         }
     }
@@ -49,6 +52,7 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Boltz(error) => Some(error),
             Self::Pricing(error) => Some(error),
             _ => None,
         }
@@ -77,6 +81,7 @@ pub struct FundedProviderConfig {
     pub minimum_confirmations: u32,
     pub reorg_safety_blocks: u32,
     pub pricing: PricingConfig,
+    pub boltz: Option<BoltzConfig>,
 }
 
 impl fmt::Debug for FundedProviderConfig {
@@ -96,6 +101,7 @@ impl fmt::Debug for FundedProviderConfig {
             .field("minimum_confirmations", &self.minimum_confirmations)
             .field("reorg_safety_blocks", &self.reorg_safety_blocks)
             .field("pricing", &self.pricing)
+            .field("boltz", &self.boltz)
             .finish()
     }
 }
@@ -172,6 +178,7 @@ impl FundedProviderConfig {
         if pricing.reservation_tier != ReservationTier::Hard {
             return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_RESERVATION_TIER"));
         }
+        let boltz = BoltzConfig::from_environment().map_err(ConfigError::Boltz)?;
 
         Ok(Self {
             database_url: DatabaseUrl(database_url),
@@ -187,6 +194,7 @@ impl FundedProviderConfig {
             minimum_confirmations,
             reorg_safety_blocks,
             pricing,
+            boltz,
         })
     }
 

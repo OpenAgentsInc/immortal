@@ -157,6 +157,28 @@ IMMORTAL_PROVIDER_RESERVATION_TIER=hard
 IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM=1000
 ```
 
+The Boltz compatibility listener is optional and absent unless all three
+values below are present. Read the digest from the installed bytes, paste that
+exact value into the environment file, bind the daemon to a private or loopback
+address, and set the one browser origin allowed to call it:
+
+```sh
+/opt/immortal-provider/current/immortal-provider contract \
+  | jq -r '.operations.boltz_compatibility.conformance_sha256'
+```
+
+```ini
+IMMORTAL_PROVIDER_BOLTZ_BIND=127.0.0.1:9093
+IMMORTAL_PROVIDER_BOLTZ_CONFORMANCE_SHA256=<OUTPUT_FROM_PROVIDER_CONTRACT>
+IMMORTAL_PROVIDER_BOLTZ_ALLOWED_ORIGIN=https://wallet.example.com
+```
+
+Expose that private plaintext listener only through the operator's authenticated
+TLS reverse proxy. Configure the relay handoff origin to the proxy's HTTPS
+origin and configure adapted clients to use its `wss://.../v2/ws` endpoint
+directly. Do not make the provider bind public. The surface is a compatibility
+API and is never advertised in relay NIP-11.
+
 For LND, replace the CLN selector/path with the following values. Copy or
 provision the certificate and least-privilege macaroon files through the
 operator's custody system; each macaroon file must be a nonsymlink regular

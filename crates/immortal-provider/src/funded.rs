@@ -1,5 +1,6 @@
 use crate::{
     bitcoind::RpcRequestId,
+    boltz::{BoltzApi, serve_boltz},
     config::FundedProviderConfig,
     funded_mode::{FundedMode, FundedModePolicy, signer_from_environment},
     health::{ProviderHealth, serve_health},
@@ -25,6 +26,7 @@ enum FundedError {
     Wallet(String),
     Health(String),
     Watchtower(String),
+    Boltz(String),
     Shutdown,
 }
 
@@ -43,6 +45,7 @@ impl fmt::Display for FundedError {
             Self::Wallet(error) => write!(formatter, "provider wallet startup failed: {error}"),
             Self::Health(error) => write!(formatter, "provider health server failed: {error}"),
             Self::Watchtower(error) => write!(formatter, "provider watchtower failed: {error}"),
+            Self::Boltz(error) => write!(formatter, "provider Boltz API failed: {error}"),
             Self::Shutdown => formatter.write_str("provider shutdown signal failed"),
         }
     }
@@ -112,10 +115,21 @@ async fn run_async() -> Result<(), FundedError> {
     let watch_store = ProviderStore::connect_verified(config.database_url())
         .await
         .map_err(|error| FundedError::Database(error.to_string()))?;
+    let boltz_store = if config.boltz.is_some() {
+        Some(
+            ProviderStore::connect_verified(config.database_url())
+                .await
+                .map_err(|error| FundedError::Database(error.to_string()))?,
+        )
+    } else {
+        None
+    };
     let relay_url = config.relay_url.clone();
     let mode_bitcoind = config.bitcoind.clone();
     let watch_bitcoind = config.bitcoind.clone();
     let mode_lightning = config.lightning.clone();
+    let boltz_bitcoind = config.bitcoind.clone();
+    let boltz_lightning = config.lightning.clone();
     let network = config.network;
     let health_bind = config.health_bind;
     let alert_endpoint = config.alert_endpoint.clone();
@@ -124,6 +138,8 @@ async fn run_async() -> Result<(), FundedError> {
     let minimum_confirmations = config.minimum_confirmations;
     let reorg_safety_blocks = config.reorg_safety_blocks;
     let pricing = config.pricing;
+    let boltz_pricing = pricing.clone();
+    let boltz_config = config.boltz;
     let wallet = config.wallet;
     let mode = FundedMode::new(
         tokio::runtime::Handle::current(),
@@ -153,7 +169,30 @@ async fn run_async() -> Result<(), FundedError> {
     let (shutdown_sender, shutdown_receiver) = watch::channel(false);
     let mut health_task =
         tokio::spawn(serve_health(health_bind, health, shutdown_receiver.clone()));
-    let mut watchtower_task = tokio::spawn(watchtower.run(shutdown_receiver));
+    let mut watchtower_task = tokio::spawn(watchtower.run(shutdown_receiver.clone()));
+    let mut boltz_task = match (boltz_config, boltz_store) {
+        (Some(boltz_config), Some(boltz_store)) => {
+            let api = BoltzApi::new(
+                boltz_store,
+                boltz_bitcoind,
+                boltz_lightning,
+                boltz_pricing,
+                network,
+                boltz_config.allowed_origin,
+            );
+            Some(tokio::spawn(serve_boltz(
+                boltz_config.bind,
+                api,
+                shutdown_receiver,
+            )))
+        }
+        (None, None) => None,
+        _ => {
+            return Err(FundedError::Boltz(
+                "listener configuration was incomplete".to_owned(),
+            ));
+        }
+    };
     let (relay_sender, mut relay_receiver) = oneshot::channel();
     let _relay_thread = thread::Builder::new()
         .name("immortal-provider-relay".to_owned())
@@ -195,12 +234,42 @@ async fn run_async() -> Result<(), FundedError> {
                 Err(_) => Err(FundedError::Shutdown),
             };
         }
+        result = wait_for_boltz_failure(&mut boltz_task) => {
+            return match result {
+                Ok(Ok(())) => Err(FundedError::Boltz("listener stopped before shutdown".to_owned())),
+                Ok(Err(error)) => Err(FundedError::Boltz(error.to_string())),
+                Err(_) => Err(FundedError::Boltz("listener task failed".to_owned())),
+            };
+        }
     }
     shutdown_sender
         .send(true)
         .map_err(|_| FundedError::Shutdown)?;
     await_shutdown(health_task, "health").await?;
-    await_shutdown(watchtower_task, "watchtower").await
+    await_shutdown(watchtower_task, "watchtower").await?;
+    if let Some(task) = boltz_task {
+        await_boltz_shutdown(task).await?;
+    }
+    Ok(())
+}
+
+async fn wait_for_boltz_failure(
+    task: &mut Option<tokio::task::JoinHandle<Result<(), crate::boltz::BoltzServerError>>>,
+) -> Result<Result<(), crate::boltz::BoltzServerError>, tokio::task::JoinError> {
+    match task {
+        Some(task) => task.await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn await_boltz_shutdown(
+    task: tokio::task::JoinHandle<Result<(), crate::boltz::BoltzServerError>>,
+) -> Result<(), FundedError> {
+    match task.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(FundedError::Boltz(error.to_string())),
+        Err(_) => Err(FundedError::Boltz("listener task failed".to_owned())),
+    }
 }
 
 async fn verify_bitcoind(config: &FundedProviderConfig) -> Result<(), FundedError> {

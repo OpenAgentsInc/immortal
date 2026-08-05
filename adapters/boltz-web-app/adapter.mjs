@@ -104,7 +104,8 @@ const validateApproval = (binding, approval) => {
         !validLowerHex32(approval.requesterContractEventId) ||
         !validLowerHex32(approval.providerContractEventId) ||
         approval.requesterContractEventId === approval.providerContractEventId ||
-        !validLowerHex32(approval.exitPackageSha256)
+        !validLowerHex32(approval.exitPackageSha256) ||
+        !["presigned", "wallet_sign"].includes(approval.exitPackageMode)
     ) {
         throw failure("bilateral_contract_approval_mismatch");
     }

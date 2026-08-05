@@ -21,6 +21,8 @@ const PRICING_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/nipmkt/sw
 const COOPERATIVE_RUNTIME_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json");
 const LND_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/provider/lnd-rest-v1.json");
+const BOLTZ_API_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/nipmkt/boltz-provider-api-v1.json");
 
 #[test]
 fn provider_contract_is_canonical_byte_stable_and_matches_export() {
@@ -62,6 +64,10 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
             COOPERATIVE_RUNTIME_FIXTURE,
         ),
         ("tests/fixtures/provider/lnd-rest-v1.json", LND_FIXTURE),
+        (
+            "tests/fixtures/nipmkt/boltz-provider-api-v1.json",
+            BOLTZ_API_FIXTURE,
+        ),
     ] {
         let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();
         assert_eq!(entry["bytes"], bytes.len());
@@ -80,6 +86,7 @@ fn provider_contract_exports_closed_nonzero_runtime_limits() {
     assert_eq!(
         limits.keys().map(String::as_str).collect::<Vec<_>>(),
         [
+            "boltz_compatibility",
             "health",
             "quote",
             "rail_rpc",
@@ -222,6 +229,27 @@ fn provider_contract_distinguishes_required_and_optional_environment() {
         .unwrap();
     assert_eq!(database["required_in_modes"], json!(["funded"]));
     assert!(database.get("optional_in_modes").is_none());
+
+    for name in [
+        "IMMORTAL_PROVIDER_BOLTZ_BIND",
+        "IMMORTAL_PROVIDER_BOLTZ_CONFORMANCE_SHA256",
+        "IMMORTAL_PROVIDER_BOLTZ_ALLOWED_ORIGIN",
+    ] {
+        let variable = variables
+            .iter()
+            .find(|variable| variable["name"] == name)
+            .unwrap();
+        assert_eq!(variable["optional_in_modes"], json!(["funded"]));
+        assert_eq!(variable["defaulted"], false);
+    }
+    assert_eq!(
+        contract["operations"]["boltz_compatibility"]["dependent_call_emulated_routes"],
+        19
+    );
+    assert_eq!(
+        contract["operations"]["boltz_compatibility"]["requester_exit_package_modes"],
+        json!(["presigned", "wallet_sign"])
+    );
 }
 
 #[test]

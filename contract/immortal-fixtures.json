@@ -271,15 +271,21 @@
     },
     {
       "path": "tests/fixtures/nipmkt/boltz-client-adapters-v1.json",
-      "sha256": "9aa40d9a04b13e621e80bfcc60707e291e0736ddca4a41681ba5b63e1aca3f38",
-      "bytes": 5404,
+      "sha256": "d2283867e09dfe17b5a78b074a7551186ec3354873845cccc3dd354433a1d3fc",
+      "bytes": 5677,
       "scope": "client"
     },
     {
       "path": "tests/fixtures/nipmkt/boltz-facade-v2.json",
-      "sha256": "18283f6d1e14505b0b7b981f459d275c9d2020ba62bc72850647488d416d909c",
-      "bytes": 13056,
+      "sha256": "0b96c0eff5da85d432f16d6c2598d958bfa3166267a2f9b101b6b6c598afb283",
+      "bytes": 13201,
       "scope": "relay_and_client"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/boltz-provider-api-v1.json",
+      "sha256": "2cb8e422dc41f786cd60058ecd5acd8da48d3de65edaa65cfb2487a92ab1997d",
+      "bytes": 5758,
+      "scope": "provider"
     },
     {
       "path": "tests/fixtures/nipmkt/client-only-cases.json",

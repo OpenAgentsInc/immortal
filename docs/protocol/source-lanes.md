@@ -771,9 +771,12 @@ wallet authority.
 Inventory correction:
 `openagents.mkt-swp.boltz-released-client.v2` distinguishes the pinned
 backend's 53 registered v2 routes from the 19 route shapes invoked by the
-adapted Bitcoin/Lightning Go and web profile. The current results are **0/53
-endpoint routes emulated** and **0/19 dependent calls emulated**. A relay
-redirect counts toward neither denominator. Legacy `/swapstatus` and
+adapted Bitcoin/Lightning Go and web profile. The provider implementation and
+external process replay establish **17/53 endpoint routes emulated (32.08%)**
+and **19/19 dependent calls emulated (100%)**. The provider routes account for
+17 registered backend endpoints; finalize and WebSocket complete the dependent
+union without entering the 53-route REST denominator. A relay redirect counts
+toward neither denominator. Legacy `/swapstatus` and
 `/streamswapstatus`, generic node inventory, reverse-expiry, invoice-amount,
 and cooperative claim/refund calls are not part of the released profile.
 
@@ -789,16 +792,22 @@ The adapted upstream builds must integrate the checked-in seams at those call
 sites and pass the 19-call process gate before #18 replacement scenarios; #19
 still owns deployment evidence.
 
-The first adapter packet records clean-room CC0 Go and browser/Node seams in
+The adapter packet records clean-room CC0 Go and browser/Node seams in
 `adapters/` rather than copying either pinned client. Its fixture pins the
 inspected upstream Git blobs and proves that the 13-call Go and 15-call web
 subsets have the same 19-call union as the facade ledger. Both gates make the
 one-shot payment path unrepresentable: raw bytes are prepared, bound into two
 locally verified Contract events, paired with a persisted script-path exit,
-and only then passed unchanged to broadcast. This changes no source-lane
-precedence, kind allocation, endpoint denominator, or emulation count. The
-external provider listener and actual process replay remain the next #15
-adoption evidence.
+and only then passed unchanged to broadcast. The subsequent provider adoption
+keeps that boundary: compatibility creation names an existing signed native
+session, finalization reads equal bilateral Contracts, broadcast accepts only
+the committed funding transaction or the exact reverse script-path claim, and
+released-secret lookup derives from the public claim transaction. The listener
+requires an exact corpus digest, private or loopback bind, and exact browser
+origin; it is absent by default and never enters NIP-11. The funded smoke runs
+both adapter processes over the 19-call union. This changes no source-lane
+precedence or kind allocation and is the #15 adoption decision; #19 retains the
+public replacement gate.
 
 ## M12 LND provider-rail decision (2026-08-05)
 

@@ -5644,7 +5644,7 @@ fn require_json_u64(body: &Map<String, Value>, name: &str, expected: u64) -> Res
     }
 }
 
-fn parse_unique_json(content: &str, subject: &str) -> Result<Value, String> {
+pub fn parse_unique_json(content: &str, subject: &str) -> Result<Value, String> {
     let mut deserializer = serde_json::Deserializer::from_str(content);
     let value = UniqueJsonValue::deserialize(&mut deserializer)
         .map_err(|error| format!("{subject} is invalid JSON: {error}"))?;

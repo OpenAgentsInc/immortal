@@ -62,6 +62,8 @@
     "provider_contract_required": true,
     "exact_funding_binding_required": true,
     "persisted_script_path_exit_required": true,
+    "exit_package_mode_returned_with_digest": true,
+    "allowed_exit_package_modes": ["presigned", "wallet_sign"],
     "cooperative_endpoints_allowed": false,
     "one_shot_prepare_and_broadcast_allowed": false,
     "maximum_raw_transaction_bytes": 1000000
@@ -154,13 +156,16 @@
     "approval_finalize_path_mismatch",
     "approval_transaction_digest_or_output_mismatch",
     "requester_or_provider_contract_missing",
+    "approval_exit_package_mode_missing_or_invalid",
     "script_path_exit_not_persisted",
     "prepared_transaction_changed_before_broadcast"
   ],
   "coverage": {
     "adapter_source_and_unit_gate": true,
-    "provider_listener_process_gate": false,
-    "dependent_call_emulated_routes": 0,
-    "dependent_call_route_denominator": 19
+    "provider_listener_process_gate": true,
+    "dependent_call_emulated_routes": 19,
+    "dependent_call_route_denominator": 19,
+    "dependent_call_coverage_percent": "100.00",
+    "process_gate": "scripts/test-provider-funded.sh"
   }
 }

@@ -23,6 +23,27 @@ const COOPERATIVE_RUNTIME_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json");
 const LND_FIXTURE_PATH: &str = "tests/fixtures/provider/lnd-rest-v1.json";
 const LND_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/provider/lnd-rest-v1.json");
+const BOLTZ_API_FIXTURE_PATH: &str = "tests/fixtures/nipmkt/boltz-provider-api-v1.json";
+const BOLTZ_API_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/nipmkt/boltz-provider-api-v1.json");
+pub(crate) const BOLTZ_CONFIGURATION_SCHEMA: &str = concat!(
+    "openagents.mkt-swp.boltz-provider-api.config.v1\n",
+    "activation=exact_fixture_digest_private_bind_and_exact_browser_origin\n",
+    "native_session=existing_signed_records_only\n",
+    "submarine_finalize=bilateral_contract_before_broadcast\n",
+    "broadcast=session_bound\n",
+    "preimage=public_claim_transaction_only\n",
+    "nip11_advertisement=never\n",
+);
+
+pub fn boltz_provider_conformance_sha256() -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"openagents.mkt-swp.boltz-provider-api.conformance.v1\0");
+    digest.update(BOLTZ_API_FIXTURE);
+    digest.update(b"\0");
+    digest.update(BOLTZ_CONFIGURATION_SCHEMA.as_bytes());
+    lower_hex(&digest.finalize())
+}
 const NIP_MANIFEST: &str = include_str!("../../../nips/manifest.json");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,6 +259,23 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 "network_scope":"private_or_loopback",
                 "public_bind_allowed":false
             },
+            "boltz_compatibility":{
+                "enabled_by_default":false,
+                "required_mode":"funded",
+                "activation":"exact_conformance_digest_private_bind_and_exact_browser_origin",
+                "mapping_revision":immortal_core::boltz_compat::BOLTZ_MAPPING_REVISION,
+                "provider_process":true,
+                "signed_native_session_source":true,
+                "session_bound_broadcast":true,
+                "relay_body_access":false,
+                "nip11_advertised":false,
+                "endpoint_surface_emulated_routes":17,
+                "endpoint_surface_route_denominator":53,
+                "dependent_call_emulated_routes":19,
+                "dependent_call_route_denominator":19,
+                "requester_exit_package_modes":["presigned","wallet_sign"],
+                "conformance_sha256":boltz_provider_conformance_sha256()
+            },
             "alerts":{
                 "transport":"plaintext_http",
                 "network_scope":"private_numeric_or_loopback",
@@ -288,7 +326,8 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 fixture_entry(FUNDED_SMOKE_FIXTURE_PATH, FUNDED_SMOKE_FIXTURE),
                 fixture_entry(PRICING_FIXTURE_PATH, PRICING_FIXTURE),
                 fixture_entry(COOPERATIVE_RUNTIME_FIXTURE_PATH, COOPERATIVE_RUNTIME_FIXTURE),
-                fixture_entry(LND_FIXTURE_PATH, LND_FIXTURE)
+                fixture_entry(LND_FIXTURE_PATH, LND_FIXTURE),
+                fixture_entry(BOLTZ_API_FIXTURE_PATH, BOLTZ_API_FIXTURE)
             ]
         },
         "relay_contract_affected":false,
@@ -359,6 +398,16 @@ fn limits_contract() -> Value {
             "request_bytes":crate::health::MAX_HTTP_REQUEST_BYTES,
             "alert_response_bytes":crate::health::MAX_ALERT_RESPONSE_BYTES
         },
+        "boltz_compatibility":{
+            "connections":crate::boltz::MAX_CONNECTIONS,
+            "requests_per_minute_per_ip":crate::boltz::MAX_REQUESTS_PER_MINUTE,
+            "http_head_bytes":crate::boltz::MAX_HTTP_HEAD_BYTES,
+            "json_body_bytes":crate::boltz::MAX_JSON_BODY_BYTES,
+            "raw_transaction_bytes":crate::boltz::MAX_RAW_TRANSACTION_BYTES,
+            "status_ids":crate::boltz::MAX_STATUS_IDS,
+            "websocket_subscriptions":crate::boltz::MAX_WS_SUBSCRIPTIONS,
+            "websocket_frame_bytes":crate::boltz::MAX_WS_FRAME_BYTES
+        },
         "quote":{
             "rail_sync_attempts":crate::funded_mode::QUOTE_RAIL_SYNC_ATTEMPTS,
             "rail_sync_delay_milliseconds":crate::funded_mode::QUOTE_RAIL_SYNC_DELAY.as_millis(),
@@ -416,6 +465,16 @@ fn limits_contract() -> Value {
             "lease_seconds":30
         },
         "health":{"connections":16,"request_bytes":4096,"alert_response_bytes":65536},
+        "boltz_compatibility":{
+            "connections":64,
+            "requests_per_minute_per_ip":120,
+            "http_head_bytes":16384,
+            "json_body_bytes":2000128,
+            "raw_transaction_bytes":1000000,
+            "status_ids":64,
+            "websocket_subscriptions":64,
+            "websocket_frame_bytes":16384
+        },
         "quote":{
             "rail_sync_attempts":40,
             "rail_sync_delay_milliseconds":250,
@@ -576,6 +635,7 @@ fn validate_limits(value: &Value) -> Result<(), ProviderContractError> {
         "store",
         "watchtower",
         "health",
+        "boltz_compatibility",
         "quote",
     ]);
     if limits.keys().map(String::as_str).collect::<BTreeSet<_>>() != expected_sections
@@ -970,6 +1030,33 @@ fn environment_contract() -> Value {
             &["funded"],
             0,
             100000
+        ),
+        optional_env_string(
+            "IMMORTAL_PROVIDER_BOLTZ_BIND",
+            &["funded"],
+            1,
+            128,
+            false,
+            Some("private_or_loopback_socket_address_required_with_boltz_profile"),
+            false
+        ),
+        optional_env_string(
+            "IMMORTAL_PROVIDER_BOLTZ_CONFORMANCE_SHA256",
+            &["funded"],
+            64,
+            64,
+            false,
+            Some("exact_compiled_lowercase_sha256_required_with_boltz_profile"),
+            false
+        ),
+        optional_env_string(
+            "IMMORTAL_PROVIDER_BOLTZ_ALLOWED_ORIGIN",
+            &["funded"],
+            1,
+            2048,
+            false,
+            Some("single_exact_http_or_https_origin_required_with_boltz_profile"),
+            false
         )
     ])
 }

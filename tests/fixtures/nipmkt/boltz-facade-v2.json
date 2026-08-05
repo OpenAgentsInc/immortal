@@ -293,10 +293,13 @@
   ],
   "coverage": {
     "backend_v2_route_denominator": 53,
-    "endpoint_surface_emulated_routes": 0,
+    "endpoint_surface_emulated_routes": 17,
+    "endpoint_surface_coverage_percent": "32.08",
     "dependent_call_route_denominator": 19,
-    "dependent_call_emulated_routes": 0,
+    "dependent_call_emulated_routes": 19,
+    "dependent_call_coverage_percent": "100.00",
     "relay_redirect_routes_are_not_emulation": true,
-    "dependent_call_coverage_claim": "0/19 until the external provider process gate passes"
+    "provider_listener_process_gate": true,
+    "dependent_call_coverage_claim": "19/19 against the external immortal-provider process"
   }
 }

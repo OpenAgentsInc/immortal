@@ -375,25 +375,24 @@ fixtures. Its disposable three-journey funded gate passed locally on
 packets follow the dependency table and subledger; #19 still owns Debian and
 deployment evidence.
 
-The relay-side #15 compatibility handoff is implemented off by default after
-the workspace/provider packets: exact-digest activation, safe external-provider
-`307` routing, sensitive-body non-read proof, and the submarine finalize seam.
-It is not endpoint emulation. The corrected inventory records **0/53 backend
-routes emulated** and, separately, **0/19 released-profile dependent calls
-emulated**. #15 remains incomplete until the funded provider serves those 19
-route shapes and the adapted Go/web process gate reaches 19/19. Those builds
-must integrate the checked-in pre-broadcast seam, enforce script-path mode,
-suppress stock chain/cooperative calls outside the profile, and connect
-WebSockets directly to the provider. #18 replacement scenarios wait for that
-gate; relay handoff custody/failure cases may proceed independently.
+The #15 compatibility packet now includes both halves: the relay's
+off-by-default exact-digest `307` handoff and the funded provider's independent,
+off-by-default HTTP/WebSocket listener. The relay still reads no sensitive body
+and a redirect is not endpoint emulation. The provider projects signed native
+sessions, requires bilateral Contracts for finalization and session-bound
+broadcast, exposes released secrets only from public claim transactions, and
+never advertises the surface in NIP-11. The measured results are **17/53 backend
+routes emulated (32.08%)** and **19/19 released-profile dependent calls
+emulated (100%)**. The adapted Go/web processes pass that union in the funded
+smoke with script-path mode and direct provider WebSockets. #18 may consume this
+local capability; #19 still owns deployment replacement evidence.
 
-The fixture-first adapter source packet now supplies dependency-free Go and
-browser/Node gates for that exact pre-broadcast sequence. Their static/unit
-gate proves the 13-call and 15-call subsets, exact 19-call union, bilateral
-Contract funding binding, persisted script-path exit, unchanged-byte
-broadcast, and absence of the stock one-shot paths. It does not implement the
-provider listener, so the measured results remain 0/53 and 0/19 until the
-subsequent provider/process packet.
+The fixture-first adapter packet supplies dependency-free Go and browser/Node
+gates for that exact pre-broadcast sequence. Its static/unit gate proves the
+13-call and 15-call subsets, exact 19-call union, bilateral Contract funding
+binding, persisted script-path exit, unchanged-byte broadcast, and absence of
+the stock one-shot paths. The funded smoke runs both adapted clients against
+the provider listener before accepting its rail evidence.
 
 ### M12 provider-runtime subledger (2026-08-04)
 

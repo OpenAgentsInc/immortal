@@ -27,6 +27,33 @@ authoring `requester_lock_verified`, and the provider must broadcast those
 same bytes. Each journey finishes only after the client engine accepts the
 provider's signer-local terminal Close (`completed` or `refunded`).
 
+After all three native journeys, the harness publishes the provider's
+compatibility listener through a random host-loopback port and runs the
+checked-in adapted Go and browser/Node processes against the same daemon and
+signed sessions. Their 13-call and 15-call subsets cover the exact 19-call
+union. The submarine adapter replays prepare, bilateral finalize with its
+persisted script-path exit, and unchanged-byte idempotent broadcast; the
+reverse, status, released-secret, transaction, rail-read, and direct WebSocket
+routes are also exercised. Neither client process mounts provider credentials,
+wallet state, or Postgres.
+
+**Compatibility process passed locally.** On 2026-08-05 on macOS 26.4
+arm64, the adapted Go client executed and passed its 13-call subset, and the
+adapted browser/Node client executed and passed its 15-call subset with zero
+skips. The fixture-pinned union was 19/19 dependent calls. The same run then
+reported `test-provider-funded: submarine, reverse, and noncooperative refund
+passed`. The submarine session used a `wallet_sign` exit package: both clients
+matched its mode and SHA-256 to their persisted snapshot before broadcast, and
+the provider returned that exact mode without implying a keyless `presigned`
+package. #12's pre-signed doomsday cases remain separate coverage.
+
+For the disposable shared Bitcoin/provider network namespace, the script reads
+the runtime private IPv4 address after startup and configures the listener on
+that numeric private address. Docker publishes port 19093 only through a
+random host-loopback port. This preserves the provider's private-or-loopback
+bind law while making the process endpoint reachable through container port
+translation.
+
 The funded journey process succeeding is insufficient. The shell harness reads
 `tests/fixtures/provider/funded-smoke-v1.json` and independently checks the
 reported transaction IDs through bitcoind, verifies that each terminal

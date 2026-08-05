@@ -832,7 +832,7 @@
         "enabled_by_default": false,
         "activation_environment": "IMMORTAL_BOLTZ_FACADE_CONFORMANCE_SHA256",
         "provider_base_url_environment": "IMMORTAL_BOLTZ_FACADE_PROVIDER_BASE_URL",
-        "conformance_sha256": "d8d72f4914268f58c202b28590fdf0868fd352ef9f73e18fe3caf3383b6b67e0",
+        "conformance_sha256": "c58a2e3e4d1281d951521fbc9178e0e876f944b47aadfe4659e2defec33cded1",
         "handoff": "http_307_external_provider_preserve_method_and_body",
         "relay_reads_request_body": false,
         "relay_persists_session_state": false,

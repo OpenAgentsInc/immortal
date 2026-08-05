@@ -11,6 +11,8 @@ pub mod wallet;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub mod bitcoind;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
+pub mod boltz;
+#[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub mod cln;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub mod config;

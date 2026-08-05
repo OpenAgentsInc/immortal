@@ -96,9 +96,9 @@ fn released_client_handoff_fixture_replays_exact_route_classes() {
     );
     assert_eq!(fixture.route_cases.len(), 19);
     assert_eq!(fixture.coverage.backend_v2_route_denominator, 53);
-    assert_eq!(fixture.coverage.endpoint_surface_emulated_routes, 0);
+    assert_eq!(fixture.coverage.endpoint_surface_emulated_routes, 17);
     assert_eq!(fixture.coverage.dependent_call_route_denominator, 19);
-    assert_eq!(fixture.coverage.dependent_call_emulated_routes, 0);
+    assert_eq!(fixture.coverage.dependent_call_emulated_routes, 19);
     assert!(fixture.coverage.relay_redirect_routes_are_not_emulation);
     for case in fixture.route_cases {
         assert!(
@@ -224,8 +224,8 @@ fn adapted_client_fixture_pins_routes_and_removes_stock_funding_paths() {
     );
 
     assert!(adapters.coverage.adapter_source_and_unit_gate);
-    assert!(!adapters.coverage.provider_listener_process_gate);
-    assert_eq!(adapters.coverage.dependent_call_emulated_routes, 0);
+    assert!(adapters.coverage.provider_listener_process_gate);
+    assert_eq!(adapters.coverage.dependent_call_emulated_routes, 19);
     assert_eq!(adapters.coverage.dependent_call_route_denominator, 19);
 }
 

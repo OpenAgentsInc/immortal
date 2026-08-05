@@ -198,6 +198,13 @@ func TestFundingGateNeverBroadcastsWithoutExactBilateralScriptApproval(t *testin
 			err: ErrScriptPathExitNotPersisted,
 		},
 		{
+			name: "exit package mode",
+			mutate: func(approval *BilateralApproval) {
+				approval.ExitPackageMode = "external_signer"
+			},
+			err: ErrBilateralApprovalMismatch,
+		},
+		{
 			name: "cooperative exit",
 			mutate: func(approval *BilateralApproval) {
 				approval.ScriptPathOnly = false
@@ -259,6 +266,7 @@ func validApproval(binding FundingBinding) (BilateralApproval, error) {
 		RequesterContractEventID: requesterContractID,
 		ProviderContractEventID:  providerContractID,
 		ExitPackageSHA256:        exitPackageDigest,
+		ExitPackageMode:          "wallet_sign",
 		ExitPackagePersisted:     true,
 		ScriptPathOnly:           true,
 	}, nil
