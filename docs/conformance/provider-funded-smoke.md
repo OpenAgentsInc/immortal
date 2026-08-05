@@ -363,6 +363,13 @@ restored before signed Close replay. Each case used a fresh disposable
 topology, and the run-specific Compose projects and mode-0700 temporary roots
 were absent after completion.
 
+The rebased requester-API and Status-hardening tree repeated the exact 20-case
+run at commit `433bfcb478e84ed9672bc3647dd680ba6a3f7dbe`. Its bounded receipt is
+`docs/conformance/records/2026-08-05-funded-matrix-macos-dev.json`; the receipt
+retains case names, manifest and console-log digests, tool versions, and the
+zero-container cleanup result. The console log and per-case runtime artifacts
+were not retained. The receipt labels this as a development-host run.
+
 This is local process evidence. It does not establish a clean macOS or Debian
 run, full funded execution through the reusable three-node/two-provider
 topology, multi-provider Quote comparison, or chain-to-chain support.

@@ -1,0 +1,57 @@
+{
+  "schema": "openagents.immortal.lab-funded-matrix-run.v1",
+  "source_commit": "433bfcb478e84ed9672bc3647dd680ba6a3f7dbe",
+  "command": "scripts/test-provider-funded-matrix.sh --all",
+  "started_at": "2026-08-05T07:36:24-05:00",
+  "finished_at": "2026-08-05T08:49:16-05:00",
+  "result": "passed",
+  "scope": "development-host-fresh-disposable-topology",
+  "clean_host": false,
+  "platform": {
+    "operating_system": "macOS 26.4 (25E246)",
+    "architecture": "arm64",
+    "docker_engine": "29.4.3",
+    "docker_compose": "5.1.4"
+  },
+  "manifests": {
+    "funded_matrix_sha256": "71dc0b09fd2ca43d4c0c70bc70768b37111de688d9699a24cf0313a6c53e9573",
+    "funded_checkpoints_sha256": "5de6c6fc8e3c7b414049b02f74215a28877c567c0c7eb9bcd1df2c829830ced0"
+  },
+  "case_count": 20,
+  "cases": [
+    "restart-submarine-funding_authorized",
+    "restart-submarine-funding_execution_ready",
+    "restart-submarine-funding_effect_recorded",
+    "restart-submarine-completed",
+    "restart-reverse-funding_authorized",
+    "restart-reverse-funding_execution_ready",
+    "restart-reverse-funding_effect_recorded",
+    "restart-reverse-claim_broadcast_ready",
+    "restart-reverse-claim_broadcast_recorded",
+    "restart-reverse-completed",
+    "restart-reverse_refund-funding_authorized",
+    "restart-reverse_refund-funding_execution_ready",
+    "restart-reverse_refund-funding_effect_recorded",
+    "restart-reverse_refund-refunded",
+    "injection-stale-quote",
+    "injection-duplicate-message",
+    "injection-conflicting-message",
+    "injection-secret-leak",
+    "injection-relay-loss",
+    "injection-provider-crash"
+  ],
+  "fresh_disposable_topology_per_case": true,
+  "cleanup": {
+    "matching_containers_after_run": 0,
+    "runtime_artifacts_retained": false
+  },
+  "console_log": {
+    "sha256": "aa0f5bca71884b3ab3bc488af13628cd6620bf2a996afdd355c044e957b5f8b1",
+    "retained": false
+  },
+  "limitations": [
+    "This is a development-host run and does not satisfy the clean macOS requirement.",
+    "The reusable three-CLN, two-provider, two-relay topology is recorded by a separate process gate.",
+    "Chain-to-chain execution remains outside this matrix."
+  ]
+}
