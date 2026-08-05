@@ -235,6 +235,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 "lock_deadline_expired",
                 "funding_deadline_expired",
                 "claim_deadline_expired",
+                "swp_reservation_overallocated",
                 "quote_rejected"
             ],
             "provider_close_dispositions":[
@@ -771,6 +772,26 @@ fn validate_vocabulary(value: &Value) -> Result<(), ProviderContractError> {
         .map(String::as_str)
         .collect::<BTreeSet<_>>()
         != expected_keys
+    {
+        return Err(ProviderContractError::InvalidShape);
+    }
+    let expected_failure_dispositions = [
+        "invalid_hold_invoice",
+        "hold_invoice_cancelled",
+        "invalid_hold_invoice_settled",
+        "hold_invoice_settled_before_funding",
+        "lock_deadline_expired",
+        "funding_deadline_expired",
+        "claim_deadline_expired",
+        "swp_reservation_overallocated",
+        "quote_rejected",
+    ];
+    if vocabulary
+        .get("failure_dispositions")
+        .and_then(Value::as_array)
+        .map(|values| values.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .as_deref()
+        != Some(expected_failure_dispositions.as_slice())
     {
         return Err(ProviderContractError::InvalidShape);
     }

@@ -51,6 +51,7 @@ enum ProofPlan {
         outcome: &'static str,
     },
     TopologyCancellation,
+    DoubleReservation,
     CustodyRefusal {
         member: &'static str,
     },
@@ -265,6 +266,10 @@ fn execute_proof(selected: &SelectedCase) -> Result<Value, String> {
             }
             topology_proof(&result)
         }
+        ProofPlan::DoubleReservation => {
+            let proof = funded::run_adversarial_double_reservation()?;
+            double_reservation_proof(&proof)
+        }
         ProofPlan::CustodyRefusal { member } => prove_custody_refusal(member),
         ProofPlan::RbfConflict => {
             let result = funded::run_adversarial_funded_journey(
@@ -406,6 +411,7 @@ fn journey_proof(
             injection,
             "relay_loss"
                 | "provider_crash"
+                | "wallet_crash"
                 | "provider_noncooperative"
                 | "funding_reorg"
                 | "claim_reorg"
@@ -419,6 +425,7 @@ fn journey_proof(
                 "provider_crash" => {
                     format!("provider-{}", if provider_index == 0 { "a" } else { "b" })
                 }
+                "wallet_crash" => "wallet-driver".to_owned(),
                 "provider_noncooperative" => {
                     format!("provider-{}", if provider_index == 0 { "a" } else { "b" })
                 }
@@ -426,7 +433,7 @@ fn journey_proof(
                 _ => return Err("external process injection is unsupported".to_owned()),
             };
             let expected_transition = match injection {
-                "relay_loss" | "provider_crash" => "process_replaced_and_ready",
+                "relay_loss" | "provider_crash" | "wallet_crash" => "process_replaced_and_ready",
                 "provider_noncooperative" => "process_stopped",
                 "funding_reorg" => "funding_reorg_waited_and_resumed",
                 "claim_reorg" => "claim_watch_reorged_and_reconfirmed",
@@ -607,6 +614,63 @@ fn topology_proof(result: &Value) -> Result<Value, String> {
     }))
 }
 
+fn double_reservation_proof(proof: &Value) -> Result<Value, String> {
+    provider_support::reject_custody_material(proof)
+        .map_err(|error| format!("double-reservation proof contains custody material: {error}"))?;
+    if proof.get("proof_class").and_then(Value::as_str) != Some("live_double_reservation")
+        || proof
+            .pointer("/refused/expected_code")
+            .and_then(Value::as_str)
+            != Some("swp_reservation_overallocated")
+        || proof.pointer("/refused/provider_wire_refusal") != Some(&Value::Null)
+        || proof.pointer("/refused/surface").and_then(Value::as_str)
+            != Some("lab_process_audit_required")
+        || proof
+            .pointer("/checks/daemon_backed_hard_reservation_effects")
+            .and_then(Value::as_u64)
+            != Some(1)
+        || proof
+            .pointer("/checks/same_provider")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || proof
+            .pointer("/checks/same_capacity_bucket")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || proof
+            .pointer("/checks/overlapping_signed_sessions")
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
+        return Err("double-reservation process proof has another outcome".to_owned());
+    }
+    for (pointer, label) in [
+        ("/provider_pubkey", "double-reservation provider pubkey"),
+        ("/daemon_reservation_id", "daemon-backed reservation ID"),
+        ("/active/session_id", "active reservation session ID"),
+        ("/active/rfq_id", "active reservation RFQ ID"),
+        ("/active/quote_id", "active reservation Quote ID"),
+        ("/active/reservation_id", "active reservation ID"),
+        ("/refused/session_id", "refused reservation session ID"),
+        ("/refused/rfq_id", "refused reservation RFQ ID"),
+    ] {
+        required_hash(proof, pointer, label)?;
+    }
+    let bucket = proof
+        .get("capacity_bucket_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "double-reservation proof has no capacity bucket".to_owned())?;
+    if bucket.is_empty()
+        || bucket.len() > 64
+        || !bucket
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err("double-reservation capacity bucket is invalid".to_owned());
+    }
+    Ok(proof.clone())
+}
+
 fn required_hash(value: &Value, pointer: &str, label: &str) -> Result<String, String> {
     let hash = value
         .pointer(pointer)
@@ -723,12 +787,13 @@ fn proof_plan(case_id: &str) -> ProofPlan {
             injection: Some("provider_crash"),
             outcome: JourneyOutcome::Claimed,
         },
-        "wallet-crash-restart" => ProofPlan::Unsupported {
-            reason: "the topology runner has no case-bound wallet process replacement proof",
+        "wallet-crash-restart" => ProofPlan::Journey {
+            provider_index: 0,
+            journey: FundedJourney::Submarine,
+            injection: Some("wallet_crash"),
+            outcome: JourneyOutcome::Claimed,
         },
-        "double-reservation" => ProofPlan::Unsupported {
-            reason: "the funded harness has no concurrent reservation driver",
-        },
+        "double-reservation" => ProofPlan::DoubleReservation,
         "status-gap" => ProofPlan::ExpectedJourneyError {
             provider_index: 0,
             journey: FundedJourney::Submarine,
@@ -924,7 +989,7 @@ mod tests {
             .keys()
             .filter(|case_id| !matches!(proof_plan(case_id), ProofPlan::Unsupported { .. }))
             .count();
-        assert_eq!(supported, 24);
+        assert_eq!(supported, 26);
         for case_id in cases.keys() {
             if let ProofPlan::Unsupported { reason } = proof_plan(case_id) {
                 assert!(
@@ -1030,6 +1095,42 @@ mod tests {
     }
 
     #[test]
+    fn double_reservation_proof_requires_one_live_effect_and_exact_refusal() {
+        let proof = json!({
+            "proof_class":"live_double_reservation",
+            "provider_pubkey":hash("1"),
+            "capacity_bucket_id":"lightning-outbound",
+            "daemon_reservation_id":hash("9"),
+            "active":{
+                "session_id":hash("2"),
+                "rfq_id":hash("3"),
+                "quote_id":hash("4"),
+                "reservation_id":hash("5"),
+            },
+            "refused":{
+                "session_id":hash("6"),
+                "rfq_id":hash("7"),
+                "expected_code":"swp_reservation_overallocated",
+                "provider_wire_refusal":null,
+                "surface":"lab_process_audit_required",
+            },
+            "checks":{
+                "same_provider":true,
+                "same_capacity_bucket":true,
+                "overlapping_signed_sessions":true,
+                "daemon_backed_hard_reservation_effects":1,
+            }
+        });
+        assert_eq!(
+            double_reservation_proof(&proof).expect("process proof should pass"),
+            proof
+        );
+        let mut changed = proof;
+        changed["checks"]["daemon_backed_hard_reservation_effects"] = json!(2);
+        assert!(double_reservation_proof(&changed).is_err());
+    }
+
+    #[test]
     fn journey_proof_binds_external_recovery_to_selected_provider() {
         let result = json!({
             "step":"submarine",
@@ -1069,7 +1170,7 @@ mod tests {
             Some(&Value::String("provider-b".to_owned()))
         );
 
-        let mut wrong_target = result;
+        let mut wrong_target = result.clone();
         wrong_target["external_control"]["evidence"]["target"] =
             Value::String("provider-a".to_owned());
         assert!(
@@ -1081,6 +1182,23 @@ mod tests {
                 JourneyOutcome::Claimed,
             )
             .is_err()
+        );
+
+        let mut wallet = result;
+        wallet["external_control"]["injection"] = Value::String("wallet_crash".to_owned());
+        wallet["external_control"]["evidence"]["target"] =
+            Value::String("wallet-driver".to_owned());
+        let proof = journey_proof(
+            &wallet,
+            1,
+            FundedJourney::Submarine,
+            Some("wallet_crash"),
+            JourneyOutcome::Claimed,
+        )
+        .expect("wallet crash proof should bind the wallet driver");
+        assert_eq!(
+            proof.pointer("/external_control/evidence/target"),
+            Some(&Value::String("wallet-driver".to_owned()))
         );
     }
 

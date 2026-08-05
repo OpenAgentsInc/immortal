@@ -46,17 +46,21 @@ use crate::state::{
     BoltzAdapterApproval, BoltzAdapterBroadcast, BoltzAdapterFinalizeRequest, BoltzAdapterPrepared,
     FundedCheckpoint, FundedInjectionRequest, LabPaths, clear_boltz_adapter_controls,
     load_boltz_adapter_broadcast, load_boltz_adapter_finalize_request, load_funded_deliveries,
-    load_funded_injection_proof, load_funded_journey_checkpoint, load_funded_secret,
-    load_funded_signed_exit, load_or_create_funded_run_id, load_or_create_identity,
-    remove_funded_secret, store_boltz_adapter_approval, store_boltz_adapter_complete,
-    store_boltz_adapter_prepared, store_funded_checkpoint, store_funded_deliveries,
-    store_funded_injection, store_funded_injection_proof, store_funded_journey_checkpoint,
-    store_funded_secret, store_funded_signed_exit, store_funded_snapshot,
+    load_funded_injection, load_funded_injection_proof, load_funded_journey_checkpoint,
+    load_funded_secret, load_funded_signed_exit, load_or_create_funded_run_id,
+    load_or_create_identity, remove_funded_secret, store_boltz_adapter_approval,
+    store_boltz_adapter_complete, store_boltz_adapter_prepared, store_funded_checkpoint,
+    store_funded_deliveries, store_funded_injection, store_funded_injection_proof,
+    store_funded_journey_checkpoint, store_funded_secret, store_funded_signed_exit,
+    store_funded_snapshot,
 };
 
 const OFFERING_ID: &str = "immortal-funded-btc-lightning";
 const INPUT_AMOUNT_SAT: u64 = 100_000;
 const OUTPUT_AMOUNT_SAT: u64 = 98_400;
+const DOUBLE_RESERVATION_INPUT_AMOUNT_SAT: u64 = 1_000_000;
+const DOUBLE_RESERVATION_OUTPUT_AMOUNT_SAT: u64 = 986_790;
+const DOUBLE_RESERVATION_MAXIMUM_TOTAL_FEE_SAT: u64 = 50_000;
 const NETWORK_ID: &str = "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4";
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const JOURNEY_TIMEOUT: Duration = Duration::from_secs(180);
@@ -181,6 +185,7 @@ enum HarnessInjection {
     SecretLeak,
     RelayLoss,
     ProviderCrash,
+    WalletCrash,
     ProviderNoncooperative,
     FundingReorg,
     ClaimReorg,
@@ -199,6 +204,7 @@ impl HarnessInjection {
             "secret_leak" => Ok(Self::SecretLeak),
             "relay_loss" => Ok(Self::RelayLoss),
             "provider_crash" => Ok(Self::ProviderCrash),
+            "wallet_crash" => Ok(Self::WalletCrash),
             "provider_noncooperative" => Ok(Self::ProviderNoncooperative),
             "funding_reorg" => Ok(Self::FundingReorg),
             "claim_reorg" => Ok(Self::ClaimReorg),
@@ -218,6 +224,7 @@ impl HarnessInjection {
             Self::SecretLeak => "secret_leak",
             Self::RelayLoss => "relay_loss",
             Self::ProviderCrash => "provider_crash",
+            Self::WalletCrash => "wallet_crash",
             Self::ProviderNoncooperative => "provider_noncooperative",
             Self::FundingReorg => "funding_reorg",
             Self::ClaimReorg => "claim_reorg",
@@ -233,6 +240,7 @@ impl HarnessInjection {
             self,
             Self::RelayLoss
                 | Self::ProviderCrash
+                | Self::WalletCrash
                 | Self::ProviderNoncooperative
                 | Self::FundingReorg
                 | Self::ClaimReorg
@@ -281,7 +289,7 @@ impl StepControl {
         let injection = injection_override.or(environment_injection);
         if injection.is_some_and(HarnessInjection::requires_external_control) && inject_at.is_none()
         {
-            return Err("relay_loss and provider_crash require IMMORTAL_LAB_INJECT_AT".to_owned());
+            return Err("external process injections require IMMORTAL_LAB_INJECT_AT".to_owned());
         }
         Ok(Self {
             paths,
@@ -350,38 +358,69 @@ impl StepControl {
                     requested_at: unix_now()?,
                 },
             )?;
-            let deadline = Instant::now() + self.injection_timeout;
-            while Instant::now() < deadline {
-                if continue_path.exists() {
-                    let acknowledgement = std::fs::read(&continue_path).map_err(|error| {
-                        format!(
-                            "could not read injection continuation {}: {error}",
-                            continue_path.display()
-                        )
-                    })?;
-                    let proof = validate_injection_acknowledgement(
-                        &acknowledgement,
-                        &self.run_id,
-                        &qualified,
-                        injection,
-                    )?;
-                    store_funded_injection_proof(&self.paths, &proof)?;
-                    std::fs::remove_file(&continue_path).map_err(|error| {
-                        format!(
-                            "could not consume injection continuation {}: {error}",
-                            continue_path.display()
-                        )
-                    })?;
-                    return Ok(true);
-                }
-                thread::sleep(Duration::from_millis(200));
-            }
-            return Err(format!(
-                "timed out waiting for injection continuation {} at {qualified}",
-                continue_path.display()
-            ));
+            self.consume_injection_acknowledgement(&qualified, injection)?;
+            return Ok(true);
         }
         Ok(false)
+    }
+
+    fn resume_interrupted_wallet_injection(&self) -> Result<(), String> {
+        if self.injection != Some(HarnessInjection::WalletCrash) {
+            return Ok(());
+        }
+        let Some(request) = load_funded_injection(&self.paths)? else {
+            return Ok(());
+        };
+        let expected_checkpoint = self
+            .inject_at
+            .as_deref()
+            .ok_or_else(|| "wallet crash recovery has no configured checkpoint".to_owned())?;
+        if request.run_id != self.run_id
+            || request.checkpoint != expected_checkpoint
+            || request.injection != HarnessInjection::WalletCrash.name()
+            || request.journey != expected_checkpoint.split(':').next().unwrap_or_default()
+        {
+            return Err("wallet crash recovery request differs from the selected case".to_owned());
+        }
+        self.consume_injection_acknowledgement(expected_checkpoint, HarnessInjection::WalletCrash)
+    }
+
+    fn consume_injection_acknowledgement(
+        &self,
+        checkpoint: &str,
+        injection: HarnessInjection,
+    ) -> Result<(), String> {
+        let continue_path = self.paths.funded_continue();
+        let deadline = Instant::now() + self.injection_timeout;
+        while Instant::now() < deadline {
+            if continue_path.exists() {
+                let acknowledgement = std::fs::read(&continue_path).map_err(|error| {
+                    format!(
+                        "could not read injection continuation {}: {error}",
+                        continue_path.display()
+                    )
+                })?;
+                let proof = validate_injection_acknowledgement(
+                    &acknowledgement,
+                    &self.run_id,
+                    checkpoint,
+                    injection,
+                )?;
+                store_funded_injection_proof(&self.paths, &proof)?;
+                std::fs::remove_file(&continue_path).map_err(|error| {
+                    format!(
+                        "could not consume injection continuation {}: {error}",
+                        continue_path.display()
+                    )
+                })?;
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        Err(format!(
+            "timed out waiting for injection continuation {} at {checkpoint}",
+            continue_path.display()
+        ))
     }
 }
 
@@ -413,7 +452,9 @@ fn validate_injection_acknowledgement(
         .and_then(Value::as_object)
         .ok_or_else(|| "injection evidence is not an object".to_owned())?;
     match injection {
-        HarnessInjection::RelayLoss | HarnessInjection::ProviderCrash => {
+        HarnessInjection::RelayLoss
+        | HarnessInjection::ProviderCrash
+        | HarnessInjection::WalletCrash => {
             validate_process_replacement_evidence(evidence)?;
         }
         HarnessInjection::ProviderNoncooperative => {
@@ -468,8 +509,10 @@ fn validate_process_replacement_evidence(evidence: &Map<String, Value>) -> Resul
         .ok_or_else(|| "process injection evidence has no transition".to_owned())?;
     let before_pid = evidence.get("before_pid").and_then(Value::as_u64);
     let after_pid = evidence.get("after_pid").and_then(Value::as_u64);
-    if !matches!(target, "relay-a" | "relay-b" | "provider-a" | "provider-b")
-        || transition != "process_replaced_and_ready"
+    if !matches!(
+        target,
+        "relay-a" | "relay-b" | "provider-a" | "provider-b" | "wallet-driver"
+    ) || transition != "process_replaced_and_ready"
         || before_pid.is_none_or(|pid| pid == 0 || pid > i32::MAX as u64)
         || after_pid.is_none_or(|pid| pid == 0 || pid > i32::MAX as u64)
         || before_pid == after_pid
@@ -1024,6 +1067,7 @@ pub fn run_adversarial_funded_journey(
     let runtime =
         Runtime::new().map_err(|error| format!("could not start lab runtime: {error}"))?;
     let environment = SmokeEnvironment::load_topology_selected(provider_index, injection)?;
+    environment.control.resume_interrupted_wallet_injection()?;
     let mut result = run_funded_journey_with_environment(&runtime, &environment, journey)?;
     if injection.is_some_and(HarnessInjection::requires_external_control) {
         let proof = load_funded_injection_proof(&environment.control.paths)?
@@ -1034,6 +1078,169 @@ pub fn run_adversarial_funded_journey(
             .insert("external_control".to_owned(), proof);
     }
     Ok(result)
+}
+
+pub fn run_adversarial_double_reservation() -> Result<Value, String> {
+    let runtime =
+        Runtime::new().map_err(|error| format!("could not start lab runtime: {error}"))?;
+    let environment = SmokeEnvironment::load_topology_selected(0, None)?;
+    verify_health(&environment.health_url)?;
+    let provider_pubkey = discover_provider(
+        &environment.relay_url,
+        &environment.requester,
+        JOURNEY_TIMEOUT,
+    )?;
+    let active_invoice = runtime
+        .block_on(
+            environment.peer_cln.invoice(
+                &cln_id("double-reservation-active-invoice")?,
+                Millisatoshi::from_satoshis(DOUBLE_RESERVATION_OUTPUT_AMOUNT_SAT)
+                    .map_err(|error| format!("double-reservation amount is invalid: {error}"))?,
+                "immortal-double-reservation-active",
+                "Immortal adversarial active reservation",
+                86_400,
+            ),
+        )
+        .map_err(|error| format!("could not create active reservation invoice: {error}"))?;
+    let refused_invoice = runtime
+        .block_on(
+            environment.peer_cln.invoice(
+                &cln_id("double-reservation-refused-invoice")?,
+                Millisatoshi::from_satoshis(DOUBLE_RESERVATION_OUTPUT_AMOUNT_SAT)
+                    .map_err(|error| format!("double-reservation amount is invalid: {error}"))?,
+                "immortal-double-reservation-refused",
+                "Immortal adversarial refused reservation",
+                86_400,
+            ),
+        )
+        .map_err(|error| format!("could not create refused reservation invoice: {error}"))?;
+    let active_requester_key = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(2, false, 20)
+                .map_err(|error| format!("double-reservation path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive double-reservation key: {error}"))?
+        .internal_key;
+    let refused_requester_key = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(2, false, 21)
+                .map_err(|error| format!("double-reservation path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive double-reservation key: {error}"))?
+        .internal_key;
+    let active_exit_destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 20)
+                .map_err(|error| format!("double-reservation exit path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive double-reservation exit: {error}"))?;
+    let refused_exit_destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 21)
+                .map_err(|error| format!("double-reservation exit path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive double-reservation exit: {error}"))?;
+    let active_input = NegotiationInput {
+        journey_name: "double_reservation_active",
+        swap_type: "submarine",
+        payment_hash: &active_invoice.payment_hash,
+        invoice: Some(&active_invoice.bolt11),
+        requester_key: active_requester_key,
+        requester_funding_input: None,
+        exit_destination_script_pubkey: &active_exit_destination.script_pubkey,
+    };
+    let active = prepare_quote_with_terms(
+        &environment,
+        &provider_pubkey,
+        active_input,
+        DOUBLE_RESERVATION_INPUT_AMOUNT_SAT,
+        DOUBLE_RESERVATION_MAXIMUM_TOTAL_FEE_SAT,
+    )?;
+    let active_rfq = active
+        .records
+        .iter()
+        .find(|event| event.kind == immortal_core::domain::MKT_RFQ_KIND)
+        .cloned()
+        .ok_or_else(|| "double-reservation active session has no RFQ".to_owned())?;
+    let active_quote = active
+        .records
+        .iter()
+        .find(|event| event.kind == MKT_QUOTE_KIND)
+        .cloned()
+        .ok_or_else(|| "double-reservation active session has no Quote".to_owned())?;
+    let active_profile = record_profile(&active_quote)?;
+    let active_reservation = active_profile
+        .get("reservation_terms")
+        .and_then(|value| value.as_object().cloned())
+        .ok_or_else(|| "double-reservation active Quote has no hard reservation".to_owned())?;
+    if !active_quote.tag_values("reservation").eq(["hard"]) {
+        return Err("double-reservation active Quote is not hard".to_owned());
+    }
+    let daemon_reservation_id = required_string(&active_reservation, "reservation_id")?.to_owned();
+    let capacity_bucket_id = required_string(&active_reservation, "capacity_bucket_id")?.to_owned();
+    if capacity_bucket_id != "lightning-outbound" {
+        return Err("double-reservation active Quote used another capacity bucket".to_owned());
+    }
+    let reserved_amount = canonical_u64(required_string(&active_reservation, "reserved_amount")?)?;
+    let committed_capacity = canonical_u64(required_string(
+        &active_reservation,
+        "handler_committed_capacity",
+    )?)?;
+    if reserved_amount != DOUBLE_RESERVATION_OUTPUT_AMOUNT_SAT
+        || committed_capacity < DOUBLE_RESERVATION_INPUT_AMOUNT_SAT
+        || committed_capacity.saturating_sub(reserved_amount) >= DOUBLE_RESERVATION_INPUT_AMOUNT_SAT
+    {
+        return Err("live provider capacity does not create one-reservation contention".to_owned());
+    }
+
+    let refused_input = NegotiationInput {
+        journey_name: "double_reservation_refused",
+        swap_type: "submarine",
+        payment_hash: &refused_invoice.payment_hash,
+        invoice: Some(&refused_invoice.bolt11),
+        requester_key: refused_requester_key,
+        requester_funding_input: None,
+        exit_destination_script_pubkey: &refused_exit_destination.script_pubkey,
+    };
+    let (refused_session_id, refused_rfq) = publish_quote_request_with_terms(
+        &environment,
+        &provider_pubkey,
+        refused_input,
+        DOUBLE_RESERVATION_INPUT_AMOUNT_SAT,
+        DOUBLE_RESERVATION_MAXIMUM_TOTAL_FEE_SAT,
+    )?;
+    thread::sleep(Duration::from_millis(750));
+    verify_health(&environment.health_url)?;
+
+    Ok(json!({
+        "proof_class":"live_double_reservation",
+        "provider_pubkey":provider_pubkey,
+        "capacity_bucket_id":capacity_bucket_id,
+        "daemon_reservation_id":daemon_reservation_id,
+        "active":{
+            "session_id":active.config.session_id,
+            "rfq_id":active_rfq.id,
+            "quote_id":active_quote.id,
+            "reservation_id":daemon_reservation_id,
+        },
+        "refused":{
+            "session_id":refused_session_id,
+            "rfq_id":refused_rfq.id,
+            "expected_code":"swp_reservation_overallocated",
+            "provider_wire_refusal":null,
+            "surface":"lab_process_audit_required",
+        },
+        "checks":{
+            "same_provider":true,
+            "same_capacity_bucket":true,
+            "overlapping_signed_sessions":true,
+            "daemon_backed_hard_reservation_effects":1,
+        }
+    }))
 }
 
 fn run_funded_journey_with_environment(
@@ -3081,6 +3288,16 @@ fn prepare_quote(
     provider_pubkey: &str,
     input: NegotiationInput<'_>,
 ) -> Result<QuotedSession, String> {
+    prepare_quote_with_terms(environment, provider_pubkey, input, INPUT_AMOUNT_SAT, 5_000)
+}
+
+fn prepare_quote_with_terms(
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    input: NegotiationInput<'_>,
+    input_amount_sat: u64,
+    maximum_total_fee_sat: u64,
+) -> Result<QuotedSession, String> {
     let session_id = digest(&format!(
         "funded-smoke:{}:{}",
         environment.control.run_id, input.journey_name
@@ -3116,7 +3333,7 @@ fn prepare_quote(
                 now,
                 &digest(&format!("rfq:{session_id}")),
                 now.saturating_add(600),
-                funded_rfq_profile(input, now)?,
+                funded_rfq_profile_with_terms(input, now, input_amount_sat, maximum_total_fee_sat)?,
             )
             .map_err(|error| format!("could not construct funded RFQ: {error}"))?,
         &environment.requester,
@@ -3160,6 +3377,52 @@ fn prepare_quote(
         journey_name: input.journey_name.to_owned(),
         control: environment.control.clone(),
     })
+}
+
+fn publish_quote_request_with_terms(
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    input: NegotiationInput<'_>,
+    input_amount_sat: u64,
+    maximum_total_fee_sat: u64,
+) -> Result<(String, Event), String> {
+    let session_id = digest(&format!(
+        "funded-smoke:{}:{}",
+        environment.control.run_id, input.journey_name
+    ));
+    let factory = SwapRecordFactory::new(SwapClientConfig {
+        session_id: session_id.clone(),
+        requester_pubkey: environment.requester.pubkey().to_owned(),
+        provider_pubkey: provider_pubkey.to_owned(),
+        offering_address: format!("39601:{provider_pubkey}:{OFFERING_ID}"),
+    })
+    .map_err(|error| format!("could not initialize reservation contender: {error}"))?;
+    let now = unix_now()?;
+    let (rfq, raw) = sign_request(
+        factory
+            .rfq(
+                now,
+                &digest(&format!("rfq:{session_id}")),
+                now.saturating_add(600),
+                funded_rfq_profile_with_terms(input, now, input_amount_sat, maximum_total_fee_sat)?,
+            )
+            .map_err(|error| format!("could not construct reservation contender RFQ: {error}"))?,
+        &environment.requester,
+    )?;
+    let mut publisher = connect(&environment.relay_url)?;
+    authenticate(
+        &mut publisher,
+        &environment.requester,
+        &environment.relay_url,
+        now,
+    )?;
+    publish_private(
+        &mut publisher,
+        &raw,
+        &environment.requester,
+        provider_pubkey,
+    )?;
+    Ok((session_id, rfq))
 }
 
 fn prepare_order(
@@ -3411,6 +3674,7 @@ impl SessionContext {
             | Some(
                 HarnessInjection::RelayLoss
                 | HarnessInjection::ProviderCrash
+                | HarnessInjection::WalletCrash
                 | HarnessInjection::FundingReorg
                 | HarnessInjection::ClaimReorg
                 | HarnessInjection::RbfConflict,
@@ -4066,7 +4330,12 @@ fn verify_local_lightning_terminal(
     Ok(format!("cln:{direction}:{payment_hash}:{expected_status}"))
 }
 
-fn funded_rfq_profile(input: NegotiationInput<'_>, now: u64) -> Result<Value, String> {
+fn funded_rfq_profile_with_terms(
+    input: NegotiationInput<'_>,
+    now: u64,
+    input_amount_sat: u64,
+    maximum_total_fee_sat: u64,
+) -> Result<Value, String> {
     let (asset_pair, leg_id, path) = match input.swap_type {
         "submarine" => (
             json!([
@@ -4098,9 +4367,9 @@ fn funded_rfq_profile(input: NegotiationInput<'_>, now: u64) -> Result<Value, St
         },
         "desired_completion_time":now.saturating_add(86_400),
         "firm_quote_required":true,
-        "input_amount":INPUT_AMOUNT_SAT.to_string(),
+        "input_amount":input_amount_sat.to_string(),
         "invoice_sha256":input.invoice.map(|invoice| lower_hex(&sha256(invoice.as_bytes()))),
-        "maximum_total_fee":"5000",
+        "maximum_total_fee":maximum_total_fee_sat.to_string(),
         "payment_hash":input.payment_hash,
         "requester_public_keys":[{
             "leg_id":leg_id,

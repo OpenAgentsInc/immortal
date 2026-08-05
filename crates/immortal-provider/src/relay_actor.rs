@@ -2,6 +2,7 @@
 
 use std::{
     collections::BTreeMap,
+    fmt,
     fs::File,
     io::{ErrorKind, Read},
     net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
@@ -57,6 +58,58 @@ pub(crate) struct DurableRecovery {
     pub has_prior_records: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QuoteDisposition {
+    Rejected,
+    ReservationOverallocated,
+}
+
+impl QuoteDisposition {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Rejected => "quote_rejected",
+            Self::ReservationOverallocated => "swp_reservation_overallocated",
+        }
+    }
+}
+
+pub(crate) struct QuoteConstructionError {
+    detail: String,
+    disposition: QuoteDisposition,
+}
+
+impl QuoteConstructionError {
+    pub(crate) fn rejected(detail: String) -> Self {
+        Self {
+            detail,
+            disposition: QuoteDisposition::Rejected,
+        }
+    }
+
+    pub(crate) fn reservation_overallocated(detail: String) -> Self {
+        Self {
+            detail,
+            disposition: QuoteDisposition::ReservationOverallocated,
+        }
+    }
+
+    pub(crate) fn disposition(&self) -> QuoteDisposition {
+        self.disposition
+    }
+}
+
+impl From<String> for QuoteConstructionError {
+    fn from(detail: String) -> Self {
+        Self::rejected(detail)
+    }
+}
+
+impl fmt::Display for QuoteConstructionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
 pub(crate) trait ProviderMode {
     fn mode_name(&self) -> &'static str;
     fn provider_id(&self) -> &str;
@@ -104,6 +157,7 @@ pub(crate) trait ProviderMode {
         &mut self,
         _session: &ProviderSession,
         _requester_pubkey: &str,
+        _disposition: QuoteDisposition,
         _observed_at: u64,
     ) -> Result<(), String> {
         Ok(())
@@ -114,7 +168,7 @@ pub(crate) trait ProviderMode {
         session: &mut ProviderSession,
         requester_pubkey: &str,
         created_at: u64,
-    ) -> Result<Option<MktSigningRequest>, String>;
+    ) -> Result<Option<MktSigningRequest>, QuoteConstructionError>;
 
     fn observe_durable_signed_record(
         &mut self,
@@ -958,28 +1012,31 @@ impl<M: ProviderMode> RelayActor<M> {
                 &actor.session.config().provider_pubkey,
             );
             let created_at = next_created_at(&actor.session)?;
-            let action = if awaiting_quote {
-                self.mode
-                    .construct_quote(&mut actor.session, &actor.requester_pubkey, created_at)
-            } else {
-                self.mode.next_after_contract_or_status(
+            if awaiting_quote {
+                match self.mode.construct_quote(
                     &mut actor.session,
                     &actor.requester_pubkey,
                     created_at,
-                )
-            };
-            match action {
-                Ok(action) => (action, None),
-                Err(error) if awaiting_quote => {
-                    let reason = bounded_rejection_reason(&error);
-                    self.mode.reject_session(
-                        &actor.session,
-                        &actor.requester_pubkey,
-                        observed_at,
-                    )?;
-                    (None, Some(reason))
+                ) {
+                    Ok(action) => (action, None),
+                    Err(error) => {
+                        let reason = bounded_rejection_reason(&error.to_string());
+                        self.mode.reject_session(
+                            &actor.session,
+                            &actor.requester_pubkey,
+                            error.disposition(),
+                            observed_at,
+                        )?;
+                        (None, Some(reason))
+                    }
                 }
-                Err(error) => return Err(error),
+            } else {
+                let action = self.mode.next_after_contract_or_status(
+                    &mut actor.session,
+                    &actor.requester_pubkey,
+                    created_at,
+                )?;
+                (action, None)
             }
         };
         if let Some(reason) = rejection {
@@ -1693,8 +1750,10 @@ mod tests {
             _session: &mut ProviderSession,
             _requester_pubkey: &str,
             _created_at: u64,
-        ) -> Result<Option<MktSigningRequest>, String> {
-            Err("not used by recovery test".to_owned())
+        ) -> Result<Option<MktSigningRequest>, QuoteConstructionError> {
+            Err(QuoteConstructionError::rejected(
+                "not used by recovery test".to_owned(),
+            ))
         }
 
         fn observe_durable_signed_record(

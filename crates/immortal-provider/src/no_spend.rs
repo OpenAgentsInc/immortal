@@ -14,8 +14,8 @@ use sha2::{Digest, Sha256};
 use crate::ProviderSession;
 
 use crate::relay_actor::{
-    ProviderMode, RecordOrigin, has_kind_by_author, run_with_mode, session_id,
-    stalled_session_disposition, tag_value, validate_relay_url,
+    ProviderMode, QuoteConstructionError, RecordOrigin, has_kind_by_author, run_with_mode,
+    session_id, stalled_session_disposition, tag_value, validate_relay_url,
 };
 
 const PROVIDER_ID: &str = "immortal-no-spend";
@@ -73,31 +73,34 @@ impl ProviderMode for NoSpendMode {
         session: &mut ProviderSession,
         _requester_pubkey: &str,
         created_at: u64,
-    ) -> Result<Option<MktSigningRequest>, String> {
-        let records = session.signed_records();
-        let rfq = exactly_one_kind(records, MKT_RFQ_KIND, "RFQ")?;
-        let swap_type = rfq_swap_type(rfq)?;
-        let rfq_expiration = tag_value(rfq, "expiration")
-            .ok_or_else(|| "RFQ has no expiration".to_owned())?
-            .parse::<u64>()
-            .map_err(|_| "RFQ expiration is invalid".to_owned())?;
-        if created_at >= rfq_expiration {
-            return Err("RFQ expired before the no-spend Quote was created".to_owned());
-        }
-        let expiration = created_at
-            .saturating_add(QUOTE_LIFETIME_SECONDS)
-            .min(rfq_expiration);
-        let profile = quote_profile(swap_type, rfq, expiration)?;
-        let session_id = session.config().session_id.clone();
-        session
-            .soft_quote(
-                created_at,
-                &deterministic_id("quote", &session_id),
-                expiration,
-                profile,
-            )
-            .map(Some)
-            .map_err(|error| format!("could not construct no-spend Quote: {error}"))
+    ) -> Result<Option<MktSigningRequest>, QuoteConstructionError> {
+        (|| -> Result<Option<MktSigningRequest>, String> {
+            let records = session.signed_records();
+            let rfq = exactly_one_kind(records, MKT_RFQ_KIND, "RFQ")?;
+            let swap_type = rfq_swap_type(rfq)?;
+            let rfq_expiration = tag_value(rfq, "expiration")
+                .ok_or_else(|| "RFQ has no expiration".to_owned())?
+                .parse::<u64>()
+                .map_err(|_| "RFQ expiration is invalid".to_owned())?;
+            if created_at >= rfq_expiration {
+                return Err("RFQ expired before the no-spend Quote was created".to_owned());
+            }
+            let expiration = created_at
+                .saturating_add(QUOTE_LIFETIME_SECONDS)
+                .min(rfq_expiration);
+            let profile = quote_profile(swap_type, rfq, expiration)?;
+            let session_id = session.config().session_id.clone();
+            session
+                .soft_quote(
+                    created_at,
+                    &deterministic_id("quote", &session_id),
+                    expiration,
+                    profile,
+                )
+                .map(Some)
+                .map_err(|error| format!("could not construct no-spend Quote: {error}"))
+        })()
+        .map_err(QuoteConstructionError::rejected)
     }
 
     fn observe_durable_signed_record(

@@ -128,6 +128,7 @@ run_case() (
   local private_root project_name provider_image_ref current_phase compose_ready infrastructure_proven
   local maximum_seconds case_deadline failure_reason record_path
   local external_injection external_checkpoint external_target
+  local wallet_driver_container_name
   private_root="$(mktemp -d "${TMPDIR:-/tmp}/immortal-adversarial-case.XXXXXX")"
   project_name="immortal-18-$(printf '%s' "${case_id}" | cut -c1-24)-$(random_hex 5)"
   provider_image_ref="${project_name}-provider:local"
@@ -159,6 +160,11 @@ run_case() (
       external_injection=provider_crash
       external_checkpoint=submarine:funding_effect_recorded
       external_target=provider-b
+      ;;
+    wallet-crash-restart)
+      external_injection=wallet_crash
+      external_checkpoint=submarine:funding_effect_recorded
+      external_target=wallet-driver
       ;;
     submarine-provider-noncooperative-refund)
       external_injection=provider_noncooperative
@@ -467,6 +473,14 @@ PY
     docker inspect --format '{{.State.Pid}}' "${container}"
   }
 
+  wallet_driver_container() {
+    if test -z "${wallet_driver_container_name}" \
+      || ! docker inspect --type container "${wallet_driver_container_name}" >/dev/null 2>&1; then
+      return 1
+    fi
+    printf '%s\n' "${wallet_driver_container_name}"
+  }
+
   wait_for_injection_request() {
     local request_file="$1"
     for _ in $(seq 1 600); do
@@ -630,7 +644,8 @@ PY
 
   acknowledge_external_injection() {
     local request_file acknowledgement_file request_metadata request_run_id request_sha256
-    local before_pid after_pid target_suffix target_port target_provider restored transition
+    local before_pid after_pid target_suffix target_port target_provider target_container
+    local restored transition
     request_file="${private_root}/state/funded-injection.json"
     acknowledgement_file="${private_root}/state/funded-continue"
     wait_for_injection_request "${request_file}"
@@ -686,13 +701,13 @@ PY
         ;;
     esac
 
-    before_pid="$(container_pid "${external_target}")"
-    [[ "${before_pid}" =~ ^[1-9][0-9]*$ ]]
     restored=true
     transition=process_replaced_and_ready
     after_pid=""
     case "${external_injection}" in
       relay_loss)
+        before_pid="$(container_pid "${external_target}")"
+        [[ "${before_pid}" =~ ^[1-9][0-9]*$ ]]
         current_phase="${external_target}-partition"
         compose stop "${external_target}" >/dev/null
         if compose ps --services --status running | grep -Fx "${external_target}" >/dev/null; then
@@ -710,8 +725,11 @@ PY
         wait_for "restored ${external_target}" compose run --rm --no-deps \
           --entrypoint /usr/bin/curl "${target_provider}" --fail --silent \
           "http://127.0.0.1:${target_port}/health"
+        after_pid="$(container_pid "${external_target}")"
         ;;
       provider_crash)
+        before_pid="$(container_pid "${external_target}")"
+        [[ "${before_pid}" =~ ^[1-9][0-9]*$ ]]
         current_phase="${external_target}-crash-restart"
         compose kill "${external_target}" >/dev/null
         if compose ps --services --status running | grep -Fx "${external_target}" >/dev/null; then
@@ -725,8 +743,34 @@ PY
           target_port=9092
         fi
         wait_for "restored ${external_target}" provider_ready "${target_suffix}" "${target_port}"
+        after_pid="$(container_pid "${external_target}")"
+        ;;
+      wallet_crash)
+        current_phase=wallet-driver-crash
+        target_container="$(wallet_driver_container)"
+        before_pid="$(docker inspect --format '{{.State.Pid}}' "${target_container}")"
+        [[ "${before_pid}" =~ ^[1-9][0-9]*$ ]]
+        docker kill "${target_container}" >/dev/null
+        if wait "${driver_process}" >/dev/null 2>&1; then
+          echo "test-lab-adversarial: ${case_id}: killed wallet driver returned success" >&2
+          return 1
+        fi
+        if docker ps --quiet --filter "name=^/${target_container}$" | grep -q .; then
+          echo "test-lab-adversarial: ${case_id}: wallet driver survived process kill" >&2
+          return 1
+        fi
+        current_phase=wallet-driver-restart
+        wallet_driver_container_name="${project_name}-wallet-driver-replacement"
+        compose run --name "${wallet_driver_container_name}" --rm --no-deps wallet-driver \
+          >"${private_root}/evidence/driver.json" 2>"${private_root}/driver-error.log" &
+        driver_process=$!
+        wait_for "replacement wallet driver container" wallet_driver_container
+        target_container="$(wallet_driver_container)"
+        after_pid="$(docker inspect --format '{{.State.Pid}}' "${target_container}")"
         ;;
       provider_noncooperative)
+        before_pid="$(container_pid "${external_target}")"
+        [[ "${before_pid}" =~ ^[1-9][0-9]*$ ]]
         current_phase="${external_target}-noncooperative-stop"
         compose stop "${external_target}" >/dev/null
         if compose ps --services --status running | grep -Fx "${external_target}" >/dev/null; then
@@ -742,7 +786,9 @@ PY
         ;;
     esac
     if test "${restored}" = true; then
-      after_pid="$(container_pid "${external_target}")"
+      if test -z "${after_pid}"; then
+        after_pid="$(container_pid "${external_target}")"
+      fi
       [[ "${after_pid}" =~ ^[1-9][0-9]*$ ]]
       test "${before_pid}" != "${after_pid}"
     fi
@@ -1303,8 +1349,9 @@ PY
     exit 1
   fi
   if test -n "${external_injection}"; then
+    wallet_driver_container_name="${project_name}-wallet-driver-initial"
     set +e
-    compose run --rm --no-deps wallet-driver \
+    compose run --name "${wallet_driver_container_name}" --rm --no-deps wallet-driver \
       >"${private_root}/evidence/driver.json" 2>"${private_root}/driver-error.log" &
     driver_process=$!
     set -e
@@ -1370,6 +1417,94 @@ PY
     fi
     echo "test-lab-adversarial: ${case_id}: wallet driver failed" >&2
     exit "${driver_status}"
+  fi
+
+  if test "${case_id}" = double-reservation; then
+    current_phase=double-reservation-process-audit
+    local active_quote_id active_reservation_id active_session_id refused_session_id refused_rfq_id
+    local provider_audit
+    active_quote_id="$(jq -er '.proof.active.quote_id | select(test("^[0-9a-f]{64}$"))' \
+      "${private_root}/evidence/driver.json")"
+    active_reservation_id="$(jq -er '.proof.daemon_reservation_id | select(test("^[0-9a-f]{64}$"))' \
+      "${private_root}/evidence/driver.json")"
+    active_session_id="$(jq -er '.proof.active.session_id | select(test("^[0-9a-f]{64}$"))' \
+      "${private_root}/evidence/driver.json")"
+    refused_session_id="$(jq -er '.proof.refused.session_id | select(test("^[0-9a-f]{64}$"))' \
+      "${private_root}/evidence/driver.json")"
+    refused_rfq_id="$(jq -er '.proof.refused.rfq_id | select(test("^[0-9a-f]{64}$"))' \
+      "${private_root}/evidence/driver.json")"
+    for _ in $(seq 1 50); do
+      provider_audit="$(compose exec -T provider-a-postgres psql \
+        --username immortal_provider --dbname immortal_provider --tuples-only --no-align \
+        --set ON_ERROR_STOP=1 --set reservation_id="${active_reservation_id}" \
+        --set active_session="${active_session_id}" --set active_quote="${active_quote_id}" \
+        --set refused_session="${refused_session_id}" --set refused_rfq="${refused_rfq_id}" <<'SQL'
+SELECT
+  count(*) FILTER (WHERE reservation_id = :'reservation_id'),
+  count(*),
+  (SELECT count(*) FROM provider_effect WHERE operation = 'reserve' AND state = 'applied'),
+  (SELECT count(*) FROM provider_session_disposition
+    WHERE session_id = :'refused_session'
+      AND reason_code = 'swp_reservation_overallocated'),
+  (SELECT count(*) FROM provider_session_record
+    WHERE session_id = :'refused_session' AND event_id = :'refused_rfq' AND kind = 39604),
+  (SELECT count(*) FROM provider_session_record
+    WHERE session_id = :'refused_session' AND kind = 39605),
+  (SELECT count(*) FROM provider_session_record
+    WHERE session_id = :'active_session' AND event_id = :'active_quote' AND kind = 39605),
+  (SELECT count(*) FROM provider_effect WHERE session_id = :'refused_session')
+FROM provider_reservation;
+SQL
+)"
+      if test "${provider_audit}" = "1|1|1|1|1|0|1|0"; then
+        break
+      fi
+      sleep 0.1
+    done
+    python3 - "${private_root}/evidence/driver.json" "${provider_audit}" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+provider = [int(value) for value in sys.argv[2].strip().split("|")]
+if provider != [1, 1, 1, 1, 1, 0, 1, 0]:
+    raise SystemExit(
+        "provider process did not retain the exact over-allocation outcome: "
+        + ",".join(str(value) for value in provider)
+    )
+document = json.loads(path.read_text(encoding="utf-8"))
+proof = document.get("proof")
+if not isinstance(proof, dict) or "process_audit" in proof:
+    raise SystemExit("double-reservation driver proof has another shape")
+refused = proof.get("refused")
+if not isinstance(refused, dict) or refused.get("provider_wire_refusal") is not None:
+    raise SystemExit("double-reservation proof invented a provider wire refusal")
+refused["surface"] = "provider_session_disposition"
+proof["process_audit"] = {
+    "schema": "openagents.immortal.double-reservation-process-audit.v1",
+    "manifest_code": "swp_reservation_overallocated",
+    "durable_disposition": "swp_reservation_overallocated",
+    "provider_wire_refusal": None,
+    "provider_reservations": 1,
+    "provider_reserve_effects": 1,
+    "refused_session_records": 1,
+    "refused_quote_records": 0,
+    "refused_external_effects": 0,
+}
+encoded = (json.dumps(document, separators=(",", ":")) + "\n").encode()
+if len(encoded) > 16384:
+    raise SystemExit("audited double-reservation proof exceeds its input bound")
+temporary = path.with_name(path.name + ".tmp")
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "wb") as output:
+    output.write(encoded)
+    output.flush()
+    os.fsync(output.fileno())
+os.replace(temporary, path)
+os.chmod(path, 0o600)
+PY
   fi
 
   current_phase=sanitized-evidence

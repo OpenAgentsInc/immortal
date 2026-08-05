@@ -39,7 +39,7 @@ use crate::{
     lightning::{LightningPreimage, LightningRail},
     liquidity::{WalletScanPolicy, discover_wallet_utxos},
     pricing::{
-        CapacityBounds, DerivedQuote, PricingConfig, QuoteRequest, QuoteSide,
+        CapacityBounds, DerivedQuote, FeerateObservation, PricingConfig, QuoteRequest, QuoteSide,
         SwapType as PricingSwapType, derive_quote, feerate_for_quote,
         funding_feerate_from_quote_budget,
     },
@@ -48,8 +48,8 @@ use crate::{
         build_funded_quote,
     },
     relay_actor::{
-        DurableRecovery, ProviderMode, RecordOrigin, has_kind_by_author, session_id,
-        stalled_session_disposition, tag_value,
+        DurableRecovery, ProviderMode, QuoteConstructionError, QuoteDisposition, RecordOrigin,
+        has_kind_by_author, session_id, stalled_session_disposition, tag_value,
     },
     settlement::{
         ClaimPreimage, CooperativeSettlementTemplate, SettlementBridge, SettlementTemplate,
@@ -97,6 +97,33 @@ pub(crate) struct FundedModePolicy {
     pub reorg_safety_blocks: u32,
     pub pricing: PricingConfig,
     pub hold_invoice_expiry_seconds: u32,
+}
+
+fn derive_quote_with_capacity_disposition(
+    pricing: &PricingConfig,
+    feerate: &FeerateObservation,
+    available: &CapacityBounds,
+    total_capacity: u64,
+    request: &QuoteRequest,
+    created_at: u64,
+) -> Result<DerivedQuote, QuoteConstructionError> {
+    match derive_quote(pricing, feerate, available, request, created_at) {
+        Ok(quote) => Ok(quote),
+        Err(error) => {
+            if available.available_capacity != total_capacity.to_string() {
+                let total = CapacityBounds {
+                    capacity_bucket_id: available.capacity_bucket_id.clone(),
+                    available_capacity: total_capacity.to_string(),
+                };
+                if derive_quote(pricing, feerate, &total, request, created_at).is_ok() {
+                    return Err(QuoteConstructionError::reservation_overallocated(
+                        error.to_string(),
+                    ));
+                }
+            }
+            Err(QuoteConstructionError::rejected(error.to_string()))
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -298,12 +325,20 @@ impl FundedMode {
         }
     }
 
-    fn quote(&mut self, rfq: &Event, created_at: u64) -> Result<Option<BuiltFundedQuote>, String> {
+    fn quote(
+        &mut self,
+        rfq: &Event,
+        created_at: u64,
+    ) -> Result<Option<BuiltFundedQuote>, QuoteConstructionError> {
         let swap_type_name = rfq_swap_type(rfq)?;
         let swap_type = match swap_type_name.as_str() {
             "submarine" => PricingSwapType::Submarine,
             "reverse" => PricingSwapType::Reverse,
-            _ => return Err("funded v1 supports submarine and reverse swaps".to_owned()),
+            _ => {
+                return Err("funded v1 supports submarine and reverse swaps"
+                    .to_owned()
+                    .into());
+            }
         };
         let Some((chain_tip, lightning_current_height)) =
             self.synchronized_quote_heights(session_id(rfq)?)?
@@ -358,7 +393,7 @@ impl FundedMode {
         rfq: &Event,
         swap_type: PricingSwapType,
         created_at: u64,
-    ) -> Result<DerivedQuote, String> {
+    ) -> Result<DerivedQuote, QuoteConstructionError> {
         let session = session_id(rfq)?;
         let live = self
             .handle
@@ -378,19 +413,20 @@ impl FundedMode {
             .and_then(Value::as_object)
             .ok_or_else(|| "funded RFQ has no constraints".to_owned())?;
         let amount = required_string(constraints, "input_amount")?.to_owned();
-        let capacity = self.quote_capacity(session, swap_type, created_at)?;
-        derive_quote(
+        let (capacity, total_capacity) = self.quote_capacity(session, swap_type, created_at)?;
+        let request = QuoteRequest {
+            swap_type,
+            side: QuoteSide::Input,
+            amount,
+        };
+        derive_quote_with_capacity_disposition(
             &self.pricing,
             &feerate,
             &capacity,
-            &QuoteRequest {
-                swap_type,
-                side: QuoteSide::Input,
-                amount,
-            },
+            total_capacity,
+            &request,
             created_at,
         )
-        .map_err(|error| error.to_string())
     }
 
     fn quote_capacity(
@@ -398,7 +434,7 @@ impl FundedMode {
         session_id: &str,
         swap_type: PricingSwapType,
         observed_at: u64,
-    ) -> Result<CapacityBounds, String> {
+    ) -> Result<(CapacityBounds, u64), String> {
         let (bucket_id, asset_id, total_capacity) = match swap_type {
             PricingSwapType::Submarine => (
                 "lightning-outbound".to_owned(),
@@ -453,10 +489,13 @@ impl FundedMode {
             .handle
             .block_on(self.store.available_capacity(&bucket_id))
             .map_err(|error| format!("could not read Quote capacity: {error}"))?;
-        Ok(CapacityBounds {
-            capacity_bucket_id: bucket_id,
-            available_capacity: available_capacity.to_string(),
-        })
+        Ok((
+            CapacityBounds {
+                capacity_bucket_id: bucket_id,
+                available_capacity: available_capacity.to_string(),
+            },
+            total_capacity,
+        ))
     }
 
     fn synchronized_quote_heights(
@@ -573,11 +612,13 @@ impl FundedMode {
     fn reserve(
         &mut self,
         request: &ProviderEffectRequest,
-    ) -> Result<ReservationConfirmation, String> {
+    ) -> Result<ReservationConfirmation, QuoteConstructionError> {
         let amount = canonical_u64(&request.reserved_amount)?;
         let now = unix_now()?;
         if now >= request.reservation_expires_at {
-            return Err("reservation expired before capacity allocation".to_owned());
+            return Err("reservation expired before capacity allocation"
+                .to_owned()
+                .into());
         }
         let (proof_class, selected_utxos, committed_capacity) =
             if request.reserved_asset_id.ends_with(":chain") {
@@ -620,7 +661,9 @@ impl FundedMode {
                     }
                 }
                 if selected_total < target {
-                    return Err("provider wallet has insufficient confirmed capacity".to_owned());
+                    return Err("provider wallet has insufficient confirmed capacity"
+                        .to_owned()
+                        .into());
                 }
                 let outpoints = selected
                     .iter()
@@ -639,10 +682,14 @@ impl FundedMode {
                     self.lightning_capacity_for_session(&request.session_id)?,
                 )
             } else {
-                return Err("reservation asset is not a funded v1 rail".to_owned());
+                return Err("reservation asset is not a funded v1 rail"
+                    .to_owned()
+                    .into());
             };
         if committed_capacity < amount {
-            return Err("provider rail has insufficient confirmed capacity".to_owned());
+            return Err("provider rail has insufficient confirmed capacity"
+                .to_owned()
+                .into());
         }
         self.handle
             .block_on(self.store.configure_capacity_bucket(
@@ -678,12 +725,18 @@ impl FundedMode {
                         .ok_or_else(|| "capacity allocation sequence overflowed".to_owned())?;
                 }
                 Ok(ReservationOutcome::InsufficientCapacity) => {
-                    return Err("capacity bucket is fully allocated".to_owned());
+                    return Err(QuoteConstructionError::reservation_overallocated(
+                        "capacity bucket is fully allocated".to_owned(),
+                    ));
                 }
                 Ok(ReservationOutcome::UtxoUnavailable(_)) => {
-                    return Err("selected chain capacity is no longer available".to_owned());
+                    return Err("selected chain capacity is no longer available"
+                        .to_owned()
+                        .into());
                 }
-                Err(error) => return Err(format!("capacity reservation failed: {error}")),
+                Err(error) => {
+                    return Err(format!("capacity reservation failed: {error}").into());
+                }
             }
         };
         let commitment =
@@ -3083,9 +3136,10 @@ impl ProviderMode for FundedMode {
         &mut self,
         session: &ProviderSession,
         _requester_pubkey: &str,
+        disposition: QuoteDisposition,
         observed_at: u64,
     ) -> Result<(), String> {
-        self.dispose_unfunded_session(session, "quote_rejected", observed_at)
+        self.dispose_unfunded_session(session, disposition.code(), observed_at)
     }
 
     fn construct_quote(
@@ -3093,7 +3147,7 @@ impl ProviderMode for FundedMode {
         session: &mut ProviderSession,
         _requester_pubkey: &str,
         created_at: u64,
-    ) -> Result<Option<MktSigningRequest>, String> {
+    ) -> Result<Option<MktSigningRequest>, QuoteConstructionError> {
         let rfq = exactly_one_kind(session.signed_records(), MKT_RFQ_KIND, "RFQ")?.clone();
         let Some(quote) = self.quote(&rfq, created_at)? else {
             return Ok(None);
@@ -3113,36 +3167,62 @@ impl ProviderMode for FundedMode {
         };
         let session_id = session.config().session_id.clone();
         if rfq_swap_type(&rfq)? == "reverse" {
-            return session
-                .hard_quote_with_bound_reserve(
-                    created_at,
-                    &deterministic_id("quote", &session_id),
-                    quote.expiration,
-                    reservation,
-                    quote.profile,
-                    |request, existing_confirmation, profile| {
-                        let confirmation = match existing_confirmation {
-                            Some(confirmation) => confirmation.clone(),
-                            None => self.reserve(request)?,
-                        };
-                        let profile = self.bind_reverse_funding_template(&session_id, profile)?;
-                        Ok((confirmation, profile))
-                    },
-                )
-                .map(Some)
-                .map_err(|error| format!("could not construct funded hard Quote: {error}"));
-        }
-        session
-            .hard_quote_with_reserve(
+            let mut reserve_error = None;
+            let result = session.hard_quote_with_bound_reserve(
                 created_at,
                 &deterministic_id("quote", &session_id),
                 quote.expiration,
                 reservation,
                 quote.profile,
-                |request| self.reserve(request),
-            )
-            .map(Some)
-            .map_err(|error| format!("could not construct funded hard Quote: {error}"))
+                |request, existing_confirmation, profile| {
+                    let confirmation = match existing_confirmation {
+                        Some(confirmation) => confirmation.clone(),
+                        None => match self.reserve(request) {
+                            Ok(confirmation) => confirmation,
+                            Err(error) => {
+                                let detail = error.to_string();
+                                reserve_error = Some(error);
+                                return Err(detail);
+                            }
+                        },
+                    };
+                    let profile = self.bind_reverse_funding_template(&session_id, profile)?;
+                    Ok((confirmation, profile))
+                },
+            );
+            return match result {
+                Ok(request) => Ok(Some(request)),
+                Err(error) => Err(reserve_error.unwrap_or_else(|| {
+                    QuoteConstructionError::rejected(format!(
+                        "could not construct funded hard Quote: {error}"
+                    ))
+                })),
+            };
+        }
+        let mut reserve_error = None;
+        let result = session.hard_quote_with_reserve(
+            created_at,
+            &deterministic_id("quote", &session_id),
+            quote.expiration,
+            reservation,
+            quote.profile,
+            |request| match self.reserve(request) {
+                Ok(confirmation) => Ok(confirmation),
+                Err(error) => {
+                    let detail = error.to_string();
+                    reserve_error = Some(error);
+                    Err(detail)
+                }
+            },
+        );
+        match result {
+            Ok(request) => Ok(Some(request)),
+            Err(error) => Err(reserve_error.unwrap_or_else(|| {
+                QuoteConstructionError::rejected(format!(
+                    "could not construct funded hard Quote: {error}"
+                ))
+            })),
+        }
     }
 
     fn observe_durable_signed_record(
@@ -5428,24 +5508,98 @@ mod tests {
     use immortal_core::mkt_swp_verify::{Transaction, TransactionInput, TransactionOutput};
     use serde_json::{Value, json};
 
-    use crate::funding::SignedFundingTransaction;
+    use crate::{
+        funding::SignedFundingTransaction,
+        pricing::{
+            CapacityBounds, FeerateObservation, PricingConfig, QuoteRequest, QuoteSide,
+            ReservationTier, SwapType,
+        },
+        relay_actor::QuoteDisposition,
+    };
 
     use super::{
         ChainTerms, CooperativeProviderStep, CooperativeTranscriptPresence, HoldStateDecision,
         ReverseInvoiceCancellationAction, base_state, bind_reverse_funding_profile,
         bitcoin_spend_reference, canonical_json, chain_observation_from_response,
-        cooperative_provider_step, decode_hex, execute_before_exclusive_deadline,
-        extract_hold_invoice, finalized_from_signed_message, funded_cancel_pre_effect,
-        hold_state_decision, latest_status_state, lower_hex, require_chain_finality,
-        required_chain_confirmations, reverse_invoice_cancellation_action, reverse_spend_decision,
-        settlement_destination_path, sha256, status_transaction_id, status_transaction_reference,
-        terminal_evidence_expectations, validate_executable_reverse_funding, validate_held_htlcs,
+        cooperative_provider_step, decode_hex, derive_quote_with_capacity_disposition,
+        execute_before_exclusive_deadline, extract_hold_invoice, finalized_from_signed_message,
+        funded_cancel_pre_effect, hold_state_decision, latest_status_state, lower_hex,
+        require_chain_finality, required_chain_confirmations, reverse_invoice_cancellation_action,
+        reverse_spend_decision, settlement_destination_path, sha256, status_transaction_id,
+        status_transaction_reference, terminal_evidence_expectations,
+        validate_executable_reverse_funding, validate_held_htlcs,
     };
 
     const RUNTIME_FIXTURE: &[u8] =
         include_bytes!("../../../tests/fixtures/provider/provider-runtime-v1.json");
     const COOPERATIVE_RUNTIME_FIXTURE: &[u8] =
         include_bytes!("../../../tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json");
+
+    #[test]
+    fn active_reservations_produce_the_exact_overallocated_disposition() {
+        let fixture: Value = serde_json::from_slice(RUNTIME_FIXTURE).expect("runtime fixture");
+        let case = fixture["cases"]
+            .as_array()
+            .and_then(|cases| {
+                cases.iter().find(|case| {
+                    case["name"] == "provider-v1-hard-reservation-overallocation-disposition"
+                })
+            })
+            .expect("over-allocation fixture case");
+        assert_eq!(
+            case["durable_session_disposition"],
+            "swp_reservation_overallocated"
+        );
+        assert_eq!(case["wire_refusal"], Value::Null);
+
+        let pricing = PricingConfig {
+            spread_bps: 100,
+            fallback_feerate_sat_per_vb: Some(2),
+            min_swap_sat: 10_000,
+            max_swap_sat: 1_000_000,
+            quote_expiry_seconds: 3,
+            reservation_tier: ReservationTier::Hard,
+            lightning_routing_fee_ppm: 2_900,
+        };
+        let feerate = FeerateObservation::Fallback { sat_per_vb: 2 };
+        let request = QuoteRequest {
+            swap_type: SwapType::Submarine,
+            side: QuoteSide::Input,
+            amount: "1000000".to_owned(),
+        };
+        let reduced = CapacityBounds {
+            capacity_bucket_id: "lightning-outbound".to_owned(),
+            available_capacity: "500000".to_owned(),
+        };
+        let error = derive_quote_with_capacity_disposition(
+            &pricing,
+            &feerate,
+            &reduced,
+            1_500_000,
+            &request,
+            1_785_859_200,
+        )
+        .expect_err("active reservation must reject the second quote");
+        assert_eq!(
+            error.disposition(),
+            QuoteDisposition::ReservationOverallocated
+        );
+
+        let outside_total = QuoteRequest {
+            amount: "2000000".to_owned(),
+            ..request
+        };
+        let error = derive_quote_with_capacity_disposition(
+            &pricing,
+            &feerate,
+            &reduced,
+            1_500_000,
+            &outside_total,
+            1_785_859_200,
+        )
+        .expect_err("request outside total capacity must be rejected");
+        assert_eq!(error.disposition(), QuoteDisposition::Rejected);
+    }
 
     #[test]
     fn funded_cancel_consent_is_limited_to_pre_effect_states() {

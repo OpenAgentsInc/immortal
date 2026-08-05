@@ -194,6 +194,15 @@
       "expected_watch_completion_reason": "claim_settled"
     },
     {
+      "name": "provider-v1-hard-reservation-overallocation-disposition",
+      "requested_input_within_total_rail_capacity": true,
+      "active_hard_reservations_reduce_available_capacity_below_request": true,
+      "signed_quote_emitted": false,
+      "second_reserve_effect_emitted": false,
+      "durable_session_disposition": "swp_reservation_overallocated",
+      "wire_refusal": null
+    },
+    {
       "name": "provider-v1-private-operations",
       "health_scope": "private_or_loopback",
       "metrics_scope": "private_or_loopback",

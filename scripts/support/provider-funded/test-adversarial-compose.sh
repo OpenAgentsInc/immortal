@@ -62,6 +62,7 @@ for case_id, injection, checkpoint, target in (
     ("relay-b-partition", "relay_loss", "submarine:funding_execution_ready", "relay-b"),
     ("provider-a-crash-restart", "provider_crash", "submarine:funding_effect_recorded", "provider-a"),
     ("provider-b-crash-restart", "provider_crash", "submarine:funding_effect_recorded", "provider-b"),
+    ("wallet-crash-restart", "wallet_crash", "submarine:funding_effect_recorded", "wallet-driver"),
 ):
     case_start = runner.find(f"{case_id})")
     case_end = runner.find(";;", case_start)
@@ -71,8 +72,23 @@ for case_id, injection, checkpoint, target in (
 for member in ("before_pid", "after_pid", "process_replaced_and_ready"):
     if member not in runner:
         raise SystemExit(f"adversarial acknowledgement lacks {member}")
+for container in ("wallet-driver-initial", "wallet-driver-replacement"):
+    if container not in runner:
+        raise SystemExit(f"wallet restart lacks deterministic {container} ownership")
 if "provider-funding chain height" not in runner:
     raise SystemExit("provider startup lacks an all-CLN chain-height barrier")
+wallet_environment_start = runner.index('cat >"${private_root}/wallet-driver.env"')
+wallet_environment_end = runner.index("\nEOF", wallet_environment_start)
+wallet_environment = runner[wallet_environment_start:wallet_environment_end]
+if "IMMORTAL_PROVIDER_IDENTITY_SECRET" in wallet_environment:
+    raise SystemExit("wallet driver has provider signing authority")
+for predicate in (
+    "event_id = :'refused_rfq' AND kind = 39604",
+    "session_id = :'refused_session' AND kind = 39605",
+    "event_id = :'active_quote' AND kind = 39605",
+):
+    if predicate not in runner:
+        raise SystemExit("double-reservation audit uses another MKT kind mapping")
 PY
 
 if ! docker compose version >/dev/null 2>&1; then

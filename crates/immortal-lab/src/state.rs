@@ -445,6 +445,30 @@ pub fn load_funded_injection_proof(paths: &LabPaths) -> Result<Option<Value>, St
     Ok(Some(proof))
 }
 
+pub fn load_funded_injection(paths: &LabPaths) -> Result<Option<FundedInjectionRequest>, String> {
+    let path = paths.funded_injection();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let request: FundedInjectionRequest = read_json(&path)?;
+    if request.schema != "openagents.immortal.lab-injection.v1"
+        || validate_run_id(&request.run_id).is_err()
+        || request.journey.is_empty()
+        || request.journey.len() > 32
+        || !request
+            .journey
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        || request.checkpoint.is_empty()
+        || request.checkpoint.len() > 128
+        || request.injection.is_empty()
+        || request.injection.len() > 32
+    {
+        return Err("persisted funded injection request is invalid or unbounded".to_owned());
+    }
+    Ok(Some(request))
+}
+
 pub fn store_funded_snapshot(
     paths: &LabPaths,
     journey: &str,
@@ -909,6 +933,25 @@ mod tests {
         if paths.root().exists() {
             fs::remove_dir_all(paths.root()).expect("scratch state should be removable");
         }
+    }
+
+    #[test]
+    fn funded_injection_request_round_trips_for_process_recovery() {
+        let paths = scratch("funded-injection-request");
+        let request = FundedInjectionRequest {
+            schema: "openagents.immortal.lab-injection.v1".to_owned(),
+            run_id: "run-1".to_owned(),
+            journey: "submarine".to_owned(),
+            checkpoint: "submarine:funding_effect_recorded".to_owned(),
+            injection: "wallet_crash".to_owned(),
+            requested_at: 10,
+        };
+        store_funded_injection(&paths, &request).expect("injection request should persist");
+        assert_eq!(
+            load_funded_injection(&paths).expect("injection request should load"),
+            Some(request)
+        );
+        fs::remove_dir_all(paths.root()).expect("scratch state should be removable");
     }
 
     #[test]
