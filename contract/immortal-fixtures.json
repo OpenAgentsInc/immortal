@@ -84,6 +84,12 @@
       "scope": "client"
     },
     {
+      "path": "tests/fixtures/lab/provisioning-v1.json",
+      "sha256": "4c925828030ec0b00a0429f0a2fbcb95a88bf845c720085eeca7c4e3eaeae661",
+      "bytes": 3364,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/nip01/events.json",
       "sha256": "a1a74424da21fb04e22d5a689ef17204aa2cb46f3937cfa8727a11d952f5bd3a",
       "bytes": 630,

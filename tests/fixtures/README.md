@@ -83,6 +83,14 @@ names the NIP that owns the behavior.
   unsigned bytes, signature messages, sighashes, deterministic signatures,
   witnesses, signed bytes, transaction IDs, fees, weights, and virtual sizes.
   The provider contract exports its exact digest.
+- `lab/provisioning-v1.json` pins the non-secret #18 machine allocation: the
+  shared regtest Bitcoin helpers including explicit RBF replacement, two
+  provider-owned CLN nodes with required hold RPCs, a separate wallet CLN
+  node, two relay/provider identities, balanced channel edges, teardown
+  ownership checks, the digest-checked funded-smoke CLN-plus-hold image build,
+  and hook-only LND/elementsd/arkd extension boundaries.
+  It contains no node credentials or custody material and does not claim the
+  owning rail issues are implemented.
 - `nipmkt/swp-profile-v1.json` pins the relay-observable MKT-SWP v1 adoption
   at OpenAgents commit `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`:
   Offering grammar, kind-39610 profile binding and immutable wrapped

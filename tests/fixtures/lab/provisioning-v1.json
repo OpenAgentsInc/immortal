@@ -1,0 +1,146 @@
+{
+  "schema": "openagents.immortal.lab-provisioning-manifest.v1",
+  "loopback_only": true,
+  "bitcoin": {
+    "role": "shared-regtest-chain",
+    "rpc_port": 18543,
+    "p2p_port": 18544,
+    "wallet": "lab",
+    "maturity_blocks": 101,
+    "helpers": [
+      "mine",
+      "mine-past",
+      "invalidate",
+      "rbf-send",
+      "rbf-replace"
+    ],
+    "rbf_fee_rate_unit": "sat/vB"
+  },
+  "products": {
+    "relays": [
+      {
+        "id": "relay-a",
+        "websocket_port": 18080,
+        "database": "disposable-relay-a-postgres"
+      },
+      {
+        "id": "relay-b",
+        "websocket_port": 18081,
+        "database": "disposable-relay-b-postgres"
+      }
+    ],
+    "providers": [
+      {
+        "id": "provider-a",
+        "relay": "relay-a",
+        "lightning_node": "provider-a-cln",
+        "database": "disposable-provider-a-postgres"
+      },
+      {
+        "id": "provider-b",
+        "relay": "relay-b",
+        "lightning_node": "provider-b-cln",
+        "database": "disposable-provider-b-postgres"
+      }
+    ],
+    "wallet_harness": {
+      "id": "wallet-harness",
+      "relays": [
+        "relay-a",
+        "relay-b"
+      ],
+      "lightning_node": "wallet-cln"
+    }
+  },
+  "lightning": {
+    "container_image": "immortal-lab-cln-hold:v0.3.3-cln-v26.06.6",
+    "container_build_source": "scripts/support/provider-funded/Dockerfile.cln-hold",
+    "hold_rpc_commands": [
+      "holdinvoice",
+      "listholdinvoices",
+      "settleholdinvoice",
+      "cancelholdinvoice"
+    ],
+    "nodes": [
+      {
+        "id": "provider-a-cln",
+        "script_node": 1,
+        "owner": "provider-a",
+        "p2p_port": 19846,
+        "hold_plugin": "required-and-probed"
+      },
+      {
+        "id": "provider-b-cln",
+        "script_node": 2,
+        "owner": "provider-b",
+        "p2p_port": 19847,
+        "hold_plugin": "required-and-probed"
+      },
+      {
+        "id": "wallet-cln",
+        "script_node": 3,
+        "owner": "wallet-harness",
+        "p2p_port": 19848,
+        "hold_plugin": "not-required"
+      }
+    ],
+    "balanced_channels": [
+      [
+        "provider-a-cln",
+        "wallet-cln"
+      ],
+      [
+        "provider-b-cln",
+        "wallet-cln"
+      ],
+      [
+        "provider-a-cln",
+        "provider-b-cln"
+      ]
+    ]
+  },
+  "extensions": [
+    {
+      "id": "lnd",
+      "issue": 29,
+      "state": "hook-only",
+      "hook_environment": "IMMORTAL_LAB_LND_HOOK",
+      "ports": {
+        "p2p": 19736,
+        "rpc": 19009,
+        "rest": 19080
+      }
+    },
+    {
+      "id": "elementsd",
+      "issue": 27,
+      "state": "hook-only",
+      "hook_environment": "IMMORTAL_LAB_ELEMENTSD_HOOK",
+      "ports": {
+        "p2p": 18886,
+        "rpc": 18884
+      }
+    },
+    {
+      "id": "arkd",
+      "issue": 20,
+      "state": "hook-only",
+      "hook_environment": "IMMORTAL_LAB_ARKD_HOOK",
+      "ports": {
+        "api": 17070
+      }
+    }
+  ],
+  "custody_boundary": {
+    "manifest_contains_credentials": false,
+    "extension_hook_receives_credentials": false,
+    "private_material_location": "owning-process-mode-0600-state-only",
+    "relay_receives_rail_credentials": false
+  },
+  "teardown": {
+    "ownership_markers_required": true,
+    "container_identity_match_required": true,
+    "created_image_identity_match_required": true,
+    "preexisting_paths_reused": false
+  }
+}
