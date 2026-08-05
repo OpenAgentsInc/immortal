@@ -45,7 +45,7 @@ const COUNT_SESSION_RECORDS_SQL: &str =
     "SELECT count(*) FROM provider_session_record WHERE session_id = $1";
 const SELECT_SESSION_RECORDS_SQL: &str = r#"
 SELECT signed_event FROM provider_session_record
-WHERE session_id = $1 ORDER BY created_at, event_id LIMIT $2
+WHERE session_id = $1 ORDER BY event_id LIMIT $2
 "#;
 const SELECT_BOLTZ_INVOICE_CANDIDATE_SESSIONS_SQL: &str = r#"
 SELECT DISTINCT record.session_id FROM provider_session_record AS record
@@ -73,7 +73,7 @@ WHERE NOT EXISTS (
     SELECT 1 FROM provider_session_disposition AS disposition
     WHERE disposition.session_id = record.session_id
 )
-ORDER BY record.session_id, record.created_at, record.event_id
+ORDER BY record.session_id, record.event_id
 LIMIT $1
 "#;
 const INSERT_BOLTZ_INVOICE_BINDING_SQL: &str = r#"

@@ -1,6 +1,229 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "schema": "openagents.mkt-swp.requester-api-fixture.v1",
   "view_schema": "openagents.mkt-swp.requester-session-view.v1",
+  "operations": [
+    {
+      "name": "requester_order",
+      "input_schema": {"$ref": "#/$defs/requester_order_input"},
+      "output_schema": {"$ref": "#/$defs/signing_request"}
+    },
+    {
+      "name": "requester_contract_draft",
+      "input_schema": {"$ref": "#/$defs/requester_contract_draft_input"},
+      "output_schema": {"type": "object"}
+    },
+    {
+      "name": "requester_contract",
+      "input_schema": {"$ref": "#/$defs/requester_contract_signing_input"},
+      "output_schema": {"$ref": "#/$defs/signing_request"}
+    },
+    {
+      "name": "requester_session_view",
+      "input_schema": {"$ref": "#/$defs/requester_session_input"},
+      "output_schema": {"$ref": "#/$defs/requester_session_view"}
+    },
+    {
+      "name": "verify_price_feed",
+      "input_schema": {"$ref": "#/$defs/price_feed_verification_input"},
+      "output_schema": {"$ref": "#/$defs/price_feed_verification_receipt"}
+    }
+  ],
+  "$defs": {
+    "nostr_event": {
+      "type": "object",
+      "required": ["id", "pubkey", "created_at", "kind", "tags", "content", "sig"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "pubkey": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "created_at": {"type": "integer", "minimum": 0},
+        "kind": {"type": "integer", "minimum": 0, "maximum": 65535},
+        "tags": {
+          "type": "array",
+          "items": {"type": "array", "items": {"type": "string"}}
+        },
+        "content": {"type": "string"},
+        "sig": {"type": "string", "pattern": "^[0-9a-f]{128}$"}
+      },
+      "additionalProperties": false
+    },
+    "signing_request": {
+      "type": "object",
+      "required": ["pubkey", "created_at", "kind", "tags", "content", "expected_event_id"],
+      "properties": {
+        "pubkey": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "created_at": {"type": "integer", "minimum": 0},
+        "kind": {"type": "integer", "minimum": 39604, "maximum": 39610},
+        "tags": {"type": "array"},
+        "content": {"type": "string"},
+        "expected_event_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "requester_contract_inputs": {
+      "type": "object",
+      "required": ["effect_bindings", "exit_package_commitments"],
+      "properties": {
+        "effect_bindings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["role", "leg_id"],
+            "properties": {"role": {"type": "string"}, "leg_id": {"type": "string"}},
+            "additionalProperties": false
+          }
+        },
+        "exit_package_commitments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["participant_role", "leg_id", "path", "package_mode", "package_sha256"],
+            "properties": {
+              "participant_role": {"const": "requester"},
+              "leg_id": {"type": "string"},
+              "path": {"enum": ["claim", "refund"]},
+              "package_mode": {"enum": ["presigned", "wallet_sign"]},
+              "package_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "requester_order_input": {
+      "type": "object",
+      "required": ["rfq", "quote", "created_at", "observed_at", "price_feed", "distinct", "selection"],
+      "properties": {
+        "rfq": {"$ref": "#/$defs/nostr_event"},
+        "quote": {"$ref": "#/$defs/nostr_event"},
+        "created_at": {"type": "integer", "minimum": 0},
+        "observed_at": {"type": "integer", "minimum": 0},
+        "price_feed": {
+          "anyOf": [
+            {"$ref": "#/$defs/price_feed_verification_input"},
+            {"type": "null"}
+          ]
+        },
+        "distinct": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "selection": {
+          "anyOf": [
+            {"$ref": "#/$defs/order_selection"},
+            {"type": "null"}
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "order_selection": {
+      "type": "object",
+      "properties": {
+        "input_amount": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
+        "fee_payer": {"type": "string"},
+        "confirmation_policy": {"type": "object"},
+        "public_receipt_consent": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "requester_contract_draft_input": {
+      "type": "object",
+      "required": ["rfq", "quote", "order", "order_observed_at", "local_inputs"],
+      "properties": {
+        "rfq": {"$ref": "#/$defs/nostr_event"},
+        "quote": {"$ref": "#/$defs/nostr_event"},
+        "order": {"$ref": "#/$defs/nostr_event"},
+        "order_observed_at": {"type": "integer", "minimum": 0},
+        "local_inputs": {"$ref": "#/$defs/requester_contract_inputs"}
+      },
+      "additionalProperties": false
+    },
+    "requester_contract_signing_input": {
+      "type": "object",
+      "required": ["rfq", "quote", "order", "order_observed_at", "created_at", "distinct", "contract"],
+      "properties": {
+        "rfq": {"$ref": "#/$defs/nostr_event"},
+        "quote": {"$ref": "#/$defs/nostr_event"},
+        "order": {"$ref": "#/$defs/nostr_event"},
+        "order_observed_at": {"type": "integer", "minimum": 0},
+        "created_at": {"type": "integer", "minimum": 0},
+        "distinct": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "contract": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "price_feed_verification_input": {
+      "type": "object",
+      "required": ["request_url", "response_url", "redirect_count", "raw_response", "observed_at"],
+      "properties": {
+        "request_url": {"type": "string"},
+        "response_url": {"type": "string"},
+        "redirect_count": {"type": "integer", "minimum": 0},
+        "raw_response": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}},
+        "observed_at": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "price_feed_verification_receipt": {
+      "type": "object",
+      "required": ["url", "value_pointer", "observed_value", "response_sha256", "observed_at", "quote_output_amount"],
+      "properties": {
+        "url": {"type": "string"},
+        "value_pointer": {"type": "string"},
+        "observed_value": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"},
+        "response_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "observed_at": {"type": "integer", "minimum": 0},
+        "quote_output_amount": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"}
+      },
+      "additionalProperties": false
+    },
+    "signed_record_delivery": {
+      "type": "object",
+      "required": ["event_id", "raw_signed_event", "raw_wrap_event", "wrap_event_id", "sender_pubkey", "observed_at", "provenance"],
+      "properties": {
+        "event_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "raw_signed_event": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}},
+        "raw_wrap_event": {
+          "anyOf": [
+            {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}},
+            {"type": "null"}
+          ]
+        },
+        "wrap_event_id": {
+          "anyOf": [
+            {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            {"type": "null"}
+          ]
+        },
+        "sender_pubkey": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "observed_at": {"type": "integer", "minimum": 0},
+        "provenance": {"enum": ["locally_signed", "direct", "gift_wrap"]}
+      },
+      "additionalProperties": false
+    },
+    "requester_session_input": {
+      "type": "object",
+      "required": ["records", "deliveries"],
+      "properties": {
+        "records": {"type": "array", "minItems": 2, "maxItems": 512, "items": {"$ref": "#/$defs/nostr_event"}},
+        "deliveries": {"type": "array", "minItems": 2, "maxItems": 512, "items": {"$ref": "#/$defs/signed_record_delivery"}}
+      },
+      "additionalProperties": false
+    },
+    "requester_session_view": {
+      "type": "object",
+      "required": ["schema", "session_id", "quote", "timeline", "verification", "terminal", "deliveries"],
+      "properties": {
+        "schema": {"const": "openagents.mkt-swp.requester-session-view.v1"},
+        "session_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "quote": {"type": "object"},
+        "timeline": {"type": "array"},
+        "verification": {"type": "object"},
+        "terminal": {"type": "object"},
+        "deliveries": {"type": "array"}
+      },
+      "additionalProperties": false
+    }
+  },
   "submarine_quote": {
     "swap_type": "submarine",
     "input_amount": "100000",
@@ -21,17 +244,37 @@
     "url": "https://prices.example.test/btc-usd",
     "value_pointer": "/data/price",
     "observed_value": "6543210",
-    "response_sha256": "abababababababababababababababababababababababababababababababab",
+    "response_sha256": "528acb0e24c36ad90ae7396ec86999730f0ca46f700b53299cf24754396a18dd",
     "observed_at": 1700000000,
     "max_age_seconds": 30
   },
+  "cases": [
+    {
+      "name": "requester-price-feed-exact-response",
+      "operation": "verify_price_feed",
+      "input": {
+        "request_url": "https://prices.example.test/btc-usd",
+        "response_url": "https://prices.example.test/btc-usd",
+        "redirect_count": 0,
+        "raw_response": [123, 34, 100, 97, 116, 97, 34, 58, 123, 34, 112, 114, 105, 99, 101, 34, 58, 34, 54, 53, 52, 51, 50, 49, 48, 34, 125, 125],
+        "observed_at": 1700000010
+      },
+      "expected": {
+        "observed_value": "6543210",
+        "response_sha256": "528acb0e24c36ad90ae7396ec86999730f0ca46f700b53299cf24754396a18dd",
+        "quote_output_amount": "1000"
+      }
+    }
+  ],
   "laws": {
     "order_validates_quote_against_rfq": true,
     "order_uses_effective_reservation_deadline": true,
-    "contract_revalidates_before_signing": true,
+    "contract_reuses_trusted_order_acceptance": true,
     "local_verification_required_after_contract": true,
     "contract_terms_do_not_authorize_funding": true,
     "timeline_uses_protocol_structure_not_created_at": true,
-    "delivery_preserves_exact_validated_raw_bytes": true
+    "delivery_preserves_exact_validated_raw_bytes": true,
+    "delivery_is_mandatory_per_record": true,
+    "indicative_quote_order_fails_closed": true
   }
 }

@@ -9,13 +9,15 @@ use std::{
 };
 
 use immortal_client::mkt_swp_client::{
-    AwaitingVerification, ChainRecoveryState, ExitPackage, ExitSigningOutcome,
+    AwaitingVerification, ChainRecoveryState, DeliveryProvenance, ExitPackage, ExitSigningOutcome,
     ExternalEffectRequest, ExternalEffectResult, FundingAction, FundingAuthorized,
     FundingVerificationInput, InvoiceVerificationInput, LightningProgressState,
     LightningReadinessState, LightningRecoveryState, LocalLightningProgress,
     LocalLightningReadiness, LocalRailEvidence, LocalRecoveryObservation, ParticipantRole,
-    RailObservationRequest, RecoveryAction, StatusState, SwapClientConfig, SwapRecordFactory,
-    SwapSession, VerifyBeforeFundInput, provider_support,
+    RailObservationRequest, RecoveryAction, RequesterContractLocalInputs,
+    RequesterContractSigningInput, RequesterOrderInput, SignedRecordDelivery, StatusState,
+    SwapClientConfig, SwapRecordFactory, SwapSession, SwapType, VerifyBeforeFundInput,
+    provider_support,
 };
 use immortal_core::{
     domain::{
@@ -42,12 +44,13 @@ use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message, WebSocket
 use crate::state::{
     BoltzAdapterApproval, BoltzAdapterBroadcast, BoltzAdapterFinalizeRequest, BoltzAdapterPrepared,
     FundedCheckpoint, FundedInjectionRequest, LabPaths, clear_boltz_adapter_controls,
-    load_boltz_adapter_broadcast, load_boltz_adapter_finalize_request,
+    load_boltz_adapter_broadcast, load_boltz_adapter_finalize_request, load_funded_deliveries,
     load_funded_journey_checkpoint, load_funded_secret, load_funded_signed_exit,
     load_or_create_funded_run_id, load_or_create_identity, remove_funded_secret,
     store_boltz_adapter_approval, store_boltz_adapter_complete, store_boltz_adapter_prepared,
-    store_funded_checkpoint, store_funded_injection, store_funded_journey_checkpoint,
-    store_funded_secret, store_funded_signed_exit, store_funded_snapshot,
+    store_funded_checkpoint, store_funded_deliveries, store_funded_injection,
+    store_funded_journey_checkpoint, store_funded_secret, store_funded_signed_exit,
+    store_funded_snapshot,
 };
 
 const OFFERING_ID: &str = "immortal-funded-btc-lightning";
@@ -104,6 +107,7 @@ struct SessionContext {
     provider_pubkey: String,
     factory: SwapRecordFactory,
     verifier: SwapSession<AwaitingVerification>,
+    deliveries: Vec<SignedRecordDelivery>,
     order: Event,
     contract: Value,
     authorized_verifier: Option<SwapSession<FundingAuthorized>>,
@@ -127,6 +131,11 @@ struct PendingSession {
     requester_funding: Option<SignedFundingTransaction>,
     journey_name: String,
     control: StepControl,
+}
+
+struct ReceivedPrivate {
+    event: Event,
+    delivery: SignedRecordDelivery,
 }
 
 struct RestoredSession {
@@ -789,6 +798,16 @@ fn restore_authorized_session(
     )?;
     let requester_status =
         latest_requester_status(verifier.signed_records(), environment.requester.pubkey())?;
+    let deliveries = restore_funded_deliveries(
+        load_funded_deliveries(&environment.control.paths, journey.name())?.ok_or_else(|| {
+            format!(
+                "persisted {} session has no delivery provenance archive",
+                journey.name()
+            )
+        })?,
+        verifier.signed_records(),
+        &environment.requester,
+    )?;
     Ok(Some(RestoredSession {
         session: SessionContext {
             relay_url: environment.relay_url.clone(),
@@ -799,6 +818,7 @@ fn restore_authorized_session(
             factory: SwapRecordFactory::new(config)
                 .map_err(|error| format!("could not restore funded record factory: {error}"))?,
             verifier,
+            deliveries,
             order,
             contract,
             authorized_verifier: Some(authorized),
@@ -1899,48 +1919,63 @@ fn prepare_negotiation(
         &environment.requester,
     )?;
     let mut records = vec![rfq.clone()];
+    let mut deliveries = vec![
+        SignedRecordDelivery::from_locally_signed(&rfq, now)
+            .map_err(|error| format!("could not archive funded RFQ provenance: {error}"))?,
+    ];
     publish_private(
         &mut publisher,
         &rfq,
         &environment.requester,
         provider_pubkey,
     )?;
-    let quote = receive_matching_private(
+    let received_quote = receive_matching_private(
         &mut reader,
         &environment.requester,
         &session_id,
         JOURNEY_TIMEOUT,
         |event| event.kind == MKT_QUOTE_KIND,
     )?;
+    let quote = received_quote.event;
+    deliveries.push(received_quote.delivery);
     quote
         .validate_crypto()
         .map_err(|error| format!("funded Quote signature is invalid: {error}"))?;
     records.push(quote.clone());
+    let order_observed_at = next_created_at_records(&records)?;
     let order = sign_request(
         factory
-            .requester_order(
-                &rfq,
-                &quote,
-                next_created_at_records(&records)?,
-                &digest(&format!("order:{session_id}")),
-                None,
-            )
+            .requester_order(RequesterOrderInput {
+                rfq: &rfq,
+                quote: &quote,
+                created_at: order_observed_at,
+                observed_at: order_observed_at,
+                price_feed: None,
+                distinct: &digest(&format!("order:{session_id}")),
+                selection: None,
+            })
             .map_err(|error| format!("could not construct funded Order: {error}"))?,
         &environment.requester,
     )?;
     records.push(order.clone());
+    deliveries.push(
+        SignedRecordDelivery::from_locally_signed(&order, order_observed_at)
+            .map_err(|error| format!("could not archive funded Order provenance: {error}"))?,
+    );
     publish_private(
         &mut publisher,
         &order,
         &environment.requester,
         provider_pubkey,
     )?;
-    let local_contract = fixture_profile(input.swap_type, 39_610, Some("requester"))?
-        .get("contract")
-        .cloned()
-        .ok_or_else(|| "fixture requester contract has no contract".to_owned())?;
+    let swap_type = match input.swap_type {
+        "submarine" => SwapType::Submarine,
+        "reverse" => SwapType::Reverse,
+        _ => return Err("funded smoke requester swap type is unsupported".to_owned()),
+    };
+    let local_inputs = RequesterContractLocalInputs::for_swap_type(swap_type);
     let mut contract = factory
-        .requester_contract_draft(&rfq, &quote, &order, local_contract)
+        .requester_contract_draft(&rfq, &quote, &order, order_observed_at, local_inputs)
         .map_err(|error| format!("could not compose funded contract: {error}"))?;
     let requester_funding = match input.requester_funding_input {
         Some(funding_input) if input.swap_type == "submarine" => Some(bind_requester_funding(
@@ -2004,31 +2039,38 @@ fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, Strin
         .ok_or_else(|| "prepared funded session has no Quote".to_owned())?;
     let requester_contract = sign_request(
         factory
-            .requester_contract(
-                &rfq,
-                &quote,
-                &order,
-                next_created_at_records(&records)?,
-                &digest(&format!("requester-contract:{session_id}")),
-                contract.clone(),
-            )
+            .requester_contract(RequesterContractSigningInput {
+                rfq: &rfq,
+                quote: &quote,
+                order: &order,
+                order_observed_at,
+                created_at: next_created_at_records(&records)?,
+                distinct: &digest(&format!("requester-contract:{session_id}")),
+                contract: contract.clone(),
+            })
             .map_err(|error| format!("could not construct funded contract: {error}"))?,
         &requester,
     )?;
     records.push(requester_contract.clone());
+    deliveries.push(
+        SignedRecordDelivery::from_locally_signed(&requester_contract, unix_now()?)
+            .map_err(|error| format!("could not archive requester Contract provenance: {error}"))?,
+    );
     publish_private(
         &mut publisher,
         &requester_contract,
         &requester,
         &provider_pubkey,
     )?;
-    let provider_contract = receive_matching_private(
+    let received_provider_contract = receive_matching_private(
         &mut reader,
         &requester,
         &session_id,
         JOURNEY_TIMEOUT,
         |event| event.kind == MKT_SWP_SWAP_CONTRACT_KIND && event.pubkey == provider_pubkey,
     )?;
+    let provider_contract = received_provider_contract.event;
+    deliveries.push(received_provider_contract.delivery);
     if record_profile(&provider_contract)?.get("contract") != Some(&contract) {
         return Err("provider countersigned different funded contract terms".to_owned());
     }
@@ -2055,6 +2097,7 @@ fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, Strin
         provider_pubkey,
         factory,
         verifier,
+        deliveries,
         order,
         contract,
         authorized_verifier: None,
@@ -2156,6 +2199,7 @@ impl SessionContext {
             .persist()
             .map_err(|error| format!("could not persist funded client session: {error}"))?;
         store_funded_snapshot(&self.control.paths, &self.journey_name, &snapshot)?;
+        self.persist_deliveries()?;
         let mut checkpoint_details = details
             .as_object()
             .cloned()
@@ -2171,6 +2215,16 @@ impl SessionContext {
                 self.control
                     .paths
                     .funded_snapshot(&self.journey_name)
+                    .display()
+                    .to_string(),
+            ),
+        );
+        checkpoint_details.insert(
+            "deliveries".to_owned(),
+            Value::String(
+                self.control
+                    .paths
+                    .funded_deliveries(&self.journey_name)
                     .display()
                     .to_string(),
             ),
@@ -2211,7 +2265,14 @@ impl SessionContext {
         let snapshot = authorized
             .persist()
             .map_err(|error| format!("could not persist funded client session: {error}"))?;
-        store_funded_snapshot(&self.control.paths, &self.journey_name, &snapshot)
+        store_funded_snapshot(&self.control.paths, &self.journey_name, &snapshot)?;
+        self.persist_deliveries()
+    }
+
+    fn persist_deliveries(&self) -> Result<(), String> {
+        let archive = serde_json::to_value(&self.deliveries)
+            .map_err(|error| format!("could not encode funded delivery provenance: {error}"))?;
+        store_funded_deliveries(&self.control.paths, &self.journey_name, &archive)
     }
 
     fn record_funding_effect(
@@ -2263,7 +2324,7 @@ impl SessionContext {
             return Ok(existing.clone());
         }
         let session_id = self.verifier.config().session_id.clone();
-        let event = receive_matching_private(
+        let received = receive_matching_private(
             &mut self.reader,
             &self.requester,
             &session_id,
@@ -2279,6 +2340,8 @@ impl SessionContext {
                         == Some(expected)
             },
         )?;
+        let event = received.event;
+        self.deliveries.push(received.delivery);
         self.ingest_synchronized(event.clone(), &format!("provider {expected}"))?;
         Ok(event)
     }
@@ -2289,28 +2352,34 @@ impl SessionContext {
         check: TerminalRailCheck<'_>,
     ) -> Result<Event, String> {
         let session_id = self.verifier.config().session_id.clone();
-        let event = match self.verifier.signed_records().iter().find(|event| {
+        let (event, delivery) = match self.verifier.signed_records().iter().find(|event| {
             event.kind == MKT_CLOSE_KIND
                 && event.pubkey == self.provider_pubkey
                 && event
                     .tag_values("outcome")
                     .eq(std::iter::once(expected_outcome))
         }) {
-            Some(existing) => existing.clone(),
-            None => receive_matching_private(
-                &mut self.reader,
-                &self.requester,
-                &session_id,
-                JOURNEY_TIMEOUT,
-                |event| {
-                    event.kind == MKT_CLOSE_KIND
-                        && event.pubkey == self.provider_pubkey
-                        && event
-                            .tag_values("outcome")
-                            .eq(std::iter::once(expected_outcome))
-                },
-            )?,
+            Some(existing) => (existing.clone(), None),
+            None => {
+                let received = receive_matching_private(
+                    &mut self.reader,
+                    &self.requester,
+                    &session_id,
+                    JOURNEY_TIMEOUT,
+                    |event| {
+                        event.kind == MKT_CLOSE_KIND
+                            && event.pubkey == self.provider_pubkey
+                            && event
+                                .tag_values("outcome")
+                                .eq(std::iter::once(expected_outcome))
+                    },
+                )?;
+                (received.event, Some(received.delivery))
+            }
         };
+        if let Some(delivery) = delivery {
+            self.deliveries.push(delivery);
+        }
         let leg_ids = contract_leg_ids(&self.contract)?;
         let mut authorized = self
             .authorized_verifier
@@ -2393,7 +2462,11 @@ impl SessionContext {
                 .map_err(|error| format!("could not construct requester {state}: {error}"))?,
             &self.requester,
         )?;
+        let delivery = SignedRecordDelivery::from_locally_signed(&event, unix_now()?)
+            .map_err(|error| format!("could not retain requester Status provenance: {error}"))?;
         self.ingest_synchronized(event.clone(), &format!("requester {state}"))?;
+        self.deliveries.push(delivery);
+        self.persist_snapshot()?;
         publish_private(
             &mut self.publisher,
             &event,
@@ -3601,7 +3674,7 @@ fn receive_matching_private<F>(
     session_id: &str,
     timeout: Duration,
     matches: F,
-) -> Result<Event, String>
+) -> Result<ReceivedPrivate, String>
 where
     F: Fn(&Event) -> bool,
 {
@@ -3621,12 +3694,91 @@ where
             .map_err(|error| format!("funded subscription payload is not an event: {error}"))?;
         let delivered = unwrap_mkt_record(&wrap, recipient, &swp_profiles())?;
         if delivered.record.envelope.session_id == session_id && matches(&delivered.record.event) {
-            return Ok(delivered.record.event);
+            let delivery = SignedRecordDelivery::from_delivered(&wrap, &delivered, unix_now()?)
+                .map_err(|error| format!("could not retain funded delivery provenance: {error}"))?;
+            return Ok(ReceivedPrivate {
+                event: delivered.record.event,
+                delivery,
+            });
         }
     }
     Err(format!(
         "no matching provider record arrived for session {session_id}"
     ))
+}
+
+fn restore_funded_deliveries(
+    archive: Value,
+    records: &[Event],
+    requester: &MarketSigner,
+) -> Result<Vec<SignedRecordDelivery>, String> {
+    let entries = archive
+        .as_array()
+        .ok_or_else(|| "funded delivery archive is not an array".to_owned())?;
+    if entries.len() != records.len() {
+        return Err("funded delivery archive does not cover every signed record".to_owned());
+    }
+    let mut restored = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let event_id = entry
+            .get("event_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "funded delivery archive has no event ID".to_owned())?;
+        let event = records
+            .iter()
+            .find(|event| event.id == event_id)
+            .ok_or_else(|| "funded delivery archive refers outside the session".to_owned())?;
+        let observed_at = entry
+            .get("observed_at")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "funded delivery archive has no observation time".to_owned())?;
+        let provenance: DeliveryProvenance = serde_json::from_value(
+            entry
+                .get("provenance")
+                .cloned()
+                .ok_or_else(|| "funded delivery archive has no provenance".to_owned())?,
+        )
+        .map_err(|error| format!("funded delivery provenance is invalid: {error}"))?;
+        let delivery = match provenance {
+            DeliveryProvenance::LocallySigned => {
+                let delivery = SignedRecordDelivery::from_locally_signed(event, observed_at)
+                    .map_err(|error| format!("local delivery restore failed: {error}"))?;
+                let archived_raw: Vec<u8> = serde_json::from_value(
+                    entry
+                        .get("raw_signed_event")
+                        .cloned()
+                        .ok_or_else(|| "local delivery has no signed bytes".to_owned())?,
+                )
+                .map_err(|error| format!("local delivery bytes are invalid: {error}"))?;
+                if delivery.raw_signed_event() != archived_raw {
+                    return Err("local delivery bytes changed across restore".to_owned());
+                }
+                delivery
+            }
+            DeliveryProvenance::GiftWrap => {
+                let raw_wrap: Vec<u8> = serde_json::from_value(
+                    entry
+                        .get("raw_wrap_event")
+                        .cloned()
+                        .ok_or_else(|| "gift-wrap delivery has no outer bytes".to_owned())?,
+                )
+                .map_err(|error| format!("gift-wrap delivery bytes are invalid: {error}"))?;
+                let wrap: Event = serde_json::from_slice(&raw_wrap)
+                    .map_err(|error| format!("gift-wrap delivery is not an event: {error}"))?;
+                let delivered = unwrap_mkt_record(&wrap, requester, &swp_profiles())?;
+                if delivered.record.event != *event {
+                    return Err("gift-wrap delivery restored another signed record".to_owned());
+                }
+                SignedRecordDelivery::from_delivered(&wrap, &delivered, observed_at)
+                    .map_err(|error| format!("gift-wrap delivery restore failed: {error}"))?
+            }
+            DeliveryProvenance::Direct => {
+                return Err("funded relay archive cannot contain direct provenance".to_owned());
+            }
+        };
+        restored.push(delivery);
+    }
+    Ok(restored)
 }
 
 fn expect_ok(websocket: &mut RelaySocket, event_id: &str, deadline: Instant) -> Result<(), String> {
@@ -3727,46 +3879,6 @@ fn sign_request(
     request
         .verify_signed(event)
         .map_err(|error| format!("request signature failed: {error}"))
-}
-
-fn fixture_profile(swap_type: &str, kind: u64, signer_role: Option<&str>) -> Result<Value, String> {
-    let fixtures: Value = serde_json::from_str(FULL_SESSION_FIXTURES)
-        .map_err(|error| format!("full-session fixture is invalid: {error}"))?;
-    let records = fixtures
-        .get("flows")
-        .and_then(|flows| flows.get(swap_type))
-        .and_then(|flow| flow.get("snapshot"))
-        .and_then(|snapshot| snapshot.get("signed_records"))
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("full-session fixture has no {swap_type} records"))?;
-    let content = records
-        .iter()
-        .find(|record| {
-            record.get("kind").and_then(Value::as_u64) == Some(kind)
-                && signer_role.is_none_or(|role| {
-                    record
-                        .get("content")
-                        .and_then(Value::as_str)
-                        .and_then(|content| serde_json::from_str::<Value>(content).ok())
-                        .and_then(|content| {
-                            content
-                                .get("mkt_swp")
-                                .and_then(|profile| profile.get("signer_role"))
-                                .and_then(Value::as_str)
-                                .map(str::to_owned)
-                        })
-                        .as_deref()
-                        == Some(role)
-                })
-        })
-        .and_then(|record| record.get("content"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("full-session fixture has no kind {kind} record"))?;
-    serde_json::from_str::<Value>(content)
-        .map_err(|error| format!("fixture record is invalid JSON: {error}"))?
-        .get("mkt_swp")
-        .cloned()
-        .ok_or_else(|| "fixture record has no MKT-SWP profile".to_owned())
 }
 
 fn record_profile(event: &Event) -> Result<Map<String, Value>, String> {

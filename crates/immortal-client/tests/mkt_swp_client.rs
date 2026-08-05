@@ -7,20 +7,23 @@ use std::{
 
 use immortal_client::{
     market::MarketSigner,
+    market::{WrapMaterial, unwrap_mkt_record, wrap_mkt_record},
     mkt_swp_client::{
         AwaitingVerification, BitcoinObservationRequest, Cancellation, ChainRecoveryState,
         CloseOutcome, CooperativePrevout, CooperativeSigningContext, CooperativeSigningMessage,
-        CooperativeTweak, DeliveryProvenance, ExitPackage, ExitSigningOutcome,
-        ExternalEffectRequest, ExternalEffectResult, FundingAction, FundingAuthorized,
-        FundingVerificationInput, InvoiceVerificationInput, KeylessEsploraExecutor,
-        LightningDispositionState, LightningProgressRequest, LightningProgressState,
-        LightningReadinessRequest, LightningReadinessState, LightningRecoveryState,
-        LocalBitcoinObservation, LocalLightningDisposition, LocalLightningProgress,
-        LocalLightningReadiness, LocalRailEvidence, LocalRecoveryObservation, MktSigningRequest,
-        ParticipantRole, QuotePolicy, RecoveryAction, RequesterPriceFeedView, RequesterSessionView,
-        RequesterVerificationState, SignedRecordDelivery, StatusState, SwapClientConfig,
-        SwapContractReferences, SwapRecordFactory, SwapSession, SwapType, TimeoutLadder,
-        VerifyBeforeFundInput, provider_support, validate_cooperative_signing_exchange,
+        CooperativeTweak, ExitPackage, ExitSigningOutcome, ExternalEffectRequest,
+        ExternalEffectResult, FundingAction, FundingAuthorized, FundingVerificationInput,
+        InvoiceVerificationInput, KeylessEsploraExecutor, LightningDispositionState,
+        LightningProgressRequest, LightningProgressState, LightningReadinessRequest,
+        LightningReadinessState, LightningRecoveryState, LocalBitcoinObservation,
+        LocalLightningDisposition, LocalLightningProgress, LocalLightningReadiness,
+        LocalRailEvidence, LocalRecoveryObservation, MktSigningRequest, ParticipantRole,
+        PriceFeedVerificationInput, QuotePolicy, RecoveryAction, RequesterContractLocalInputs,
+        RequesterContractSigningInput, RequesterOrderInput, RequesterPriceFeedView,
+        RequesterSessionView, RequesterTerminalState, RequesterVerificationState,
+        SignedRecordDelivery, StatusState, SwapClientConfig, SwapContractReferences,
+        SwapRecordFactory, SwapSession, SwapType, TimeoutLadder, VerifyBeforeFundInput,
+        provider_support, validate_cooperative_signing_exchange,
     },
     mkt_swp_verify::{
         Transaction, TransactionInput, TransactionOutput, musig2_aggregate_key, musig2_nonce_gen,
@@ -41,6 +44,7 @@ fn fixture_manifest_is_complete_and_unique() {
             immortal_client::mkt_swp_client::fixture_replay::replay_embedded_manifest().unwrap();
         assert_eq!(replay.cases, 62);
         assert_eq!(replay.custody_tripwires, 20);
+        immortal_client::mkt_swp_client::fixture_replay::replay_requester_api_fixture().unwrap();
     }
     assert_eq!(
         fixture["schema"],
@@ -97,15 +101,22 @@ fn requester_api_fixture_projects_terms_and_refuses_unsafe_signing() {
     let setup = Setup::new(&fixture);
     let session = build_session(&fixture, SwapType::Submarine, true);
     let records = session.signed_records();
-    let quote_only =
-        RequesterSessionView::from_signed_records(&setup.config, &records[..2], Vec::new())
-            .unwrap();
+    let quote_only = RequesterSessionView::from_signed_records(
+        &setup.config,
+        &records[..2],
+        delivery_receipts(&records[..2], 100),
+    )
+    .unwrap();
     assert_eq!(
         quote_only.verification.state,
         RequesterVerificationState::QuoteVerified
     );
-    let view =
-        RequesterSessionView::from_signed_records(&setup.config, records, Vec::new()).unwrap();
+    let view = RequesterSessionView::from_signed_records(
+        &setup.config,
+        records,
+        delivery_receipts(records, 100),
+    )
+    .unwrap();
     let expected = &api_fixture["submarine_quote"];
     assert_eq!(view.schema, api_fixture["view_schema"]);
     assert_eq!(view.quote.swap_type, SwapType::Submarine);
@@ -181,51 +192,70 @@ fn requester_api_fixture_projects_terms_and_refuses_unsafe_signing() {
         .unwrap();
     let factory = SwapRecordFactory::new(setup.config.clone()).unwrap();
     factory
-        .requester_order(rfq, quote, order.created_at, &"13".repeat(32), None)
+        .requester_order(RequesterOrderInput {
+            rfq,
+            quote,
+            created_at: order.created_at,
+            observed_at: order.created_at,
+            price_feed: None,
+            distinct: &"13".repeat(32),
+            selection: None,
+        })
         .unwrap()
         .verify_signed(order.clone())
         .unwrap();
     let local_contract =
         serde_json::from_str::<Value>(&requester_contract.content).unwrap()["mkt_swp"]["contract"]
             .clone();
+    let local_inputs: RequesterContractLocalInputs = serde_json::from_value(json!({
+        "effect_bindings": local_contract["effect_bindings"],
+        "exit_package_commitments": local_contract["exit_package_commitments"]
+    }))
+    .unwrap();
     let contract = factory
-        .requester_contract_draft(rfq, quote, order, local_contract)
+        .requester_contract_draft(rfq, quote, order, order.created_at, local_inputs)
         .unwrap();
     factory
-        .requester_contract(
+        .requester_contract(RequesterContractSigningInput {
             rfq,
             quote,
             order,
-            requester_contract.created_at,
-            &"14".repeat(32),
+            order_observed_at: order.created_at,
+            created_at: requester_contract.created_at,
+            distinct: &"14".repeat(32),
             contract,
-        )
+        })
         .unwrap()
         .verify_signed(requester_contract.clone())
         .unwrap();
     assert_eq!(
         factory
-            .requester_order(rfq, quote, 901, &"91".repeat(32), None)
-            .unwrap_err()
-            .code,
-        "swp_quote_expired"
-    );
-    assert_eq!(
-        factory
-            .requester_contract(
+            .requester_order(RequesterOrderInput {
                 rfq,
                 quote,
-                order,
-                901,
-                &"94".repeat(32),
-                serde_json::from_str::<Value>(&requester_contract.content).unwrap()["mkt_swp"]
-                    ["contract"]
-                    .clone(),
-            )
+                created_at: 901,
+                observed_at: 901,
+                price_feed: None,
+                distinct: &"91".repeat(32),
+                selection: None,
+            })
             .unwrap_err()
             .code,
         "swp_quote_expired"
     );
+    factory
+        .requester_contract(RequesterContractSigningInput {
+            rfq,
+            quote,
+            order,
+            order_observed_at: order.created_at,
+            created_at: 901,
+            distinct: &"94".repeat(32),
+            contract: serde_json::from_str::<Value>(&requester_contract.content).unwrap()
+                ["mkt_swp"]["contract"]
+                .clone(),
+        })
+        .unwrap();
 
     let mut timeline_records = records.to_vec();
     let first_status = signed(
@@ -265,9 +295,12 @@ fn requester_api_fixture_projects_terms_and_refuses_unsafe_signing() {
         &setup.provider,
     );
     timeline_records.extend([second_status, first_status]);
-    let timeline =
-        RequesterSessionView::from_signed_records(&setup.config, &timeline_records, Vec::new())
-            .unwrap();
+    let timeline = RequesterSessionView::from_signed_records(
+        &setup.config,
+        &timeline_records,
+        delivery_receipts(&timeline_records, 100),
+    )
+    .unwrap();
     let status_sequences = timeline
         .timeline
         .iter()
@@ -283,40 +316,567 @@ fn requester_delivery_archive_rejects_mutation_and_duplicate_members() {
     let session = build_session(&fixture, SwapType::Submarine, true);
     let event = session.signed_records().first().unwrap();
     let raw = serde_json::to_vec(event).unwrap();
-    let evidence = SignedRecordDelivery {
-        event_id: event.id.clone(),
-        raw_signed_event: raw.clone(),
-        wrap_event_id: None,
-        provenance: DeliveryProvenance::Direct,
-    };
+    let evidence = SignedRecordDelivery::from_direct(event, raw.clone(), 100).unwrap();
     evidence.validate(event).unwrap();
 
-    let mut mutated = evidence.clone();
+    let mut mutated = raw.clone();
     let event_id = event.id.as_bytes();
     let offset = mutated
-        .raw_signed_event
         .windows(event_id.len())
         .position(|window| window == event_id)
         .unwrap();
-    mutated.raw_signed_event[offset] ^= 1;
-    assert!(mutated.validate(event).is_err());
+    mutated[offset] ^= 1;
+    assert!(SignedRecordDelivery::from_direct(event, mutated, 100).is_err());
 
     let raw_text = String::from_utf8(raw).unwrap();
     let duplicate = raw_text.replacen('{', &format!("{{\"id\":\"{}\",", event.id), 1);
-    let duplicate = SignedRecordDelivery {
-        event_id: event.id.clone(),
-        raw_signed_event: duplicate.into_bytes(),
-        wrap_event_id: None,
-        provenance: DeliveryProvenance::Direct,
-    };
-    assert!(duplicate.validate(event).is_err());
+    assert!(SignedRecordDelivery::from_direct(event, duplicate.into_bytes(), 100).is_err());
+    let mut receipts = delivery_receipts(session.signed_records(), 100);
+    receipts[0] = evidence;
     assert!(
         RequesterSessionView::from_signed_records(
             &setup.config,
             session.signed_records(),
-            vec![evidence]
+            receipts,
         )
         .is_ok()
+    );
+}
+
+#[test]
+fn requester_price_feed_requires_exact_bytes_pointer_age_and_calculation() {
+    let fixture = fixture();
+    let setup = Setup::new(&fixture);
+    let session = build_session(&fixture, SwapType::Submarine, true);
+    let quote = RequesterSessionView::from_signed_records(
+        &setup.config,
+        session.signed_records(),
+        delivery_receipts(session.signed_records(), 100),
+    )
+    .unwrap()
+    .quote;
+    let raw_response = br#"{"data":{"price":"6543210"}}"#.to_vec();
+    let feed_value = json!({
+        "url":"https://prices.example.test/btc-usd",
+        "value_pointer":"/data/price",
+        "observed_value":"6543210",
+        "response_sha256":lower_hex(&Sha256::digest(&raw_response)),
+        "observed_at":100_u64,
+        "max_age_seconds":30_u64
+    });
+    let feed = RequesterPriceFeedView::from_pinned_terms(&feed_value)
+        .unwrap()
+        .unwrap();
+    let input = PriceFeedVerificationInput {
+        request_url: feed.url.clone(),
+        response_url: feed.url.clone(),
+        redirect_count: 0,
+        raw_response: raw_response.clone(),
+        observed_at: 102,
+    };
+    feed.verify(&input, &quote).unwrap();
+
+    for invalid in [
+        json!({"url":"https://user@example.test/feed"}),
+        json!({"url":"https://example.test/feed#value"}),
+        json!({"observed_value":"06543210"}),
+        json!({"value_pointer":"/data/~2price"}),
+    ] {
+        let mut candidate = feed_value.clone();
+        for (name, value) in invalid.as_object().unwrap() {
+            candidate[name] = value.clone();
+        }
+        assert_eq!(
+            RequesterPriceFeedView::from_pinned_terms(&candidate)
+                .unwrap_err()
+                .code,
+            "swp_price_feed_invalid"
+        );
+    }
+
+    let mut redirected = input.clone();
+    redirected.redirect_count = 1;
+    assert_eq!(
+        feed.verify(&redirected, &quote).unwrap_err().code,
+        "swp_price_feed_invalid"
+    );
+    let mut substituted = input.clone();
+    substituted.response_url = "https://mirror.example.test/btc-usd".to_owned();
+    assert_eq!(
+        feed.verify(&substituted, &quote).unwrap_err().code,
+        "swp_price_feed_invalid"
+    );
+    let mut digest_mismatch = input.clone();
+    digest_mismatch.raw_response.push(b' ');
+    assert_eq!(
+        feed.verify(&digest_mismatch, &quote).unwrap_err().code,
+        "swp_price_feed_invalid"
+    );
+    let mut stale = input.clone();
+    stale.observed_at = 131;
+    assert_eq!(
+        feed.verify(&stale, &quote).unwrap_err().code,
+        "swp_price_feed_stale"
+    );
+    let mut bad_pointer = feed.clone();
+    bad_pointer.value_pointer = "/data/missing".to_owned();
+    assert_eq!(
+        bad_pointer.verify(&input, &quote).unwrap_err().code,
+        "swp_price_feed_invalid"
+    );
+    let mut bad_calculation = quote;
+    bad_calculation.output_amount = "999".to_owned();
+    assert_eq!(
+        feed.verify(&input, &bad_calculation).unwrap_err().code,
+        "swp_price_feed_invalid"
+    );
+
+    let rfq_event = session
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == 39_604)
+        .unwrap();
+    let quote_event = session
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == 39_605)
+        .unwrap();
+    let mut profile =
+        serde_json::from_str::<Value>(&quote_event.content).unwrap()["mkt_swp"].clone();
+    profile["terms"]["price_feed"] = feed_value;
+    let factory = SwapRecordFactory::new(setup.config).unwrap();
+    let feed_quote = signed(
+        factory
+            .soft_quote(
+                quote_event.created_at,
+                &"79".repeat(32),
+                &rfq_event.id,
+                1_000,
+                profile,
+            )
+            .unwrap(),
+        &setup.provider,
+    );
+    factory
+        .requester_order(RequesterOrderInput {
+            rfq: rfq_event,
+            quote: &feed_quote,
+            created_at: 102,
+            observed_at: 102,
+            price_feed: Some(&input),
+            distinct: &"7a".repeat(32),
+            selection: None,
+        })
+        .unwrap();
+    assert_eq!(
+        factory
+            .requester_order(RequesterOrderInput {
+                rfq: rfq_event,
+                quote: &feed_quote,
+                created_at: 102,
+                observed_at: 102,
+                price_feed: None,
+                distinct: &"7b".repeat(32),
+                selection: None,
+            })
+            .unwrap_err()
+            .code,
+        "swp_price_feed_invalid"
+    );
+}
+
+#[test]
+fn requester_delivery_binds_verified_outer_wrap_and_is_mandatory() {
+    let fixture = fixture();
+    let setup = Setup::new(&fixture);
+    let session = build_session(&fixture, SwapType::Submarine, true);
+    let event = session.signed_records().first().unwrap();
+    let wrapped = wrap_mkt_record(
+        &serde_json::to_vec(event).unwrap(),
+        &setup.requester,
+        setup.provider.pubkey(),
+        WrapMaterial {
+            seal_created_at: 8,
+            wrap_created_at: 9,
+            seal_nonce: [3; 32],
+            wrap_nonce: [4; 32],
+            wrap_secret: [5; 32],
+        },
+    )
+    .unwrap();
+    let profiles = [immortal_client::domain::MktProfileSupport {
+        profile_id: "mkt-swp",
+        version: 1,
+        critical_members: &["mkt_swp"],
+        understood_members: &["mkt_swp"],
+    }];
+    let delivered = unwrap_mkt_record(&wrapped.event, &setup.provider, &profiles).unwrap();
+    SignedRecordDelivery::from_delivered(&wrapped.event, &delivered, 10).unwrap();
+
+    let mut forged_id = wrapped.event.clone();
+    forged_id.id = "ff".repeat(32);
+    assert!(SignedRecordDelivery::from_delivered(&forged_id, &delivered, 10).is_err());
+    let mut outer_mutation = wrapped.event.clone();
+    outer_mutation.content.push('x');
+    assert!(SignedRecordDelivery::from_delivered(&outer_mutation, &delivered, 10).is_err());
+
+    let mut missing = delivery_receipts(session.signed_records(), 100);
+    missing.pop();
+    assert_eq!(
+        RequesterSessionView::from_signed_records(
+            &setup.config,
+            session.signed_records(),
+            missing,
+        )
+        .unwrap_err()
+        .code,
+        "swp_unresolved_loss"
+    );
+}
+
+#[test]
+fn requester_status_sequence_is_bounded_before_gap_expansion() {
+    let fixture = fixture();
+    let setup = Setup::new(&fixture);
+    let session = build_session(&fixture, SwapType::Submarine, true);
+    let order = session
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == 39_606)
+        .unwrap();
+    let factory = SwapRecordFactory::new(setup.config).unwrap();
+    factory
+        .status(
+            ParticipantRole::Provider,
+            200,
+            &"71".repeat(32),
+            &order.id,
+            StatusState {
+                sequence: 511,
+                previous: Some(&"72".repeat(32)),
+                base_state: "accepted",
+                swp_state: "accepted",
+            },
+            Default::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        factory
+            .status(
+                ParticipantRole::Provider,
+                200,
+                &"73".repeat(32),
+                &order.id,
+                StatusState {
+                    sequence: 512,
+                    previous: Some(&"74".repeat(32)),
+                    base_state: "accepted",
+                    swp_state: "accepted",
+                },
+                Default::default(),
+            )
+            .unwrap_err()
+            .code,
+        "swp_status_gap"
+    );
+}
+
+#[test]
+fn requester_view_refuses_duplicate_orders_and_participant_contracts() {
+    let fixture = fixture();
+    let setup = Setup::new(&fixture);
+    let session = build_session(&fixture, SwapType::Submarine, true);
+    let factory = SwapRecordFactory::new(setup.config.clone()).unwrap();
+    let quote = session
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == 39_605)
+        .unwrap();
+    let order = session
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == 39_606)
+        .unwrap();
+    let order_profile = serde_json::from_str::<Value>(&order.content).unwrap()["mkt_swp"].clone();
+    let duplicate_order = signed(
+        factory
+            .order(
+                order.created_at + 1,
+                &"75".repeat(32),
+                &quote.id,
+                order_profile,
+            )
+            .unwrap(),
+        &setup.requester,
+    );
+    let mut duplicate_order_records = session.signed_records().to_vec();
+    duplicate_order_records.push(duplicate_order);
+    assert_eq!(
+        RequesterSessionView::from_signed_records(
+            &setup.config,
+            &duplicate_order_records,
+            delivery_receipts(&duplicate_order_records, 100),
+        )
+        .unwrap_err()
+        .code,
+        "swp_idempotency_conflict"
+    );
+
+    let requester_contract = session
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == 39_610 && event.pubkey == setup.config.requester_pubkey)
+        .unwrap();
+    let contract =
+        serde_json::from_str::<Value>(&requester_contract.content).unwrap()["mkt_swp"]["contract"]
+            .clone();
+    let duplicate_contract = signed(
+        factory
+            .swap_contract(
+                ParticipantRole::Requester,
+                requester_contract.created_at + 1,
+                &"76".repeat(32),
+                SwapContractReferences {
+                    order_id: &order.id,
+                    quote_id: &quote.id,
+                    accepted_status_id: None,
+                },
+                contract,
+            )
+            .unwrap(),
+        &setup.requester,
+    );
+    let mut duplicate_contract_records = session.signed_records().to_vec();
+    duplicate_contract_records.push(duplicate_contract);
+    assert_eq!(
+        RequesterSessionView::from_signed_records(
+            &setup.config,
+            &duplicate_contract_records,
+            delivery_receipts(&duplicate_contract_records, 100),
+        )
+        .unwrap_err()
+        .code,
+        "swp_idempotency_conflict"
+    );
+}
+
+#[test]
+fn requester_order_fails_closed_for_indicative_quotes() {
+    let fixture = fixture();
+    let setup = Setup::new(&fixture);
+    let session = build_session(&fixture, SwapType::Submarine, true);
+    let factory = SwapRecordFactory::new(setup.config).unwrap();
+    let rfq = session
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == 39_604)
+        .unwrap();
+    let quote = session
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == 39_605)
+        .unwrap();
+    let profile = serde_json::from_str::<Value>(&quote.content).unwrap()["mkt_swp"].clone();
+    let indicative = signed(
+        factory
+            .indicative_quote(quote.created_at, &"77".repeat(32), &rfq.id, 1_000, profile)
+            .unwrap(),
+        &setup.provider,
+    );
+    assert_eq!(
+        factory
+            .requester_order(RequesterOrderInput {
+                rfq,
+                quote: &indicative,
+                created_at: 102,
+                observed_at: 102,
+                price_feed: None,
+                distinct: &"78".repeat(32),
+                selection: None,
+            })
+            .unwrap_err()
+            .code,
+        "swp_order_selection_invalid"
+    );
+}
+
+#[test]
+fn requester_contract_composer_applies_each_allowed_order_selection() {
+    let fixture = fixture();
+    let selectable = json!({
+        "input_amount":{"minimum":"100000","maximum":"200000"},
+        "fee_payer":["requester","provider"],
+        "confirmation_policy":["one_confirmation"],
+        "public_receipt_consent":[false,true]
+    });
+    for (name, selected) in [
+        ("input_amount", json!("100000")),
+        ("fee_payer", json!("provider")),
+        ("confirmation_policy", json!("one_confirmation")),
+        ("public_receipt_consent", json!(true)),
+    ] {
+        let selection = json!({name:selected});
+        let session = build_session_with_options(
+            &fixture,
+            SwapType::Submarine,
+            BuildOptions {
+                quote_selectable: Some(&selectable),
+                order_selection: Some(&selection),
+                contract_selection: Some(&selection),
+                ..BuildOptions::default()
+            },
+        );
+        let setup = Setup::new(&fixture);
+        let factory = SwapRecordFactory::new(setup.config).unwrap();
+        let rfq = session
+            .signed_records()
+            .iter()
+            .find(|event| event.kind == 39_604)
+            .unwrap();
+        let quote = session
+            .signed_records()
+            .iter()
+            .find(|event| event.kind == 39_605)
+            .unwrap();
+        let order = session
+            .signed_records()
+            .iter()
+            .find(|event| event.kind == 39_606)
+            .unwrap();
+        let signed_contract = session
+            .signed_records()
+            .iter()
+            .find(|event| event.kind == 39_610 && event.pubkey == setup.requester.pubkey())
+            .unwrap();
+        let contract = serde_json::from_str::<Value>(&signed_contract.content).unwrap()["mkt_swp"]
+            ["contract"]
+            .clone();
+        let local_inputs: RequesterContractLocalInputs = serde_json::from_value(json!({
+            "effect_bindings":contract["effect_bindings"],
+            "exit_package_commitments":contract["exit_package_commitments"]
+        }))
+        .unwrap();
+        let draft = factory
+            .requester_contract_draft(rfq, quote, order, 102, local_inputs)
+            .unwrap();
+        assert_eq!(draft["order_selection"][name], selection[name], "{name}");
+        assert_eq!(draft[name], selection[name], "{name}");
+    }
+}
+
+#[test]
+fn requester_close_projection_distinguishes_terminal_loss_and_conflicts() {
+    let fixture = fixture();
+    let setup = Setup::new(&fixture);
+    let completed = terminal_close_session(&fixture, "completed");
+    let completed_view = RequesterSessionView::from_signed_records(
+        &setup.config,
+        completed.signed_records(),
+        delivery_receipts(completed.signed_records(), 100),
+    )
+    .unwrap();
+    assert_eq!(
+        completed_view.terminal.state,
+        RequesterTerminalState::Completed
+    );
+    assert!(completed_view.terminal.watch_terminal);
+    assert_eq!(
+        completed_view.verification.state,
+        RequesterVerificationState::TerminalVerified
+    );
+
+    let base = build_session(&fixture, SwapType::Submarine, true);
+    let factory = SwapRecordFactory::new(setup.config.clone()).unwrap();
+    let order_id = base
+        .signed_records()
+        .iter()
+        .find(|event| event.kind == 39_606)
+        .unwrap()
+        .id
+        .clone();
+    let terms = base_terms(&fixture, SwapType::Submarine);
+    let terminal = |distinct: &str, outcome: &str, loss_accounting: Value| {
+        signed(
+            factory
+                .close(
+                    ParticipantRole::Requester,
+                    300,
+                    distinct,
+                    &order_id,
+                    CloseOutcome {
+                        outcome,
+                        terminal_at: 300,
+                    },
+                    json!({"loss_accounting":loss_accounting}),
+                )
+                .unwrap(),
+            &setup.requester,
+        )
+    };
+    let project = |close: immortal_client::domain::Event| {
+        let mut records = base.signed_records().to_vec();
+        records.push(close);
+        RequesterSessionView::from_signed_records(
+            &setup.config,
+            &records,
+            delivery_receipts(&records, 100),
+        )
+        .unwrap()
+    };
+    let mut complete_failed = empty_loss_accounting(&terms);
+    complete_failed["evidence_refs"] =
+        json!([bound_failure_evidence(&terms, setup.requester.pubkey())]);
+    let failed = terminal(&"81".repeat(32), "failed", complete_failed.clone());
+    let failed_view = project(failed.clone());
+    assert_eq!(failed_view.terminal.state, RequesterTerminalState::Failed);
+    assert!(failed_view.terminal.watch_terminal);
+
+    let mut unresolved_principal = complete_failed.clone();
+    unresolved_principal["input_committed"] = json!("1");
+    unresolved_principal["principal_unresolved"] = json!("1");
+    let unresolved_failed = project(terminal(&"82".repeat(32), "failed", unresolved_principal));
+    assert!(!unresolved_failed.terminal.watch_terminal);
+
+    let mut incomplete_failed = complete_failed.clone();
+    incomplete_failed
+        .as_object_mut()
+        .unwrap()
+        .remove("miner_fee_paid");
+    let incomplete = project(terminal(&"83".repeat(32), "failed", incomplete_failed));
+    assert!(!incomplete.terminal.loss_accounting_complete);
+    assert!(!incomplete.terminal.watch_terminal);
+
+    for (index, outcome) in ["disputed", "unresolved"].into_iter().enumerate() {
+        let view = project(terminal(
+            &format!("{:02x}", 132 + index).repeat(32),
+            outcome,
+            complete_failed.clone(),
+        ));
+        assert!(!view.terminal.watch_terminal);
+    }
+
+    let unresolved = terminal(&"86".repeat(32), "unresolved", complete_failed);
+    let mut conflicting_records = base.signed_records().to_vec();
+    conflicting_records.extend([failed, unresolved]);
+    let conflicted = RequesterSessionView::from_signed_records(
+        &setup.config,
+        &conflicting_records,
+        delivery_receipts(&conflicting_records, 100),
+    )
+    .unwrap();
+    assert_eq!(
+        conflicted.terminal.state,
+        RequesterTerminalState::Conflicted
+    );
+    assert!(
+        conflicted
+            .timeline
+            .iter()
+            .filter(|entry| matches!(
+                entry.kind,
+                immortal_client::mkt_swp_client::RequesterTimelineKind::Close
+            ))
+            .all(|entry| entry.conflict.is_some())
     );
 }
 
@@ -2079,6 +2639,28 @@ fn cancellation_requires_two_exact_consents_and_refuses_funded_history() {
         cancelled.status_projection().unwrap().close_records.len(),
         1
     );
+    let cancellation_view = RequesterSessionView::from_signed_records(
+        &setup.config,
+        cancelled.signed_records(),
+        delivery_receipts(cancelled.signed_records(), 100),
+    )
+    .unwrap();
+    let accepted_entry = cancellation_view
+        .timeline
+        .iter()
+        .find(|entry| entry.event_id == accepted.id)
+        .unwrap();
+    assert!(accepted_entry.causal_event_ids.contains(&request.id));
+    assert!(accepted_entry.causal_event_ids.contains(&order_id));
+    let effective_entry = cancellation_view
+        .timeline
+        .iter()
+        .find(|entry| entry.event_id == effective.id)
+        .unwrap();
+    assert!(effective_entry.causal_event_ids.contains(&accepted.id));
+    assert!(effective_entry.causal_event_ids.contains(&request.id));
+    let close_entry = cancellation_view.timeline.last().unwrap();
+    assert!(close_entry.causal_event_ids.contains(&effective.id));
     let acceptor_effective_request = factory
         .cancel(
             ParticipantRole::Provider,
@@ -4670,6 +5252,16 @@ fn signed(request: MktSigningRequest, signer: &MarketSigner) -> immortal_client:
         request.content.clone(),
     );
     request.verify_signed(event).unwrap()
+}
+
+fn delivery_receipts(
+    records: &[immortal_client::domain::Event],
+    observed_at: u64,
+) -> Vec<SignedRecordDelivery> {
+    records
+        .iter()
+        .map(|event| SignedRecordDelivery::from_locally_signed(event, observed_at).unwrap())
+        .collect()
 }
 
 fn add_signed_taproot_witness(

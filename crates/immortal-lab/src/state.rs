@@ -85,6 +85,10 @@ impl LabPaths {
         self.root.join(format!("funded-{journey}-session.json"))
     }
 
+    pub fn funded_deliveries(&self, journey: &str) -> PathBuf {
+        self.root.join(format!("funded-{journey}-deliveries.json"))
+    }
+
     pub fn funded_secret(&self, journey: &str) -> PathBuf {
         self.root.join(format!("funded-{journey}-secret"))
     }
@@ -417,6 +421,42 @@ pub fn store_funded_snapshot(
         return Err("funded journey name is invalid".to_owned());
     }
     write_bytes(&paths.funded_snapshot(journey), snapshot)
+}
+
+pub fn store_funded_deliveries(
+    paths: &LabPaths,
+    journey: &str,
+    deliveries: &Value,
+) -> Result<(), String> {
+    if !journey
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        || !deliveries.is_array()
+    {
+        return Err("funded delivery archive is invalid".to_owned());
+    }
+    provider_support::reject_custody_material(deliveries)
+        .map_err(|error| format!("funded delivery archive contains custody material: {error}"))?;
+    let bytes = serde_json::to_vec(deliveries)
+        .map_err(|error| format!("could not encode funded delivery archive: {error}"))?;
+    if bytes.len() > 8 * 1024 * 1024 {
+        return Err("funded delivery archive exceeds its bound".to_owned());
+    }
+    write_json(&paths.funded_deliveries(journey), deliveries)
+}
+
+pub fn load_funded_deliveries(paths: &LabPaths, journey: &str) -> Result<Option<Value>, String> {
+    let path = paths.funded_deliveries(journey);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let value: Value = read_json(&path)?;
+    if !value.is_array() {
+        return Err("persisted funded delivery archive is not an array".to_owned());
+    }
+    provider_support::reject_custody_material(&value)
+        .map_err(|error| format!("persisted funded delivery archive is unsafe: {error}"))?;
+    Ok(Some(value))
 }
 
 pub fn store_funded_secret(
@@ -852,6 +892,27 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        fs::remove_dir_all(paths.root()).expect("scratch state should be removable");
+    }
+
+    #[test]
+    fn funded_delivery_provenance_round_trips_without_custody_material() {
+        let paths = scratch("funded-deliveries");
+        let archive = serde_json::json!([{
+            "event_id":"11".repeat(32),
+            "raw_signed_event":[123,125],
+            "raw_wrap_event":null,
+            "wrap_event_id":null,
+            "sender_pubkey":"22".repeat(32),
+            "observed_at":10,
+            "provenance":"locally_signed"
+        }]);
+        store_funded_deliveries(&paths, "submarine", &archive)
+            .expect("delivery provenance should persist");
+        assert_eq!(
+            load_funded_deliveries(&paths, "submarine").expect("delivery provenance should load"),
+            Some(archive)
+        );
         fs::remove_dir_all(paths.root()).expect("scratch state should be removable");
     }
 

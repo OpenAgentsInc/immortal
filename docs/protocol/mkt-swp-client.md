@@ -42,23 +42,41 @@ Close must reference its signer's exact contiguous last-valid terminal Status.
 
 `SwapRecordFactory::requester_order` validates the signed Quote against the
 exact RFQ and applies the minimum of the Quote, reservation, and profile
-acceptance deadlines before returning bytes for an external signature.
-`requester_contract_draft` binds Quote terms, causal IDs, and the reservation
-proof commitment; the wallet adds its executable funding and exit bindings,
-then `requester_contract` revalidates the RFQ, Quote, Order, complete Contract,
-and requester topology before returning a signing request. The funded lab uses
-this public path rather than owning a private Contract composer.
+acceptance deadlines to a trusted local observation time supplied separately
+from the untrusted event `created_at`. Draft and final Contract operations
+reuse that timely Order observation; a Contract arriving after the Quote
+deadline remains valid because Contracts do not expire. Indicative Quotes fail
+closed at this execution API. `requester_contract_draft` accepts typed public
+effect and exit-package inputs, binds Quote terms, selections, causal IDs, and
+the reservation proof commitment; the wallet adds its executable funding and
+exit bindings, then `requester_contract` revalidates the RFQ, Quote, Order,
+complete Contract, and requester topology before returning a signing request.
+The funded lab uses this public path rather than a private fixture Contract.
 
 `RequesterSessionView` is the custody-free consumer projection. Its versioned
 schema exposes asset IDs, canonical amounts, fee equation and payer, rounding,
-the complete optional pinned-feed tuple, structural timeline, independent
-Status gap/fork lanes, and a Contract-terms verdict. Local verify-before-fund
-remains mandatory and the view never reports funding authorization. Timeline
-order follows protocol phase and per-author sequence with event-ID tie-breaks;
-`created_at` remains display data. `SignedRecordDelivery` retains the exact
-domain-validated signed bytes and direct, local, or gift-wrap provenance. A
-gift-wrap delivery also retains its outer event ID, so an SDK can persist the
-archive without reconstructing JSON.
+the complete optional pinned-feed tuple, structural causal references,
+independent Status gap/fork lanes, typed terminal/loss state, Close conflicts,
+and a Contract-terms verdict. Local verify-before-fund remains mandatory and
+the view never reports funding authorization. Timeline order follows protocol
+phase and per-author sequence with event-ID tie-breaks; `created_at` remains
+display data. Each record requires exactly one `SignedRecordDelivery`.
+Receipts retain the exact domain-validated signed bytes, trusted observation
+time, sender, and direct, local, or gift-wrap provenance. Gift-wrap receipts
+also bind the complete validated outer event bytes and ID. Their constructors
+accept only locally signed bytes, exact direct bytes, or the non-forgeable
+result of the transport unwrap operation.
+The funded lab stores the receipt archive beside the client snapshot, records
+both artifact paths in every restartable checkpoint, and re-decrypts archived
+gift wraps before restoring the requester view.
+
+When a Quote pins `price_feed`, Order construction requires a host-supplied
+verification input. The operation rejects redirects, substitute response URLs,
+userinfo, fragments, malformed RFC 6901 pointers, duplicate JSON members,
+noncanonical decimal values, stale observations, response-digest changes, and
+an amount calculation that does not reproduce the signed Quote. The versioned
+`swp-requester-api-v1.json` artifact publishes operation schemas and exact-byte
+replay cases; the same replay runs in native tests and the WASM fixture probe.
 
 ## Verify before fund
 

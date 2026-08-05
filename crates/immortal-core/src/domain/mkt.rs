@@ -5654,6 +5654,10 @@ pub fn parse_unique_json(content: &str, subject: &str) -> Result<Value, String> 
     Ok(value.0)
 }
 
+pub fn parse_json_without_duplicate_members(content: &str, subject: &str) -> Result<Value, String> {
+    parse_unique_json(content, subject)
+}
+
 struct UniqueJsonValue(Value);
 
 impl<'de> Deserialize<'de> for UniqueJsonValue {

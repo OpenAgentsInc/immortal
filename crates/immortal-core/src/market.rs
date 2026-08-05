@@ -119,6 +119,7 @@ pub struct WrappedMktRecord {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DeliveredMktRecord {
     pub wrap_event_id: String,
     pub sender: String,

@@ -356,7 +356,6 @@ impl<M: ProviderMode> RelayActor<M> {
             records.sort_by(|left, right| {
                 recovery_rank(left, self.signer.pubkey())
                     .cmp(&recovery_rank(right, self.signer.pubkey()))
-                    .then_with(|| left.created_at.cmp(&right.created_at))
                     .then_with(|| left.id.cmp(&right.id))
             });
             let Some(actor) = self.recover_session_group(&session_id, records)? else {
@@ -1465,6 +1464,44 @@ mod tests {
             insert_recovery_record(&mut records, conflicting)
                 .expect_err("changed signed bytes must conflict")
                 .contains("conflicting signed bytes")
+        );
+    }
+
+    #[test]
+    fn recovery_order_is_causal_when_event_timestamps_are_reversed() {
+        let provider_pubkey = "11".repeat(32);
+        let event = |kind, created_at, tags| Event {
+            id: format!("{:02x}", kind % 256).repeat(32),
+            pubkey: provider_pubkey.clone(),
+            created_at,
+            kind,
+            tags,
+            content: "{}".to_owned(),
+            sig: "22".repeat(64),
+        };
+        let rfq = event(MKT_RFQ_KIND, 1_000, Vec::new());
+        let quote = event(MKT_QUOTE_KIND, 1, Vec::new());
+        assert!(recovery_rank(&rfq, &provider_pubkey) < recovery_rank(&quote, &provider_pubkey));
+
+        let status_zero = event(
+            MKT_STATUS_KIND,
+            1_000,
+            vec![immortal_core::domain::Tag::new(vec![
+                "seq".to_owned(),
+                "0".to_owned(),
+            ])],
+        );
+        let status_one = event(
+            MKT_STATUS_KIND,
+            1,
+            vec![immortal_core::domain::Tag::new(vec![
+                "seq".to_owned(),
+                "1".to_owned(),
+            ])],
+        );
+        assert!(
+            recovery_rank(&status_zero, &provider_pubkey)
+                < recovery_rank(&status_one, &provider_pubkey)
         );
     }
 
