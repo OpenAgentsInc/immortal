@@ -152,8 +152,8 @@ The retained mode-0600 record contains only platform data, public CLN node
 IDs and channel counts, the wallet pubkey, normalized public Quote terms, and
 the selection. Its recursive allowlist excludes credentials, custody fields,
 and raw signed or wrap events. This gate proves discovery and negotiation; its
-providers run `--no-spend`, so funded execution through both provider CLN
-nodes remains a separate #32 closure claim.
+providers run `--no-spend`. The separate funded topology gate below exercises
+the provider CLN nodes and durable databases.
 
 Regtest has no fee history for a useful `estimatesmartfee` result. The harness
 therefore sets `IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB=2` explicitly
@@ -412,6 +412,35 @@ fixture-pinned total order. The mode-0600 retained record contains only public
 node and event identifiers, normalized Quote terms, and the selection result;
 the disposable containers and private root were absent after cleanup.
 
-This record proves the reusable topology's multi-provider negotiation gate. It
-does not prove funded two-provider execution, a clean-machine run, or a public
-replacement claim.
+This negotiation record proves the reusable topology's multi-provider Quote
+gate. By itself it does not prove funded two-provider execution, a clean-machine
+run, or a public replacement claim.
+
+### 2026-08-05 local funded multi-provider topology record
+
+`scripts/test-lab-topology-funded.sh` passed on macOS 26.4 arm64. Its shared
+regtest namespace contained two authenticated relays, two independently keyed
+funded provider processes with separate Postgres databases and wallet seeds,
+and provider-a/provider-b/wallet CLN nodes with two normal channels each. Each
+provider mounted only its own read-only CLN RPC volume; the wallet driver
+mounted only the wallet RPC volume and client seed.
+
+One wallet verified two exact firm hard Quotes before creating either Order.
+The fixture-pinned total order selected one provider. The other completed
+request, accepted, and effective Cancel records followed by a cancelled Close,
+zero external spend, and a terminal reservation release. The selected session
+completed bilateral Contract verification, verify-before-fund authorization,
+one Bitcoin funding broadcast, a three-confirmation provider claim, a paid
+wallet Lightning invoice, and a completed Close. Independent queries against
+both provider databases showed one released reservation each, no pending or
+unresolved effects, and the expected completed/cancelled dispositions; both
+provider metrics ended ready with no pending or unresolved watches.
+
+The mode-0600 retained record contains normalized public identifiers, terms,
+counts, confirmations, and durable-state summaries. Raw transactions, signed
+records, gift wraps, credentials, and custody material stayed in the deleted
+mode-0700 private root. This #32 process gate deliberately shares one bitcoind
+namespace while isolating the two provider binaries, databases, wallet seeds,
+and CLN sockets. It does not satisfy #18's separate-bitcoind independence gate.
+This is local evidence; it does not establish clean macOS or Debian execution,
+live deployment, or a public replacement claim.

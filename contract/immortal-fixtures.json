@@ -96,6 +96,12 @@
       "scope": "client"
     },
     {
+      "path": "tests/fixtures/lab/topology-funded-v1.json",
+      "sha256": "f8c7ffaacfef91165fd4fa464b9de29a0e5a85e80a68f5e2aba9112be1dcb388",
+      "bytes": 2393,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/lab/topology-quotes-v1.json",
       "sha256": "e46fae23667e103f2c8c9a278e7e9d54ca40c6a87ff0021c278ba919e1b01289",
       "bytes": 2043,

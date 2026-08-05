@@ -117,4 +117,8 @@ notes
 - The owned discovery/Quote process proof is scripts/test-lab-topology-quotes.sh;
   its provider actors use --no-spend and its retained record makes no funded
   two-provider claim.
+- The owned funded process proof is scripts/test-lab-topology-funded.sh; it
+  uses the same public role graph with provider-owned CLN socket/seed mounts,
+  two provider databases, rank-two cancellation, and rank-one settlement. This
+  #32 gate shares bitcoind; #18 still requires separate bitcoind namespaces.
 MANIFEST

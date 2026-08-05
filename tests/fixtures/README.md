@@ -129,6 +129,13 @@ the pinned upstream applications.
   input, deterministic Quote ordering, execution bounds, and custody-free
   retained-record schema. It excludes funded two-provider and clean-host
   claims.
+- `lab/topology-funded-v1.json` pins the full local two-provider process gate:
+  exact hard-Quote comparison before Orders, rank-two bilateral cancellation
+  and durable release, rank-one funded submarine settlement, independent
+  chain/Lightning/provider-database evidence, and the custody-free retained
+  record. It deliberately shares bitcoind for #32 and leaves #18's separate
+  bitcoind namespaces unclaimed. Clean-host, deployment, and public replacement
+  claims remain false.
 - `nipmkt/swp-profile-v1.json` pins the relay-observable MKT-SWP v1 adoption
   at OpenAgents commit `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`:
   Offering grammar, kind-39610 profile binding and immutable wrapped

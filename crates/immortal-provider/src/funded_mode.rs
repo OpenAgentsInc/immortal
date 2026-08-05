@@ -6,8 +6,9 @@ use std::{
 };
 
 use immortal_client::mkt_swp_client::{
-    CloseOutcome, CooperativePrevout, CooperativeSigningAction, CooperativeSigningContext,
-    CooperativeSigningMessage, ExitPackage, MktSigningRequest, ParticipantRole, StatusState,
+    Cancellation, CloseOutcome, CooperativePrevout, CooperativeSigningAction,
+    CooperativeSigningContext, CooperativeSigningMessage, ExitPackage, MktSigningRequest,
+    ParticipantRole, StatusState,
     provider_support::{canonical_json, cooperative_signing_message, effect_id},
 };
 use immortal_core::{
@@ -3216,6 +3217,79 @@ impl ProviderMode for FundedMode {
                 .map_err(|error| format!("could not countersign requester contract: {error}"));
         }
 
+        let cancel_request = records.iter().find(|record| {
+            record.kind == MKT_CANCEL_KIND
+                && record.pubkey == requester_pubkey
+                && tag_value(record, "action") == Some("request")
+        });
+        if let Some(cancel_request) = cancel_request {
+            let response = records.iter().find(|record| {
+                record.kind == MKT_CANCEL_KIND
+                    && record.pubkey == session.config().provider_pubkey
+                    && matches!(tag_value(record, "action"), Some("accepted" | "rejected"))
+            });
+            if response.is_none() {
+                let session_id = session.config().session_id.clone();
+                let provider_state =
+                    latest_status_state(records, &session.config().provider_pubkey)?;
+                let requester_has_status = records.iter().any(|record| {
+                    record.kind == MKT_STATUS_KIND && record.pubkey == requester_pubkey
+                });
+                let pre_effect =
+                    funded_cancel_pre_effect(requester_has_status, provider_state.as_deref());
+                let action = if pre_effect { "accepted" } else { "rejected" };
+                let reason = if pre_effect {
+                    "requester_no_fund_selection"
+                } else {
+                    "settlement_already_started"
+                };
+                return session
+                    .provider_cancel(
+                        created_at,
+                        &deterministic_id(&format!("cancel-{action}"), &session_id),
+                        Cancellation {
+                            action,
+                            reason,
+                            request_id: Some(&cancel_request.id),
+                            accepted_id: None,
+                        },
+                        json!({"disposition":if pre_effect {
+                            "no_funding_authorized"
+                        } else {
+                            "settlement_already_started"
+                        }}),
+                    )
+                    .map(Some)
+                    .map_err(|error| format!("could not answer funded Cancel: {error}"));
+            }
+            let response =
+                response.ok_or_else(|| "funded Cancel response disappeared".to_owned())?;
+            if tag_value(response, "action") == Some("rejected") {
+                return Ok(None);
+            }
+            if !records.iter().any(|record| {
+                record.kind == MKT_CANCEL_KIND
+                    && record.pubkey == session.config().provider_pubkey
+                    && tag_value(record, "action") == Some("effective")
+            }) {
+                let session_id = session.config().session_id.clone();
+                return session
+                    .provider_cancel(
+                        created_at,
+                        &deterministic_id("cancel-effective", &session_id),
+                        Cancellation {
+                            action: "effective",
+                            reason: "requester_no_fund_selection",
+                            request_id: Some(&cancel_request.id),
+                            accepted_id: Some(&response.id),
+                        },
+                        json!({"disposition":"no_funding_authorized"}),
+                    )
+                    .map(Some)
+                    .map_err(|error| format!("could not make funded Cancel effective: {error}"));
+            }
+        }
+
         if records.iter().any(is_effective_cancel)
             && !has_kind_by_author(records, MKT_CLOSE_KIND, &session.config().provider_pubkey)
         {
@@ -4620,6 +4694,10 @@ fn is_effective_cancel(record: &Event) -> bool {
     record.kind == MKT_CANCEL_KIND && record.tag_values("action").eq(["effective"])
 }
 
+fn funded_cancel_pre_effect(requester_has_status: bool, provider_state: Option<&str>) -> bool {
+    !requester_has_status && matches!(provider_state, None | Some("accepted" | "lock_terms_ready"))
+}
+
 fn status_transaction_reference(status: &Event) -> Result<(String, u32), String> {
     let profile = record_profile(status)?;
     let transaction_id = status_transaction_id_from_profile(&profile)?;
@@ -5365,10 +5443,10 @@ mod tests {
         ChainTerms, HoldStateDecision, ReverseInvoiceCancellationAction, base_state,
         bind_reverse_funding_profile, bitcoin_spend_reference, canonical_json,
         chain_observation_from_response, decode_hex, execute_before_exclusive_deadline,
-        extract_hold_invoice, finalized_from_signed_message, hold_state_decision,
-        latest_status_state, lower_hex, require_chain_finality, required_chain_confirmations,
-        reverse_invoice_cancellation_action, reverse_spend_decision, settlement_destination_path,
-        sha256, status_transaction_id, status_transaction_reference,
+        extract_hold_invoice, finalized_from_signed_message, funded_cancel_pre_effect,
+        hold_state_decision, latest_status_state, lower_hex, require_chain_finality,
+        required_chain_confirmations, reverse_invoice_cancellation_action, reverse_spend_decision,
+        settlement_destination_path, sha256, status_transaction_id, status_transaction_reference,
         terminal_evidence_expectations, validate_executable_reverse_funding, validate_held_htlcs,
     };
 
@@ -5376,6 +5454,15 @@ mod tests {
         include_bytes!("../../../tests/fixtures/provider/provider-runtime-v1.json");
     const COOPERATIVE_RUNTIME_FIXTURE: &[u8] =
         include_bytes!("../../../tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json");
+
+    #[test]
+    fn funded_cancel_consent_is_limited_to_pre_effect_states() {
+        assert!(funded_cancel_pre_effect(false, None));
+        assert!(funded_cancel_pre_effect(false, Some("accepted")));
+        assert!(funded_cancel_pre_effect(false, Some("lock_terms_ready")));
+        assert!(!funded_cancel_pre_effect(true, Some("lock_terms_ready")));
+        assert!(!funded_cancel_pre_effect(false, Some("funding_observed")));
+    }
 
     #[test]
     fn finalized_signed_status_reconstructs_exact_broadcast_bytes_after_restart() {

@@ -10,20 +10,21 @@ use std::{
 };
 
 use immortal_client::mkt_swp_client::{
-    AwaitingVerification, ChainRecoveryState, DeliveryProvenance, ExitPackage, ExitSigningOutcome,
-    ExternalEffectRequest, FundingAction, FundingAuthorized, FundingVerificationInput,
-    InvoiceVerificationInput, LightningProgressState, LightningReadinessState,
-    LightningRecoveryState, LocalLightningProgress, LocalLightningReadiness, LocalRailEvidence,
-    LocalRecoveryObservation, ParticipantRole, RailObservationRequest, RecoveryAction,
-    RequesterContractLocalInputs, RequesterContractSigningInput, RequesterOrderInput,
-    SignedRecordDelivery, StatusState, SwapClientConfig, SwapRecordFactory, SwapSession, SwapType,
-    VerifyBeforeFundInput, provider_support,
+    AwaitingVerification, Cancellation, ChainRecoveryState, DeliveryProvenance, ExitPackage,
+    ExitSigningOutcome, ExternalEffectRequest, FundingAction, FundingAuthorized,
+    FundingVerificationInput, InvoiceVerificationInput, LightningProgressState,
+    LightningReadinessState, LightningRecoveryState, LocalLightningProgress,
+    LocalLightningReadiness, LocalRailEvidence, LocalRecoveryObservation, ParticipantRole,
+    RailObservationRequest, RecoveryAction, RequesterContractLocalInputs,
+    RequesterContractSigningInput, RequesterOrderInput, RequesterQuoteView, RequesterSessionView,
+    RequesterVerificationState, SignedRecordDelivery, StatusState, SwapClientConfig,
+    SwapRecordFactory, SwapSession, SwapType, VerifyBeforeFundInput, provider_support,
 };
 use immortal_core::{
     domain::{
-        Event, MKT_CLOSE_KIND, MKT_ORDER_KIND, MKT_QUOTE_KIND, MKT_STATUS_KIND, MKT_SWP_PROFILE_ID,
-        MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND, MktProfileSupport, Tag,
-        validate_mkt_public_event,
+        Event, MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_ORDER_KIND, MKT_QUOTE_KIND, MKT_STATUS_KIND,
+        MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND, MktProfileSupport,
+        Tag, validate_mkt_public_event,
     },
     market::{MarketSigner, WrapMaterial, unwrap_mkt_record_raw, wrap_mkt_record},
     mkt_swp_verify::{Transaction, TransactionInput, TransactionOutput, sha256},
@@ -60,6 +61,8 @@ const NETWORK_ID: &str = "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4";
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const JOURNEY_TIMEOUT: Duration = Duration::from_secs(180);
 const LIGHTNING_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+const FUNDED_TOPOLOGY_FIXTURE: &str =
+    include_str!("../../../tests/fixtures/lab/topology-funded-v1.json");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FundedJourney {
@@ -132,6 +135,29 @@ struct PendingSession {
     requester_funding: Option<SignedFundingTransaction>,
     journey_name: String,
     control: StepControl,
+}
+
+struct QuotedSession {
+    relay_url: String,
+    reader: RelayClient,
+    publisher: RelayClient,
+    requester: MarketSigner,
+    provider_pubkey: String,
+    factory: SwapRecordFactory,
+    config: SwapClientConfig,
+    records: Vec<Event>,
+    deliveries: Vec<SignedRecordDelivery>,
+    quote_observed_at: u64,
+    journey_name: String,
+    control: StepControl,
+}
+
+struct FundedTopologyCandidate {
+    environment_index: usize,
+    quote: RequesterQuoteView,
+    quoted: QuotedSession,
+    output_amount: u64,
+    maximum_total_fee: u64,
 }
 
 struct ReceivedPrivate {
@@ -402,6 +428,409 @@ pub fn run_funded_smoke() -> Result<(), String> {
         reverse,
         reverse_refund,
     )
+}
+
+pub fn run_funded_topology() -> Result<Value, String> {
+    validate_funded_topology_fixture()?;
+    if [
+        "IMMORTAL_LAB_STOP_AFTER",
+        "IMMORTAL_LAB_INJECTION",
+        "IMMORTAL_LAB_INJECT_AT",
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_some())
+    {
+        return Err("funded topology does not accept restart or injection controls".to_owned());
+    }
+    let runtime =
+        Runtime::new().map_err(|error| format!("could not start lab runtime: {error}"))?;
+    let environments = SmokeEnvironment::load_topology()?;
+    for environment in &environments {
+        verify_health(&environment.health_url)?;
+    }
+    let provider_pubkeys = environments
+        .iter()
+        .map(|environment| {
+            discover_provider(
+                &environment.relay_url,
+                &environment.requester,
+                JOURNEY_TIMEOUT,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if provider_pubkeys.len() != 2 || provider_pubkeys[0] == provider_pubkeys[1] {
+        return Err("funded topology did not discover two distinct providers".to_owned());
+    }
+
+    let client_input = fund_client_wallet(&runtime, &environments[0])?;
+    let invoice = runtime
+        .block_on(
+            environments[0].peer_cln.invoice(
+                &cln_id("topology-submarine-invoice")?,
+                Millisatoshi::from_satoshis(OUTPUT_AMOUNT_SAT)
+                    .map_err(|error| format!("topology invoice amount is invalid: {error}"))?,
+                "immortal-funded-topology-submarine",
+                "Immortal funded topology submarine",
+                86_400,
+            ),
+        )
+        .map_err(|error| format!("could not create topology submarine invoice: {error}"))?;
+    let refund_path = WalletPath::new(2, false, 0)
+        .map_err(|error| format!("topology refund path is invalid: {error}"))?;
+    let requester_key = environments[0]
+        .wallet
+        .derive_address(refund_path)
+        .map_err(|error| format!("could not derive topology refund key: {error}"))?
+        .internal_key;
+    let exit_destination = environments[0]
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 10)
+                .map_err(|error| format!("topology exit destination path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive topology exit destination: {error}"))?;
+
+    let journey_names = ["topology_a", "topology_b"];
+    let mut candidates = Vec::with_capacity(2);
+    for index in 0..2 {
+        let input = NegotiationInput {
+            journey_name: journey_names[index],
+            swap_type: "submarine",
+            payment_hash: &invoice.payment_hash,
+            invoice: Some(&invoice.bolt11),
+            requester_key,
+            requester_funding_input: Some(&client_input),
+            exit_destination_script_pubkey: &exit_destination.script_pubkey,
+        };
+        let quoted = prepare_quote(&environments[index], &provider_pubkeys[index], input)?;
+        candidates.push(funded_topology_candidate(index, quoted)?);
+    }
+    require_comparable_funded_quotes(&candidates[0].quote, &candidates[1].quote)?;
+    candidates.sort_by(compare_funded_topology_candidate);
+    let ranked = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            json!({
+                "rank":index + 1,
+                "relay_url":candidate.quoted.relay_url,
+                "provider_pubkey":candidate.quote.provider_pubkey,
+                "session_id":candidate.quoted.config.session_id,
+                "rfq_id":candidate.quote.rfq_id,
+                "quote_id":candidate.quote.quote_id,
+                "reservation_class":candidate.quote.reservation_class,
+                "input_amount":candidate.quote.input_amount,
+                "output_amount":candidate.quote.output_amount,
+                "maximum_total_fee":candidate.quote.fees.maximum_total_fee,
+                "effective_acceptance_deadline":candidate.quote.effective_acceptance_deadline,
+            })
+        })
+        .collect::<Vec<_>>();
+    let unselected = candidates
+        .pop()
+        .ok_or_else(|| "funded topology has no unselected candidate".to_owned())?;
+    let selected = candidates
+        .pop()
+        .ok_or_else(|| "funded topology has no selected candidate".to_owned())?;
+    if !candidates.is_empty() {
+        return Err("funded topology retained an unexpected third candidate".to_owned());
+    }
+
+    let unselected_input = NegotiationInput {
+        journey_name: journey_names[unselected.environment_index],
+        swap_type: "submarine",
+        payment_hash: &invoice.payment_hash,
+        invoice: Some(&invoice.bolt11),
+        requester_key,
+        requester_funding_input: Some(&client_input),
+        exit_destination_script_pubkey: &exit_destination.script_pubkey,
+    };
+    let unselected_environment = &environments[unselected.environment_index];
+    let unselected_quote = unselected.quote;
+    let unselected_session = finalize_negotiation(prepare_order(
+        unselected_environment,
+        unselected.quoted,
+        unselected_input,
+    )?)?;
+    let cancellation = cancel_unselected_funded_session(unselected_session, &unselected_quote)?;
+
+    let selected_input = NegotiationInput {
+        journey_name: journey_names[selected.environment_index],
+        swap_type: "submarine",
+        payment_hash: &invoice.payment_hash,
+        invoice: Some(&invoice.bolt11),
+        requester_key,
+        requester_funding_input: Some(&client_input),
+        exit_destination_script_pubkey: &exit_destination.script_pubkey,
+    };
+    let selected_environment = &environments[selected.environment_index];
+    let selected_provider_pubkey = selected.quote.provider_pubkey.clone();
+    let selected_quote_id = selected.quote.quote_id.clone();
+    let mut selected_session = finalize_negotiation(prepare_order(
+        selected_environment,
+        selected.quoted,
+        selected_input,
+    )?)?;
+    selected_session.wait_provider_state("accepted")?;
+    selected_session.wait_provider_state("lock_terms_ready")?;
+    let funding = selected_session
+        .requester_funding
+        .take()
+        .ok_or_else(|| "selected topology session has no funding transaction".to_owned())?;
+    let authorized = verify_submarine_before_fund(&selected_session, &invoice.bolt11, &funding)?;
+    selected_session.set_authorized_verifier(authorized)?;
+    let selected_journey = continue_submarine(
+        &runtime,
+        selected_environment,
+        selected_session,
+        &funding.raw_transaction,
+        Some(&funding.txid),
+        &invoice.payment_hash,
+    )?;
+    for environment in &environments {
+        verify_health(&environment.health_url)?;
+    }
+    let result = json!({
+        "schema":"openagents.immortal.funded-topology-result.v1",
+        "wallet_pubkey":environments[0].requester.pubkey(),
+        "candidates":ranked,
+        "selection":{
+            "policy":[
+                "output_amount_desc",
+                "maximum_total_fee_asc",
+                "provider_pubkey_asc",
+                "quote_id_asc"
+            ],
+            "selected_provider_pubkey":selected_provider_pubkey,
+            "selected_quote_id":selected_quote_id,
+        },
+        "unselected":cancellation,
+        "selected":selected_journey,
+    });
+    provider_support::reject_custody_material(&result)
+        .map_err(|error| format!("funded topology result contains custody material: {error}"))?;
+    Ok(result)
+}
+
+fn validate_funded_topology_fixture() -> Result<(), String> {
+    let fixture: Value = serde_json::from_str(FUNDED_TOPOLOGY_FIXTURE)
+        .map_err(|error| format!("funded topology fixture is invalid: {error}"))?;
+    if fixture.get("schema").and_then(Value::as_str)
+        != Some("openagents.immortal.lab-funded-topology.v1")
+        || fixture
+            .pointer("/topology/relay_count")
+            .and_then(Value::as_u64)
+            != Some(2)
+        || fixture
+            .pointer("/topology/provider_database_count")
+            .and_then(Value::as_u64)
+            != Some(2)
+        || fixture
+            .pointer("/topology/shared_bitcoind_namespace")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || fixture
+            .pointer("/topology/issue_18_requires_separate_bitcoind_namespaces")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || fixture.pointer("/selection/ordering")
+            != Some(&json!([
+                "output_amount_desc",
+                "maximum_total_fee_asc",
+                "provider_pubkey_asc",
+                "quote_id_asc"
+            ]))
+        || fixture
+            .pointer("/unselected/reservation_release_cause")
+            .and_then(Value::as_str)
+            != Some("terminal_close")
+    {
+        return Err("funded topology fixture differs from the executable contract".to_owned());
+    }
+    Ok(())
+}
+
+fn funded_topology_candidate(
+    environment_index: usize,
+    quoted: QuotedSession,
+) -> Result<FundedTopologyCandidate, String> {
+    let view = RequesterSessionView::from_signed_records(
+        &quoted.config,
+        &quoted.records,
+        quoted.deliveries.clone(),
+    )
+    .map_err(|error| format!("requester rejected a funded topology Quote: {error}"))?;
+    if view.verification.state != RequesterVerificationState::QuoteVerified
+        || view.verification.funding_authorized
+        || view.quote.quote_class != "firm"
+        || view.quote.reservation_class != "hard"
+        || unix_now()? > view.quote.effective_acceptance_deadline
+    {
+        return Err("funded topology candidate is not a fresh verified hard Quote".to_owned());
+    }
+    let output_amount = canonical_u64(&view.quote.output_amount)?;
+    let maximum_total_fee = canonical_u64(&view.quote.fees.maximum_total_fee)?;
+    Ok(FundedTopologyCandidate {
+        environment_index,
+        quote: view.quote,
+        quoted,
+        output_amount,
+        maximum_total_fee,
+    })
+}
+
+fn require_comparable_funded_quotes(
+    left: &RequesterQuoteView,
+    right: &RequesterQuoteView,
+) -> Result<(), String> {
+    if left.swap_type != right.swap_type
+        || left.input_asset_id != right.input_asset_id
+        || left.output_asset_id != right.output_asset_id
+        || left.input_amount != right.input_amount
+        || left.amount_equation != right.amount_equation
+        || left.rounding != right.rounding
+    {
+        return Err("funded topology Quotes are not economically comparable".to_owned());
+    }
+    Ok(())
+}
+
+fn compare_funded_topology_candidate(
+    left: &FundedTopologyCandidate,
+    right: &FundedTopologyCandidate,
+) -> std::cmp::Ordering {
+    right
+        .output_amount
+        .cmp(&left.output_amount)
+        .then_with(|| left.maximum_total_fee.cmp(&right.maximum_total_fee))
+        .then_with(|| left.quote.provider_pubkey.cmp(&right.quote.provider_pubkey))
+        .then_with(|| left.quote.quote_id.cmp(&right.quote.quote_id))
+}
+
+fn cancel_unselected_funded_session(
+    mut session: SessionContext,
+    quote: &RequesterQuoteView,
+) -> Result<Value, String> {
+    let session_id = session.verifier.config().session_id.clone();
+    let (request, request_raw) = sign_request(
+        session
+            .factory
+            .cancel(
+                ParticipantRole::Requester,
+                next_created_at(&session.verifier)?,
+                &digest(&format!("topology-cancel-request:{session_id}")),
+                &session.order.id,
+                Cancellation {
+                    action: "request",
+                    reason: "topology_quote_not_selected",
+                    request_id: None,
+                    accepted_id: None,
+                },
+                json!({"disposition":"no_funding_authorized"}),
+            )
+            .map_err(|error| format!("could not construct topology Cancel request: {error}"))?,
+        &session.requester,
+    )?;
+    session
+        .verifier
+        .ingest_signed_record(request.clone())
+        .map_err(|error| format!("requester rejected topology Cancel request: {error}"))?;
+    session.deliveries.push(
+        SignedRecordDelivery::from_locally_signed(request_raw.clone(), unix_now()?)
+            .map_err(|error| format!("could not archive topology Cancel request: {error}"))?,
+    );
+    publish_private(
+        &mut session.publisher,
+        &request_raw,
+        &session.requester,
+        &session.provider_pubkey,
+    )?;
+
+    let accepted = receive_matching_private(
+        &mut session.reader,
+        &session.requester,
+        &session_id,
+        JOURNEY_TIMEOUT,
+        |event| {
+            event.kind == MKT_CANCEL_KIND
+                && event.pubkey == session.provider_pubkey
+                && event.tag_values("action").eq(["accepted"])
+        },
+    )?;
+    let accepted_id = accepted.event.id.clone();
+    session.deliveries.push(accepted.delivery);
+    session
+        .verifier
+        .ingest_signed_record(accepted.event)
+        .map_err(|error| format!("requester rejected accepted topology Cancel: {error}"))?;
+
+    let effective = receive_matching_private(
+        &mut session.reader,
+        &session.requester,
+        &session_id,
+        JOURNEY_TIMEOUT,
+        |event| {
+            event.kind == MKT_CANCEL_KIND
+                && event.pubkey == session.provider_pubkey
+                && event.tag_values("action").eq(["effective"])
+        },
+    )?;
+    let effective_id = effective.event.id.clone();
+    session.deliveries.push(effective.delivery);
+    session
+        .verifier
+        .ingest_signed_record(effective.event)
+        .map_err(|error| format!("requester rejected effective topology Cancel: {error}"))?;
+
+    let close = receive_matching_private(
+        &mut session.reader,
+        &session.requester,
+        &session_id,
+        JOURNEY_TIMEOUT,
+        |event| {
+            event.kind == MKT_CLOSE_KIND
+                && event.pubkey == session.provider_pubkey
+                && event.tag_values("outcome").eq(["cancelled"])
+        },
+    )?;
+    let close_id = close.event.id.clone();
+    let profile = record_profile(&close.event)?;
+    if profile
+        .get("external_spend_effects")
+        .and_then(Value::as_u64)
+        != Some(0)
+        || profile
+            .get("loss_accounting")
+            .and_then(Value::as_object)
+            .and_then(|loss| loss.get("input_committed"))
+            .and_then(Value::as_str)
+            != Some("0")
+        || profile
+            .get("loss_accounting")
+            .and_then(Value::as_object)
+            .and_then(|loss| loss.get("reservation_released"))
+            .and_then(Value::as_str)
+            != Some(quote.output_amount.as_str())
+    {
+        return Err("unselected provider Close has invalid no-spend release accounting".to_owned());
+    }
+    session.deliveries.push(close.delivery);
+    session
+        .verifier
+        .ingest_signed_record(close.event)
+        .map_err(|error| format!("requester rejected cancelled topology Close: {error}"))?;
+    Ok(json!({
+        "provider_pubkey":session.provider_pubkey,
+        "session_id":session_id,
+        "order_id":session.order.id,
+        "cancel_request_id":request.id,
+        "cancel_accepted_id":accepted_id,
+        "cancel_effective_id":effective_id,
+        "close_id":close_id,
+        "reservation_released":quote.output_amount,
+        "external_spend_effects":0,
+        "outcome":"cancelled",
+    }))
 }
 
 fn journey_evidence(result: Value) -> Result<Value, String> {
@@ -944,13 +1373,41 @@ fn restartable_checkpoint(journey: FundedJourney, label: &str) -> bool {
 
 impl SmokeEnvironment {
     fn load() -> Result<Self, String> {
-        let control = StepControl::load()?;
         let relay_url = required_environment("IMMORTAL_PROVIDER_FUNDED_SMOKE_RELAY_URL")?;
         let health_url =
             required_environment("IMMORTAL_PROVIDER_FUNDED_SMOKE_PROVIDER_HEALTH_URL")?;
         let evidence_file = PathBuf::from(required_environment(
             "IMMORTAL_PROVIDER_FUNDED_SMOKE_EVIDENCE_FILE",
         )?);
+        Self::load_for(relay_url, health_url, evidence_file)
+    }
+
+    fn load_topology() -> Result<[Self; 2], String> {
+        let relay_urls = crate::relay::parse_topology_relay_urls(&required_environment(
+            "IMMORTAL_PROVIDER_FUNDED_TOPOLOGY_RELAY_URLS",
+        )?)?;
+        let health_urls = exact_topology_health_urls(&required_environment(
+            "IMMORTAL_PROVIDER_FUNDED_TOPOLOGY_HEALTH_URLS",
+        )?)?;
+        let evidence_file = PathBuf::from(required_environment(
+            "IMMORTAL_PROVIDER_FUNDED_SMOKE_EVIDENCE_FILE",
+        )?);
+        let [relay_a, relay_b] = relay_urls
+            .try_into()
+            .map_err(|_| "funded topology requires exactly two relay URLs".to_owned())?;
+        let [health_a, health_b] = health_urls;
+        Ok([
+            Self::load_for(relay_a, health_a, evidence_file.clone())?,
+            Self::load_for(relay_b, health_b, evidence_file)?,
+        ])
+    }
+
+    fn load_for(
+        relay_url: String,
+        health_url: String,
+        evidence_file: PathBuf,
+    ) -> Result<Self, String> {
+        let control = StepControl::load()?;
         let requester = load_or_create_identity(&LabPaths::from_env())?.signer()?;
         let wallet = ProviderWallet::load(
             required_environment("IMMORTAL_PROVIDER_FUNDED_SMOKE_CLIENT_WALLET_SEED_FILE")?,
@@ -1002,6 +1459,26 @@ impl SmokeEnvironment {
             control,
         })
     }
+}
+
+fn exact_topology_health_urls(value: &str) -> Result<[String; 2], String> {
+    let urls = value.split(',').map(str::to_owned).collect::<Vec<_>>();
+    let [first, second] = urls.as_slice() else {
+        return Err("funded topology requires exactly two provider health URLs".to_owned());
+    };
+    if first == second
+        || [first, second].iter().any(|url| {
+            url.len() > 2_048
+                || url.bytes().any(|byte| byte.is_ascii_control())
+                || !url.starts_with("http://127.0.0.1:")
+                || !url.ends_with("/healthz")
+        })
+    {
+        return Err(
+            "funded topology health URLs must be distinct bounded loopback URLs".to_owned(),
+        );
+    }
+    Ok([first.clone(), second.clone()])
 }
 
 fn drive_submarine(
@@ -1874,6 +2351,15 @@ fn prepare_negotiation(
     provider_pubkey: &str,
     input: NegotiationInput<'_>,
 ) -> Result<PendingSession, String> {
+    let quoted = prepare_quote(environment, provider_pubkey, input)?;
+    prepare_order(environment, quoted, input)
+}
+
+fn prepare_quote(
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    input: NegotiationInput<'_>,
+) -> Result<QuotedSession, String> {
     let session_id = digest(&format!(
         "funded-smoke:{}:{}",
         environment.control.run_id, input.journey_name
@@ -1939,6 +2425,52 @@ fn prepare_negotiation(
         .validate_crypto()
         .map_err(|error| format!("funded Quote signature is invalid: {error}"))?;
     records.push(quote.clone());
+    Ok(QuotedSession {
+        relay_url: environment.relay_url.clone(),
+        reader,
+        publisher,
+        requester: environment.requester.clone(),
+        provider_pubkey: provider_pubkey.to_owned(),
+        factory,
+        config,
+        records,
+        deliveries,
+        quote_observed_at,
+        journey_name: input.journey_name.to_owned(),
+        control: environment.control.clone(),
+    })
+}
+
+fn prepare_order(
+    environment: &SmokeEnvironment,
+    quoted: QuotedSession,
+    input: NegotiationInput<'_>,
+) -> Result<PendingSession, String> {
+    let QuotedSession {
+        relay_url,
+        reader,
+        mut publisher,
+        requester,
+        provider_pubkey,
+        factory,
+        config,
+        mut records,
+        mut deliveries,
+        quote_observed_at,
+        journey_name,
+        control,
+    } = quoted;
+    let rfq = records
+        .iter()
+        .find(|event| event.kind == immortal_core::domain::MKT_RFQ_KIND)
+        .cloned()
+        .ok_or_else(|| "quoted funded session has no RFQ".to_owned())?;
+    let quote = records
+        .iter()
+        .find(|event| event.kind == MKT_QUOTE_KIND)
+        .cloned()
+        .ok_or_else(|| "quoted funded session has no Quote".to_owned())?;
+    let session_id = config.session_id.clone();
     let order_created_at = next_created_at_records(&records)?;
     let (order, order_raw) = sign_request(
         factory
@@ -1951,19 +2483,14 @@ fn prepare_negotiation(
                 selection: None,
             })
             .map_err(|error| format!("could not construct funded Order: {error}"))?,
-        &environment.requester,
+        &requester,
     )?;
     records.push(order.clone());
     let order_delivery = SignedRecordDelivery::from_locally_signed(order_raw.clone(), unix_now()?)
         .map_err(|error| format!("could not archive funded Order provenance: {error}"))?;
     let order_observed_at = order_delivery.observed_at();
     deliveries.push(order_delivery);
-    publish_private(
-        &mut publisher,
-        &order_raw,
-        &environment.requester,
-        provider_pubkey,
-    )?;
+    publish_private(&mut publisher, &order_raw, &requester, &provider_pubkey)?;
     let swap_type = match input.swap_type {
         "submarine" => SwapType::Submarine,
         "reverse" => SwapType::Reverse,
@@ -1990,11 +2517,11 @@ fn prepare_negotiation(
         input.exit_destination_script_pubkey,
     )?;
     Ok(PendingSession {
-        relay_url: environment.relay_url.clone(),
+        relay_url,
         reader,
         publisher,
-        requester: environment.requester.clone(),
-        provider_pubkey: provider_pubkey.to_owned(),
+        requester,
+        provider_pubkey,
         factory,
         config,
         records,
@@ -2004,8 +2531,8 @@ fn prepare_negotiation(
         contract,
         exit_package_seed,
         requester_funding,
-        journey_name: input.journey_name.to_owned(),
-        control: environment.control.clone(),
+        journey_name,
+        control,
     })
 }
 
@@ -4436,6 +4963,28 @@ mod tests {
             FundedJourney::ReverseRefund,
             "claim_broadcast_recorded"
         ));
+    }
+
+    #[test]
+    fn funded_topology_fixture_matches_the_executable_contract() {
+        validate_funded_topology_fixture()
+            .expect("funded topology fixture should match the executable contract");
+        assert_eq!(
+            exact_topology_health_urls(
+                "http://127.0.0.1:9091/healthz,http://127.0.0.1:9092/healthz"
+            ),
+            Ok([
+                "http://127.0.0.1:9091/healthz".to_owned(),
+                "http://127.0.0.1:9092/healthz".to_owned()
+            ])
+        );
+        assert!(exact_topology_health_urls("http://127.0.0.1:9091/healthz").is_err());
+        assert!(
+            exact_topology_health_urls(
+                "http://127.0.0.1:9091/healthz,http://127.0.0.1:9091/healthz"
+            )
+            .is_err()
+        );
     }
 
     #[test]

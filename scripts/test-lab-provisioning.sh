@@ -8,9 +8,11 @@ scripts=(
   scripts/lab-extensions.sh
   scripts/lab-topology.sh
   scripts/test-lab-topology-quotes.sh
+  scripts/test-lab-topology-funded.sh
 )
 manifest="tests/fixtures/lab/provisioning-v1.json"
 topology_quote_manifest="tests/fixtures/lab/topology-quotes-v1.json"
+topology_funded_manifest="tests/fixtures/lab/topology-funded-v1.json"
 
 for script in "${scripts[@]}"; do
   bash -n "${script}"
@@ -83,12 +85,38 @@ jq -e '
   .claims.live_deployment_evidence == false
 ' "${topology_quote_manifest}" >/dev/null
 
+jq -e '
+  .schema == "openagents.immortal.lab-funded-topology.v1" and
+  .process_gate == "scripts/test-lab-topology-funded.sh" and
+  .wallet_command == "immortal-lab funded-topology" and
+  .topology.relay_count == 2 and
+  .topology.provider_count == 2 and
+  .topology.provider_database_count == 2 and
+  .topology.cln_roles == ["provider-a", "provider-b", "wallet"] and
+  .topology.shared_bitcoind_namespace == true and
+  .topology.scope == "issue_32_local_selection_cancellation_gate" and
+  .topology.issue_18_requires_separate_bitcoind_namespaces == true and
+  .selection.candidate_count == 2 and
+  .selection.required_reservation_class == "hard" and
+  .selection.orders_created_after_comparison == true and
+  .unselected.external_spend_effects == 0 and
+  .unselected.reservation_release_cause == "terminal_close" and
+  .retained_record.contains_raw_transactions == false and
+  .retained_record.contains_custody_material == false and
+  .claims.local_funded_two_provider_execution == true and
+  .claims.clean_host_evidence == false and
+  .claims.public_replacement == false
+' "${topology_funded_manifest}" >/dev/null
+
 scripts/lab-bitcoind.sh help | grep -q 'rbf-replace'
 scripts/lab-cln.sh help | grep -q 'wallet (3)'
 scripts/lab-extensions.sh manifest elementsd | jq -e '.issue == 27 and .state == "hook-only"' >/dev/null
 test -f "$(jq -r '.lightning.container_build_source' "${manifest}")"
 grep -q 'Command::TopologyQuotes' crates/immortal-lab/src/cli.rs
 grep -q 'RequesterSessionView::from_signed_records' crates/immortal-lab/src/steps.rs
+grep -q 'run_funded_topology' crates/immortal-lab/src/funded.rs
+grep -q 'provider-b-postgres' scripts/support/provider-funded/topology-compose.yaml
+grep -q 'PREPARE funded_topology_evidence' scripts/support/provider-funded/topology_evidence.sql
 
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/immortal-lab-provisioning-test.XXXXXX")"
 cleanup() {

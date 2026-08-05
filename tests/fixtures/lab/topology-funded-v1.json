@@ -1,0 +1,75 @@
+{
+  "schema": "openagents.immortal.lab-funded-topology.v1",
+  "process_gate": "scripts/test-lab-topology-funded.sh",
+  "wallet_command": "immortal-lab funded-topology",
+  "topology": {
+    "relay_count": 2,
+    "provider_count": 2,
+    "provider_database_count": 2,
+    "cln_roles": ["provider-a", "provider-b", "wallet"],
+    "shared_bitcoind_namespace": true,
+    "scope": "issue_32_local_selection_cancellation_gate",
+    "issue_18_requires_separate_bitcoind_namespaces": true,
+    "provider_rpc_mount": "own_cln_socket_read_only",
+    "provider_seed_mount": "own_wallet_seed_read_only"
+  },
+  "selection": {
+    "candidate_count": 2,
+    "required_quote_class": "firm",
+    "required_reservation_class": "hard",
+    "orders_created_after_comparison": true,
+    "ordering": [
+      "output_amount_desc",
+      "maximum_total_fee_asc",
+      "provider_pubkey_asc",
+      "quote_id_asc"
+    ]
+  },
+  "selected": {
+    "swap_type": "submarine",
+    "bilateral_contract_required": true,
+    "funding_broadcast_count": 1,
+    "terminal_outcome": "completed",
+    "chain_evidence": ["lockup_confirmed", "claim_confirmed"],
+    "lightning_evidence": "wallet_invoice_paid",
+    "reservation_release_cause": "terminal_close"
+  },
+  "unselected": {
+    "cancel_request_required": true,
+    "accepted_cancel_required": true,
+    "effective_cancel_required": true,
+    "terminal_outcome": "cancelled",
+    "external_spend_effects": 0,
+    "reservation_release_cause": "terminal_close"
+  },
+  "retained_record": {
+    "schema": "openagents.immortal.lab-funded-topology-record.v1",
+    "failure_schema": "openagents.immortal.lab-funded-topology-failure.v1",
+    "default_path": "target/lab-evidence/topology-funded-v1.json",
+    "file_mode": "0600",
+    "directory_mode": "0700",
+    "allowed_sections": [
+      "platform",
+      "topology",
+      "selection",
+      "selected",
+      "unselected",
+      "provider_databases"
+    ],
+    "contains_raw_transactions": false,
+    "contains_raw_signed_events": false,
+    "contains_raw_wrap_events": false,
+    "contains_credentials": false,
+    "contains_custody_material": false
+  },
+  "bounds": {
+    "maximum_runtime_seconds": 900,
+    "maximum_retained_record_bytes": 32768
+  },
+  "claims": {
+    "local_funded_two_provider_execution": true,
+    "clean_host_evidence": false,
+    "live_deployment_evidence": false,
+    "public_replacement": false
+  }
+}

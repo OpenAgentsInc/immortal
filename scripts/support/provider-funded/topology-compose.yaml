@@ -1,0 +1,102 @@
+services:
+  relay-b-postgres:
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: immortal_relay
+      POSTGRES_USER: immortal_relay
+      POSTGRES_PASSWORD_FILE: /run/immortal-private/relay-b-postgres-password
+    volumes:
+      - relay-b-postgres-data:/var/lib/postgresql/data
+      - type: bind
+        source: ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/relay-b-postgres-password
+        target: /run/immortal-private/relay-b-postgres-password
+        read_only: true
+    networks:
+      - smoke
+
+  provider-b-postgres:
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: immortal_provider
+      POSTGRES_USER: immortal_provider
+      POSTGRES_PASSWORD_FILE: /run/immortal-private/provider-b-postgres-password
+    volumes:
+      - provider-b-postgres-data:/var/lib/postgresql/data
+      - type: bind
+        source: ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/provider-b-postgres-password
+        target: /run/immortal-private/provider-b-postgres-password
+        read_only: true
+    networks:
+      - smoke
+
+  relay-b:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    env_file:
+      - ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/relay-b.env
+    depends_on:
+      - bitcoin
+      - relay-b-postgres
+    restart: "no"
+    network_mode: service:bitcoin
+
+  cln-provider-b:
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.cln-hold
+    command: ["--conf=/run/immortal-private/cln-provider-b.conf"]
+    environment:
+      LIGHTNINGD_NETWORK: regtest
+    depends_on:
+      - bitcoin
+    restart: "no"
+    volumes:
+      - cln-provider-b-data:/root/.lightning
+      - cln-provider-b-rpc:/rail-rpc
+      - type: bind
+        source: ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/cln-provider-b.conf
+        target: /run/immortal-private/cln-provider-b.conf
+        read_only: true
+    networks:
+      - smoke
+
+  provider-b:
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.provider
+      target: provider
+    command: ["run"]
+    env_file:
+      - ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/provider-b.env
+    network_mode: service:bitcoin
+    depends_on:
+      - bitcoin
+      - cln-provider-b
+      - provider-b-postgres
+      - relay-b
+      - alert-sink
+    restart: "no"
+    volumes:
+      - type: volume
+        source: cln-provider-b-rpc
+        target: /rail/cln-provider-b
+        read_only: true
+      - type: bind
+        source: ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/provider-b-wallet-seed
+        target: /run/immortal-private/provider-b-wallet-seed
+        read_only: true
+
+  driver:
+    command: ["funded-topology"]
+    env_file:
+      - ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/driver-topology.env
+    depends_on:
+      - provider
+      - provider-b
+
+volumes:
+  cln-provider-b-data:
+  cln-provider-b-rpc:
+  provider-b-postgres-data:
+  relay-b-postgres-data:

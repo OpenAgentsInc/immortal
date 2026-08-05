@@ -28,7 +28,7 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
-### 2026-08-05 — Codex 5.6 Sol, M13 multi-provider negotiation / issue #32
+### 2026-08-05 — Codex 5.6 Sol, M12 multi-provider negotiation / issue #32
 
 - Added the reusable three-CLN-role, two-relay, two-provider process gate. One
   requester discovers both independently keyed no-spend providers, retains the
@@ -38,9 +38,11 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   counts and identifiers, normalized Quote terms, and the selected Quote. The
   live macOS run passed with both channels normal on every CLN node and removed
   all disposable containers and the mode-0700 private root afterward.
-- This packet proves negotiation only. It makes no funded two-provider,
-  clean-host, deployment, or replacement claim; funded execution through the
-  reusable topology remains issue #32 work.
+- Added a separate funded gate with two provider databases and provider-owned
+  CLN socket/seed boundaries. It compares hard Quotes before Orders, cancels
+  and releases rank two with zero spend, and settles rank one through confirmed
+  Bitcoin claim and paid Lightning invoice. Clean-host, deployment, and public
+  replacement claims remain open.
 
 ### 2026-08-05 — Codex 5.6 Sol, M12 Boltz compatibility handoff / issue #15
 

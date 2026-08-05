@@ -18,6 +18,7 @@ primitives) against a loopback dev relay — the same wire
 | `rfq` | Creates (or reloads) the persisted lab identity, opens a session, builds an MKT-SWP RFQ through `SwapRecordFactory` from the pinned full-session fixture profile (`tests/fixtures/nipmkt/swp-full-sessions-v1.json`), signs it, gift-wraps it twice (counterparty + recovery), and publishes both wraps. `--swap-type submarine|reverse|chain`. |
 | `quote` | NIP-42-authenticates, reads the recipient-gated kind-1059 subscription (stored history first, then a bounded live wait), unwraps with `unwrap_mkt_record`, and persists the session's Quote. Safe to re-run until the Quote arrives. |
 | `topology-quotes` | Uses one wallet identity to discover exactly one independently keyed provider on each of two loopback relays, collect both wrapped firm Quotes, reconstruct both production `RequesterSessionView` projections from exact delivery evidence, and apply the fixture-pinned total ordering. Requires `IMMORTAL_LAB_RELAY_URLS`. |
+| `funded-topology` | Uses the funded requester engine to compare two exact hard Quotes before either Order exists, cancel and release rank two through bilateral signed records, then verify, fund, and settle rank one. The disposable process gate supplies its two relays/providers/databases and three CLN nodes. |
 | `verify` | The verify-before-fund gate rendered from the engine's real verification output: structural revalidation of the signed Quote bytes, quote/reservation/expiration tag grammar, staleness, `validate_quote_profile`, and `validate_quote_against_rfq`. Prints a JSON verdict; a failing gate exits non-zero and marks the session `verification_failed`. |
 | `fund` | Runs a funded submarine session through bilateral contract verification, a persisted engine funding authorization, exact regtest transaction broadcast, and locally verified terminal Close. |
 | `claim` | Runs a reverse session, persists its wallet-only preimage before RFQ publication, pays the provider hold invoice, and broadcasts the requester script-path claim. |
@@ -137,3 +138,13 @@ record at `target/lab-evidence/topology-quotes-v1.json`. Provider processes
 run the production no-spend actor for this negotiation gate, so the record
 claims signed discovery and Quote comparison and no funded two-provider rail
 execution.
+
+`scripts/test-lab-topology-funded.sh` extends the same topology with two funded
+provider databases, provider-owned read-only CLN socket volumes, and separate
+mode-0600 wallet seeds. It retains normalized Quote, cancellation, chain,
+Lightning, and durable-database evidence at
+`target/lab-evidence/topology-funded-v1.json`; raw transactions, signed events,
+wraps, credentials, and custody material remain in its deleted private root.
+This #32 gate deliberately shares one regtest bitcoind namespace while keeping
+provider custody and process state separate. It does not satisfy #18's later
+independent-provider gate, which requires separate bitcoind namespaces.
