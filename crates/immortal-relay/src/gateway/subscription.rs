@@ -98,7 +98,9 @@ enum SubscriptionState {
         events: Vec<PublishedEvent>,
         ids: HashSet<String>,
     },
-    Live,
+    Live {
+        high_water: i64,
+    },
 }
 
 struct ConnectionSink {
@@ -418,7 +420,13 @@ impl Hub {
                         .is_none_or(|ingest_seq| ingest_seq > high_water)
             })
             .collect::<Vec<_>>();
-        subscription.state = SubscriptionState::Live;
+        let live_high_water = live
+            .iter()
+            .filter_map(|published| published.ingest_seq)
+            .fold(high_water, i64::max);
+        subscription.state = SubscriptionState::Live {
+            high_water: live_high_water,
+        };
 
         for stored in &events {
             if !self.send_one(
@@ -476,10 +484,21 @@ impl Hub {
                         }
                     }
                 }
-                SubscriptionState::Live => outbound.push((
-                    key.connection_id,
-                    wire::event_message(&key.subscription_id, &published.event),
-                )),
+                SubscriptionState::Live { high_water } => {
+                    if published
+                        .ingest_seq
+                        .is_some_and(|ingest_seq| ingest_seq <= *high_water)
+                    {
+                        continue;
+                    }
+                    if let Some(ingest_seq) = published.ingest_seq {
+                        *high_water = ingest_seq;
+                    }
+                    outbound.push((
+                        key.connection_id,
+                        wire::event_message(&key.subscription_id, &published.event),
+                    ));
+                }
             }
         }
         for connection_id in overflowed_connections {
@@ -834,7 +853,7 @@ mod tests {
             1,
             5,
             vec![StoredEvent {
-                event: historical,
+                event: historical.clone(),
                 ingest_seq: 5,
             }],
         )
@@ -848,6 +867,17 @@ mod tests {
         assert_eq!(second, serde_json::json!(["EOSE", "sub"]));
         assert_eq!(third[0], "EVENT");
         assert_eq!(third[2]["id"], "b".repeat(64));
+        for (event, ingest_seq) in [(historical, 5), (after_boundary, 6)] {
+            hub.publish(
+                PublishedEvent {
+                    event: Arc::new(event),
+                    ingest_seq: Some(ingest_seq),
+                },
+                100,
+            )
+            .await
+            .unwrap();
+        }
         assert!(
             timeout(Duration::from_millis(20), channels.outbound.recv())
                 .await
