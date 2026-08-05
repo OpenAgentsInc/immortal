@@ -2304,6 +2304,399 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+
+    // Official BIP-327 vectors. Provenance and the replay/gap table live in
+    // `tests/fixtures/bip327/README.md`. Everything reachable through the
+    // public API is replayed from `tests/musig2_bip327.rs`; the cases below
+    // are the ones that need a caller-fixed secret nonce or the exact
+    // aggregate-nonce serialization, neither of which is — or should be —
+    // a production input.
+    const NONCE_GEN_VECTORS: &str =
+        include_str!("../../../tests/fixtures/bip327/nonce_gen_vectors.json");
+    const NONCE_AGG_VECTORS: &str =
+        include_str!("../../../tests/fixtures/bip327/nonce_agg_vectors.json");
+    const SIGN_VERIFY_VECTORS: &str =
+        include_str!("../../../tests/fixtures/bip327/sign_verify_vectors.json");
+    const SIG_AGG_VECTORS: &str =
+        include_str!("../../../tests/fixtures/bip327/sig_agg_vectors.json");
+    const TWEAK_VECTORS: &str = include_str!("../../../tests/fixtures/bip327/tweak_vectors.json");
+
+    #[test]
+    fn bip327_nonce_aggregation_valid_vectors() {
+        let vectors: Value = serde_json::from_str(NONCE_AGG_VECTORS).expect("nonce_agg vectors");
+        let cases = vectors["valid_test_cases"].as_array().expect("valid cases");
+        assert_eq!(
+            cases.len(),
+            2,
+            "upstream nonce_agg valid case count changed"
+        );
+
+        for (case_index, case) in cases.iter().enumerate() {
+            let nonces = vector_nonces(&vectors["pnonces"], &case["pnonce_indices"]);
+            let (first, second) =
+                musig2_aggregate_nonces(&nonces).expect("official nonce aggregation");
+            let mut aggregate = [0_u8; 66];
+            aggregate[..33].copy_from_slice(&first.serialize_extended());
+            aggregate[33..].copy_from_slice(&second.serialize_extended());
+            assert_eq!(
+                aggregate,
+                vector_fixed::<66>(vector_text(&case["expected"])),
+                "nonce_agg valid case {case_index} produced the wrong aggregate nonce",
+            );
+        }
+    }
+
+    #[test]
+    fn bip327_nonce_aggregation_error_vectors() {
+        let vectors: Value = serde_json::from_str(NONCE_AGG_VECTORS).expect("nonce_agg vectors");
+        let cases = vectors["error_test_cases"].as_array().expect("error cases");
+        assert_eq!(
+            cases.len(),
+            3,
+            "upstream nonce_agg error case count changed"
+        );
+
+        for (case_index, case) in cases.iter().enumerate() {
+            let nonces = vector_nonces(&vectors["pnonces"], &case["pnonce_indices"]);
+            assert!(
+                musig2_aggregate_nonces(&nonces).is_err(),
+                "nonce_agg error case {case_index} aggregated a malformed public nonce",
+            );
+        }
+    }
+
+    #[test]
+    fn bip327_nonce_generation_secnonce_vectors() {
+        let vectors: Value = serde_json::from_str(NONCE_GEN_VECTORS).expect("nonce_gen vectors");
+        let cases = vectors["test_cases"].as_array().expect("test cases");
+        let mut replayed = 0;
+
+        for (case_index, case) in cases.iter().enumerate() {
+            // The all-optional-inputs-absent case has no representable
+            // argument; see the fixture README.
+            if case["sk"].is_null()
+                || case["aggpk"].is_null()
+                || case["msg"].is_null()
+                || case["extra_in"].is_null()
+            {
+                continue;
+            }
+            let secret_key =
+                SecretKey::from_byte_array(vector_fixed::<32>(vector_text(&case["sk"])))
+                    .expect("official secret key");
+            let nonce = musig2_nonce_gen(
+                &secret_key,
+                &vector_fixed::<32>(vector_text(&case["aggpk"])),
+                &vector_decode(vector_text(&case["msg"])),
+                &vector_decode(vector_text(&case["extra_in"])),
+                vector_fixed::<32>(vector_text(&case["rand_"])),
+            )
+            .expect("official nonce generation");
+
+            let expected = vector_decode(vector_text(&case["expected_secnonce"]));
+            assert_eq!(expected.len(), 97);
+            assert_eq!(
+                nonce.first,
+                expected[..32],
+                "nonce_gen case {case_index} first secret nonce scalar differs",
+            );
+            assert_eq!(
+                nonce.second,
+                expected[32..64],
+                "nonce_gen case {case_index} second secret nonce scalar differs",
+            );
+            assert_eq!(
+                nonce.public_key,
+                expected[64..],
+                "nonce_gen case {case_index} bound public key differs",
+            );
+            replayed += 1;
+        }
+
+        assert_eq!(replayed, 3);
+    }
+
+    #[test]
+    fn bip327_partial_signing_valid_vectors() {
+        let vectors: Value =
+            serde_json::from_str(SIGN_VERIFY_VECTORS).expect("sign_verify vectors");
+        let secret_key =
+            SecretKey::from_byte_array(vector_fixed::<32>(vector_text(&vectors["sk"])))
+                .expect("official secret key");
+        let cases = vectors["valid_test_cases"].as_array().expect("valid cases");
+        assert_eq!(
+            cases.len(),
+            6,
+            "upstream sign_verify valid case count changed"
+        );
+
+        for (case_index, case) in cases.iter().enumerate() {
+            let keys = vector_keys(&vectors["pubkeys"], &case["key_indices"]);
+            let nonces = vector_nonces(&vectors["pnonces"], &case["nonce_indices"]);
+            let message = vector_decode(vector_text(
+                &vectors["msgs"][vector_index(&case["msg_index"])],
+            ));
+            let signer_index = vector_index(&case["signer_index"]);
+            let mut secret_nonce = vector_secret_nonce(
+                vector_text(&vectors["secnonces"][0]),
+                Some(nonces[signer_index]),
+            );
+
+            let partial = musig2_partial_sign(
+                &mut secret_nonce,
+                &secret_key,
+                &keys,
+                &nonces,
+                &[],
+                &message,
+            )
+            .unwrap_or_else(|error| {
+                panic!("sign_verify valid case {case_index} failed to sign: {error}")
+            });
+            assert_eq!(
+                partial,
+                vector_fixed::<32>(vector_text(&case["expected"])),
+                "sign_verify valid case {case_index} produced the wrong partial signature",
+            );
+            assert!(secret_nonce.is_consumed());
+        }
+    }
+
+    #[test]
+    fn bip327_tweaked_partial_signing_valid_vectors() {
+        let vectors: Value = serde_json::from_str(TWEAK_VECTORS).expect("tweak vectors");
+        let secret_key =
+            SecretKey::from_byte_array(vector_fixed::<32>(vector_text(&vectors["sk"])))
+                .expect("official secret key");
+        let message = vector_decode(vector_text(&vectors["msg"]));
+        let cases = vectors["valid_test_cases"].as_array().expect("valid cases");
+        assert_eq!(cases.len(), 5, "upstream tweak valid case count changed");
+
+        for (case_index, case) in cases.iter().enumerate() {
+            let keys = vector_keys(&vectors["pubkeys"], &case["key_indices"]);
+            let nonces = vector_nonces(&vectors["pnonces"], &case["nonce_indices"]);
+            let tweaks = vector_tweaks(
+                &vectors["tweaks"],
+                &case["tweak_indices"],
+                &case["is_xonly"],
+            );
+            let signer_index = vector_index(&case["signer_index"]);
+            let mut secret_nonce = vector_secret_nonce(
+                vector_text(&vectors["secnonce"]),
+                Some(nonces[signer_index]),
+            );
+
+            let partial = musig2_partial_sign(
+                &mut secret_nonce,
+                &secret_key,
+                &keys,
+                &nonces,
+                &tweaks,
+                &message,
+            )
+            .unwrap_or_else(|error| {
+                panic!(
+                    "tweak valid case {case_index} ({}) failed to sign: {error}",
+                    vector_text(&case["comment"]),
+                )
+            });
+            assert_eq!(
+                partial,
+                vector_fixed::<32>(vector_text(&case["expected"])),
+                "tweak valid case {case_index} produced the wrong partial signature",
+            );
+        }
+    }
+
+    #[test]
+    fn bip327_partial_signing_error_vectors() {
+        let vectors: Value =
+            serde_json::from_str(SIGN_VERIFY_VECTORS).expect("sign_verify vectors");
+        let secret_key =
+            SecretKey::from_byte_array(vector_fixed::<32>(vector_text(&vectors["sk"])))
+                .expect("official secret key");
+        let cases = vectors["sign_error_test_cases"]
+            .as_array()
+            .expect("sign error cases");
+        let mut replayed = 0;
+
+        for (case_index, case) in cases.iter().enumerate() {
+            // The three "aggnonce" cases have no aggregate-nonce parameter to
+            // corrupt here; `tests/musig2_bip327.rs` replays those bytes as
+            // per-signer nonces instead. The "pubkey" case is refused before
+            // any MuSig2 call because the key does not parse.
+            if case["error"]["type"] != "value" {
+                continue;
+            }
+            let indices = case["key_indices"].as_array().expect("key indices");
+            let keys = vector_keys(&vectors["pubkeys"], &case["key_indices"]);
+            let nonces: Vec<[u8; 66]> = (0..indices.len())
+                .map(|position| vector_fixed::<66>(vector_text(&vectors["pnonces"][position])))
+                .collect();
+            let message = vector_decode(vector_text(
+                &vectors["msgs"][vector_index(&case["msg_index"])],
+            ));
+            let secnonce =
+                vector_text(&vectors["secnonces"][vector_index(&case["secnonce_index"])]);
+            let mut secret_nonce = vector_secret_nonce(secnonce, Some(nonces[0]));
+
+            let outcome = musig2_partial_sign(
+                &mut secret_nonce,
+                &secret_key,
+                &keys,
+                &nonces,
+                &[],
+                &message,
+            );
+            assert!(
+                outcome.is_err(),
+                "sign_error case {case_index} ({}) produced a partial signature",
+                vector_text(&case["comment"]),
+            );
+            replayed += 1;
+        }
+
+        assert_eq!(
+            replayed, 2,
+            "expected the two non-aggnonce sign_error cases"
+        );
+    }
+
+    #[test]
+    fn bip327_signature_aggregation_binds_upstream_aggregate_nonces() {
+        // The sig_agg vectors publish the aggregate nonce alongside the
+        // per-signer nonces. Immortal derives the aggregate itself, so this
+        // pins that derivation against upstream rather than trusting the
+        // final signature to catch a mismatch.
+        let vectors: Value = serde_json::from_str(SIG_AGG_VECTORS).expect("sig_agg vectors");
+        for (case_index, case) in vectors["valid_test_cases"]
+            .as_array()
+            .expect("valid cases")
+            .iter()
+            .enumerate()
+        {
+            let nonces = vector_nonces(&vectors["pnonces"], &case["nonce_indices"]);
+            let (first, second) =
+                musig2_aggregate_nonces(&nonces).expect("official nonce aggregation");
+            let mut aggregate = [0_u8; 66];
+            aggregate[..33].copy_from_slice(&first.serialize_extended());
+            aggregate[33..].copy_from_slice(&second.serialize_extended());
+            assert_eq!(
+                aggregate,
+                vector_fixed::<66>(vector_text(&case["aggnonce"])),
+                "sig_agg valid case {case_index} disagrees with the upstream aggregate nonce",
+            );
+        }
+    }
+
+    fn vector_secret_nonce(encoded: &str, public_nonce: Option<[u8; 66]>) -> Musig2SecretNonce {
+        let bytes = vector_decode(encoded);
+        assert_eq!(bytes.len(), 97, "BIP-327 secnonce is 97 bytes");
+        let mut first = [0_u8; 32];
+        let mut second = [0_u8; 32];
+        let mut public_key = [0_u8; 33];
+        first.copy_from_slice(&bytes[..32]);
+        second.copy_from_slice(&bytes[32..64]);
+        public_key.copy_from_slice(&bytes[64..]);
+
+        // Where the vector's secret nonce is a live scalar pair, confirm it
+        // really is the preimage of the public nonce the same vector hands the
+        // other signers before feeding it to the signer.
+        if let (Some(expected), Ok(k1), Ok(k2)) = (
+            public_nonce,
+            SecretKey::from_byte_array(first),
+            SecretKey::from_byte_array(second),
+        ) {
+            let secp = Secp256k1::signing_only();
+            let mut derived = [0_u8; 66];
+            derived[..33].copy_from_slice(&PublicKey::from_secret_key(&secp, &k1).serialize());
+            derived[33..].copy_from_slice(&PublicKey::from_secret_key(&secp, &k2).serialize());
+            assert_eq!(
+                derived, expected,
+                "BIP-327 secnonce does not match the paired public nonce",
+            );
+        }
+
+        Musig2SecretNonce {
+            first,
+            second,
+            public_key,
+            public_nonce: public_nonce.unwrap_or([0_u8; 66]),
+            consumed: false,
+        }
+    }
+
+    fn vector_keys(pubkeys: &Value, indices: &Value) -> Vec<PublicKey> {
+        indices
+            .as_array()
+            .expect("key indices")
+            .iter()
+            .map(|index| {
+                PublicKey::from_slice(&vector_fixed::<33>(vector_text(
+                    &pubkeys[vector_index(index)],
+                )))
+                .expect("official public key")
+            })
+            .collect()
+    }
+
+    fn vector_nonces(pnonces: &Value, indices: &Value) -> Vec<[u8; 66]> {
+        indices
+            .as_array()
+            .expect("nonce indices")
+            .iter()
+            .map(|index| vector_fixed::<66>(vector_text(&pnonces[vector_index(index)])))
+            .collect()
+    }
+
+    fn vector_tweaks(tweaks: &Value, indices: &Value, is_xonly: &Value) -> Vec<Musig2Tweak> {
+        indices
+            .as_array()
+            .expect("tweak indices")
+            .iter()
+            .zip(is_xonly.as_array().expect("is_xonly flags"))
+            .map(|(index, xonly)| Musig2Tweak {
+                value: vector_fixed::<32>(vector_text(&tweaks[vector_index(index)])),
+                xonly: xonly.as_bool().expect("is_xonly is a boolean"),
+            })
+            .collect()
+    }
+
+    fn vector_text(value: &Value) -> &str {
+        value.as_str().expect("BIP-327 vector field is a string")
+    }
+
+    fn vector_index(value: &Value) -> usize {
+        usize::try_from(value.as_u64().expect("BIP-327 index is an integer"))
+            .expect("BIP-327 index fits in usize")
+    }
+
+    fn vector_decode(input: &str) -> Vec<u8> {
+        assert!(input.len() % 2 == 0, "hex has an even length");
+        input
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| (vector_nibble(pair[0]) << 4) | vector_nibble(pair[1]))
+            .collect()
+    }
+
+    fn vector_fixed<const N: usize>(input: &str) -> [u8; N] {
+        let decoded = vector_decode(input);
+        assert_eq!(decoded.len(), N, "hex field has the wrong byte length");
+        let mut output = [0_u8; N];
+        output.copy_from_slice(&decoded);
+        output
+    }
+
+    fn vector_nibble(byte: u8) -> u8 {
+        match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => panic!("BIP-327 vector must be hexadecimal"),
+        }
+    }
 
     #[test]
     fn bip327_partial_signing_vector_matches_and_consumes_nonce() {

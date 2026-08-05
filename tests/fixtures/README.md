@@ -162,6 +162,21 @@ names the NIP that owns the behavior.
   degradation, race-free standard relay semantics, the no-relay-handler Git
   signature case, and NIP-PL's fail-closed unadvertised executor posture.
 
+- `bip327/` holds upstream-exact copies of all seven official BIP-327 MuSig2
+  vector files from `bitcoin/bips` `master`, path `bip-0327/vectors/`, fetched
+  2026-08-05. They are unmodified upstream bytes, not Immortal-authored
+  fixtures, and they check the hand-written MuSig2 implementation in
+  `crates/immortal-core/src/mkt_swp_verify.rs` against the specification's own
+  adversarial cases. `bip327/README.md` carries the per-file digests, the
+  replay table, and the two recorded gaps: the optional `DeterministicSign`
+  algorithm is not implemented, and the `NonceGen` case with every optional
+  input absent has no representable argument. Consumed by
+  `crates/immortal-core/tests/musig2_bip327.rs` and, for the vectors that need
+  a caller-fixed secret nonce or the exact aggregate-nonce serialization, by
+  the `#[cfg(test)]` module in `mkt_swp_verify.rs`. These vectors are
+  client-scoped in the exported manifest and never compiled into a product
+  binary.
+
 - `nipwk/work-records.json` pins NIP-WK (kinds 32170-32173) and NIP-PI
   (kind 32200) structural validation: required tags, the
   `<work_ref>:evt:<seq>` and `<work_ref>:obj:<revision>` address grammars,

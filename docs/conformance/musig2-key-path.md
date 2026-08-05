@@ -18,3 +18,22 @@ shapes, refusal cases, custody boundary, and these footprint values. This is
 deterministic local conformance evidence. Runtime advertisement and public
 replacement claims remain gated on the funded #18 lab and live deployment
 evidence, respectively.
+
+## Specification conformance
+
+The MuSig2 primitives themselves are checked against the specification's own
+vectors, not only against Immortal fixtures. `tests/fixtures/bip327/` holds
+upstream-exact copies of all seven `bitcoin/bips` `bip-0327/vectors/` files.
+`crates/immortal-core/tests/musig2_bip327.rs` replays every class reachable
+through the public API — key aggregation, ordinary and x-only tweaks, nonce
+generation, partial-signature verification, and signature aggregation, with
+their invalid-contribution, out-of-range, and point-at-infinity error cases.
+The `#[cfg(test)]` module in `crates/immortal-core/src/mkt_swp_verify.rs`
+replays the classes that require a caller-fixed secret nonce or the exact
+aggregate-nonce serialization; no production entry point accepts either.
+
+Two gaps are recorded rather than approximated: BIP-327's optional
+`DeterministicSign` algorithm is not implemented, and the `NonceGen` case with
+every optional input absent has no representable argument because
+`musig2_nonce_gen` requires all of them. `tests/fixtures/bip327/README.md`
+carries the provenance, digests, and the full replay/gap table.
