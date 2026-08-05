@@ -140,6 +140,67 @@ test "$(cut -d- -f1-4 "${test_dir}/relay-b-postgres-name")" = \
 test "$(cat "${test_dir}/relay-a-postgres-name")" != \
   "$(cat "${test_dir}/relay-b-postgres-name")"
 
+mock_runtime_dir="${test_dir}/mock-runtime"
+mkdir -m 0700 "${mock_runtime_dir}"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'printf "%s\n" "$*" >>"${IMMORTAL_DEV_RELAY_MOCK_COMMAND_LOG}"' \
+  'case "${1:-}" in' \
+  'run)' \
+  '  test "${IMMORTAL_DEV_RELAY_MOCK_CASE}" != run-failure' \
+  '  printf "%s\n" created-container-id' \
+  '  ;;' \
+  'exec) exit 1 ;;' \
+  'container)' \
+  '  test "${2:-}" = inspect' \
+  '  if test "${IMMORTAL_DEV_RELAY_MOCK_CASE}" = mismatch; then' \
+  '    printf "%s\n" replacement-container-id' \
+  '  else' \
+  '    printf "%s\n" created-container-id' \
+  '  fi' \
+  '  ;;' \
+  'rm)' \
+  '  printf "%s\n" "$*" >>"${IMMORTAL_DEV_RELAY_MOCK_DELETE_LOG}"' \
+  '  ;;' \
+  '*) exit 1 ;;' \
+  'esac' >"${mock_runtime_dir}/docker"
+printf '%s\n' '#!/bin/sh' 'exit 0' >"${mock_runtime_dir}/sleep"
+chmod 0700 "${mock_runtime_dir}/docker" "${mock_runtime_dir}/sleep"
+
+run_dev_relay_cleanup_case() {
+  local case_name="$1" command_log delete_log output_log exit_status
+  command_log="${test_dir}/${case_name}-commands"
+  delete_log="${test_dir}/${case_name}-deletes"
+  output_log="${test_dir}/${case_name}-output"
+  : >"${command_log}"
+  : >"${delete_log}"
+  set +e
+  (
+    unset IMMORTAL_DEV_DATABASE_URL
+    PATH="${mock_runtime_dir}:/usr/bin:/bin" \
+      IMMORTAL_DEV_RELAY_MOCK_CASE="${case_name}" \
+      IMMORTAL_DEV_RELAY_MOCK_COMMAND_LOG="${command_log}" \
+      IMMORTAL_DEV_RELAY_MOCK_DELETE_LOG="${delete_log}" \
+      scripts/dev-relay.sh
+  ) >"${output_log}" 2>&1
+  exit_status=$?
+  set -e
+  test "${exit_status}" -ne 0
+}
+
+run_dev_relay_cleanup_case run-failure
+test ! -s "${test_dir}/run-failure-deletes"
+test "$(grep -c '^run ' "${test_dir}/run-failure-commands")" -eq 1
+
+run_dev_relay_cleanup_case mismatch
+test ! -s "${test_dir}/mismatch-deletes"
+grep -Fq 'no longer matches the created container; refusing teardown' \
+  "${test_dir}/mismatch-output"
+
+run_dev_relay_cleanup_case exact-match
+test "$(grep -c '^rm -f immortal-dev-postgres-' "${test_dir}/exact-match-deletes")" -eq 1
+
 IMMORTAL_LAB_DIR="${test_dir}/lab" \
   IMMORTAL_LAB_STATE_DIR="${test_dir}/wallet" \
   scripts/lab-topology.sh >"${test_dir}/topology"

@@ -6,17 +6,30 @@ relay_port="${IMMORTAL_DEV_RELAY_PORT:-18080}"
 relay_url="ws://127.0.0.1:${relay_port}"
 cluster_dir=""
 container_name=""
+container_id=""
 container_runtime=""
 relay_pid=""
 
 cleanup() {
+  local exit_status=$?
   trap - EXIT INT TERM
   if test -n "${relay_pid}" && kill -0 "${relay_pid}" 2>/dev/null; then
     kill -TERM "${relay_pid}"
     wait "${relay_pid}" || true
   fi
-  if test -n "${container_name}"; then
-    "${container_runtime}" rm -f "${container_name}" >/dev/null 2>&1 || true
+  if test -n "${container_id}"; then
+    current_container_id="$(
+      "${container_runtime}" container inspect --format '{{.Id}}' \
+        "${container_name}" 2>/dev/null || true
+    )"
+    if test -n "${current_container_id}" && test "${current_container_id}" != "${container_id}"; then
+      echo "dev-relay: ${container_name} no longer matches the created container; refusing teardown" >&2
+      exit_status=1
+    elif test -n "${current_container_id}" \
+      && ! "${container_runtime}" rm -f "${container_name}" >/dev/null; then
+      echo "dev-relay: could not remove its disposable Postgres container" >&2
+      exit_status=1
+    fi
   fi
   if test -n "${cluster_dir}"; then
     if test -f "${cluster_dir}/data/postmaster.pid"; then
@@ -24,6 +37,7 @@ cleanup() {
     fi
     rm -rf "${cluster_dir}"
   fi
+  exit "${exit_status}"
 }
 trap cleanup EXIT INT TERM
 
@@ -61,12 +75,22 @@ else
       exit 1
     fi
     container_name="immortal-dev-postgres-$PPID-$$"
-    "${container_runtime}" run --rm -d \
-      --name "${container_name}" \
-      -e POSTGRES_HOST_AUTH_METHOD=trust \
-      -e POSTGRES_DB=immortal_dev \
-      -p 127.0.0.1::5432 \
-      postgres:17-alpine >/dev/null
+    if ! created_container_id="$(
+      "${container_runtime}" run --rm -d \
+        --name "${container_name}" \
+        -e POSTGRES_HOST_AUTH_METHOD=trust \
+        -e POSTGRES_DB=immortal_dev \
+        -p 127.0.0.1::5432 \
+        postgres:17-alpine
+    )"; then
+      echo "dev-relay: could not start its disposable Postgres container" >&2
+      exit 1
+    fi
+    if test -z "${created_container_id}"; then
+      echo "dev-relay: container runtime returned no Postgres container id" >&2
+      exit 1
+    fi
+    container_id="${created_container_id}"
     for _ in $(seq 1 100); do
       if "${container_runtime}" exec "${container_name}" pg_isready -U postgres -d immortal_dev >/dev/null 2>&1; then
         break
