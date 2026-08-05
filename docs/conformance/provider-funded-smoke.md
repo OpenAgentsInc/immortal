@@ -339,6 +339,15 @@ process, restores its health, then writes an atomic mode-0600 acknowledgement
 whose run id, checkpoint, injection, and restored state exactly match the
 request.
 
+The acknowledgement is also a wallet transport boundary. Relay loss replaces
+and NIP-42 authenticates the requester's reader and publisher sockets, then
+resubscribes without discarding stored history; signed-record replay remains
+the idempotency authority. Provider crash retains the authenticated wallet
+sockets and waits for the restarted provider through the same subscription.
+The provider restores an exact durable terminal reservation release before it
+ingests the matching provider-authored Close; a missing or conflicting release
+halts recovery.
+
 This runner has static fixture and shell coverage in this packet. Its live
 cases are not recorded here until they are executed. A local `--all` success
 would remain local process evidence: it does not establish a clean macOS or

@@ -97,6 +97,7 @@ struct SmokeEnvironment {
 }
 
 struct SessionContext {
+    relay_url: String,
     reader: RelayClient,
     publisher: RelayClient,
     requester: MarketSigner,
@@ -223,7 +224,7 @@ impl StepControl {
         label: &str,
         safe_to_stop: bool,
         details: Value,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let qualified = format!("{journey}:{label}");
         let checkpoint = FundedCheckpoint {
             schema: "openagents.immortal.lab-checkpoint.v1".to_owned(),
@@ -295,7 +296,7 @@ impl StepControl {
                             continue_path.display()
                         )
                     })?;
-                    return Ok(());
+                    return Ok(true);
                 }
                 thread::sleep(Duration::from_millis(200));
             }
@@ -304,7 +305,7 @@ impl StepControl {
                 continue_path.display()
             ));
         }
-        Ok(())
+        Ok(false)
     }
 }
 
@@ -790,6 +791,7 @@ fn restore_authorized_session(
         latest_requester_status(verifier.signed_records(), environment.requester.pubkey())?;
     Ok(Some(RestoredSession {
         session: SessionContext {
+            relay_url: environment.relay_url.clone(),
             reader,
             publisher,
             requester: environment.requester.clone(),
@@ -1594,7 +1596,7 @@ fn continue_reverse_after_funding_effect(
 fn resume_reverse_claim(
     runtime: &Runtime,
     environment: &SmokeEnvironment,
-    session: SessionContext,
+    mut session: SessionContext,
     checkpoint: &FundedCheckpoint,
     journey_name: &str,
     payment_hash: String,
@@ -2037,6 +2039,7 @@ fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, Strin
     let verifier = SwapSession::from_signed_records(config, records, vec![exit_package])
         .map_err(|error| format!("funded verifier rejected negotiated session: {error}"))?;
     let mut session = SessionContext {
+        relay_url: environment.relay_url.clone(),
         reader,
         publisher,
         requester,
@@ -2126,12 +2129,12 @@ impl SessionContext {
         self.persist_authorized("funding_authorized", true)
     }
 
-    fn persist_authorized(&self, label: &str, safe_to_stop: bool) -> Result<(), String> {
+    fn persist_authorized(&mut self, label: &str, safe_to_stop: bool) -> Result<(), String> {
         self.persist_authorized_details(label, safe_to_stop, json!({}))
     }
 
     fn persist_authorized_details(
-        &self,
+        &mut self,
         label: &str,
         safe_to_stop: bool,
         details: Value,
@@ -2163,16 +2166,33 @@ impl SessionContext {
                     .to_string(),
             ),
         );
-        self.control.checkpoint(
+        let recovered_external_process = self.control.checkpoint(
             &self.journey_name,
             label,
             safe_to_stop,
             Value::Object(checkpoint_details),
-        )
+        )?;
+        if recovered_external_process && self.control.injection == Some(HarnessInjection::RelayLoss)
+        {
+            self.reconnect_relay()?;
+        }
+        Ok(())
     }
 
-    fn persist_terminal(&self, label: &str, result: Value) -> Result<(), String> {
+    fn persist_terminal(&mut self, label: &str, result: Value) -> Result<(), String> {
         self.persist_authorized_details(label, true, json!({"result": result}))
+    }
+
+    fn reconnect_relay(&mut self) -> Result<(), String> {
+        let now = unix_now()?;
+        let mut reader = connect(&self.relay_url)?;
+        authenticate(&mut reader, &self.requester, &self.relay_url, now)?;
+        subscribe(&mut reader, self.requester.pubkey())?;
+        let mut publisher = connect(&self.relay_url)?;
+        authenticate(&mut publisher, &self.requester, &self.relay_url, now)?;
+        self.reader = reader;
+        self.publisher = publisher;
+        Ok(())
     }
 
     fn persist_snapshot(&self) -> Result<(), String> {
@@ -4268,6 +4288,20 @@ mod tests {
                 name
             );
         }
+        assert_eq!(
+            injections[4].get("wallet_recovery").and_then(Value::as_str),
+            Some("reauthenticate_reader_and_publisher_then_resubscribe_without_history_discard")
+        );
+        assert_eq!(
+            injections[5].get("wallet_recovery").and_then(Value::as_str),
+            Some("retain_authenticated_relay_sockets")
+        );
+        assert_eq!(
+            injections[5]
+                .get("provider_recovery")
+                .and_then(Value::as_str),
+            Some("restore_durable_reservation_release_before_ingesting_provider_close")
+        );
     }
 
     #[test]

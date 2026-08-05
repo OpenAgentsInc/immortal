@@ -2858,6 +2858,34 @@ impl ProviderMode for FundedMode {
         session: &mut ProviderSession,
         record: &Event,
     ) -> Result<(), String> {
+        if record.kind == MKT_CLOSE_KIND
+            && record.pubkey == session.config().provider_pubkey
+            && session.reservation().is_some()
+            && !session.reservation_released()
+        {
+            let reservation_id = session
+                .reservation()
+                .ok_or_else(|| "provider Close recovery lost its reservation".to_owned())?
+                .reservation_id
+                .clone();
+            let stored = self
+                .handle
+                .block_on(self.store.reservation(&reservation_id))
+                .map_err(|error| format!("could not recover provider Close release: {error}"))?
+                .ok_or_else(|| "provider Close has no durable reservation".to_owned())?;
+            if stored.session_id != session.config().session_id
+                || stored.state != "released"
+                || stored.release_cause.as_deref() != Some("terminal_close")
+            {
+                return Err("provider Close has no matching durable terminal release".to_owned());
+            }
+            session
+                .restore_terminal_close_release(record, |request| {
+                    self.release_reservation_effect(request, record.created_at)
+                })
+                .map_err(|error| format!("could not restore provider Close release: {error}"))?;
+            return Ok(());
+        }
         if record.kind != MKT_QUOTE_KIND
             || record.pubkey != session.config().provider_pubkey
             || !record.tag_values("reservation").eq(["hard"])

@@ -90,13 +90,16 @@
       "name": "relay_loss",
       "owner": "external_script",
       "phase": "any_safe_checkpoint",
-      "expected": "acknowledged_restart_then_continue"
+      "expected": "acknowledged_restart_then_continue",
+      "wallet_recovery": "reauthenticate_reader_and_publisher_then_resubscribe_without_history_discard"
     },
     {
       "name": "provider_crash",
       "owner": "external_script",
       "phase": "any_safe_checkpoint",
-      "expected": "acknowledged_restart_then_continue"
+      "expected": "acknowledged_restart_then_continue",
+      "wallet_recovery": "retain_authenticated_relay_sockets",
+      "provider_recovery": "restore_durable_reservation_release_before_ingesting_provider_close"
     }
   ],
   "forbidden_checkpoint_members": [

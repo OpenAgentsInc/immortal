@@ -99,6 +99,14 @@ mode-0600 acknowledgement. Harness-owned rejection cases additionally require
 an empty Bitcoin mempool, no provider Lightning payment, and no funded
 checkpoint before and after the refusal.
 
+After an acknowledged relay loss, the wallet replaces and NIP-42 authenticates
+both relay sockets, then resubscribes the reader without draining stored
+history. This lets the existing signed-session/idempotency layer process any
+record published during recovery. A provider crash does not replace the
+wallet's still-authenticated relay sockets. Provider recovery restores a
+durable terminal reservation release before replaying its matching signed
+Close, and fails closed if PostgreSQL does not contain that exact release.
+
 ## Safety rails
 
 - Only `ws://` loopback relay URLs are accepted (same refusal as

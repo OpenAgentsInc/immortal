@@ -951,6 +951,46 @@ impl ProviderSession {
         Ok((request, receipt))
     }
 
+    pub(crate) fn restore_terminal_close_release<F>(
+        &mut self,
+        close: &Event,
+        mut release: F,
+    ) -> Result<ProviderEffectReceipt, SwapClientError>
+    where
+        F: FnMut(&ProviderEffectRequest) -> Result<ProviderEffectReceipt, String>,
+    {
+        validate_session_event(&self.config, close)?;
+        if close.kind != MKT_CLOSE_KIND || close.pubkey != self.config.provider_pubkey {
+            return Err(provider_error(
+                "swp_reservation_release_invalid",
+                "provider recovery release requires a provider-authored Close",
+            ));
+        }
+        self.validate_idempotency_key(close)?;
+        let mut candidate = self.signed_records.clone();
+        candidate.push(close.clone());
+        validate_close_history(
+            &self.config,
+            &candidate,
+            close,
+            self.reservation.as_ref(),
+            self.released,
+            true,
+        )?;
+        self.release_reservation_inner(
+            ReservationReleaseCause::TerminalClose,
+            close.created_at,
+            true,
+            &mut release,
+        )?
+        .ok_or_else(|| {
+            provider_error(
+                "swp_reservation_release_invalid",
+                "provider recovery Close has no reservation to release",
+            )
+        })
+    }
+
     pub fn release_reservation<F>(
         &mut self,
         cause: ReservationReleaseCause,
@@ -3390,6 +3430,7 @@ pub mod fixture_replay {
                 )?;
                 provider.ingest_signed(effective)?;
             } else {
+                let recovery_snapshot = provider.persist()?;
                 let (close_request, receipt) = provider.provider_close_with_release(
                     103,
                     &"29".repeat(32),
@@ -3415,6 +3456,26 @@ pub mod fixture_replay {
                 }
                 let close = sign_private(close_request, &setup.provider)?;
                 provider.ingest_signed(close)?;
+
+                let mut recovered = ProviderSession::restore(&recovery_snapshot)?;
+                let recovered_close = provider
+                    .signed_records()
+                    .last()
+                    .ok_or_else(|| invalid("provider Close disappeared"))?;
+                let recovered_receipt =
+                    recovered.restore_terminal_close_release(recovered_close, |request| {
+                        Ok(ProviderEffectReceipt {
+                            effect_id: request.effect_id.clone(),
+                            request_sha256: request.request_sha256.clone(),
+                            external_reference: "fixture-release:1".into(),
+                            result_sha256: "30".repeat(32),
+                        })
+                    })?;
+                if recovered_receipt.external_reference != "fixture-release:1" {
+                    return Err(invalid("recovered Close release receipt drifted"));
+                }
+                recovered.ingest_signed(recovered_close.clone())?;
+                ProviderSession::restore(&recovered.persist()?)?;
             }
         }
         let receipt = provider.release_reservation(cause, 250, |request| {
