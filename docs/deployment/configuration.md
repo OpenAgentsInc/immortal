@@ -197,6 +197,21 @@ provider Postgres, relay state, or the contract artifact.
 | `IMMORTAL_PROVIDER_CHAIN_STALE_SECONDS` | `30` | Maximum time without a successful chain observation, 5–3,600 seconds and greater than the poll interval. |
 | `IMMORTAL_PROVIDER_MINIMUM_CONFIRMATIONS` | `1` | Base finality requirement, 1–144 confirmations. |
 | `IMMORTAL_PROVIDER_REORG_SAFETY_BLOCKS` | `6` | Additional confirmation safety window, 1–144 blocks. |
+| `IMMORTAL_PROVIDER_SPREAD_BPS` | `0` | Provider spread, 0–1,000 basis points. |
+| `IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB` | unset | Explicit 1–2,000 sat/vB override when `estimatesmartfee` has no usable estimate. Regtest and the lab set this; production without a live estimate or this override refuses to quote. |
+| `IMMORTAL_PROVIDER_QUOTE_MIN_SAT` | `10000` | Smallest input amount the pricing engine may quote. |
+| `IMMORTAL_PROVIDER_QUOTE_MAX_SAT` | `1000000` | Largest input amount before live capacity clamps the limit, at most 2,100,000,000,000,000 satoshis. |
+| `IMMORTAL_PROVIDER_QUOTE_EXPIRY_SECONDS` | `300` | Quote acceptance window, 1–3,600 seconds, further bounded by RFQ and invoice expiry. |
+| `IMMORTAL_PROVIDER_RESERVATION_TIER` | `hard` | Pricing reservation policy. Funded mode accepts `hard`; `none` and `soft` fail startup because funded rail effects require a durable reserve. |
+| `IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM` | `0` | Submarine outbound-Lightning routing budget, 0–100,000 parts per million. |
+
+Each Quote uses a live conservative two-block `estimatesmartfee` result when
+available. The engine rounds the JSON decimal BTC/kvB value upward to an exact
+integer sat/vB without floating-point arithmetic. The signed miner budget uses
+the production script-path weights: 155 vB for claim, 139 vB for refund, 155
+vB for provider lockup, 294 vB for reverse lockup-plus-refund, and 310 vB for
+the chain worst case. The configured spread, routing budget, quote window, and
+unallocated reservation-ledger capacity determine the remaining terms.
 
 `GET /healthz` returns `200 ready` only when startup completed and there are
 no pending effects, unresolved effects, or unresolved watch jobs. `GET

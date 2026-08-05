@@ -122,6 +122,10 @@ const LOCK_BUCKET_SQL: &str = r#"
 SELECT asset_id, total_capacity, allocated_capacity, allocation_sequence
 FROM provider_capacity_bucket WHERE bucket_id = $1 FOR UPDATE
 "#;
+const SELECT_AVAILABLE_CAPACITY_SQL: &str = r#"
+SELECT total_capacity - allocated_capacity
+FROM provider_capacity_bucket WHERE bucket_id = $1
+"#;
 const UPDATE_BUCKET_RESERVE_SQL: &str = r#"
 UPDATE provider_capacity_bucket
 SET allocated_capacity = allocated_capacity + $2,
@@ -1029,6 +1033,21 @@ impl ProviderStore {
             ));
         }
         Ok(())
+    }
+
+    pub async fn available_capacity(&self, bucket_id: &str) -> Result<u64, ProviderStoreError> {
+        self.ensure_current()?;
+        validate_identifier(bucket_id, "capacity bucket")?;
+        let statement = self.client.prepare(SELECT_AVAILABLE_CAPACITY_SQL).await?;
+        let available = self
+            .client
+            .query_opt(&statement, &[&bucket_id])
+            .await?
+            .ok_or_else(|| ProviderStoreError::NotFound(bucket_id.to_owned()))?
+            .get::<_, i64>(0);
+        u64::try_from(available).map_err(|_| {
+            ProviderStoreError::MigrationDrift("available capacity became negative".to_owned())
+        })
     }
 
     pub async fn observe_utxo(

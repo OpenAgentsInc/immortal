@@ -7,6 +7,11 @@ use immortal_core::{
 use immortal_provider::{
     ProviderSession, ReservationConfirmation, ReservationRequest,
     bitcoind::ChainTip,
+    pricing::{
+        CapacityBounds, FeerateObservation, PricingConfig, QuoteRequest, QuoteSide,
+        ReservationTier, SwapType as PricingSwapType, derive_quote, feerate_for_quote,
+        funding_feerate_from_quote_budget,
+    },
     quote::{
         BuiltFundedQuote, FundedQuotePolicy, QuoteWalletAllocation, ReplacementPolicy,
         build_funded_quote,
@@ -208,6 +213,134 @@ fn fixture_builds_dynamic_submarine_and_reverse_hard_quotes() {
         let signed = sign_private(request, &setup.provider);
         assert!(provider.ingest_signed(signed).expect("ingest hard Quote"));
     }
+}
+
+#[test]
+fn pricing_decision_feeds_the_exact_funded_reverse_quote_terms()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = fixture();
+    let invoice = fixture["invoice"]
+        .as_str()
+        .ok_or("Quote fixture invoice is missing")?;
+    let now = fixture["now"]
+        .as_u64()
+        .ok_or("Quote fixture timestamp is missing")?;
+    let mut case = fixture["cases"]
+        .as_array()
+        .and_then(|cases| cases.get(1))
+        .cloned()
+        .ok_or("reverse Quote fixture case is missing")?;
+    case["maximum_total_fee"] = Value::String("500".to_owned());
+    let setup = Setup::new(0xd0);
+    let rfq = signed_rfq(&setup, &case, invoice, now, None, None, None, None);
+    let config = PricingConfig {
+        spread_bps: 100,
+        fallback_feerate_sat_per_vb: Some(1),
+        min_swap_sat: 1,
+        max_swap_sat: 10_000,
+        quote_expiry_seconds: 60,
+        reservation_tier: ReservationTier::Hard,
+        lightning_routing_fee_ppm: 0,
+    };
+    let feerate = feerate_for_quote(&config, None)?;
+    let capacity = CapacityBounds {
+        capacity_bucket_id: "btc-pricing-integration".to_owned(),
+        available_capacity: "5000".to_owned(),
+    };
+    let derived = derive_quote(
+        &config,
+        &feerate,
+        &capacity,
+        &QuoteRequest {
+            swap_type: PricingSwapType::Reverse,
+            side: QuoteSide::Input,
+            amount: "1000".to_owned(),
+        },
+        now,
+    )?;
+    let wallet = TestWallet::new(BitcoinNetwork::Mainnet);
+    let quote = build_funded_quote(
+        &rfq,
+        invoice,
+        &wallet.wallet,
+        wallet_allocation(),
+        &chain_tip(fixture),
+        FundedQuotePolicy {
+            network_id: fixture["network_id"]
+                .as_str()
+                .ok_or("Quote fixture network is missing")?,
+            lightning_current_height: u32::try_from(
+                fixture["lightning_height"]
+                    .as_u64()
+                    .ok_or("Quote fixture Lightning height is missing")?,
+            )?,
+            fee_bps: derived.fee_bps.parse()?,
+            miner_fee_budget_sat: derived.miner_fee_budget.parse()?,
+            lightning_routing_fee_budget_sat: derived.lightning_routing_fee_budget.parse()?,
+            minimum_confirmations: 1,
+            reorg_safety_blocks: 1,
+            zero_confirmation: false,
+            rbf: ReplacementPolicy::Reject,
+            replacement: ReplacementPolicy::Reject,
+            quote_validity_seconds: config.quote_expiry_seconds,
+            funding_window_blocks: 2,
+            broadcast_safety_blocks: 1,
+            lightning_settlement_blocks: 1,
+            expected_block_seconds: 600,
+            clock_skew_seconds: 60,
+            recovery_target_blocks: 2,
+        },
+        now,
+    )?;
+    let terms = quote
+        .profile
+        .get("terms")
+        .and_then(Value::as_object)
+        .ok_or("funded Quote terms are missing")?;
+    for (name, expected) in derived.amount_terms() {
+        assert_eq!(terms.get(&name), Some(&expected), "pricing term {name}");
+    }
+    assert_eq!(quote.expiration, derived.quote_expires_at);
+    assert_eq!(derived.capacity_bucket_id, "btc-pricing-integration");
+    assert_eq!(derived.reservation, ReservationTier::Hard);
+    assert_eq!(
+        derived.feerate,
+        FeerateObservation::Fallback { sat_per_vb: 1 }
+    );
+    let live_feerate = feerate_for_quote(&config, Some((2, "bitcoind-estimatesmartfee-2")))?;
+    assert_eq!(
+        live_feerate,
+        FeerateObservation::Live {
+            sat_per_vb: 2,
+            source: "bitcoind-estimatesmartfee-2".to_owned(),
+        }
+    );
+    assert_eq!(
+        funding_feerate_from_quote_budget(
+            PricingSwapType::Reverse,
+            derived.miner_fee_budget.parse()?,
+        )?,
+        1
+    );
+    let reduced_capacity = CapacityBounds {
+        capacity_bucket_id: capacity.capacity_bucket_id,
+        available_capacity: "999".to_owned(),
+    };
+    assert!(
+        derive_quote(
+            &config,
+            &feerate,
+            &reduced_capacity,
+            &QuoteRequest {
+                swap_type: PricingSwapType::Reverse,
+                side: QuoteSide::Input,
+                amount: "1000".to_owned(),
+            },
+            now,
+        )
+        .is_err()
+    );
+    Ok(())
 }
 
 #[test]

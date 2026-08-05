@@ -132,12 +132,13 @@ reservation timeouts, Status gaps/forks, and public observation-not-authority
 evidence. The executable-profile set remains empty. See `docs/ROADMAP.md`,
 `docs/conformance/`, and `docs/deployment/`.
 
-The funded-provider #25 implementation is still under its final local
-acceptance gate. Its production-helper runtime fixture, deterministic provider
-contract, and client verify-before-fund/`ExitPackage`/terminal-Close harness
-are present, but the disposable three-journey bitcoind/CLN funded smoke remains
-pending. No live-funded or deployment-conformance claim follows until that
-command passes.
+The funded-provider #25 implementation passed its disposable three-journey
+bitcoind/CLN gate on 2026-08-04 on macOS 26.4 arm64. The production-helper
+runtime fixture, deterministic provider contract, client verify-before-fund/
+`ExitPackage`/terminal-Close harness, and `scripts/test-provider-funded.sh`
+therefore establish local regtest conformance for submarine settlement,
+reverse settlement, and noncooperative refund. This is not Debian or live
+deployment evidence; issue #19 owns that release proof.
 
 The current feature list is a deployment snapshot, not Immortal's scope
 ceiling. The immediate protocol-totality program targets **every specification

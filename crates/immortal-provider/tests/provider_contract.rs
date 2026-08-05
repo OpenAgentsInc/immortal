@@ -17,6 +17,7 @@ const SETTLEMENT_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/settlement-construction-v1.json");
 const FUNDED_SMOKE_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/funded-smoke-v1.json");
+const PRICING_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/nipmkt/swp-pricing-v1.json");
 
 #[test]
 fn provider_contract_is_canonical_byte_stable_and_matches_export() {
@@ -52,6 +53,7 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
             "tests/fixtures/provider/funded-smoke-v1.json",
             FUNDED_SMOKE_FIXTURE,
         ),
+        ("tests/fixtures/nipmkt/swp-pricing-v1.json", PRICING_FIXTURE),
     ] {
         let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();
         assert_eq!(entry["bytes"], bytes.len());
@@ -151,6 +153,17 @@ fn provider_contract_distinguishes_required_and_optional_environment() {
     assert_eq!(health["optional_in_modes"], json!(["funded"]));
     assert_eq!(health["defaulted"], json!(true));
 
+    assert!(variables.iter().any(|variable| {
+        variable["name"] == "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB"
+            && variable["optional_in_modes"] == json!(["funded"])
+            && variable["defaulted"] == json!(false)
+    }));
+    assert!(variables.iter().any(|variable| {
+        variable["name"] == "IMMORTAL_PROVIDER_RESERVATION_TIER"
+            && variable["choices"] == json!(["hard"])
+            && variable["defaulted"] == json!(true)
+    }));
+
     let database = variables
         .iter()
         .find(|variable| variable["name"] == "IMMORTAL_PROVIDER_DATABASE_URL")
@@ -160,18 +173,39 @@ fn provider_contract_distinguishes_required_and_optional_environment() {
 }
 
 #[test]
-fn provider_contract_identifies_the_crate_and_pinned_nip_sources() {
-    let contract = provider_contract_value().unwrap();
+fn provider_contract_identifies_the_crate_and_pinned_nip_sources()
+-> Result<(), Box<dyn std::error::Error>> {
+    let contract = provider_contract_value()?;
     let identity = &contract["identity"];
     assert_eq!(identity["crate_name"], "immortal_provider");
     assert_eq!(identity["crate_version"], env!("CARGO_PKG_VERSION"));
-    let sources = identity["nips"].as_array().unwrap();
+    let sources = identity["nips"].as_array().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "contract nips must be an array",
+        )
+    })?;
     assert_eq!(sources.len(), 3);
-    assert_eq!(sources[2]["lane"], "openagents");
-    assert_eq!(
-        sources[2]["commit"],
-        "cad192988c0deba1fd4181370242e5d579bc863c"
-    );
+    let provider_source = sources.get(2).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "contract must contain the OpenAgents NIP source",
+        )
+    })?;
+    assert_eq!(provider_source["lane"], "openagents");
+
+    let manifest: Value = serde_json::from_str(include_str!("../../../nips/manifest.json"))?;
+    let manifest_commit = manifest["sources"]
+        .as_array()
+        .and_then(|sources| sources.iter().find(|source| source["name"] == "openagents"))
+        .and_then(|source| source["commit"].as_str())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "manifest must contain the OpenAgents NIP source commit",
+            )
+        })?;
+    assert_eq!(provider_source["commit"], manifest_commit);
 
     let mut changed = contract;
     changed["identity"]["nips"][2]["commit"] = Value::String("00".repeat(20));
@@ -179,6 +213,7 @@ fn provider_contract_identifies_the_crate_and_pinned_nip_sources() {
         validate_provider_contract(&changed),
         Err(ProviderContractError::InvalidShape)
     );
+    Ok(())
 }
 
 #[test]

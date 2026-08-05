@@ -289,8 +289,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/swp-pricing-v1.json",
-      "sha256": "bf7dc9790b59db55767cd23dcfef473fab3d3bdb408f0b7df01469d6eada7cc0",
-      "bytes": 21087,
+      "sha256": "c73cf28a53077218aa0d5bcf3f136541e5698294369f23c00a345948e1b7d519",
+      "bytes": 23093,
       "scope": "provider"
     },
     {

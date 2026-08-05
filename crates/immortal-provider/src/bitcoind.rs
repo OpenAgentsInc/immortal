@@ -302,6 +302,26 @@ impl BitcoindClient {
         })
     }
 
+    pub async fn estimated_feerate_sat_per_vbyte(
+        &self,
+        request_id: &RpcRequestId,
+        confirmation_target: u16,
+    ) -> Result<Option<u64>, BitcoindError> {
+        if !(1..=1_008).contains(&confirmation_target) {
+            return Err(BitcoindError::InvalidConfiguration(
+                "fee estimate confirmation target must be between 1 and 1008",
+            ));
+        }
+        let result = self
+            .call(
+                request_id,
+                "estimatesmartfee",
+                json!([confirmation_target, "conservative"]),
+            )
+            .await?;
+        parse_feerate_estimate(&result)
+    }
+
     pub async fn best_block_hash(
         &self,
         request_id: &RpcRequestId,
@@ -433,6 +453,91 @@ impl BitcoindClient {
         }
         Ok(stream)
     }
+}
+
+fn parse_feerate_estimate(result: &Value) -> Result<Option<u64>, BitcoindError> {
+    let object = result
+        .as_object()
+        .ok_or(BitcoindError::Json("fee estimate result is not an object"))?;
+    let errors_report_no_estimate = object
+        .get("errors")
+        .and_then(Value::as_array)
+        .is_some_and(|errors| !errors.is_empty());
+    let feerate_btc_per_kvb = match object.get("feerate") {
+        Some(feerate) if feerate.is_number() => feerate,
+        None | Some(Value::Null) if errors_report_no_estimate => return Ok(None),
+        None => {
+            return Err(BitcoindError::Json(
+                "fee estimate has neither a feerate nor an error",
+            ));
+        }
+        Some(_) => return Err(BitcoindError::Json("fee estimate feerate is invalid")),
+    };
+    let feerate_btc_per_kvb = feerate_btc_per_kvb
+        .as_number()
+        .ok_or(BitcoindError::Json("fee estimate feerate is invalid"))?;
+    let sat_per_vbyte = decimal_btc_per_kvb_to_sat_per_vbyte(&feerate_btc_per_kvb.to_string())?;
+    if !(1..=2_000).contains(&sat_per_vbyte) {
+        return Err(BitcoindError::Json(
+            "fee estimate is outside the provider pricing bound",
+        ));
+    }
+    Ok(Some(sat_per_vbyte))
+}
+
+fn decimal_btc_per_kvb_to_sat_per_vbyte(value: &str) -> Result<u64, BitcoindError> {
+    let (mantissa, exponent) = match value.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (
+            mantissa,
+            exponent
+                .parse::<i32>()
+                .map_err(|_| BitcoindError::Json("fee estimate exponent is invalid"))?,
+        ),
+        None => (value, 0),
+    };
+    if mantissa.starts_with('-') || mantissa.starts_with('+') {
+        return Err(BitcoindError::Json("fee estimate feerate is invalid"));
+    }
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(BitcoindError::Json("fee estimate feerate is invalid"));
+    }
+    let digits = format!("{whole}{fraction}");
+    let coefficient = digits
+        .parse::<u128>()
+        .map_err(|_| BitcoindError::Json("fee estimate feerate is too precise"))?;
+    if coefficient == 0 {
+        return Err(BitcoindError::Json("fee estimate feerate is invalid"));
+    }
+    let fraction_digits = i32::try_from(fraction.len())
+        .map_err(|_| BitcoindError::Json("fee estimate feerate is too precise"))?;
+    let scale = exponent
+        .checked_sub(fraction_digits)
+        .and_then(|scale| scale.checked_add(5))
+        .ok_or(BitcoindError::Json("fee estimate exponent is invalid"))?;
+    let sat_per_vbyte = if scale >= 0 {
+        let scale = u32::try_from(scale)
+            .map_err(|_| BitcoindError::Json("fee estimate exponent is invalid"))?;
+        let multiplier = 10_u128
+            .checked_pow(scale)
+            .ok_or(BitcoindError::Json("fee estimate exponent is too large"))?;
+        coefficient
+            .checked_mul(multiplier)
+            .ok_or(BitcoindError::Json("fee estimate is too large"))?
+    } else {
+        let denominator_scale = scale
+            .checked_abs()
+            .and_then(|scale| u32::try_from(scale).ok())
+            .ok_or(BitcoindError::Json("fee estimate exponent is invalid"))?;
+        let denominator = 10_u128
+            .checked_pow(denominator_scale)
+            .ok_or(BitcoindError::Json("fee estimate exponent is too small"))?;
+        coefficient.div_ceil(denominator)
+    };
+    u64::try_from(sat_per_vbyte).map_err(|_| BitcoindError::Json("fee estimate is too large"))
 }
 
 async fn connect_first(addresses: &[SocketAddr]) -> Result<TcpStream, BitcoindError> {
@@ -721,5 +826,44 @@ impl PollBackoff {
 
     pub fn consecutive_failures(&self) -> u32 {
         self.consecutive_failures
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fee_estimate_rounds_up_and_regtest_errors_have_no_live_value() -> Result<(), BitcoindError> {
+        assert_eq!(
+            parse_feerate_estimate(&json!({"feerate":0.00001001,"blocks":2}))?,
+            Some(2)
+        );
+        assert_eq!(decimal_btc_per_kvb_to_sat_per_vbyte("1e-5")?, 1);
+        assert_eq!(decimal_btc_per_kvb_to_sat_per_vbyte("1.00000001e-5")?, 2);
+        assert_eq!(decimal_btc_per_kvb_to_sat_per_vbyte("0.02")?, 2_000);
+        assert_eq!(
+            parse_feerate_estimate(&json!({"errors":["Insufficient data or no feerate found"]}))?,
+            None
+        );
+        assert_eq!(
+            parse_feerate_estimate(
+                &json!({"feerate":null,"errors":["Insufficient data or no feerate found"]})
+            )?,
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn fee_estimate_rejects_malformed_or_unbounded_values() {
+        for value in [
+            json!({}),
+            json!({"feerate":0}),
+            json!({"feerate":0.1}),
+            json!({"errors":[]}),
+        ] {
+            assert!(parse_feerate_estimate(&value).is_err());
+        }
     }
 }

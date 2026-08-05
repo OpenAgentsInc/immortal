@@ -8,9 +8,8 @@
 //!
 //! # Integration point
 //!
-//! The session engine in [`crate::session`] is intentionally not modified by
-//! this module. The embedding provider derives terms first and then feeds
-//! them into the existing Quote constructors:
+//! Funded mode derives terms here before it invokes the existing session
+//! Quote constructor:
 //!
 //! 1. Build a [`PricingConfig`] once at startup with
 //!    [`PricingConfig::from_env`] (fail-fast, relay-style env contract).
@@ -20,13 +19,10 @@
 //! 3. Call [`derive_quote`]. The returned [`DerivedQuote`] carries the exact
 //!    fee components (spread and miner-fee separated), limits, expiry, and
 //!    reservation tier.
-//! 4. Merge [`DerivedQuote::amount_terms`] into the `terms` object of the
-//!    `mkt_swp` profile passed to `ProviderSession::indicative_quote`,
-//!    `ProviderSession::soft_quote`, or
-//!    `ProviderSession::hard_quote_with_reserve`. The session engine
-//!    re-validates every member against the RFQ and the MKT-SWP grammar, so
-//!    a disagreement between this module and the protocol validators fails
-//!    closed instead of signing.
+//! 4. Feed the derived spread, miner budget, routing budget, and expiry to
+//!    funded Quote construction, then compare every emitted amount term with
+//!    [`DerivedQuote::amount_terms`] before the reserve/signing gate. A
+//!    disagreement fails closed.
 //!
 //! The remaining Quote terms (asset pair, payment hash, legs, timeout
 //! ladder, verifier inputs, recovery, cancellation, evidence requirements)
@@ -49,7 +45,7 @@
 //! | `IMMORTAL_PROVIDER_QUOTE_MIN_SAT` | `10000` | Absolute minimum quotable input amount in satoshis, positive. |
 //! | `IMMORTAL_PROVIDER_QUOTE_MAX_SAT` | `1000000` | Absolute maximum quotable input amount in satoshis, `>= min`, `<= 2100000000000000`. |
 //! | `IMMORTAL_PROVIDER_QUOTE_EXPIRY_SECONDS` | `300` | Quote validity window, `1..=3600` seconds. `quote_expires_at = created_at + expiry`. |
-//! | `IMMORTAL_PROVIDER_RESERVATION_TIER` | `soft` | Reservation tier stamped on firm Quotes: `none`, `soft`, or `hard`. |
+//! | `IMMORTAL_PROVIDER_RESERVATION_TIER` | `hard` | Reservation tier stamped on firm Quotes: `none`, `soft`, or `hard`. Funded mode requires `hard` because rail effects require a confirmed reserve. |
 //! | `IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM` | `0` | Lightning routing-fee budget in parts per million of the input, `0..=100000`. Applied only to `submarine` swaps, where the provider pays outbound Lightning. |
 //!
 //! # Fee floor invariant
@@ -65,10 +61,9 @@
 //! Worst-case vbyte weights for the `taproot-musig2-script-exit` script
 //! shapes are derived arithmetically in this module (see
 //! [`claim_spend_vbytes`], [`refund_spend_vbytes`], [`lockup_vbytes`]) from
-//! canonical leaf-script templates built with the exact opcode set that
-//! `immortal_core::parse_swap_script` accepts. Tests parse the templates
-//! through the core verification primitives to prove the shapes stay in
-//! sync.
+//! the same constructors used by funded Quote construction. Tests parse the
+//! templates through the core verification primitives and replay measured
+//! transaction weights so pricing cannot drift from production scripts.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -78,7 +73,11 @@ use immortal_client::mkt_swp_client::{SwapClientError, provider_support::error a
 pub use immortal_client::mkt_swp_client::SwapType;
 
 /// Largest quotable satoshi amount: 21,000,000 BTC.
-const MAX_AMOUNT_SAT: u64 = 2_100_000_000_000_000;
+pub(crate) const MAX_AMOUNT_SAT: u64 = 2_100_000_000_000_000;
+pub(crate) const MAX_SPREAD_BPS: u64 = 1_000;
+pub(crate) const MAX_FEERATE_SAT_PER_VB: u64 = 2_000;
+pub(crate) const MAX_QUOTE_EXPIRY_SECONDS: u64 = 3_600;
+pub(crate) const MAX_LIGHTNING_ROUTING_FEE_PPM: u64 = 100_000;
 
 /// Bitcoin Core's dust threshold for a P2TR output: dustRelayFee of
 /// 3 sat/vB applied to the 43-byte output plus the 67.75-vbyte input needed
@@ -98,45 +97,74 @@ const MIN_VIABLE_SEARCH_STEPS: u64 = 64;
 // Worst-case redeemable path weights
 // ---------------------------------------------------------------------------
 
+pub(crate) fn production_claim_leaf_script(
+    payment_hash: [u8; 32],
+    signing_key: [u8; 32],
+) -> Vec<u8> {
+    let mut script = Vec::with_capacity(73);
+    script.extend_from_slice(&[0x82, 0x01, 0x20, 0x88, 0xa8, 0x20]);
+    script.extend_from_slice(&payment_hash);
+    script.extend_from_slice(&[0x88, 0x20]);
+    script.extend_from_slice(&signing_key);
+    script.push(0xac);
+    script
+}
+
+#[cfg_attr(not(feature = "funded"), allow(dead_code))]
+pub(crate) fn production_refund_leaf_script(
+    refund_height: u32,
+    signing_key: [u8; 32],
+) -> Option<Vec<u8>> {
+    if refund_height == 0 || refund_height >= 500_000_000 {
+        return None;
+    }
+    Some(refund_leaf_script(refund_height, signing_key))
+}
+
+fn refund_leaf_script(refund_height: u32, signing_key: [u8; 32]) -> Vec<u8> {
+    let lock = script_number(refund_height);
+    let lock_length = lock.len() as u8;
+    let mut script = Vec::with_capacity(1 + lock.len() + 35);
+    script.push(lock_length);
+    script.extend_from_slice(&lock);
+    script.extend_from_slice(&[0xb1, 0x75, 0x20]);
+    script.extend_from_slice(&signing_key);
+    script.push(0xac);
+    script
+}
+
+fn script_number(value: u32) -> Vec<u8> {
+    let mut remaining = value;
+    let mut encoded = Vec::with_capacity(5);
+    while remaining != 0 {
+        encoded.push((remaining & 0xff) as u8);
+        remaining >>= 8;
+    }
+    if encoded.last().is_some_and(|byte| byte & 0x80 != 0) {
+        encoded.push(0);
+    }
+    encoded
+}
+
 /// Canonical claim-leaf tapscript template:
 ///
-/// `OP_SHA256 <32-byte payment hash> OP_EQUALVERIFY <32-byte x-only claim
-/// key> OP_CHECKSIG`
+/// `OP_SIZE 32 OP_EQUALVERIFY OP_SHA256 <32-byte payment hash>
+/// OP_EQUALVERIFY <32-byte x-only claim key> OP_CHECKSIG`
 ///
-/// Byte arithmetic: 1 (OP_SHA256 = 0xa8), 1 plus 32 (direct push of the
-/// hash), 1 (OP_EQUALVERIFY = 0x88), 1 plus 32 (direct push of the key),
-/// and 1 (OP_CHECKSIG = 0xac): 69 bytes total. Every opcode is in the
-/// `immortal_core::parse_swap_script` allowlist.
+/// This is the exact production constructor used by funded Quotes: 73 bytes.
 pub fn claim_leaf_script_template() -> Vec<u8> {
-    let mut script = Vec::with_capacity(69);
-    script.push(0xa8); // OP_SHA256
-    script.push(0x20);
-    script.extend_from_slice(&[0u8; 32]); // payment hash placeholder
-    script.push(0x88); // OP_EQUALVERIFY
-    script.push(0x20);
-    script.extend_from_slice(&[0u8; 32]); // x-only claim key placeholder
-    script.push(0xac); // OP_CHECKSIG
-    script
+    production_claim_leaf_script([0; 32], [0; 32])
 }
 
 /// Canonical refund-leaf tapscript template:
 ///
-/// `<32-byte x-only refund key> OP_CHECKSIGVERIFY <4-byte locktime>
-/// OP_CHECKLOCKTIMEVERIFY`
+/// `<4-byte locktime> OP_CHECKLOCKTIMEVERIFY OP_DROP <32-byte x-only refund
+/// key> OP_CHECKSIG`
 ///
-/// Byte arithmetic: 1 + 32 (direct push of the key) + 1 (OP_CHECKSIGVERIFY
-/// = 0xad) + 1 + 4 (worst-case minimal push of a block height below
-/// 500,000,000, which needs at most 4 bytes) + 1 (OP_CHECKLOCKTIMEVERIFY =
-/// 0xb1) = 40 bytes.
+/// The template uses the largest height-valued CLTV lock, so the exact
+/// production constructor emits its 41-byte worst case.
 pub fn refund_leaf_script_template() -> Vec<u8> {
-    let mut script = Vec::with_capacity(40);
-    script.push(0x20);
-    script.extend_from_slice(&[0u8; 32]); // x-only refund key placeholder
-    script.push(0xad); // OP_CHECKSIGVERIFY
-    script.push(0x04);
-    script.extend_from_slice(&[0x01, 0x00, 0x00, 0x01]); // locktime placeholder
-    script.push(0xb1); // OP_CHECKLOCKTIMEVERIFY
-    script
+    refund_leaf_script(499_999_999, [0; 32])
 }
 
 /// Worst-case BIP-340 signature length: 64 bytes plus one explicit sighash
@@ -169,9 +197,9 @@ fn spend_vbytes(witness_item_lens: &[usize], output_count: u64) -> u64 {
 }
 
 /// Worst-case script-path claim spend of the swap output: witness stack
-/// `[65-byte signature, 32-byte preimage, 69-byte claim leaf, 65-byte
-/// control block]`, one P2TR output. 94 base bytes, 238 witness bytes,
-/// weight 614, vsize 154.
+/// `[65-byte signature, 32-byte preimage, 73-byte claim leaf, 65-byte
+/// control block]`, one P2TR output. The production OP_SIZE-bound leaf makes
+/// this 155 vbytes.
 pub fn claim_spend_vbytes() -> u64 {
     spend_vbytes(
         &[
@@ -185,8 +213,8 @@ pub fn claim_spend_vbytes() -> u64 {
 }
 
 /// Worst-case script-path refund spend of the swap output: witness stack
-/// `[65-byte signature, 40-byte refund leaf, 65-byte control block]`, one
-/// P2TR output. 94 base bytes, 176 witness bytes, weight 552, vsize 138.
+/// `[65-byte signature, 41-byte refund leaf, 65-byte control block]`, one
+/// P2TR output: 139 vbytes.
 pub fn refund_spend_vbytes() -> u64 {
     spend_vbytes(
         &[
@@ -221,6 +249,27 @@ pub fn worst_case_redeem_vbytes(swap_type: SwapType) -> u64 {
         SwapType::Reverse => lockup_vbytes() + refund_spend_vbytes(),
         SwapType::Chain => lockup_vbytes() + claim_spend_vbytes().max(refund_spend_vbytes()),
     }
+}
+
+pub fn funding_feerate_from_quote_budget(
+    swap_type: SwapType,
+    miner_fee_budget_sat: u64,
+) -> Result<u64, SwapClientError> {
+    let priced_vbytes = worst_case_redeem_vbytes(swap_type);
+    if miner_fee_budget_sat % priced_vbytes != 0 {
+        return Err(provider_error(
+            "swp_invalid_fee",
+            "signed miner-fee budget does not encode an exact feerate",
+        ));
+    }
+    let sat_per_vb = miner_fee_budget_sat / priced_vbytes;
+    if !(1..=MAX_FEERATE_SAT_PER_VB).contains(&sat_per_vb) {
+        return Err(provider_error(
+            "swp_invalid_fee",
+            "signed funding feerate is outside the provider bound",
+        ));
+    }
+    Ok(sat_per_vb)
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +352,7 @@ impl PricingConfig {
                 "300",
             )?,
             reservation_tier: match lookup("IMMORTAL_PROVIDER_RESERVATION_TIER")
-                .unwrap_or_else(|| "soft".to_owned())
+                .unwrap_or_else(|| "hard".to_owned())
                 .as_str()
             {
                 "none" => ReservationTier::None,
@@ -327,13 +376,13 @@ impl PricingConfig {
 
     /// Validate every policy bound, failing fast with exact messages.
     pub fn validate(&self) -> Result<(), PricingConfigError> {
-        if self.spread_bps > 1_000 {
+        if self.spread_bps > MAX_SPREAD_BPS {
             return Err(config_error(
                 "IMMORTAL_PROVIDER_SPREAD_BPS must be between 0 and 1000",
             ));
         }
         if let Some(fallback) = self.fallback_feerate_sat_per_vb {
-            if !(1..=2_000).contains(&fallback) {
+            if !(1..=MAX_FEERATE_SAT_PER_VB).contains(&fallback) {
                 return Err(config_error(
                     "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB must be between 1 and 2000",
                 ));
@@ -354,12 +403,12 @@ impl PricingConfig {
                 "IMMORTAL_PROVIDER_QUOTE_MAX_SAT must be at most 2100000000000000",
             ));
         }
-        if !(1..=3_600).contains(&self.quote_expiry_seconds) {
+        if !(1..=MAX_QUOTE_EXPIRY_SECONDS).contains(&self.quote_expiry_seconds) {
             return Err(config_error(
                 "IMMORTAL_PROVIDER_QUOTE_EXPIRY_SECONDS must be between 1 and 3600",
             ));
         }
-        if self.lightning_routing_fee_ppm > 100_000 {
+        if self.lightning_routing_fee_ppm > MAX_LIGHTNING_ROUTING_FEE_PPM {
             return Err(config_error(
                 "IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM must be between 0 and 100000",
             ));
@@ -426,7 +475,7 @@ pub fn feerate_for_quote(
 ) -> Result<FeerateObservation, SwapClientError> {
     match live {
         Some((sat_per_vb, source)) => {
-            if !(1..=2_000).contains(&sat_per_vb) {
+            if !(1..=MAX_FEERATE_SAT_PER_VB).contains(&sat_per_vb) {
                 return Err(provider_error(
                     "swp_invalid_fee",
                     "live feerate estimate must be between 1 and 2000 sat/vB",
@@ -775,7 +824,7 @@ pub fn derive_quote(
         .validate()
         .map_err(|error| provider_error("swp_invalid_fee", error.0))?;
     let sat_per_vb = feerate.sat_per_vb();
-    if !(1..=2_000).contains(&sat_per_vb) {
+    if !(1..=MAX_FEERATE_SAT_PER_VB).contains(&sat_per_vb) {
         return Err(provider_error(
             "swp_invalid_fee",
             "quote feerate must be between 1 and 2000 sat/vB",
@@ -877,7 +926,9 @@ pub fn derive_quote(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use immortal_core::mkt_swp_verify::{parse_swap_script, tapleaf_hash};
+    use immortal_core::mkt_swp_verify::{
+        Transaction, TransactionInput, TransactionOutput, parse_swap_script, tapleaf_hash,
+    };
 
     fn base_config() -> PricingConfig {
         PricingConfig {
@@ -906,25 +957,72 @@ mod tests {
     }
 
     #[test]
-    fn leaf_templates_parse_through_core_primitives() {
+    fn leaf_templates_parse_through_core_primitives() -> Result<(), Box<dyn std::error::Error>> {
         let claim = claim_leaf_script_template();
         let refund = refund_leaf_script_template();
-        assert_eq!(claim.len(), 69);
-        assert_eq!(refund.len(), 40);
-        parse_swap_script(&claim).expect("claim leaf uses the core opcode allowlist");
-        parse_swap_script(&refund).expect("refund leaf uses the core opcode allowlist");
-        tapleaf_hash(0xc0, &claim).expect("claim leaf is a valid tapleaf");
-        tapleaf_hash(0xc0, &refund).expect("refund leaf is a valid tapleaf");
+        assert_eq!(claim.len(), 73);
+        assert_eq!(refund.len(), 41);
+        parse_swap_script(&claim)?;
+        parse_swap_script(&refund)?;
+        tapleaf_hash(0xc0, &claim)?;
+        tapleaf_hash(0xc0, &refund)?;
+        Ok(())
     }
 
     #[test]
     fn weight_arithmetic_matches_documented_values() {
-        assert_eq!(claim_spend_vbytes(), 154);
-        assert_eq!(refund_spend_vbytes(), 138);
+        assert_eq!(claim_spend_vbytes(), 155);
+        assert_eq!(refund_spend_vbytes(), 139);
         assert_eq!(lockup_vbytes(), 155);
-        assert_eq!(worst_case_redeem_vbytes(SwapType::Submarine), 154);
-        assert_eq!(worst_case_redeem_vbytes(SwapType::Reverse), 293);
-        assert_eq!(worst_case_redeem_vbytes(SwapType::Chain), 309);
+        assert_eq!(worst_case_redeem_vbytes(SwapType::Submarine), 155);
+        assert_eq!(worst_case_redeem_vbytes(SwapType::Reverse), 294);
+        assert_eq!(worst_case_redeem_vbytes(SwapType::Chain), 310);
+        assert_eq!(
+            funding_feerate_from_quote_budget(SwapType::Reverse, 2_940),
+            Ok(10)
+        );
+        assert!(funding_feerate_from_quote_budget(SwapType::Reverse, 2_939).is_err());
+    }
+
+    #[test]
+    fn weight_arithmetic_matches_constructed_transactions() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let claim_script = production_claim_leaf_script([0; 32], [0; 32]);
+        let refund_script = production_refund_leaf_script(499_999_999, [0; 32])
+            .ok_or("worst-case refund height must be valid")?;
+        let claim = representative_transaction(
+            vec![vec![0; 65], vec![0; 32], claim_script, vec![0; 65]],
+            1,
+        );
+        let refund = representative_transaction(vec![vec![0; 65], refund_script, vec![0; 65]], 1);
+        let lockup = representative_transaction(vec![vec![0; 65]], 2);
+
+        assert_eq!(claim.virtual_size()?, claim_spend_vbytes());
+        assert_eq!(refund.virtual_size()?, refund_spend_vbytes());
+        assert_eq!(lockup.virtual_size()?, lockup_vbytes());
+        Ok(())
+    }
+
+    fn representative_transaction(witness: Vec<Vec<u8>>, output_count: usize) -> Transaction {
+        let mut p2tr_script_pubkey = vec![0x51, 0x20];
+        p2tr_script_pubkey.extend_from_slice(&[0; 32]);
+        Transaction::new(
+            2,
+            vec![TransactionInput {
+                previous_txid: [0; 32],
+                previous_output: 0,
+                script_sig: Vec::new(),
+                sequence: u32::MAX,
+                witness,
+            }],
+            (0..output_count)
+                .map(|_| TransactionOutput {
+                    value_sat: 1_000,
+                    script_pubkey: p2tr_script_pubkey.clone(),
+                })
+                .collect(),
+            0,
+        )
     }
 
     #[test]
@@ -974,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn derivation_is_reproducible() {
+    fn derivation_is_reproducible() -> Result<(), SwapClientError> {
         let config = base_config();
         let request = QuoteRequest {
             swap_type: SwapType::Submarine,
@@ -987,27 +1085,26 @@ mod tests {
             &capacity("500000"),
             &request,
             1_785_859_200,
-        )
-        .unwrap();
+        )?;
         let second = derive_quote(
             &config,
             &live_10(),
             &capacity("500000"),
             &request,
             1_785_859_200,
-        )
-        .unwrap();
+        )?;
         assert_eq!(first, second);
-        assert_eq!(first.output_amount, "98110");
+        assert_eq!(first.output_amount, "98100");
         assert_eq!(first.provider_fee, "250");
-        assert_eq!(first.miner_fee_budget, "1540");
+        assert_eq!(first.miner_fee_budget, "1550");
         assert_eq!(first.lightning_routing_fee_budget, "100");
-        assert_eq!(first.maximum_total_fee, "1890");
+        assert_eq!(first.maximum_total_fee, "1900");
         assert_eq!(first.quote_expires_at, 1_785_859_500);
+        Ok(())
     }
 
     #[test]
-    fn output_side_finds_smallest_covering_input() {
+    fn output_side_finds_smallest_covering_input() -> Result<(), Box<dyn std::error::Error>> {
         let config = base_config();
         let request = QuoteRequest {
             swap_type: SwapType::Submarine,
@@ -1020,16 +1117,16 @@ mod tests {
             &capacity("500000"),
             &request,
             1_785_859_200,
-        )
-        .unwrap();
-        assert_eq!(derived.input_amount, "99998");
+        )?;
+        assert_eq!(derived.input_amount, "100010");
         assert_eq!(derived.output_amount, "98110");
-        let input: u64 = derived.input_amount.parse().unwrap();
-        let smaller = fee_components(&config, SwapType::Submarine, 1_540, input - 1)
-            .unwrap()
-            .output
-            .unwrap();
+        let input: u64 = derived.input_amount.parse()?;
+        let smaller = fee_components(&config, SwapType::Submarine, 1_550, input - 1)?.output;
+        let Some(smaller) = smaller else {
+            return Err("smaller output unexpectedly underflowed".into());
+        };
         assert!(smaller < 98_110, "a smaller input would also cover");
+        Ok(())
     }
 
     #[test]
@@ -1079,8 +1176,22 @@ mod tests {
         assert_eq!(ok.min_swap_sat, 10_000);
         assert_eq!(ok.max_swap_sat, 1_000_000);
         assert_eq!(ok.quote_expiry_seconds, 300);
-        assert_eq!(ok.reservation_tier, ReservationTier::Soft);
+        assert_eq!(ok.reservation_tier, ReservationTier::Hard);
         assert_eq!(ok.lightning_routing_fee_ppm, 0);
+
+        for (value, expected) in [
+            ("none", ReservationTier::None),
+            ("soft", ReservationTier::Soft),
+            ("hard", ReservationTier::Hard),
+        ] {
+            assert_eq!(
+                PricingConfig::from_lookup(|name| {
+                    (name == "IMMORTAL_PROVIDER_RESERVATION_TIER").then(|| value.to_owned())
+                })
+                .map(|config| config.reservation_tier),
+                Ok(expected)
+            );
+        }
 
         for (name, value, message) in [
             (
@@ -1199,7 +1310,7 @@ mod tests {
     }
 
     #[test]
-    fn miner_fee_floor_raises_minimum_input_above_config_floor() {
+    fn miner_fee_floor_raises_minimum_input_above_config_floor() -> Result<(), SwapClientError> {
         let mut config = base_config();
         config.min_swap_sat = 1_000;
         let derived = derive_quote(
@@ -1209,12 +1320,11 @@ mod tests {
             &QuoteRequest {
                 swap_type: SwapType::Submarine,
                 side: QuoteSide::Input,
-                amount: "1545".into(),
+                amount: "1555".into(),
             },
             1_785_859_200,
-        )
-        .unwrap();
-        assert_eq!(derived.min_input, "1545");
+        )?;
+        assert_eq!(derived.min_input, "1555");
         assert_eq!(derived.output_amount, "1");
         assert_eq!(
             derive_quote(
@@ -1232,5 +1342,6 @@ mod tests {
             .code,
             "swp_invalid_amount"
         );
+        Ok(())
     }
 }

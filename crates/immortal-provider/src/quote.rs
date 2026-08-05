@@ -1,5 +1,6 @@
 use crate::{
     bitcoind::ChainTip,
+    pricing::{production_claim_leaf_script, production_refund_leaf_script},
     wallet::{BitcoinNetwork as WalletNetwork, ProviderWallet, WalletError, WalletPath},
 };
 use immortal_client::mkt_swp_client::provider_support::{
@@ -844,48 +845,19 @@ fn build_taproot(
 }
 
 fn claim_script(payment_hash: [u8; 32], signing_key: XOnlyPublicKey) -> Vec<u8> {
-    let mut script = Vec::with_capacity(70);
-    script.extend_from_slice(&[0x82, 0x01, 0x20, 0x88, 0xa8, 0x20]);
-    script.extend_from_slice(&payment_hash);
-    script.extend_from_slice(&[0x88, 0x20]);
-    script.extend_from_slice(&signing_key.serialize());
-    script.push(0xac);
-    script
+    production_claim_leaf_script(payment_hash, signing_key.serialize())
 }
 
 fn refund_script(
     refund_height: u32,
     signing_key: XOnlyPublicKey,
 ) -> Result<Vec<u8>, QuoteBuildError> {
-    let lock = script_number(refund_height)?;
-    let lock_length = u8::try_from(lock.len())
-        .map_err(|_| error("swp_script_invalid", "refund lock encoding is too long"))?;
-    let mut script = Vec::with_capacity(1 + lock.len() + 35);
-    script.push(lock_length);
-    script.extend_from_slice(&lock);
-    script.extend_from_slice(&[0xb1, 0x75, 0x20]);
-    script.extend_from_slice(&signing_key.serialize());
-    script.push(0xac);
-    Ok(script)
-}
-
-fn script_number(value: u32) -> Result<Vec<u8>, QuoteBuildError> {
-    if value == 0 {
-        return Err(error(
+    production_refund_leaf_script(refund_height, signing_key.serialize()).ok_or_else(|| {
+        error(
             "swp_timeout_ladder_unsafe",
-            "zero refund height is invalid",
-        ));
-    }
-    let mut remaining = value;
-    let mut encoded = Vec::with_capacity(5);
-    while remaining != 0 {
-        encoded.push((remaining & 0xff) as u8);
-        remaining >>= 8;
-    }
-    if encoded.last().is_some_and(|byte| byte & 0x80 != 0) {
-        encoded.push(0);
-    }
-    Ok(encoded)
+            "refund height is outside the height-valued CLTV range",
+        )
+    })
 }
 
 fn validate_policy(policy: FundedQuotePolicy<'_>) -> Result<(), QuoteBuildError> {

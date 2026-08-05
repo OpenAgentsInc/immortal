@@ -627,17 +627,18 @@ impl ProviderSession {
             expiration,
             preflight_profile,
         )?;
-        if let Some(existing) = self.reservation.as_ref()
-            && (existing.reservation_id != reservation.reservation_id
+        if let Some(existing) = self.reservation.as_ref() {
+            if existing.reservation_id != reservation.reservation_id
                 || existing.capacity_bucket_id != reservation.capacity_bucket_id
                 || existing.reserved_asset_id != reservation.reserved_asset_id
                 || existing.reserved_amount != reservation.reserved_amount
-                || existing.reservation_expires_at != reservation.reservation_expires_at)
-        {
-            return Err(provider_error(
-                "swp_idempotency_conflict",
-                "provider session cannot reserve a second hard-Quote allocation",
-            ));
+                || existing.reservation_expires_at != reservation.reservation_expires_at
+            {
+                return Err(provider_error(
+                    "swp_idempotency_conflict",
+                    "provider session cannot reserve a second hard-Quote allocation",
+                ));
+            }
         }
         let effect_request = reserve_effect_request(&self.config, &reservation)?;
         let existing_confirmation = self

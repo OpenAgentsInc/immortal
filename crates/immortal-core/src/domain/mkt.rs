@@ -2619,13 +2619,13 @@ fn validate_mint_observable_members(value: &Value, rail: Option<&str>) -> Result
                 .and_then(Value::as_str)
                 .filter(|rail| MKT_MINT_RAILS.contains(rail))
                 .or(rail);
-            if let Some(declared) = object.get("rail").and_then(Value::as_str)
-                && !MKT_MINT_RAILS.contains(&declared)
-            {
-                return Err(mint_error(
-                    "mkt_mint_invalid_market",
-                    "rail must be cashu or fedimint",
-                ));
+            if let Some(declared) = object.get("rail").and_then(Value::as_str) {
+                if !MKT_MINT_RAILS.contains(&declared) {
+                    return Err(mint_error(
+                        "mkt_mint_invalid_market",
+                        "rail must be cashu or fedimint",
+                    ));
+                }
             }
             for (name, child) in object {
                 match name.as_str() {

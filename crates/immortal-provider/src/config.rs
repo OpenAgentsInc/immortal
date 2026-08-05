@@ -4,6 +4,7 @@ use crate::{
     bitcoind::{BitcoindAuth, BitcoindClient, BitcoindEndpoint, BitcoindLimits},
     cln::{ClnClient, ClnEndpoint, ClnLimits},
     health::{AlertEndpoint, private_or_loopback},
+    pricing::{PricingConfig, PricingConfigError, ReservationTier},
     relay_actor,
     wallet::{BitcoinNetwork, ProviderWallet},
 };
@@ -17,7 +18,7 @@ const MAX_STALE_SECONDS: u64 = 3_600;
 const MIN_CONFIRMATIONS: u32 = 1;
 const MAX_CONFIRMATIONS: u32 = 144;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
     Missing(&'static str),
     Invalid(&'static str),
@@ -25,6 +26,7 @@ pub enum ConfigError {
     Cln,
     Wallet,
     Alert,
+    Pricing(PricingConfigError),
 }
 
 impl fmt::Display for ConfigError {
@@ -36,11 +38,19 @@ impl fmt::Display for ConfigError {
             Self::Cln => formatter.write_str("CLN settings are invalid"),
             Self::Wallet => formatter.write_str("provider wallet settings are invalid"),
             Self::Alert => formatter.write_str("provider alert endpoint is invalid"),
+            Self::Pricing(error) => write!(formatter, "provider {error}"),
         }
     }
 }
 
-impl std::error::Error for ConfigError {}
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Pricing(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 struct DatabaseUrl(String);
 
@@ -63,6 +73,7 @@ pub struct FundedProviderConfig {
     pub chain_stale_after: Duration,
     pub minimum_confirmations: u32,
     pub reorg_safety_blocks: u32,
+    pub pricing: PricingConfig,
 }
 
 impl fmt::Debug for FundedProviderConfig {
@@ -81,6 +92,7 @@ impl fmt::Debug for FundedProviderConfig {
             .field("chain_stale_after", &self.chain_stale_after)
             .field("minimum_confirmations", &self.minimum_confirmations)
             .field("reorg_safety_blocks", &self.reorg_safety_blocks)
+            .field("pricing", &self.pricing)
             .finish()
     }
 }
@@ -158,6 +170,10 @@ impl FundedProviderConfig {
             6_u32,
             MIN_CONFIRMATIONS..=MAX_CONFIRMATIONS,
         )?;
+        let pricing = PricingConfig::from_env().map_err(ConfigError::Pricing)?;
+        if pricing.reservation_tier != ReservationTier::Hard {
+            return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_RESERVATION_TIER"));
+        }
 
         Ok(Self {
             database_url: DatabaseUrl(database_url),
@@ -172,6 +188,7 @@ impl FundedProviderConfig {
             chain_stale_after: Duration::from_secs(stale_seconds),
             minimum_confirmations,
             reorg_safety_blocks,
+            pricing,
         })
     }
 
@@ -265,5 +282,17 @@ mod tests {
         let rendered = format!("{database:?}");
         assert!(!rendered.contains("password"));
         assert!(!rendered.contains("operator"));
+    }
+
+    #[test]
+    fn pricing_configuration_error_keeps_the_operator_action() {
+        let error = ConfigError::Pricing(PricingConfigError(
+            "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB must be between 1 and 2000".to_owned(),
+        ));
+        assert_eq!(
+            error.to_string(),
+            "provider pricing config error: IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB must be between 1 and 2000"
+        );
+        assert!(std::error::Error::source(&error).is_some());
     }
 }

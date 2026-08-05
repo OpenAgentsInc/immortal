@@ -618,10 +618,31 @@ provider/relay Postgres databases. Its prerequisite runtime fixture replays
 held-HTLC amount/state/expiry rejection, exact and one-past signed deadline
 behavior, held-invoice cancellation, and cooperative refund-watch retirement
 through production helpers; the provider contract binds its exact digest. The
-process gate is specified to prove submarine claim, reverse claim, and
-noncooperative reverse refund while retaining only public transaction and
-invoice-state evidence. Its three-journey result is pending. No GitHub workflow
-or billed automation is added.
+process gate proves submarine claim, reverse claim, and noncooperative reverse
+refund while retaining only public transaction and invoice-state evidence. On
+2026-08-04 it completed locally on macOS 26.4 arm64 with
+`test-provider-funded: submarine, reverse, and noncooperative refund passed`.
+This is local regtest conformance, not Debian or deployment evidence. No GitHub
+workflow or billed automation is added.
+
+## M12 provider pricing decision (2026-08-04)
+
+Issue #28 changes no source specification, event kind, relay admission rule,
+or NIP-11 advertisement. The funded provider uses Bitcoin Core's conservative
+two-block `estimatesmartfee` result when available and converts its JSON
+decimal BTC/kvB value to an upward-rounded integer sat/vB without floating
+point. A bounded operator fallback is explicit and unset by default; the
+regtest gate sets it because regtest has no fee history.
+
+The pricing engine shares the production claim/refund script constructors and
+binds their measured worst-case weights: 155 vB claim, 139 vB refund, 155 vB
+provider lockup, 294 vB reverse lockup-plus-refund, and 310 vB chain worst
+case. Configured spread, routing budget, quote expiry, and unallocated durable
+capacity derive the accepted amount and fee terms. Those terms are rebound
+into the signed Quote, and reverse funding recovers its exact feerate from the
+signed miner budget. Bitcoin/Lightning-only Quotes keep `price_feed` null; no
+outbound price-feed authority is adopted. The deterministic pricing corpus is
+bound by both the M11 fixture manifest and the provider contract.
 
 ## Post-provider source sync review (2026-08-05)
 

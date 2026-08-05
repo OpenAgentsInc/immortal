@@ -26,6 +26,11 @@ use crate::{
     cln::{ClnClient, ClnError, ClnRequestId, Millisatoshi},
     funding::{FundingInput, FundingRequest, SignedFundingTransaction, build_funding_transaction},
     liquidity::{WalletScanPolicy, discover_wallet_utxos},
+    pricing::{
+        CapacityBounds, DerivedQuote, PricingConfig, QuoteRequest, QuoteSide,
+        SwapType as PricingSwapType, derive_quote, feerate_for_quote,
+        funding_feerate_from_quote_budget,
+    },
     quote::{
         BuiltFundedQuote, FundedQuotePolicy, QuoteWalletAllocation, ReplacementPolicy,
         build_funded_quote,
@@ -45,8 +50,6 @@ use crate::{
 
 const PROVIDER_ID: &str = "immortal-funded";
 const OFFERING_ID: &str = "immortal-funded-btc-lightning";
-pub(crate) const QUOTE_VALIDITY_SECONDS: u64 = 600;
-const FUNDING_FEE_RATE_SAT_PER_VBYTE: u64 = 2;
 const SETTLEMENT_MAXIMUM_WEIGHT: u64 = 1_600;
 const DUST_RELAY_FEE_SAT_PER_KILOBYTE: u64 = 3_000;
 pub(crate) const MAXIMUM_WATCH_ATTEMPTS: u16 = 32;
@@ -63,6 +66,7 @@ pub(crate) struct FundedMode {
     network_id: String,
     minimum_confirmations: u32,
     reorg_safety_blocks: u32,
+    pricing: PricingConfig,
     session_invoices: BTreeMap<String, String>,
     reserved_inputs: BTreeMap<String, Vec<FundingInput>>,
 }
@@ -71,6 +75,7 @@ pub(crate) struct FundedModePolicy {
     pub network: BitcoinNetwork,
     pub minimum_confirmations: u32,
     pub reorg_safety_blocks: u32,
+    pub pricing: PricingConfig,
 }
 
 #[derive(Clone)]
@@ -171,27 +176,32 @@ impl FundedMode {
             network_id: network_id(policy.network).to_owned(),
             minimum_confirmations: policy.minimum_confirmations,
             reorg_safety_blocks: policy.reorg_safety_blocks,
+            pricing: policy.pricing,
             session_invoices: BTreeMap::new(),
             reserved_inputs: BTreeMap::new(),
         }
     }
 
     fn quote(&mut self, rfq: &Event, created_at: u64) -> Result<Option<BuiltFundedQuote>, String> {
-        let swap_type = rfq_swap_type(rfq)?;
-        let invoice = if swap_type == "submarine" {
-            rfq_invoice(rfq)?
-        } else if swap_type == "reverse" {
-            self.reverse_hold_invoice(rfq)?
-        } else {
-            return Err("funded v1 supports submarine and reverse swaps".to_owned());
+        let swap_type_name = rfq_swap_type(rfq)?;
+        let swap_type = match swap_type_name.as_str() {
+            "submarine" => PricingSwapType::Submarine,
+            "reverse" => PricingSwapType::Reverse,
+            _ => return Err("funded v1 supports submarine and reverse swaps".to_owned()),
         };
         let Some((chain_tip, lightning_current_height)) =
             self.synchronized_quote_heights(session_id(rfq)?)?
         else {
             return Ok(None);
         };
+        let pricing = self.derive_pricing(rfq, swap_type, created_at)?;
+        let invoice = if swap_type == PricingSwapType::Submarine {
+            rfq_invoice(rfq)?
+        } else {
+            self.reverse_hold_invoice(rfq)?
+        };
         let allocation = quote_allocation(session_id(rfq)?)?;
-        build_funded_quote(
+        let quote = build_funded_quote(
             rfq,
             &invoice,
             &self.wallet,
@@ -200,15 +210,18 @@ impl FundedMode {
             FundedQuotePolicy {
                 network_id: &self.network_id,
                 lightning_current_height,
-                fee_bps: 100,
-                miner_fee_budget_sat: 500,
-                lightning_routing_fee_budget_sat: 100,
+                fee_bps: u16::try_from(canonical_u64(&pricing.fee_bps)?)
+                    .map_err(|_| "derived spread exceeds the funded Quote range".to_owned())?,
+                miner_fee_budget_sat: canonical_u64(&pricing.miner_fee_budget)?,
+                lightning_routing_fee_budget_sat: canonical_u64(
+                    &pricing.lightning_routing_fee_budget,
+                )?,
                 minimum_confirmations: self.minimum_confirmations,
                 reorg_safety_blocks: self.reorg_safety_blocks,
                 zero_confirmation: false,
                 rbf: ReplacementPolicy::Reject,
                 replacement: ReplacementPolicy::Reject,
-                quote_validity_seconds: QUOTE_VALIDITY_SECONDS,
+                quote_validity_seconds: self.pricing.quote_expiry_seconds,
                 funding_window_blocks: 12,
                 broadcast_safety_blocks: 2,
                 lightning_settlement_blocks: 18,
@@ -218,8 +231,115 @@ impl FundedMode {
             },
             created_at,
         )
-        .map(Some)
+        .map_err(|error| error.to_string())?;
+        require_derived_pricing_terms(&quote, &pricing)?;
+        Ok(Some(quote))
+    }
+
+    fn derive_pricing(
+        &self,
+        rfq: &Event,
+        swap_type: PricingSwapType,
+        created_at: u64,
+    ) -> Result<DerivedQuote, String> {
+        let session = session_id(rfq)?;
+        let live = self
+            .handle
+            .block_on(
+                self.bitcoind
+                    .estimated_feerate_sat_per_vbyte(&rpc_id("quote-feerate", session)?, 2),
+            )
+            .map_err(|error| format!("could not estimate the Quote feerate: {error}"))?;
+        let feerate = feerate_for_quote(
+            &self.pricing,
+            live.map(|sat_per_vb| (sat_per_vb, "bitcoind-estimatesmartfee-2")),
+        )
+        .map_err(|error| error.to_string())?;
+        let profile = record_profile(rfq)?;
+        let constraints = profile
+            .get("constraints")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "funded RFQ has no constraints".to_owned())?;
+        let amount = required_string(constraints, "input_amount")?.to_owned();
+        let capacity = self.quote_capacity(session, swap_type, created_at)?;
+        derive_quote(
+            &self.pricing,
+            &feerate,
+            &capacity,
+            &QuoteRequest {
+                swap_type,
+                side: QuoteSide::Input,
+                amount,
+            },
+            created_at,
+        )
         .map_err(|error| error.to_string())
+    }
+
+    fn quote_capacity(
+        &self,
+        session_id: &str,
+        swap_type: PricingSwapType,
+        observed_at: u64,
+    ) -> Result<CapacityBounds, String> {
+        let (bucket_id, asset_id, total_capacity) = match swap_type {
+            PricingSwapType::Submarine => (
+                "lightning-outbound".to_owned(),
+                format!("swp:1:{}:btc:lightning", self.network_id),
+                self.lightning_capacity_for_session(session_id)?,
+            ),
+            PricingSwapType::Reverse => {
+                let asset_id = format!("swp:1:{}:btc:chain", self.network_id);
+                let policy = WalletScanPolicy::new(
+                    asset_id.clone(),
+                    0,
+                    0,
+                    20,
+                    self.minimum_confirmations,
+                    64,
+                )
+                .map_err(|error| error.to_string())?;
+                let liquidity = self
+                    .handle
+                    .block_on(discover_wallet_utxos(
+                        &self.bitcoind,
+                        &self.store,
+                        &self.wallet,
+                        &rpc_id("quote-wallet-scan", session_id)?,
+                        &policy,
+                        observed_at,
+                    ))
+                    .map_err(|error| format!("could not price provider liquidity: {error}"))?;
+                let total_capacity = liquidity
+                    .funding_inputs
+                    .iter()
+                    .try_fold(0_u64, |total, input| total.checked_add(input.value_sat))
+                    .ok_or_else(|| "provider Quote capacity overflowed".to_owned())?;
+                let prefix = session_id
+                    .get(..16)
+                    .ok_or_else(|| "provider session ID is too short".to_owned())?;
+                (format!("btc-{prefix}"), asset_id, total_capacity)
+            }
+            PricingSwapType::Chain => {
+                return Err("funded v1 does not price chain swaps".to_owned());
+            }
+        };
+        self.handle
+            .block_on(self.store.configure_capacity_bucket(
+                &bucket_id,
+                &asset_id,
+                total_capacity,
+                observed_at,
+            ))
+            .map_err(|error| format!("could not configure Quote capacity: {error}"))?;
+        let available_capacity = self
+            .handle
+            .block_on(self.store.available_capacity(&bucket_id))
+            .map_err(|error| format!("could not read Quote capacity: {error}"))?;
+        Ok(CapacityBounds {
+            capacity_bucket_id: bucket_id,
+            available_capacity: available_capacity.to_string(),
+        })
     }
 
     fn synchronized_quote_heights(
@@ -392,7 +512,7 @@ impl FundedMode {
                 (
                     "lightning_liquidity",
                     Vec::new(),
-                    self.lightning_capacity(request)?,
+                    self.lightning_capacity_for_session(&request.session_id)?,
                 )
             } else {
                 return Err("reservation asset is not a funded v1 rail".to_owned());
@@ -503,13 +623,16 @@ impl FundedMode {
         amount_sat: u64,
         miner_fee_budget_sat: u64,
     ) -> Result<SignedFundingTransaction, String> {
+        let funding_fee_rate_sat_per_vbyte =
+            funding_feerate_from_quote_budget(PricingSwapType::Reverse, miner_fee_budget_sat)
+                .map_err(|error| error.to_string())?;
         let funding = build_funding_transaction(
             &self.wallet,
             inputs,
             &FundingRequest {
                 destination_script_pubkey,
                 amount_sat,
-                fee_rate_sat_per_vbyte: FUNDING_FEE_RATE_SAT_PER_VBYTE,
+                fee_rate_sat_per_vbyte: funding_fee_rate_sat_per_vbyte,
                 change_path: funding_change_path(session_id)?,
                 lock_time: 0,
             },
@@ -523,14 +646,13 @@ impl FundedMode {
         Ok(funding)
     }
 
-    fn lightning_capacity(&self, request: &ProviderEffectRequest) -> Result<u64, String> {
+    fn lightning_capacity_for_session(&self, session_id: &str) -> Result<u64, String> {
         let response = self
             .handle
-            .block_on(self.cln.call(
-                &cln_id("listfunds", &request.session_id)?,
-                "listfunds",
-                json!({}),
-            ))
+            .block_on(
+                self.cln
+                    .call(&cln_id("listfunds", session_id)?, "listfunds", json!({})),
+            )
             .map_err(|error| format!("could not inspect Lightning liquidity: {error}"))?;
         response
             .get("channels")
@@ -1750,6 +1872,28 @@ impl FundedMode {
     }
 }
 
+fn require_derived_pricing_terms(
+    quote: &BuiltFundedQuote,
+    derived: &DerivedQuote,
+) -> Result<(), String> {
+    if quote.expiration > derived.quote_expires_at {
+        return Err("funded Quote exceeds its derived pricing expiry".to_owned());
+    }
+    let terms = quote
+        .profile
+        .get("terms")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "funded Quote has no terms object".to_owned())?;
+    for (name, expected) in derived.amount_terms() {
+        if terms.get(&name) != Some(&expected) {
+            return Err(format!(
+                "funded Quote construction changed derived pricing term {name}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl ProviderMode for FundedMode {
     fn mode_name(&self) -> &'static str {
         "funded"
@@ -1776,6 +1920,7 @@ impl ProviderMode for FundedMode {
             &self.network_id,
             self.minimum_confirmations,
             self.reorg_safety_blocks,
+            &self.pricing,
         )
     }
 
@@ -3722,15 +3867,20 @@ pub(crate) fn signer_from_environment() -> Result<MarketSigner, String> {
     signer
 }
 
-fn funded_offering(network_id: &str, minimum_confirmations: u32, reorg: u32) -> Value {
+fn funded_offering(
+    network_id: &str,
+    minimum_confirmations: u32,
+    reorg: u32,
+    pricing: &PricingConfig,
+) -> Value {
     let chain = format!("swp:1:{network_id}:btc:chain");
     let lightning = format!("swp:1:{network_id}:btc:lightning");
     json!({
         "mkt_swp":{
             "swap_types":["submarine","reverse"],
             "sides":[
-                {"input_asset_id":chain,"output_asset_id":lightning,"min":"1000","max":"1000000000","fee_bps":"100"},
-                {"input_asset_id":lightning,"output_asset_id":chain,"min":"1000","max":"1000000000","fee_bps":"100"}
+                {"input_asset_id":chain,"output_asset_id":lightning,"min":pricing.min_swap_sat.to_string(),"max":pricing.max_swap_sat.to_string(),"fee_bps":pricing.spread_bps.to_string()},
+                {"input_asset_id":lightning,"output_asset_id":chain,"min":pricing.min_swap_sat.to_string(),"max":pricing.max_swap_sat.to_string(),"fee_bps":pricing.spread_bps.to_string()}
             ],
             "networks":[network_id],
             "script_modes":["taproot-musig2-script-exit"],

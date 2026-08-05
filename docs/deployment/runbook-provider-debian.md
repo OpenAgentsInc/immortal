@@ -132,7 +132,19 @@ IMMORTAL_PROVIDER_CHAIN_POLL_SECONDS=5
 IMMORTAL_PROVIDER_CHAIN_STALE_SECONDS=30
 IMMORTAL_PROVIDER_MINIMUM_CONFIRMATIONS=1
 IMMORTAL_PROVIDER_REORG_SAFETY_BLOCKS=6
+IMMORTAL_PROVIDER_SPREAD_BPS=25
+IMMORTAL_PROVIDER_QUOTE_MIN_SAT=10000
+IMMORTAL_PROVIDER_QUOTE_MAX_SAT=1000000
+IMMORTAL_PROVIDER_QUOTE_EXPIRY_SECONDS=300
+IMMORTAL_PROVIDER_RESERVATION_TIER=hard
+IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM=1000
 ```
+
+Do not set `IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB` in this production
+example. The daemon uses bitcoind's conservative two-block `estimatesmartfee`
+result and refuses new Quotes when no estimate exists. An operator may set an
+explicit 1–2,000 sat/vB fallback after treating it as a pricing policy override;
+the regtest lab sets it because regtest has no fee history.
 
 Install it without exposing its contents:
 
@@ -295,6 +307,8 @@ provider database, and watchtower processes. Its public evidence rules are
 documented in
 [`provider-funded-smoke.md`](../conformance/provider-funded-smoke.md).
 
-Current result: **pending**. The image and tooling preflight has passed, but the
-complete three-journey process gate has not yet passed. Do not deploy for value
-or cite funded-provider conformance until it does.
+Current local result: **passed on macOS 26.4 arm64 on 2026-08-04**, with
+`test-provider-funded: submarine, reverse, and noncooperative refund passed`.
+That result validates the disposable regtest topology and does not validate a
+clean Debian installation or a live deployment. Issue #19 must execute and
+record those release proofs before a deployment claim.

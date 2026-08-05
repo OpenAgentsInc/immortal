@@ -4,10 +4,11 @@
 `immortal contract`. `immortal-fixtures.json` hashes the exact committed
 fixture bytes consumed by downstream SDK conformance.
 
-Provider-only fixtures are excluded from this relay/client manifest. The
-separate `immortal-provider contract` artifact binds them under
-`tests/fixtures/provider/`; regenerate it with
-`scripts/export-provider-contract.sh`.
+Funded-runtime fixtures under `tests/fixtures/provider/` are excluded from
+this manifest and bound by the separate `immortal-provider contract`
+artifact. The shared provider engine and pricing fixtures under
+`tests/fixtures/nipmkt/` remain in this M11 manifest with `provider` scope.
+Regenerate the provider artifact with `scripts/export-provider-contract.sh`.
 
 Regenerate both artifacts after a protocol sync or adoption change:
 

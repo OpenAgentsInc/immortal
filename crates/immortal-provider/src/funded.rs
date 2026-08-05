@@ -121,6 +121,7 @@ async fn run_async() -> Result<(), FundedError> {
     let chain_stale_after = config.chain_stale_after;
     let minimum_confirmations = config.minimum_confirmations;
     let reorg_safety_blocks = config.reorg_safety_blocks;
+    let pricing = config.pricing;
     let wallet = config.wallet;
     let mode = FundedMode::new(
         tokio::runtime::Handle::current(),
@@ -132,6 +133,7 @@ async fn run_async() -> Result<(), FundedError> {
             network,
             minimum_confirmations,
             reorg_safety_blocks,
+            pricing,
         },
     );
     let health = Arc::new(ProviderHealth::default());

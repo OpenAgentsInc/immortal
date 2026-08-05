@@ -361,17 +361,17 @@ close the program. Profiles and rails beyond the Boltz-class replacement
 are the M13 ledger below.
 
 Current M12 status: #9, #10, upstream #9311, #11, #12, #13, #14, #16, #17,
-and the #24 workspace conversion are complete. The pinned relay exposes the
+#24, #25, and the #28 pricing integration are complete. The pinned relay exposes the
 MKT-SWP and MKT-PFI v1 observable contracts and the off-by-default
 exact-conformance coordination handler without claiming PFI external
 authority or an executable profile. Verification primitives and the
 transport-neutral SWP client now live in their own wasm-safe workspace
-crates. The provider crate now contains the complete transport-neutral session
-engine and persistent no-spend process. The #25 worktree contains the funded
-rails, watchtower, reserve-gated reverse funding precommitment, and provider
-contract/runtime fixture; #25 remains open until its disposable three-journey
-funded smoke passes on pushed main. Later packets follow the dependency table
-and subledger.
+crates. The provider crate contains the transport-neutral session engine,
+persistent no-spend process, funded rails, watchtower, reserve-gated reverse
+funding precommitment, live pricing integration, and provider contract/runtime
+fixtures. Its disposable three-journey funded gate passed locally on
+2026-08-04 on macOS 26.4 arm64. Later packets follow the dependency table and
+subledger; #19 still owns Debian and deployment evidence.
 
 ### M12 provider-runtime subledger (2026-08-04)
 

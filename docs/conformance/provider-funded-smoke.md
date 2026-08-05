@@ -41,12 +41,18 @@ terminal depth. Funding, claim, and reverse-lock actions stop when the current
 chain height reaches their signed exclusive deadline, including the
 exact-deadline boundary.
 
+Regtest has no fee history for a useful `estimatesmartfee` result. The harness
+therefore sets `IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB=2` explicitly
+and pins spread and routing policy so the submarine invoice amount comes from
+the same pricing engine used by funded production Quotes.
+
 ## Current result
 
-**Pending.** Image builds, shell syntax, fixture JSON, Compose expansion, and
-the evidence validator have passed their preflight checks. The complete
-three-journey `scripts/test-provider-funded.sh` result has not yet passed and
-must not be cited as funded-provider conformance or deployment evidence.
+**Passed locally.** On 2026-08-04, `scripts/test-provider-funded.sh` completed
+on macOS 26.4 arm64 with `test-provider-funded: submarine, reverse, and
+noncooperative refund passed`. This records local disposable-regtest
+conformance. It is not a clean-Debian installation, live-network, or deployment
+claim; issue #19 owns that evidence.
 
 ## Pinned rail software
 
@@ -134,5 +140,6 @@ macOS 26.4 through the local Apple Container BuildKit. The resulting Bitcoin
 image reported `Bitcoin Core daemon version v31.1.0`; the hold binary loaded
 all required shared libraries in the pinned CLN image. Shell syntax, fixture
 JSON, evidence-validator Python, and Compose expansion also passed locally.
-The three-journey result remains pending and is recorded only by a successful
-invocation of the gate above.
+The same 2026-08-04 run completed all three journeys and the aggregate durable
+evidence check. Future platform or release claims require their own successful
+invocation; this record applies only to the local macOS 26.4 arm64 run.

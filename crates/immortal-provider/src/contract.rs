@@ -15,6 +15,8 @@ const SETTLEMENT_FIXTURE: &[u8] =
 const FUNDED_SMOKE_FIXTURE_PATH: &str = "tests/fixtures/provider/funded-smoke-v1.json";
 const FUNDED_SMOKE_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/funded-smoke-v1.json");
+const PRICING_FIXTURE_PATH: &str = "tests/fixtures/nipmkt/swp-pricing-v1.json";
+const PRICING_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/nipmkt/swp-pricing-v1.json");
 const NIP_MANIFEST: &str = include_str!("../../../nips/manifest.json");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +91,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                     "zmq":false
                 },
                 "runtime_methods":{
-                    "quote_and_safety_height":["getblockchaininfo"],
+                    "quote_and_safety_height":["getblockchaininfo","estimatesmartfee"],
                     "transaction_observation":["getrawtransaction","gettxspendingprevout"],
                     "wallet_discovery":["scantxoutset"],
                     "execution":["sendrawtransaction"]
@@ -250,7 +252,8 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 fixture_entry(RUNTIME_FIXTURE_PATH, RUNTIME_FIXTURE),
                 fixture_entry(QUOTE_FIXTURE_PATH, QUOTE_FIXTURE),
                 fixture_entry(SETTLEMENT_FIXTURE_PATH, SETTLEMENT_FIXTURE),
-                fixture_entry(FUNDED_SMOKE_FIXTURE_PATH, FUNDED_SMOKE_FIXTURE)
+                fixture_entry(FUNDED_SMOKE_FIXTURE_PATH, FUNDED_SMOKE_FIXTURE),
+                fixture_entry(PRICING_FIXTURE_PATH, PRICING_FIXTURE)
             ]
         },
         "relay_contract_affected":false,
@@ -315,10 +318,14 @@ fn limits_contract() -> Value {
             "alert_response_bytes":crate::health::MAX_ALERT_RESPONSE_BYTES
         },
         "quote":{
-            "validity_seconds":crate::funded_mode::QUOTE_VALIDITY_SECONDS,
             "rail_sync_attempts":crate::funded_mode::QUOTE_RAIL_SYNC_ATTEMPTS,
             "rail_sync_delay_milliseconds":crate::funded_mode::QUOTE_RAIL_SYNC_DELAY.as_millis(),
-            "invoice_expiry_seconds":crate::quote::MAX_INVOICE_SECONDS
+            "invoice_expiry_seconds":crate::quote::MAX_INVOICE_SECONDS,
+            "spread_bps_maximum":crate::pricing::MAX_SPREAD_BPS,
+            "feerate_sat_per_vbyte_maximum":crate::pricing::MAX_FEERATE_SAT_PER_VB,
+            "swap_sat_maximum":crate::pricing::MAX_AMOUNT_SAT,
+            "validity_seconds_maximum":crate::pricing::MAX_QUOTE_EXPIRY_SECONDS,
+            "lightning_routing_fee_ppm_maximum":crate::pricing::MAX_LIGHTNING_ROUTING_FEE_PPM
         }
     })
 }
@@ -367,10 +374,14 @@ fn limits_contract() -> Value {
         },
         "health":{"connections":16,"request_bytes":4096,"alert_response_bytes":65536},
         "quote":{
-            "validity_seconds":600,
             "rail_sync_attempts":40,
             "rail_sync_delay_milliseconds":250,
-            "invoice_expiry_seconds":31536000
+            "invoice_expiry_seconds":31536000,
+            "spread_bps_maximum":1000,
+            "feerate_sat_per_vbyte_maximum":2000,
+            "swap_sat_maximum":2100000000000000_u64,
+            "validity_seconds_maximum":3600,
+            "lightning_routing_fee_ppm_maximum":100000
         }
     })
 }
@@ -802,7 +813,39 @@ fn environment_contract() -> Value {
             1,
             144
         ),
-        optional_env_integer("IMMORTAL_PROVIDER_REORG_SAFETY_BLOCKS", &["funded"], 1, 144)
+        optional_env_integer("IMMORTAL_PROVIDER_REORG_SAFETY_BLOCKS", &["funded"], 1, 144),
+        optional_env_integer("IMMORTAL_PROVIDER_SPREAD_BPS", &["funded"], 0, 1000),
+        optional_env_integer_without_default(
+            "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB",
+            &["funded"],
+            1,
+            2000
+        ),
+        optional_env_integer(
+            "IMMORTAL_PROVIDER_QUOTE_MIN_SAT",
+            &["funded"],
+            1,
+            2100000000000000_u64
+        ),
+        optional_env_integer(
+            "IMMORTAL_PROVIDER_QUOTE_MAX_SAT",
+            &["funded"],
+            1,
+            2100000000000000_u64
+        ),
+        optional_env_integer(
+            "IMMORTAL_PROVIDER_QUOTE_EXPIRY_SECONDS",
+            &["funded"],
+            1,
+            3600
+        ),
+        optional_env_choice("IMMORTAL_PROVIDER_RESERVATION_TIER", &["funded"], &["hard"]),
+        optional_env_integer(
+            "IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM",
+            &["funded"],
+            0,
+            100000
+        )
     ])
 }
 
@@ -862,6 +905,19 @@ fn optional_env_string(
 
 fn optional_env_integer(name: &'static str, modes: &[&str], minimum: u64, maximum: u64) -> Value {
     optional_environment(env_integer(name, modes, minimum, maximum), modes, true)
+}
+
+fn optional_env_integer_without_default(
+    name: &'static str,
+    modes: &[&str],
+    minimum: u64,
+    maximum: u64,
+) -> Value {
+    optional_environment(env_integer(name, modes, minimum, maximum), modes, false)
+}
+
+fn optional_env_choice(name: &'static str, modes: &[&str], choices: &[&str]) -> Value {
+    optional_environment(env_choice(name, modes, choices), modes, true)
 }
 
 fn optional_environment(mut value: Value, modes: &[&str], defaulted: bool) -> Value {

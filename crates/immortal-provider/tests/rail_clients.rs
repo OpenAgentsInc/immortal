@@ -53,6 +53,35 @@ async fn bitcoind_binds_request_id_and_basic_auth_without_leaking_credentials() 
 }
 
 #[tokio::test]
+async fn bitcoind_requests_conservative_fee_estimate_and_rounds_up()
+-> Result<(), Box<dyn std::error::Error>> {
+    let body = json!({
+        "result":{"feerate":0.00001001,"blocks":2},
+        "error":null,
+        "id":"quote:feerate:1"
+    })
+    .to_string();
+    let (endpoint, server) = spawn_bitcoind(http_response(200, &body)).await;
+    let client = BitcoindClient::new(
+        endpoint,
+        BitcoindAuth::new("rpc-user", "top-secret")?,
+        BitcoindLimits::default(),
+    )?;
+    let request_id = RpcRequestId::new("quote:feerate:1")?;
+    assert_eq!(
+        client
+            .estimated_feerate_sat_per_vbyte(&request_id, 2)
+            .await?,
+        Some(2)
+    );
+    let request = server.await?;
+    let request: Value = serde_json::from_slice(http_body(request.as_bytes()))?;
+    assert_eq!(request["method"], "estimatesmartfee");
+    assert_eq!(request["params"], json!([2, "conservative"]));
+    Ok(())
+}
+
+#[tokio::test]
 async fn bitcoind_rejects_wrong_id_rpc_errors_truncation_and_ambiguous_framing() {
     let cases = [
         (
