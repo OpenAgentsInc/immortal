@@ -7,10 +7,13 @@ compose_file="${support_dir}/compose.yaml"
 manifest_file="tests/fixtures/provider/funded-smoke-v1.json"
 checkpoint_manifest_file="tests/fixtures/lab/funded-checkpoints-v1.json"
 matrix_manifest_file="tests/fixtures/lab/funded-matrix-v1.json"
-private_root="$(mktemp -d "${TMPDIR:-/tmp}/immortal-provider-funded.XXXXXX")"
+postgres_preflight_image="postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193"
+private_root=""
 project_name=""
 compose_ready=false
 compose_prefix=()
+container_runtime=()
+compose_runtime=""
 current_phase=initialization
 restart_at="${IMMORTAL_PROVIDER_FUNDED_RESTART_AT:-}"
 injection="${IMMORTAL_PROVIDER_FUNDED_INJECTION:-}"
@@ -42,35 +45,136 @@ cleanup() {
       exit_status=1
     fi
   fi
-  case "$(basename "${private_root}")" in
-    immortal-provider-funded.*) ;;
-    *)
-      echo "test-provider-funded: refused to remove an unexpected temporary directory" >&2
-      exit 1
-      ;;
-  esac
-  if ! rm -rf -- "${private_root}"; then
-    echo "test-provider-funded: private temporary directory cleanup failed" >&2
-    exit_status=1
+  if test -n "${private_root}"; then
+    case "$(basename "${private_root}")" in
+      immortal-provider-funded.*) ;;
+      *)
+        echo "test-provider-funded: refused to remove an unexpected temporary directory" >&2
+        exit 1
+        ;;
+    esac
+    if ! rm -rf -- "${private_root}"; then
+      echo "test-provider-funded: private temporary directory cleanup failed" >&2
+      exit_status=1
+    fi
   fi
   exit "${exit_status}"
 }
 trap cleanup EXIT INT TERM
 
 umask 077
+repository_physical_path="$(CDPATH= cd -- . && pwd -P)"
+dedicated_private_root_parent="${IMMORTAL_PROVIDER_FUNDED_PRIVATE_ROOT_PARENT:-}"
+if test -n "${dedicated_private_root_parent}"; then
+  private_root_parent="${dedicated_private_root_parent}"
+else
+  private_root_parent="${TMPDIR:-/tmp}"
+fi
+case "${private_root_parent}" in
+  /*) ;;
+  *)
+    echo "test-provider-funded: private root parent must be absolute" >&2
+    exit 1
+    ;;
+esac
+if ! test -d "${private_root_parent}" \
+  || ! test -w "${private_root_parent}" \
+  || ! test -x "${private_root_parent}"; then
+  echo "test-provider-funded: private root parent must exist and be writable/searchable" >&2
+  exit 1
+fi
+private_root_parent_physical="$(CDPATH= cd -- "${private_root_parent}" && pwd -P)"
+case "${private_root_parent_physical}" in
+  "${repository_physical_path}"|"${repository_physical_path}"/*)
+    echo "test-provider-funded: private root parent must be outside the repository" >&2
+    exit 1
+    ;;
+esac
+receipt_physical_path=""
 if test -n "${IMMORTAL_DEBIAN_PROVIDER_RECEIPT_DIRECTORY:-}"; then
   if ! test -d "${IMMORTAL_DEBIAN_PROVIDER_RECEIPT_DIRECTORY}"; then
     echo "test-provider-funded: Debian receipt directory is unavailable" >&2
     exit 1
   fi
   receipt_physical_path="$(CDPATH= cd -- "${IMMORTAL_DEBIAN_PROVIDER_RECEIPT_DIRECTORY}" && pwd -P)"
-  private_physical_path="$(CDPATH= cd -- "${private_root}" && pwd -P)"
+  case "${private_root_parent_physical}" in
+    "${receipt_physical_path}"|"${receipt_physical_path}"/*)
+      echo "test-provider-funded: private root parent must be outside the Debian receipt mount" >&2
+      exit 1
+      ;;
+  esac
+fi
+if test -n "${dedicated_private_root_parent}"; then
+  global_tmpdir="${TMPDIR:-/tmp}"
+  case "${global_tmpdir}" in
+    /*) ;;
+    *)
+      echo "test-provider-funded: global TMPDIR must be absolute when a dedicated private parent is set" >&2
+      exit 1
+      ;;
+  esac
+  if ! test -d "${global_tmpdir}"; then
+    echo "test-provider-funded: global TMPDIR is unavailable" >&2
+    exit 1
+  fi
+  global_tmpdir_physical="$(CDPATH= cd -- "${global_tmpdir}" && pwd -P)"
+  case "${global_tmpdir_physical}" in
+    "${private_root_parent_physical}"|"${private_root_parent_physical}"/*)
+      echo "test-provider-funded: global TMPDIR must not be inside the dedicated private root parent" >&2
+      exit 1
+      ;;
+  esac
+fi
+unset IMMORTAL_PROVIDER_FUNDED_PRIVATE_ROOT_PARENT
+private_root="$(mktemp -d "${private_root_parent_physical}/immortal-provider-funded.XXXXXX")"
+private_physical_path="$(CDPATH= cd -- "${private_root}" && pwd -P)"
+case "${private_physical_path}" in
+  "${private_root_parent_physical}"/*) ;;
+  *)
+    echo "test-provider-funded: private runtime directory is outside its parent" >&2
+    rmdir "${private_root}" || true
+    exit 1
+    ;;
+esac
+if ! chmod 0700 "${private_root}"; then
+  echo "test-provider-funded: could not set private runtime directory permissions" >&2
+  rmdir "${private_root}" || true
+  exit 1
+fi
+if stat --version >/dev/null 2>&1; then
+  private_root_mode="$(stat -c '%a' "${private_root}")"
+else
+  private_root_mode="$(stat -f '%Lp' "${private_root}")"
+fi
+if test "${private_root_mode}" != 700; then
+  echo "test-provider-funded: private runtime directory permissions are not 0700" >&2
+  rmdir "${private_root}" || true
+  exit 1
+fi
+if test -n "${receipt_physical_path}"; then
   case "${private_physical_path}" in
     "${receipt_physical_path}"|"${receipt_physical_path}"/*)
       echo "test-provider-funded: private runtime directory is inside the Debian receipt mount" >&2
       exit 1
       ;;
   esac
+fi
+if docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  container_runtime=(docker)
+  compose_runtime=docker
+elif podman info >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
+  container_runtime=(podman)
+  compose_runtime=podman
+else
+  echo "test-provider-funded: start Docker Desktop or a Podman compose service" >&2
+  exit 1
+fi
+current_phase=private-root-bind-preflight
+if ! "${container_runtime[@]}" run --rm \
+  --mount "type=bind,src=${private_root},dst=/run/immortal-private,readonly" \
+  "${postgres_preflight_image}" true >/dev/null; then
+  echo "test-provider-funded: container runtime cannot read the private root at its exact path" >&2
+  exit 1
 fi
 mkdir -m 0700 "${private_root}/evidence" \
   "${private_root}/evidence/chain" \
@@ -365,14 +469,14 @@ IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR=${private_root}
 EOF
 chmod 0600 "${private_root}"/*.conf "${private_root}"/*.env
 
-if docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+if test "${compose_runtime}" = docker; then
   compose_prefix=(
     docker compose
     --env-file "${private_root}/compose.env"
     --file "${compose_file}"
     --project-name "${project_name}"
   )
-elif podman info >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
+elif test "${compose_runtime}" = podman; then
   compose_prefix=(
     podman compose
     --env-file "${private_root}/compose.env"
@@ -380,7 +484,7 @@ elif podman info >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
     --project-name "${project_name}"
   )
 else
-  echo "test-provider-funded: start Docker Desktop or a Podman compose service" >&2
+  echo "test-provider-funded: selected container runtime is unavailable" >&2
   exit 1
 fi
 compose_ready=true

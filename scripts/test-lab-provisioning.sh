@@ -9,6 +9,7 @@ scripts=(
   scripts/lab-topology.sh
   scripts/test-lab-topology-quotes.sh
   scripts/test-lab-topology-funded.sh
+  scripts/test-provider-funded.sh
 )
 manifest="tests/fixtures/lab/provisioning-v1.json"
 topology_quote_manifest="tests/fixtures/lab/topology-quotes-v1.json"
@@ -118,6 +119,20 @@ grep -q 'run_funded_topology' crates/immortal-lab/src/funded.rs
 grep -q 'provider-b-postgres' scripts/support/provider-funded/topology-compose.yaml
 grep -q 'PREPARE funded_topology_evidence' scripts/support/provider-funded/topology_evidence.sql
 grep -Fq 'container_name="immortal-dev-postgres-$PPID-$$"' scripts/dev-relay.sh
+grep -Fqx 'dedicated_private_root_parent="${IMMORTAL_PROVIDER_FUNDED_PRIVATE_ROOT_PARENT:-}"' \
+  scripts/test-provider-funded.sh
+grep -Fqx 'unset IMMORTAL_PROVIDER_FUNDED_PRIVATE_ROOT_PARENT' scripts/test-provider-funded.sh
+grep -Fqx '  --mount "type=bind,src=${private_root},dst=/run/immortal-private,readonly" \' \
+  scripts/test-provider-funded.sh
+grep -Fqx 'postgres_preflight_image="postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193"' \
+  scripts/test-provider-funded.sh
+grep -Fqx '  "${private_root_parent_physical}"/*) ;;' scripts/test-provider-funded.sh
+grep -Fqx '      echo "test-provider-funded: global TMPDIR must not be inside the dedicated private root parent" >&2' \
+  scripts/test-provider-funded.sh
+if grep -Eq '^docker\(\)' scripts/test-provider-funded.sh; then
+  echo "test-lab-provisioning: funded provider harness must not wrap docker" >&2
+  exit 1
+fi
 
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/immortal-lab-provisioning-test.XXXXXX")"
 cleanup() {
@@ -200,6 +215,68 @@ grep -Fq 'no longer matches the created container; refusing teardown' \
 
 run_dev_relay_cleanup_case exact-match
 test "$(grep -c '^rm -f immortal-dev-postgres-' "${test_dir}/exact-match-deletes")" -eq 1
+
+provider_mock_runtime="${test_dir}/provider-mock-runtime"
+mkdir -m 0700 "${provider_mock_runtime}"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'case "${1:-}" in' \
+  'info) exit 0 ;;' \
+  'compose)' \
+  '  test "${2:-}" = version' \
+  '  exit 0' \
+  '  ;;' \
+  'run)' \
+  '  test -z "${IMMORTAL_PROVIDER_FUNDED_PRIVATE_ROOT_PARENT:-}"' \
+  '  printf "%s\n" "$*" >>"${IMMORTAL_PROVIDER_FUNDED_MOCK_COMMAND_LOG}"' \
+  '  exit 1' \
+  '  ;;' \
+  '*) exit 1 ;;' \
+  'esac' >"${provider_mock_runtime}/docker"
+chmod 0700 "${provider_mock_runtime}/docker"
+
+provider_private_parent="${test_dir}/provider-private-parent"
+provider_command_log="${test_dir}/provider-private-parent-commands"
+provider_output_log="${test_dir}/provider-private-parent-output"
+mkdir -m 0700 "${provider_private_parent}"
+: >"${provider_command_log}"
+set +e
+PATH="${provider_mock_runtime}:/usr/bin:/bin" \
+  IMMORTAL_PROVIDER_FUNDED_PRIVATE_ROOT_PARENT="${provider_private_parent}" \
+  IMMORTAL_PROVIDER_FUNDED_MOCK_COMMAND_LOG="${provider_command_log}" \
+  scripts/test-provider-funded.sh >"${provider_output_log}" 2>&1
+provider_preflight_status=$?
+set -e
+test "${provider_preflight_status}" -ne 0
+grep -Fq 'container runtime cannot read the private root at its exact path' \
+  "${provider_output_log}"
+test "$(wc -l <"${provider_command_log}")" -eq 1
+grep -Fq -- "--mount type=bind,src=${provider_private_parent}/immortal-provider-funded-" \
+  "${provider_command_log}"
+grep -Fq ',dst=/run/immortal-private,readonly' "${provider_command_log}"
+grep -Fq 'postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193 true' \
+  "${provider_command_log}"
+if find "${provider_private_parent}" -mindepth 1 -maxdepth 1 -name 'immortal-provider-funded.*' -print -quit | grep -q .; then
+  echo "test-lab-provisioning: failed private-root preflight retained a child" >&2
+  exit 1
+fi
+
+provider_global_tmpdir="${provider_private_parent}/global-tmpdir"
+mkdir -m 0700 "${provider_global_tmpdir}"
+set +e
+TMPDIR="${provider_global_tmpdir}" \
+  IMMORTAL_PROVIDER_FUNDED_PRIVATE_ROOT_PARENT="${provider_private_parent}" \
+  scripts/test-provider-funded.sh >"${test_dir}/provider-global-tmpdir-output" 2>&1
+provider_global_tmpdir_status=$?
+set -e
+test "${provider_global_tmpdir_status}" -ne 0
+grep -Fq 'global TMPDIR must not be inside the dedicated private root parent' \
+  "${test_dir}/provider-global-tmpdir-output"
+if find "${provider_private_parent}" -mindepth 1 -maxdepth 1 -name 'immortal-provider-funded.*' -print -quit | grep -q .; then
+  echo "test-lab-provisioning: nested TMPDIR rejection retained a child" >&2
+  exit 1
+fi
 
 IMMORTAL_LAB_DIR="${test_dir}/lab" \
   IMMORTAL_LAB_STATE_DIR="${test_dir}/wallet" \

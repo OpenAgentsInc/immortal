@@ -231,6 +231,23 @@ Postgres credential, or provider CLN socket. The directory, built project
 images, and all named volumes are removed on success, failure, or
 interruption.
 
+### Remote Docker private-root parent
+
+`IMMORTAL_PROVIDER_FUNDED_PRIVATE_ROOT_PARENT` optionally selects the parent
+for that one private directory. It must be an existing, writable, searchable
+absolute path outside the checkout and any Debian receipt directory. The
+harness canonicalizes it, creates one mode-0700
+`immortal-provider-funded.*` child beneath it, verifies physical containment,
+then unsets the setting before it starts the smoke.
+
+For a remote Docker daemon, this parent must be mounted at the same absolute
+path on the caller and the daemon host. Set this one variable to that shared
+path; do not point global `TMPDIR` at the shared mount. Docker and Buildx keep
+using the caller's normal `TMPDIR`, avoiding shared-filesystem temporary-file
+semantics. Before any credentials are generated, the harness bind-mounts the
+empty child read-only into the pinned Postgres 17 image. A remote daemon that
+cannot see the exact path fails at that preflight.
+
 The two CLN data volumes are mounted only by their owning CLN processes. Each
 CLN writes `lightning-rpc` into a separate socket-only volume: the provider
 receives the provider socket and the external actor receives the peer socket,
