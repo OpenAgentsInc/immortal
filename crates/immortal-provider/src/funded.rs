@@ -131,6 +131,7 @@ async fn run_async() -> Result<(), FundedError> {
         mode_cln,
         FundedModePolicy {
             network,
+            cooperative_signing: false,
             minimum_confirmations,
             reorg_safety_blocks,
             pricing,

@@ -18,6 +18,8 @@ const SETTLEMENT_FIXTURE: &[u8] =
 const FUNDED_SMOKE_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/funded-smoke-v1.json");
 const PRICING_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/nipmkt/swp-pricing-v1.json");
+const COOPERATIVE_RUNTIME_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json");
 
 #[test]
 fn provider_contract_is_canonical_byte_stable_and_matches_export() {
@@ -54,11 +56,19 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
             FUNDED_SMOKE_FIXTURE,
         ),
         ("tests/fixtures/nipmkt/swp-pricing-v1.json", PRICING_FIXTURE),
+        (
+            "tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json",
+            COOPERATIVE_RUNTIME_FIXTURE,
+        ),
     ] {
         let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();
         assert_eq!(entry["bytes"], bytes.len());
         assert_eq!(entry["sha256"], lower_hex(&Sha256::digest(bytes)));
     }
+    let cooperative: Value = serde_json::from_slice(COOPERATIVE_RUNTIME_FIXTURE).unwrap();
+    assert_eq!(cooperative["process_gate"]["production_enabled"], false);
+    assert_eq!(contract["execution"]["musig2_key_path"], false);
+    assert_eq!(contract["execution"]["musig2_key_path_signer"], false);
 }
 
 #[test]

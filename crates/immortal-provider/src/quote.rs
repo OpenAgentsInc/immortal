@@ -44,6 +44,7 @@ impl ReplacementPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FundedQuotePolicy<'a> {
     pub network_id: &'a str,
+    pub cooperative_signing: bool,
     pub lightning_current_height: u32,
     pub fee_bps: u16,
     pub miner_fee_budget_sat: u64,
@@ -153,6 +154,7 @@ pub fn build_funded_quote(
             ));
         }
     };
+    let cooperative_execution = policy.cooperative_signing && swap_type == SwapType::Submarine;
     match (swap_type, mkt_swp.get("invoice")) {
         (SwapType::Submarine, Some(Value::String(invoice))) if invoice == raw_invoice => {}
         (SwapType::Submarine, _) => {
@@ -396,7 +398,7 @@ pub fn build_funded_quote(
         lower_hex(&sha256(&canonical_json(&tree).map_err(|_| {
             error("swp_script_invalid", "Taproot tree is not canonical")
         })?));
-    let bitcoin_verifier = json!({
+    let mut bitcoin_verifier = json!({
         "amount":bitcoin_amount.to_string(),
         "chain_tip_hash":chain_tip.hash,
         "chain_tip_height":chain_tip.height.to_string(),
@@ -421,13 +423,17 @@ pub fn build_funded_quote(
         "exit_signing_pubkey":lower_hex(&requester_key.serialize()),
         "leg_id":bitcoin_leg_id,
         "minimum_confirmations":policy.minimum_confirmations.to_string(),
-        "musig2_execution":false,
+        "musig2_execution":cooperative_execution,
         "rbf_policy":policy.rbf.as_str(),
         "refund_script":lower_hex(&taproot.refund_script),
         "reorg_safety_blocks":policy.reorg_safety_blocks.to_string(),
         "replacement_policy":policy.replacement.as_str(),
         "script_pubkey":lower_hex(&taproot.script_pubkey),
-        "sighash_policy":"default_script_path_only",
+        "sighash_policy":if cooperative_execution {
+            "default_key_path_with_script_fallback"
+        } else {
+            "default_script_path_only"
+        },
         "swap_tree_sha256":tree_digest,
         "taproot_claim_control_block":lower_hex(&taproot.claim_control_block),
         "taproot_control_block":lower_hex(selected_control_block),
@@ -439,6 +445,40 @@ pub fn build_funded_quote(
         "verifier_policy":BITCOIN_VERIFIER,
         "zero_confirmation":zero_confirmation,
     });
+    if cooperative_execution {
+        let verifier = bitcoin_verifier
+            .as_object_mut()
+            .ok_or_else(|| error("swp_script_invalid", "Bitcoin verifier is not an object"))?;
+        verifier.insert(
+            "provider_exit_destination_script_pubkey".to_owned(),
+            Value::String(lower_hex(&unilateral.script_pubkey)),
+        );
+        verifier.insert(
+            "provider_exit_signer_ref".to_owned(),
+            Value::String(format!(
+                "immortal-provider:{bitcoin_leg_id}:{}",
+                if swap_type == SwapType::Submarine {
+                    "claim"
+                } else {
+                    "refund"
+                }
+            )),
+        );
+        verifier.insert(
+            "provider_exit_policy".to_owned(),
+            json!({
+                "earliest_broadcast_height":chain_tip.height.to_string(),
+                "latest_safe_broadcast_height":ladder.value
+                    .get("claim_last")
+                    .and_then(Value::as_u64)
+                    .map(|height| height.to_string())
+                    .ok_or_else(|| error("swp_timeout_ladder_unsafe", "submarine claim deadline is missing"))?,
+                "bump_mode":"cpfp",
+                "maximum_fee":policy.miner_fee_budget_sat.to_string(),
+                "target_blocks":policy.recovery_target_blocks,
+            }),
+        );
+    }
     let lightning_verifier = json!({
         "evidence_authority":{
             "adapter_sha256":lower_hex(&sha256(b"immortal-provider-local-verifier-v1")),
@@ -510,6 +550,31 @@ pub fn build_funded_quote(
         .checked_sub(chain_tip.height)
         .and_then(|blocks| blocks.checked_mul(policy.expected_block_seconds))
         .ok_or_else(|| error("swp_timeout_ladder_unsafe", "custody estimate overflows"))?;
+    let mut effects = if swap_type == SwapType::Submarine {
+        vec![
+            json!({"actor":"requester","effect_role":"chain_fund","leg_id":"source"}),
+            json!({"actor":"provider","effect_role":"chain_claim","leg_id":"source"}),
+            json!({"actor":"requester","effect_role":"chain_refund","leg_id":"source"}),
+            json!({"actor":"provider","effect_role":"invoice_pay","leg_id":"lightning"}),
+        ]
+    } else {
+        vec![
+            json!({"actor":"provider","effect_role":"invoice_create","leg_id":"lightning"}),
+            json!({"actor":"requester","effect_role":"invoice_pay","leg_id":"lightning"}),
+            json!({"actor":"provider","effect_role":"invoice_settle","leg_id":"lightning"}),
+            json!({"actor":"provider","effect_role":"invoice_cancel","leg_id":"lightning"}),
+            json!({"actor":"provider","effect_role":"chain_fund","leg_id":"destination"}),
+            json!({"actor":"requester","effect_role":"chain_claim","leg_id":"destination"}),
+            json!({"actor":"provider","effect_role":"chain_refund","leg_id":"destination"}),
+        ]
+    };
+    if cooperative_execution {
+        effects.push(json!({
+            "actor":"provider",
+            "effect_role":"cooperative_sign",
+            "leg_id":bitcoin_leg_id,
+        }));
+    }
     let terms = json!({
         "amount_equation":"input_minus_provider_and_quoted_fees",
         "asset_pair":asset_pair,
@@ -527,24 +592,7 @@ pub fn build_funded_quote(
         },
         "desired_completion_time":desired_completion_time,
         "effect_policy":{
-            "effects":if swap_type == SwapType::Submarine {
-                json!([
-                    {"actor":"requester","effect_role":"chain_fund","leg_id":"source"},
-                    {"actor":"provider","effect_role":"chain_claim","leg_id":"source"},
-                    {"actor":"requester","effect_role":"chain_refund","leg_id":"source"},
-                    {"actor":"provider","effect_role":"invoice_pay","leg_id":"lightning"}
-                ])
-            } else {
-                json!([
-                    {"actor":"provider","effect_role":"invoice_create","leg_id":"lightning"},
-                    {"actor":"requester","effect_role":"invoice_pay","leg_id":"lightning"},
-                    {"actor":"provider","effect_role":"invoice_settle","leg_id":"lightning"},
-                    {"actor":"provider","effect_role":"invoice_cancel","leg_id":"lightning"},
-                    {"actor":"provider","effect_role":"chain_fund","leg_id":"destination"},
-                    {"actor":"requester","effect_role":"chain_claim","leg_id":"destination"},
-                    {"actor":"provider","effect_role":"chain_refund","leg_id":"destination"}
-                ])
-            },
+            "effects":effects,
             "id_scheme":"openagents.mkt-swp.v1",
             "order_event_id_required":true,
             "replay":"idempotent_exact_bytes",
@@ -558,7 +606,7 @@ pub fn build_funded_quote(
         "lightning_routing_fee_budget":policy.lightning_routing_fee_budget_sat.to_string(),
         "maximum_total_fee":total_fee.to_string(),
         "miner_fee_budget":policy.miner_fee_budget_sat.to_string(),
-        "musig2_execution":false,
+        "musig2_execution":cooperative_execution,
         "output_amount":output_amount.to_string(),
         "payment_hash":lower_hex(&payment_hash),
         "price_feed":null,

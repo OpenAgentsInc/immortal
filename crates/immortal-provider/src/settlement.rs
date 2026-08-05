@@ -124,6 +124,7 @@ pub struct SettlementTemplate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CooperativeSettlementTemplate {
     pub settlement: SettlementTemplate,
+    pub cooperative_wallet_path: WalletPath,
     pub participant_keys: [[u8; 33]; 2],
     pub provider_index: u8,
     pub taproot_merkle_root: [u8; 32],
@@ -406,7 +407,7 @@ impl<'a> SettlementBridge<'a> {
         }
         let wallet_key = self
             .wallet
-            .derive_address(template.settlement.wallet_path)?
+            .derive_address(template.cooperative_wallet_path)?
             .internal_key;
         if keys[provider_index].x_only_public_key().0.serialize() != wallet_key
             || template.participant_keys[provider_index][0] != 0x02
@@ -442,7 +443,7 @@ impl<'a> SettlementBridge<'a> {
         )?;
         let signature_hash = taproot_key_spend_sighash(&transaction, &prevouts, 0)?;
         let nonce = self.wallet.begin_cooperative_signing(
-            template.settlement.wallet_path,
+            template.cooperative_wallet_path,
             template.transcript_digest,
             &keys,
             &tweaks,

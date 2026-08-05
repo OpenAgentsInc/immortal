@@ -88,6 +88,10 @@ pub struct BroadcastWatchPayload {
 }
 
 impl BroadcastWatchPayload {
+    pub fn cooperative_key_path(raw_transaction: String) -> Result<Self, WatchtowerError> {
+        Self::validated(raw_transaction, None)
+    }
+
     pub fn refund(raw_transaction: String) -> Result<Self, WatchtowerError> {
         Self::validated(raw_transaction, None)
     }

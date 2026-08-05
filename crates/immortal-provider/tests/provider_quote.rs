@@ -216,6 +216,163 @@ fn fixture_builds_dynamic_submarine_and_reverse_hard_quotes() {
 }
 
 #[test]
+fn cooperative_quote_shape_exists_only_under_the_inactive_process_gate() {
+    let runtime: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json"
+    ))
+    .expect("cooperative runtime fixture");
+    assert_eq!(runtime["process_gate"]["production_enabled"], false);
+    assert_eq!(
+        runtime["process_gate"]["provider_contract_advertisement"],
+        false
+    );
+
+    let fixture = fixture();
+    let case = fixture["cases"]
+        .as_array()
+        .and_then(|cases| cases.first())
+        .expect("submarine Quote fixture case");
+    let invoice = fixture["invoice"].as_str().expect("invoice");
+    let now = fixture["now"].as_u64().expect("now");
+    let setup = Setup::new(0xde);
+    let rfq = signed_rfq(&setup, case, invoice, now, None, None, None, None);
+    let wallet = TestWallet::new(BitcoinNetwork::Mainnet);
+    let mut cooperative_policy = policy(fixture, case);
+    cooperative_policy.cooperative_signing = true;
+    let built = build_funded_quote(
+        &rfq,
+        invoice,
+        &wallet.wallet,
+        wallet_allocation(),
+        &chain_tip(fixture),
+        cooperative_policy,
+        now,
+    )
+    .expect("process-gated cooperative Quote");
+    let terms = &built.profile["terms"];
+    assert_eq!(
+        terms["musig2_execution"],
+        runtime["quote_profile"]["terms_musig2_execution"]
+    );
+    let verifier = terms["verifier_inputs"]
+        .as_array()
+        .and_then(|verifiers| {
+            verifiers
+                .iter()
+                .find(|verifier| verifier["rail"].as_str() == Some("bitcoin"))
+                .or_else(|| {
+                    verifiers
+                        .iter()
+                        .find(|verifier| verifier.get("script_pubkey").is_some())
+                })
+        })
+        .expect("Bitcoin verifier");
+    assert_eq!(
+        verifier["musig2_execution"],
+        runtime["quote_profile"]["verifier_musig2_execution"]
+    );
+    assert_eq!(
+        verifier["sighash_policy"],
+        runtime["quote_profile"]["sighash_policy"]
+    );
+    assert!(
+        verifier["provider_exit_destination_script_pubkey"]
+            .as_str()
+            .is_some_and(|script| script.starts_with("5120"))
+    );
+    assert_eq!(
+        verifier["provider_exit_signer_ref"],
+        "immortal-provider:source:claim"
+    );
+    assert_eq!(
+        verifier["provider_exit_policy"]["latest_safe_broadcast_height"],
+        terms["timeout_ladder"]["claim_last"]
+            .as_u64()
+            .expect("claim deadline")
+            .to_string()
+    );
+    assert!(
+        terms["effect_policy"]["effects"]
+            .as_array()
+            .is_some_and(|effects| effects.iter().any(|effect| {
+                effect["effect_role"] == runtime["quote_profile"]["effect_role"]
+                    && effect["leg_id"] == "source"
+            }))
+    );
+
+    let mut provider = ProviderSession::new(setup.config.clone()).expect("provider session");
+    provider.ingest_signed(rfq).expect("ingest RFQ");
+    let request = provider
+        .hard_quote_with_reserve(
+            now,
+            &"df".repeat(32),
+            built.expiration,
+            ReservationRequest {
+                reservation_id: "cf".repeat(32),
+                capacity_bucket_id: "submarine-output".to_owned(),
+                reserved_asset_id: built.reserved_asset_id,
+                reserved_amount: built.reserved_amount_sat.to_string(),
+                reservation_expires_at: built.expiration,
+            },
+            built.profile,
+            |effect| {
+                Ok(ReservationConfirmation {
+                    reservation_id: effect.reservation_id.clone(),
+                    capacity_bucket_id: effect.capacity_bucket_id.clone(),
+                    reserved_asset_id: effect.reserved_asset_id.clone(),
+                    reserved_amount: effect.reserved_amount.clone(),
+                    committed_capacity: effect.reserved_amount.clone(),
+                    reservation_expires_at: effect.reservation_expires_at,
+                    allocation_sequence: "1".to_owned(),
+                    proof_class: "lightning_liquidity".to_owned(),
+                    proof_ref: "provider-cooperative-quote-fixture".to_owned(),
+                    capacity_commitment_sha256: lower_hex(&sha256(b"cooperative-quote")),
+                })
+            },
+        )
+        .expect("cooperative hard Quote reserve gate");
+    let signed = sign_private(request, &setup.provider);
+    assert!(provider.ingest_signed(signed).expect("ingest hard Quote"));
+
+    let reverse_case = fixture["cases"]
+        .as_array()
+        .and_then(|cases| cases.get(1))
+        .expect("reverse Quote fixture case");
+    let reverse_setup = Setup::new(0xdd);
+    let reverse_rfq = signed_rfq(
+        &reverse_setup,
+        reverse_case,
+        invoice,
+        now,
+        None,
+        None,
+        None,
+        None,
+    );
+    let mut reverse_policy = policy(fixture, reverse_case);
+    reverse_policy.cooperative_signing = true;
+    let reverse = build_funded_quote(
+        &reverse_rfq,
+        invoice,
+        &wallet.wallet,
+        wallet_allocation(),
+        &chain_tip(fixture),
+        reverse_policy,
+        now,
+    )
+    .expect("reverse Quote remains script-only under the incomplete gate");
+    assert_eq!(reverse.profile["terms"]["musig2_execution"], false);
+    assert!(
+        reverse.profile["terms"]["verifier_inputs"]
+            .as_array()
+            .is_some_and(|verifiers| verifiers.iter().all(|verifier| {
+                verifier.get("provider_exit_policy").is_none()
+                    && verifier.get("provider_exit_signer_ref").is_none()
+            }))
+    );
+}
+
+#[test]
 fn pricing_decision_feeds_the_exact_funded_reverse_quote_terms()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = fixture();
@@ -269,6 +426,7 @@ fn pricing_decision_feeds_the_exact_funded_reverse_quote_terms()
             network_id: fixture["network_id"]
                 .as_str()
                 .ok_or("Quote fixture network is missing")?,
+            cooperative_signing: false,
             lightning_current_height: u32::try_from(
                 fixture["lightning_height"]
                     .as_u64()
@@ -701,6 +859,7 @@ fn sign_private(request: MktSigningRequest, signer: &MarketSigner) -> Event {
 fn policy<'a>(fixture: &'a Value, case: &Value) -> FundedQuotePolicy<'a> {
     FundedQuotePolicy {
         network_id: fixture["network_id"].as_str().expect("network ID"),
+        cooperative_signing: false,
         lightning_current_height: u32::try_from(
             fixture["lightning_height"]
                 .as_u64()

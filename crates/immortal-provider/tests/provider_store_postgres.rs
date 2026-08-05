@@ -8,7 +8,7 @@ use immortal_core::{
 };
 use immortal_provider::store::{
     HardReservationRequest, OutPoint, ProviderStore, ProviderStoreError, PublicEffectRequest,
-    ReservationOutcome, StoreWriteOutcome, UtxoObservation, WatchJobRequest,
+    PublicExitPackage, ReservationOutcome, StoreWriteOutcome, UtxoObservation, WatchJobRequest,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -375,6 +375,100 @@ async fn provider_state_is_atomic_bounded_and_restart_safe() {
         StoreWriteOutcome::Stored
     );
 
+    let cooperative_package = PublicExitPackage {
+        package_id: id("cooperative-package"),
+        session_id: id("cooperative-session"),
+        order_id: id("cooperative-order"),
+        leg_id: "source".to_owned(),
+        path: "claim".to_owned(),
+        package_sha256: id("cooperative-package-digest"),
+        public_package: json!({
+            "effect_id":id("cooperative-unilateral-effect"),
+            "mode":"external_signer",
+            "path":"claim",
+            "transaction_template_sha256":id("cooperative-transaction"),
+        }),
+        created_at: 53,
+    };
+    assert_eq!(
+        first
+            .persist_exit_package(&cooperative_package)
+            .await
+            .expect("cooperative exit package must persist"),
+        StoreWriteOutcome::Stored
+    );
+    assert_eq!(
+        first
+            .persist_exit_package(&cooperative_package)
+            .await
+            .expect("cooperative exit package replay must persist"),
+        StoreWriteOutcome::Replay
+    );
+    let cooperative_effect = PublicEffectRequest {
+        effect_id: id("cooperative-effect"),
+        session_id: cooperative_package.session_id.clone(),
+        operation: "cooperative_sign".to_owned(),
+        request_sha256: id("cooperative-effect-request"),
+        public_request: json!({
+            "context_sha256":id("cooperative-context"),
+            "exit_package_sha256":cooperative_package.package_sha256,
+            "operation":"cooperative_sign",
+        }),
+        created_at: 54,
+    };
+    assert_eq!(
+        first
+            .persist_effect_request(&cooperative_effect)
+            .await
+            .expect("cooperative effect request must persist"),
+        StoreWriteOutcome::Stored
+    );
+    let cooperative_claim_effect = PublicEffectRequest {
+        effect_id: id("cooperative-claim-effect"),
+        session_id: cooperative_package.session_id.clone(),
+        operation: "chain_claim".to_owned(),
+        request_sha256: id("cooperative-claim-request"),
+        public_request: json!({
+            "exit_package_sha256":cooperative_package.package_sha256,
+            "funding_transaction_id":id("cooperative-funding"),
+            "output_index":0,
+            "path":"claim",
+            "payment_hash":id("cooperative-payment-hash"),
+            "transaction_template_sha256":id("cooperative-transaction"),
+        }),
+        created_at: 54,
+    };
+    assert_eq!(
+        first
+            .persist_effect_request(&cooperative_claim_effect)
+            .await
+            .expect("cooperative claim request must persist"),
+        StoreWriteOutcome::Stored
+    );
+    let stored_package = first
+        .exit_package(&cooperative_package.package_id)
+        .await
+        .expect("cooperative exit package must be readable")
+        .expect("cooperative exit package must exist");
+    assert_eq!(stored_package.package, cooperative_package);
+    assert_eq!(stored_package.state, "prepared");
+    let stored_effect = first
+        .public_effect(&cooperative_effect.effect_id)
+        .await
+        .expect("cooperative effect must be readable")
+        .expect("cooperative effect must exist");
+    assert_eq!(stored_effect.request, cooperative_effect);
+    assert_eq!(stored_effect.state, "pending");
+    assert_eq!(
+        first
+            .public_effect(&cooperative_claim_effect.effect_id)
+            .await
+            .expect("cooperative claim effect must be readable")
+            .expect("cooperative claim effect must exist")
+            .request,
+        cooperative_claim_effect
+    );
+
     let health = first
         .health_counts()
         .await
@@ -403,6 +497,33 @@ async fn provider_state_is_atomic_bounded_and_restart_safe() {
         .expect("reserved UTXOs must be recoverable after restart");
     assert_eq!(recovered_utxos.len(), 1);
     assert_eq!(recovered_utxos[0].outpoint, shared_outpoint);
+    assert_eq!(
+        restarted
+            .exit_package(&cooperative_package.package_id)
+            .await
+            .expect("cooperative package restart read must work")
+            .expect("cooperative package must survive restart")
+            .package,
+        cooperative_package
+    );
+    assert_eq!(
+        restarted
+            .public_effect(&cooperative_effect.effect_id)
+            .await
+            .expect("cooperative effect restart read must work")
+            .expect("cooperative effect must survive restart")
+            .request,
+        cooperative_effect
+    );
+    assert_eq!(
+        restarted
+            .public_effect(&cooperative_claim_effect.effect_id)
+            .await
+            .expect("cooperative claim restart read must work")
+            .expect("cooperative claim must survive restart")
+            .request,
+        cooperative_claim_effect
+    );
     assert_eq!(recovered_utxos[0].state, "reserved");
     assert_eq!(
         restarted

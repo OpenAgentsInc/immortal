@@ -161,6 +161,14 @@ paths, and the source/unit-versus-process coverage boundary.
   per-signer sequencing, wallet-owned claim/refund signing, idempotent external
   effects, rail-ordered crash recovery, keyless pre-signed broadcast, and
   recursive custody tripwires. It adds no relay-handler or settlement claim.
+- `nipmkt/swp-cooperative-signing-v1.json` pins the private signed-Status
+  MuSig2 transcript, exact provider actor ingress, stable action identities,
+  unilateral fallback, and custody exclusions.
+- `nipmkt/swp-provider-cooperative-runtime-v1.json` pins the inactive
+  FundedMode process gate, Quote/profile additions, signing and claim effect
+  durability order, restart abort law, final-Status broadcast recovery, and
+  custody exclusions. Production advertisement remains false pending the
+  issue #18 process lab.
 - `nipmkt/tbdex-legacy.json` adapts the field vocabulary and parse-vector
   shapes from `TBD54566975/tbdex` protocol 1.0 at commit
   `7546a079bb860e7ede8125739b7970810a2df314`, Apache-2.0. It records the

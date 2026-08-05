@@ -110,6 +110,21 @@ pub(crate) trait ProviderMode {
         provider_authored: bool,
     ) -> Result<(), String>;
 
+    fn observe_durable_signed_session_record(
+        &mut self,
+        session: &ProviderSession,
+        record: &Event,
+        origin: RecordOrigin,
+        provider_authored: bool,
+    ) -> Result<(), String> {
+        self.observe_durable_signed_record(
+            &session.config().session_id,
+            record,
+            origin,
+            provider_authored,
+        )
+    }
+
     fn next_after_contract_or_status(
         &mut self,
         session: &mut ProviderSession,
@@ -582,11 +597,23 @@ impl<M: ProviderMode> RelayActor<M> {
         origin: RecordOrigin,
     ) -> Result<(), String> {
         let provider_authored = record.pubkey == self.signer.pubkey();
-        self.mode
-            .observe_durable_signed_record(session_id, record, origin, provider_authored)
-            .map_err(|error| {
-                format!("provider could not durably observe session {session_id} record: {error}")
-            })
+        let observed = match self.sessions.get(session_id) {
+            Some(actor) => self.mode.observe_durable_signed_session_record(
+                &actor.session,
+                record,
+                origin,
+                provider_authored,
+            ),
+            None => self.mode.observe_durable_signed_record(
+                session_id,
+                record,
+                origin,
+                provider_authored,
+            ),
+        };
+        observed.map_err(|error| {
+            format!("provider could not durably observe session {session_id} record: {error}")
+        })
     }
 
     fn republish_provider_history(&self, publisher: &mut RelayClient) -> Result<(), String> {

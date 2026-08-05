@@ -65,11 +65,11 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, 'prepared', $8, $8)
 ON CONFLICT (package_id) DO NOTHING
 "#;
 const SELECT_EXIT_PACKAGE_SQL: &str = r#"
-SELECT session_id, order_id, leg_id, path, package_sha256, public_package, state
+SELECT session_id, order_id, leg_id, path, package_sha256, public_package, state, created_at
 FROM provider_exit_package WHERE package_id = $1
 "#;
 const LOCK_EXIT_PACKAGE_SQL: &str = r#"
-SELECT session_id, order_id, leg_id, path, package_sha256, public_package, state
+SELECT session_id, order_id, leg_id, path, package_sha256, public_package, state, created_at
 FROM provider_exit_package WHERE package_id = $1 FOR UPDATE
 "#;
 const UPDATE_EXIT_PACKAGE_STATE_SQL: &str = r#"
@@ -86,12 +86,12 @@ ON CONFLICT (effect_id) DO NOTHING
 "#;
 const SELECT_EFFECT_SQL: &str = r#"
 SELECT session_id, operation, request_sha256, public_request, state,
-       result_sha256, public_result, external_reference
+       result_sha256, public_result, external_reference, created_at
 FROM provider_effect WHERE effect_id = $1
 "#;
 const LOCK_EFFECT_SQL: &str = r#"
 SELECT session_id, operation, request_sha256, public_request, state,
-       result_sha256, public_result, external_reference
+       result_sha256, public_result, external_reference, created_at
 FROM provider_effect WHERE effect_id = $1 FOR UPDATE
 "#;
 const COMPLETE_EFFECT_SQL: &str = r#"
@@ -411,7 +411,7 @@ pub struct OutPoint {
     pub vout: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PublicExitPackage {
     pub package_id: String,
     pub session_id: String,
@@ -423,7 +423,13 @@ pub struct PublicExitPackage {
     pub created_at: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredPublicExitPackage {
+    pub package: PublicExitPackage,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct PublicEffectRequest {
     pub effect_id: String,
     pub session_id: String,
@@ -431,6 +437,15 @@ pub struct PublicEffectRequest {
     pub request_sha256: String,
     pub public_request: Value,
     pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredPublicEffect {
+    pub request: PublicEffectRequest,
+    pub state: String,
+    pub result_sha256: Option<String>,
+    pub public_result: Option<Value>,
+    pub external_reference: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -861,6 +876,38 @@ impl ProviderStore {
         Ok(StoreWriteOutcome::Stored)
     }
 
+    pub async fn exit_package(
+        &self,
+        package_id: &str,
+    ) -> Result<Option<StoredPublicExitPackage>, ProviderStoreError> {
+        self.ensure_current()?;
+        validate_hex(package_id, "exit package ID")?;
+        let statement = self.client.prepare(SELECT_EXIT_PACKAGE_SQL).await?;
+        self.client
+            .query_opt(&statement, &[&package_id])
+            .await?
+            .map(|row| {
+                Ok(StoredPublicExitPackage {
+                    package: PublicExitPackage {
+                        package_id: package_id.to_owned(),
+                        session_id: row.get(0),
+                        order_id: row.get(1),
+                        leg_id: row.get(2),
+                        path: row.get(3),
+                        package_sha256: row.get(4),
+                        public_package: row.get(5),
+                        created_at: u64::try_from(row.get::<_, i64>(7)).map_err(|_| {
+                            ProviderStoreError::MigrationDrift(
+                                "exit package time is negative".to_owned(),
+                            )
+                        })?,
+                    },
+                    state: row.get(6),
+                })
+            })
+            .transpose()
+    }
+
     pub async fn persist_effect_request(
         &self,
         request: &PublicEffectRequest,
@@ -945,6 +992,37 @@ impl ProviderStore {
             .await?;
         transaction.commit().await?;
         Ok(StoreWriteOutcome::Stored)
+    }
+
+    pub async fn public_effect(
+        &self,
+        effect_id: &str,
+    ) -> Result<Option<StoredPublicEffect>, ProviderStoreError> {
+        self.ensure_current()?;
+        validate_hex(effect_id, "effect ID")?;
+        let statement = self.client.prepare(SELECT_EFFECT_SQL).await?;
+        self.client
+            .query_opt(&statement, &[&effect_id])
+            .await?
+            .map(|row| {
+                Ok(StoredPublicEffect {
+                    request: PublicEffectRequest {
+                        effect_id: effect_id.to_owned(),
+                        session_id: row.get(0),
+                        operation: row.get(1),
+                        request_sha256: row.get(2),
+                        public_request: row.get(3),
+                        created_at: u64::try_from(row.get::<_, i64>(8)).map_err(|_| {
+                            ProviderStoreError::MigrationDrift("effect time is negative".to_owned())
+                        })?,
+                    },
+                    state: row.get(4),
+                    result_sha256: row.get(5),
+                    public_result: row.get(6),
+                    external_reference: row.get(7),
+                })
+            })
+            .transpose()
     }
 
     pub async fn mark_effect_unresolved(

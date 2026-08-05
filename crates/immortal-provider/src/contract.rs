@@ -17,6 +17,10 @@ const FUNDED_SMOKE_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/funded-smoke-v1.json");
 const PRICING_FIXTURE_PATH: &str = "tests/fixtures/nipmkt/swp-pricing-v1.json";
 const PRICING_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/nipmkt/swp-pricing-v1.json");
+const COOPERATIVE_RUNTIME_FIXTURE_PATH: &str =
+    "tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json";
+const COOPERATIVE_RUNTIME_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json");
 const NIP_MANIFEST: &str = include_str!("../../../nips/manifest.json");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,7 +258,8 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 fixture_entry(QUOTE_FIXTURE_PATH, QUOTE_FIXTURE),
                 fixture_entry(SETTLEMENT_FIXTURE_PATH, SETTLEMENT_FIXTURE),
                 fixture_entry(FUNDED_SMOKE_FIXTURE_PATH, FUNDED_SMOKE_FIXTURE),
-                fixture_entry(PRICING_FIXTURE_PATH, PRICING_FIXTURE)
+                fixture_entry(PRICING_FIXTURE_PATH, PRICING_FIXTURE),
+                fixture_entry(COOPERATIVE_RUNTIME_FIXTURE_PATH, COOPERATIVE_RUNTIME_FIXTURE)
             ]
         },
         "relay_contract_affected":false,

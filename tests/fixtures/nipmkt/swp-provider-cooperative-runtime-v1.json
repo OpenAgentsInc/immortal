@@ -1,0 +1,39 @@
+{
+  "schema": "openagents.mkt-swp.provider-cooperative-runtime-fixtures.v1",
+  "process_gate": {
+    "production_enabled": false,
+    "provider_contract_advertisement": false,
+    "nip11_affected": false,
+    "lab_evidence_required": "issue-18-two-provider-process-cooperative-and-mid-transcript-abort"
+  },
+  "quote_profile": {
+    "terms_musig2_execution": true,
+    "verifier_musig2_execution": true,
+    "sighash_policy": "default_key_path_with_script_fallback",
+    "effect_role": "cooperative_sign",
+    "provider_exit_destination": "quoted_script_pubkey",
+    "provider_exit_signer_ref": "immortal-provider:{leg_id}:{path}",
+    "provider_exit_policy": "quote_height_through_claim_last"
+  },
+  "durability_order": [
+    "public_exit_package",
+    "public_cooperative_effect_request",
+    "public_chain_claim_effect_request",
+    "ephemeral_nonce_allocation",
+    "signed_status_routing",
+    "public_cooperative_effect_result",
+    "durable_broadcast_watch",
+    "bitcoind_broadcast",
+    "public_chain_claim_effect_result"
+  ],
+  "restart": {
+    "unfinished_transcript": "signed_script_path_abort",
+    "secret_nonce_recreated": false,
+    "final_signature_recovery": "reconstruct_witness_from_signed_status_then_replay_watch"
+  },
+  "custody": {
+    "database_secret_nonce": false,
+    "database_spend_key": false,
+    "relay_custody_material": false
+  }
+}

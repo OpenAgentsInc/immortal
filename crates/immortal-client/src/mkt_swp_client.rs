@@ -1316,6 +1316,14 @@ pub mod provider_support {
         super::cooperative_signing_message(event, role)
     }
 
+    pub fn effect_id(
+        order_id: &str,
+        effect_role: &str,
+        leg_id: &str,
+    ) -> Result<String, SwapClientError> {
+        super::effect_id(order_id, effect_role, leg_id)
+    }
+
     pub fn validate_provider_cooperative_context(
         config: &SwapClientConfig,
         records: &[Event],
@@ -3994,6 +4002,7 @@ impl<'a> BoundSession<'a> {
             "amount_equation",
             "rounding",
             "script_mode",
+            "musig2_execution",
             "desired_completion_time",
             "clock_skew_seconds",
             "timeout_ladder",
@@ -5416,6 +5425,7 @@ fn validate_provider_quote_profile(
             "Quote script, timing, price-feed, or EVM policy is invalid",
         ));
     }
+    validate_quote_cooperative_policy(terms, swap_type)?;
     let confirmation = object(
         terms.get("confirmation_policy").unwrap_or(&Value::Null),
         "Quote confirmation policy",
@@ -5499,6 +5509,209 @@ fn validate_provider_quote_profile(
     );
     verify_requester_topology(&topology_terms, swap_type)?;
     validate_quote_reservation(profile, terms, reservation_class)
+}
+
+fn validate_quote_cooperative_policy(
+    terms: &Map<String, Value>,
+    swap_type: SwapType,
+) -> Result<(), SwapClientError> {
+    let Some(declared) = terms.get("musig2_execution") else {
+        return Ok(());
+    };
+    let enabled = declared.as_bool().ok_or_else(|| {
+        SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Quote cooperative execution flag is not boolean",
+        )
+    })?;
+    if enabled && swap_type != SwapType::Submarine {
+        return Err(SwapClientError::new(
+            "swp_unsupported_extension",
+            "this Quote profile enables cooperative execution only for submarine swaps",
+        ));
+    }
+    let bitcoin_leg = terms
+        .get("legs")
+        .and_then(Value::as_array)
+        .and_then(|legs| {
+            let matching = legs
+                .iter()
+                .filter(|leg| leg.get("rail").and_then(Value::as_str) == Some("bitcoin"))
+                .collect::<Vec<_>>();
+            let [leg] = matching.as_slice() else {
+                return None;
+            };
+            Some(*leg)
+        })
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "Quote cooperative profile requires one Bitcoin leg",
+            )
+        })?;
+    let leg_id = bitcoin_leg
+        .get("leg_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            SwapClientError::new("swp_contract_terms_mismatch", "Quote Bitcoin leg has no ID")
+        })?;
+    let verifier = terms
+        .get("verifier_inputs")
+        .and_then(Value::as_array)
+        .and_then(|verifiers| {
+            verifiers
+                .iter()
+                .find(|verifier| verifier.get("leg_id").and_then(Value::as_str) == Some(leg_id))
+        })
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "Quote Bitcoin leg has no verifier",
+            )
+        })?;
+    if verifier.get("musig2_execution").and_then(Value::as_bool) != Some(enabled)
+        || verifier.get("sighash_policy").and_then(Value::as_str)
+            != Some(if enabled {
+                "default_key_path_with_script_fallback"
+            } else {
+                "default_script_path_only"
+            })
+    {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Quote cooperative and sighash policies disagree",
+        ));
+    }
+    let effects = terms
+        .get("effect_policy")
+        .and_then(Value::as_object)
+        .and_then(|policy| policy.get("effects"))
+        .and_then(Value::as_array)
+        .filter(|effects| effects.len() <= 32);
+    if enabled && effects.is_none() {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "cooperative Quote has no bounded effect policy",
+        ));
+    }
+    let cooperative_effects = effects
+        .into_iter()
+        .flatten()
+        .filter(|effect| {
+            effect.get("actor").and_then(Value::as_str) == Some("provider")
+                && effect.get("effect_role").and_then(Value::as_str) == Some("cooperative_sign")
+                && effect.get("leg_id").and_then(Value::as_str) == Some(leg_id)
+        })
+        .count();
+    if cooperative_effects != usize::from(enabled) {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "Quote cooperative effect policy disagrees with execution",
+        ));
+    }
+    let extension_fields = [
+        "provider_exit_destination_script_pubkey",
+        "provider_exit_signer_ref",
+        "provider_exit_policy",
+    ];
+    if !enabled {
+        if extension_fields
+            .iter()
+            .any(|member| verifier.contains_key(*member))
+        {
+            return Err(SwapClientError::new(
+                "swp_contract_terms_mismatch",
+                "script-only Quote carries inactive cooperative exit fields",
+            ));
+        }
+        return Ok(());
+    }
+    let destination = decode_hex(
+        require_string(
+            verifier,
+            "provider_exit_destination_script_pubkey",
+            None,
+            "swp_contract_terms_mismatch",
+        )?,
+        "provider cooperative exit destination",
+    )?;
+    if destination.len() != 34
+        || destination.first() != Some(&0x51)
+        || destination.get(1) != Some(&0x20)
+    {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "provider cooperative exit destination is not native Taproot",
+        ));
+    }
+    let signer_ref = require_string(
+        verifier,
+        "provider_exit_signer_ref",
+        None,
+        "swp_contract_terms_mismatch",
+    )?;
+    if signer_ref.is_empty() || signer_ref.len() > 256 || signer_ref.chars().any(char::is_control) {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "provider cooperative signer reference is invalid",
+        ));
+    }
+    let policy = object(
+        verifier.get("provider_exit_policy").unwrap_or(&Value::Null),
+        "provider cooperative exit policy",
+    )?;
+    let earliest = canonical_amount(require_string(
+        policy,
+        "earliest_broadcast_height",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let latest = canonical_amount(require_string(
+        policy,
+        "latest_safe_broadcast_height",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    let maximum_fee = canonical_amount(require_string(
+        policy,
+        "maximum_fee",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    if latest < earliest
+        || maximum_fee == 0
+        || policy.get("bump_mode").and_then(Value::as_str) != Some("cpfp")
+        || policy
+            .get("target_blocks")
+            .and_then(Value::as_u64)
+            .is_none_or(|blocks| blocks == 0 || blocks > 1_008)
+    {
+        return Err(SwapClientError::new(
+            "swp_contract_terms_mismatch",
+            "provider cooperative exit policy is invalid",
+        ));
+    }
+    let timeout_ladder = object(
+        terms.get("timeout_ladder").unwrap_or(&Value::Null),
+        "Quote timeout ladder",
+    )?;
+    let chain_tip_height = canonical_amount(require_string(
+        verifier,
+        "chain_tip_height",
+        None,
+        "swp_contract_terms_mismatch",
+    )?)?;
+    if earliest != chain_tip_height
+        || maximum_fee != contract_amount(terms, "miner_fee_budget")?
+        || timeout_ladder.get("claim_last").and_then(Value::as_u64) != Some(latest)
+    {
+        return Err(SwapClientError::new(
+            "swp_timeout_ladder_unsafe",
+            "provider cooperative exit policy differs from the Quote bounds",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_quote_against_rfq(

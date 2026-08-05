@@ -139,13 +139,18 @@ implementation deferral without changing the dependency decision: BIP-327
 nonce, scalar, partial-signature, and aggregation logic is implemented
 in-repo over the allowlisted point/tweak operations and official vectors.
 The client transcript and provider signed actor support the cooperative key
-path, while the unilateral claim and refund paths remain mandatory. The actor
-binds the bilateral contract, exact provider exit package, and settlement
-template before nonce allocation and accepts only exact signed Status Events
-already in session storage. The funded daemon continues to advertise
-script-path execution and withhold its signer capability until FundedMode owns
-the actor/effect lifecycle and the #18 process lab passes; protocol primitives
-and an inactive actor alone are not a deployment claim.
+path, while the unilateral claim and refund paths remain mandatory. FundedMode
+owns the inactive submarine actor/effect lifecycle: it persists the exact
+public provider exit package plus the signing and chain-claim requests before
+nonce allocation, accepts only signed Status Events already in session
+storage, and releases a final transaction through its durable
+watch-before-broadcast path. Restart
+aborts an unfinished transcript without recreating a nonce and can reconstruct
+public final transaction bytes from a signed final Status. The funded daemon
+continues to advertise script-path execution and withhold its signer capability
+until the #18 two-provider process lab passes. Reverse cooperation additionally
+needs a signed preimage-release binding before a key-path claim can settle its
+held Lightning invoice.
 
 **Price feeds.** MKT-SWP §3.4 pinning requires fetching an exact HTTPS
 URL. Outbound HTTPS needs TLS: either the `rustls` chain (already

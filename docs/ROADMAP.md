@@ -423,7 +423,7 @@ sequenced first among extensions for commercial parity.
 | Issue | Packet | Depends on |
 | --- | --- | --- |
 | [#28](https://github.com/OpenAgentsInc/immortal/issues/28) | Provider pricing and quoting policy engine: configurable spread, miner-fee pass-through, dynamic min/max from the reservation ledger, deterministic derivation fixtures | #14, #25 |
-| [#26](https://github.com/OpenAgentsInc/immortal/issues/26) | MuSig2 cooperative key-path settlement: BIP-327 primitives, exact signed-Status provider actor, and unchanged script-path fallback law; funded activation remains a #18 process gate | #25 |
+| [#26](https://github.com/OpenAgentsInc/immortal/issues/26) | MuSig2 cooperative key-path settlement: BIP-327 primitives, exact signed-Status provider actor, inactive FundedMode public-effect/watch recovery, and unchanged script-path fallback law; activation remains a #18 two-process gate, with reverse preimage-release vocabulary still required | #25 |
 | [#29](https://github.com/OpenAgentsInc/immortal/issues/29) | LND provider rail via REST behind the `rustls` feature: pinned cert, macaroons, native hold invoices, mixed CLN/LND lab pairs | #25 |
 | [#30](https://github.com/OpenAgentsInc/immortal/issues/30) | 0-conf acceptance policy: opt-in, direction-bounded, RBF/conflict downgrade, explicit non-confirmed status vocabulary | #25, #18 |
 | [#31](https://github.com/OpenAgentsInc/immortal/issues/31) | Second operator-independent relay deployment: infrastructure-independent host, own identity and backups, relay-set docs; operator independence honestly deferred to recruitment | — |

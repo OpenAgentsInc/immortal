@@ -1110,6 +1110,7 @@ mod tests {
         let transcript_digest = decode_fixed::<32>(&context.sha256()?)?;
         let template = CooperativeSettlementTemplate {
             settlement,
+            cooperative_wallet_path: provider_path,
             participant_keys,
             provider_index: 1,
             taproot_merkle_root: merkle_root,

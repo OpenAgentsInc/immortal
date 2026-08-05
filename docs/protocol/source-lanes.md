@@ -726,10 +726,23 @@ the final provider Status is signed and stored. Restart recovery creates a
 bounded script-path abort without restoring a nonce. The provider database and
 public effect records receive no secret nonce or spend key.
 
-This adoption decision keeps the funded Quote and provider contract flags
-`musig2_key_path=false` and `musig2_key_path_signer=false`. Funded-mode actor
-ownership, rail broadcast, and capability advertisement remain gated on the
-#18 process lab, so the actor packet is not a deployment claim.
+FundedMode owns the inactive actor/effect lifecycle. Its process-gated
+submarine Quote profile pins the provider exit destination, signer reference,
+claim-height window, and cooperative effect intent; the bilateral contract
+then pins the cooperative effect and exact public exit commitment. Postgres
+receives the public exit package and exact signing and chain-claim requests
+before the ephemeral nonce exists. Signed records route through the stored
+session, final Status recovery reconstructs only public signed transaction
+bytes, and the existing claim watch-before-broadcast path supplies crash
+recovery. Restart of an unfinished transcript emits the committed script-path
+abort and never restores or recreates a nonce.
+
+The production process gate and provider contract flags remain
+`musig2_key_path=false` and `musig2_key_path_signer=false`. Activation and
+capability advertisement require #18 two-provider process evidence for a
+cooperative submarine claim and a mid-transcript abort. Reverse cooperation is
+deferred until a signed preimage-release binding can settle the held Lightning
+invoice after a key-path claim. This packet is not a deployment claim.
 
 ## M12 Boltz released-client handoff decision (2026-08-05)
 

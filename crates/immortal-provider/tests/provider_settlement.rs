@@ -188,10 +188,16 @@ fn cooperative_key_path_is_smaller_and_abort_keeps_script_exit_usable() -> Resul
     let fixture = settlement_fixture()?;
     let bridge = SettlementBridge::new(&fixture.wallet);
     let requester_path = fixture.claim.wallet_path;
-    let provider_path = WalletPath::new(1, false, 7)?;
+    let provider_unilateral_path = WalletPath::new(1, false, 7)?;
+    let provider_cooperative_path = WalletPath::new(1, false, 8)?;
     let participant_keys = [
         compressed_even(fixture.wallet.derive_address(requester_path)?.internal_key),
-        compressed_even(fixture.wallet.derive_address(provider_path)?.internal_key),
+        compressed_even(
+            fixture
+                .wallet
+                .derive_address(provider_cooperative_path)?
+                .internal_key,
+        ),
     ];
     let keys = participant_keys
         .iter()
@@ -203,7 +209,10 @@ fn cooperative_key_path_is_smaller_and_abort_keeps_script_exit_usable() -> Resul
     );
     let provider_script = claim_script(
         fixture.claim_preimage,
-        fixture.wallet.derive_address(provider_path)?.internal_key,
+        fixture
+            .wallet
+            .derive_address(provider_unilateral_path)?
+            .internal_key,
     );
     let requester_leaf = tapleaf_hash(0xc0, &requester_script)?;
     let provider_leaf = tapleaf_hash(0xc0, &provider_script)?;
@@ -223,6 +232,7 @@ fn cooperative_key_path_is_smaller_and_abort_keeps_script_exit_usable() -> Resul
     settlement.taproot_control_block = requester_control_block;
     let common = CooperativeSettlementTemplate {
         settlement,
+        cooperative_wallet_path: requester_path,
         participant_keys,
         provider_index: 0,
         taproot_merkle_root: merkle_root,
@@ -231,7 +241,8 @@ fn cooperative_key_path_is_smaller_and_abort_keeps_script_exit_usable() -> Resul
     };
     let mut requester_round = bridge.begin_cooperative(&common, 150)?;
     let mut provider_template = common.clone();
-    provider_template.settlement.wallet_path = provider_path;
+    provider_template.settlement.wallet_path = provider_unilateral_path;
+    provider_template.cooperative_wallet_path = provider_cooperative_path;
     provider_template.settlement.taproot_script = provider_script;
     provider_template.settlement.taproot_control_block = provider_control_block;
     provider_template.provider_index = 1;
@@ -330,6 +341,7 @@ fn cooperative_round_enforces_exit_commitment_and_height_gates() -> Result<(), B
     settlement.taproot_control_block = control_block(output_parity, internal_key, provider_leaf);
     let template = CooperativeSettlementTemplate {
         settlement,
+        cooperative_wallet_path: requester_path,
         participant_keys,
         provider_index: 0,
         taproot_merkle_root: merkle_root,

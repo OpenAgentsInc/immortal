@@ -33,6 +33,25 @@ withheld until the provider's final-signature Status is signed and stored.
 
 A restart never restores or persists a secret nonce. It produces a bounded
 abort Status and retains the committed script-path exit. This is deterministic
-local conformance evidence. Funded-mode activation, runtime advertisement, and
-public replacement claims remain gated on the #18 process lab and live
-deployment evidence, respectively.
+local conformance evidence.
+
+`FundedMode` now owns the inactive runtime path. A process-gated submarine
+Quote pins the provider's public exit destination, signer reference,
+claim-height window, and `cooperative_sign` effect intent. After both Swap
+Contracts bind the effect and commit the exact provider exit package, the
+daemon persists that public package plus the exact `cooperative_sign` and
+`chain_claim` requests before allocating a nonce. Every requester input is
+routed only after its signed Status is in `ProviderSession`. The signed final
+Status completes the signing effect, then releases bytes into the existing
+durable claim watch-before-broadcast path; restart can reconstruct the one-item
+key-path witness from that signed Status without a nonce. Exact package/effect
+reads are covered across Postgres restart. The production constructor still
+sets the process gate to false, and the exported `musig2_key_path` and
+`musig2_key_path_signer` flags remain false.
+
+Activation still requires #18 evidence from two independently keyed provider
+processes for cooperative completion and mid-transcript abort to script-path
+claim. Reverse cooperative settlement remains disabled until the protocol
+binds preimage release for settling the held Lightning invoice; a key-path
+spend alone does not disclose that preimage. Public replacement claims remain
+gated on live deployment evidence.
