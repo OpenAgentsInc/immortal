@@ -2018,7 +2018,7 @@ pub mod provider_support {
                         format!("signed precontract record failed validation: {error}"),
                     )
                 })?;
-            if validated.envelope.session_id != config.session_id {
+            if validated.envelope().session_id != config.session_id {
                 return Err(SwapClientError::new(
                     "swp_contract_terms_mismatch",
                     "signed precontract record belongs to another session",
@@ -2157,7 +2157,7 @@ pub mod provider_support {
                         format!("signed record failed MKT-SWP validation: {error}"),
                     )
                 })?;
-            if validated.envelope.session_id != config.session_id {
+            if validated.envelope().session_id != config.session_id {
                 return Err(SwapClientError::new(
                     "swp_status_transition_invalid",
                     "signed record belongs to another session",

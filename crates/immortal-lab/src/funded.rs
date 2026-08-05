@@ -60,8 +60,6 @@ const NETWORK_ID: &str = "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4";
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const JOURNEY_TIMEOUT: Duration = Duration::from_secs(180);
 const LIGHTNING_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
-const FULL_SESSION_FIXTURES: &str =
-    include_str!("../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FundedJourney {
