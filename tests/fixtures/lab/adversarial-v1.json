@@ -1,0 +1,178 @@
+{
+  "schema": "openagents.immortal.adversarial-lab.v1",
+  "issue": 18,
+  "manifest_gate": "scripts/test-lab-adversarial-manifest.sh",
+  "process_gate": "scripts/test-lab-adversarial.sh",
+  "automation": "manual_local_only",
+  "prerequisites": {
+    "issues": [9, 10, 11, 12, 13, 14, 15, 24, 25, 28, 29, 32],
+    "provider_product": "immortal-provider",
+    "wallet_product": "immortal-lab",
+    "relay_product": "immortal",
+    "funded_smoke_required": true
+  },
+  "topology": {
+    "network": "regtest",
+    "provider_processes": 2,
+    "provider_identities": 2,
+    "provider_databases": 2,
+    "relay_processes": 2,
+    "relay_identities": 2,
+    "relay_databases": 2,
+    "wallet_processes": 1,
+    "wallet_cln_nodes": 1,
+    "provider_cln_nodes": 2,
+    "provider_bitcoind_nodes": 2,
+    "provider_relay_sets": {
+      "provider-a": ["relay-a"],
+      "provider-b": ["relay-b"]
+    },
+    "bitcoin": {
+      "same_regtest_network": true,
+      "nodes_peered": true,
+      "shared_process": false,
+      "shared_data_directory": false,
+      "shared_rpc_credentials": false,
+      "cross_provider_rpc_access": false
+    },
+    "lightning": {
+      "implementation": "cln",
+      "hold_plugin_required": true,
+      "shared_process": false,
+      "shared_rpc_socket": false,
+      "cross_provider_rpc_access": false
+    }
+  },
+  "lab_profile": {
+    "environment": "IMMORTAL_PROVIDER_LAB_PROFILE",
+    "value": "regtest_adversarial",
+    "network_gate": "regtest_only_fail_startup_elsewhere",
+    "tiny_quote_expiry_seconds": 3,
+    "tiny_hold_invoice_expiry_seconds": 30,
+    "production_defaults_unchanged": true
+  },
+  "selection": {
+    "quotes_before_order": 2,
+    "quote_class": "firm",
+    "reservation_class": "hard",
+    "unselected_provider_terminal": "cancelled",
+    "unselected_provider_external_effects": 0
+  },
+  "scenario_groups": {
+    "routing": [
+      {"id": "route-submarine-provider-a", "expected": "completed", "provider": "provider-a"},
+      {"id": "route-submarine-provider-b", "expected": "completed", "provider": "provider-b"},
+      {"id": "route-reverse-provider-a", "expected": "completed", "provider": "provider-a"},
+      {"id": "route-reverse-provider-b", "expected": "completed", "provider": "provider-b"},
+      {"id": "rank-two-cancelled-without-effect", "expected": "cancelled"}
+    ],
+    "failure_matrix": [
+      {"id": "relay-a-partition", "expected": "completed_or_safe_exit"},
+      {"id": "relay-b-partition", "expected": "completed_or_safe_exit"},
+      {"id": "provider-a-crash-restart", "expected": "completed_or_safe_exit"},
+      {"id": "provider-b-crash-restart", "expected": "completed_or_safe_exit"},
+      {"id": "wallet-crash-restart", "expected": "completed_or_safe_exit"},
+      {"id": "replay-identical-order", "expected": "idempotent_no_second_effect"},
+      {"id": "conflict-order-bytes", "expected": "swp_idempotency_conflict"},
+      {"id": "stale-quote", "expected": "swp_quote_expired"},
+      {"id": "double-reservation", "expected": "swp_reservation_overallocated"},
+      {"id": "status-gap", "expected": "swp_status_gap"},
+      {"id": "status-fork", "expected": "swp_status_fork"},
+      {"id": "funding-reorg", "expected": "wait_or_recover"},
+      {"id": "claim-reorg", "expected": "resume_claim_or_refund"},
+      {"id": "rbf-conflict", "expected": "swp_rbf_policy_violation"},
+      {"id": "wrong-claim-key", "expected": "rejected_before_effect"},
+      {"id": "preimage-leak-rejected", "expected": "swp_secret_material_forbidden"},
+      {"id": "seed-leak-rejected", "expected": "swp_secret_material_forbidden"},
+      {"id": "macaroon-leak-rejected", "expected": "swp_secret_material_forbidden"},
+      {"id": "musig-nonce-leak-rejected", "expected": "swp_secret_material_forbidden"},
+      {"id": "submarine-provider-noncooperative-refund", "expected": "refunded"},
+      {"id": "reverse-requester-noncooperative-provider-refund", "expected": "refunded"}
+    ],
+    "doomsday": [
+      {"id": "doomsday-submarine-provider-gone", "expected": "refunded"},
+      {"id": "doomsday-reverse-coordinator-gone", "expected": "completed_or_refunded"},
+      {"id": "doomsday-keyless-esplora-broadcast", "expected": "broadcast_complete_presigned_transaction"}
+    ],
+    "cooperative": [
+      {"id": "musig2-submarine-provider-a", "expected": "completed_key_path", "provider": "provider-a"},
+      {"id": "musig2-submarine-provider-b", "expected": "completed_key_path", "provider": "provider-b"},
+      {"id": "musig2-abort-script-path", "expected": "completed_script_path"},
+      {"id": "musig2-crash-cut-recovery", "expected": "completed_or_script_path_without_nonce_recreation"}
+    ]
+  },
+  "doomsday_contract": {
+    "remove_permanently": [
+      "relay-a",
+      "relay-b",
+      "coordination-handler",
+      "catalog",
+      "provider-http-api",
+      "provider-websocket-api"
+    ],
+    "retain_only": [
+      "persisted-signed-records",
+      "exit-packages",
+      "local-wallet-state",
+      "local-node-state",
+      "authenticated-direct-counterparty-channel",
+      "bitcoin-and-lightning-access",
+      "keyless-esplora-compatible-broadcaster"
+    ],
+    "missing_signed_record_policy": "fail_closed",
+    "database_or_ui_reconstruction": false,
+    "keyless_broadcaster_accepts_signing_material": false
+  },
+  "evidence": {
+    "independent_views": [
+      "wallet",
+      "provider-a-database",
+      "provider-b-database",
+      "bitcoind-a",
+      "bitcoind-b",
+      "cln-provider-a",
+      "cln-provider-b",
+      "cln-wallet"
+    ],
+    "required_checks": [
+      "transaction-bytes-and-id",
+      "outpoint-spend-lineage",
+      "confirmations-and-reorg-lineage",
+      "lightning-payment-and-hold-state",
+      "reservation-release",
+      "external-effect-idempotency",
+      "watchtower-terminal-state",
+      "no-custody-material-persisted"
+    ],
+    "retained_record": {
+      "schema": "openagents.immortal.adversarial-lab-record.v1",
+      "failure_schema": "openagents.immortal.adversarial-lab-failure.v1",
+      "default_path": "target/lab-evidence/adversarial-v1.json",
+      "directory_mode": "0700",
+      "file_mode": "0600",
+      "maximum_bytes": 262144,
+      "contains_raw_transactions": false,
+      "contains_raw_signed_events": false,
+      "contains_raw_wrap_events": false,
+      "contains_credentials": false,
+      "contains_custody_material": false
+    }
+  },
+  "execution": {
+    "fresh_disposable_topology_per_case": true,
+    "maximum_cases": 40,
+    "maximum_case_runtime_seconds": 1200,
+    "cleanup_requires_owned_private_root": true,
+    "cleanup_requires_zero_matching_processes": true,
+    "github_billed_automation": false
+  },
+  "claims": {
+    "submarine_and_reverse_local_capability": true,
+    "chain_swap": false,
+    "liquid": false,
+    "zero_confirmation": false,
+    "live_deployment": false,
+    "independent_operator_deployment": false,
+    "public_replacement": false
+  }
+}

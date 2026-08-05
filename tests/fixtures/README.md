@@ -136,6 +136,17 @@ the pinned upstream applications.
   record. It deliberately shares bitcoind for #32 and leaves #18's separate
   bitcoind namespaces unclaimed. Clean-host, deployment, and public replacement
   claims remain false.
+- `lab/adversarial-v1.json` is the closed-world issue-#18 execution contract.
+  It requires two shipped funded provider processes with distinct identities,
+  databases, CLN sockets, bitcoind processes, data directories, and RPC
+  credentials; two distinct relay processes and databases; a regtest-only
+  tiny-expiry profile; the complete routing, replay, reservation, crash,
+  partition, reorg, RBF, custody-tripwire, unilateral-exit, doomsday, and
+  MuSig2 activation matrix; independent rail/database evidence; and
+  ownership-checked cleanup. It explicitly excludes Liquid/chain-swap,
+  zero-confirmation, deployment, operator-independence, and public-replacement
+  claims. `scripts/test-lab-adversarial-manifest.sh` rejects omissions or
+  additions before the process runner can claim the matrix.
 - `nipmkt/swp-profile-v1.json` pins the relay-observable MKT-SWP v1 adoption
   at OpenAgents commit `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`:
   Offering grammar, kind-39610 profile binding and immutable wrapped

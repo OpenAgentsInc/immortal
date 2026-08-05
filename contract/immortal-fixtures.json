@@ -78,6 +78,12 @@
       "scope": "client"
     },
     {
+      "path": "tests/fixtures/lab/adversarial-v1.json",
+      "sha256": "0a3ee56b8355fb63fa9b8b6931314bc92a0d11fdf63e572b2d91d8858de77053",
+      "bytes": 6918,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/lab/funded-checkpoints-v1.json",
       "sha256": "5de6c6fc8e3c7b414049b02f74215a28877c567c0c7eb9bcd1df2c829830ced0",
       "bytes": 3597,

@@ -7,6 +7,7 @@ scripts=(
   scripts/lab-cln.sh
   scripts/lab-extensions.sh
   scripts/lab-topology.sh
+  scripts/test-lab-adversarial-manifest.sh
   scripts/test-lab-topology-quotes.sh
   scripts/test-lab-topology-funded.sh
   scripts/test-provider-funded.sh
@@ -14,6 +15,7 @@ scripts=(
 manifest="tests/fixtures/lab/provisioning-v1.json"
 topology_quote_manifest="tests/fixtures/lab/topology-quotes-v1.json"
 topology_funded_manifest="tests/fixtures/lab/topology-funded-v1.json"
+adversarial_manifest="tests/fixtures/lab/adversarial-v1.json"
 
 for script in "${scripts[@]}"; do
   bash -n "${script}"
@@ -108,6 +110,9 @@ jq -e '
   .claims.clean_host_evidence == false and
   .claims.public_replacement == false
 ' "${topology_funded_manifest}" >/dev/null
+
+test "${adversarial_manifest}" = "tests/fixtures/lab/adversarial-v1.json"
+scripts/test-lab-adversarial-manifest.sh --check
 
 scripts/lab-bitcoind.sh help | grep -q 'rbf-replace'
 scripts/lab-cln.sh help | grep -q 'wallet (3)'
