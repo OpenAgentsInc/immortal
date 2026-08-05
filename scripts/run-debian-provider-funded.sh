@@ -52,6 +52,7 @@ case "$(basename "${receipt_directory}")" in
         ;;
 esac
 container_log="${receipt_directory}/container.log"
+failure_log="${receipt_directory}/failure.log"
 
 if ! docker run --rm \
     --privileged \
@@ -63,7 +64,6 @@ if ! docker run --rm \
     --env IMMORTAL_DISPOSABLE_CONTAINER=immortal-debian-provider-funded \
     --env IMMORTAL_DEBIAN_PROVIDER_SOURCE_COMMIT="${source_commit}" \
     --env IMMORTAL_DEBIAN_PROVIDER_RECEIPT_DIRECTORY="${receipt_directory}" \
-    --env TMPDIR="${receipt_directory}" \
     debian:13-slim \
     sh -ec '
         export DEBIAN_FRONTEND=noninteractive
@@ -107,15 +107,21 @@ if ! docker run --rm \
         cd /work
         scripts/test-debian-provider-funded.sh
     ' >"${container_log}" 2>&1; then
-    sed -n '1,200p' "${container_log}" >&2
-    echo "run-debian-provider-funded: Debian gate failed; retained ${receipt_directory}" >&2
+    sed -n '1,200p' "${container_log}" >"${failure_log}"
+    chmod 0600 "${failure_log}"
+    rm -f "${container_log}" "${receipt_directory}/result.json"
+    sed -n '1,200p' "${failure_log}" >&2
+    echo "run-debian-provider-funded: Debian gate failed; retained bounded console ${failure_log}" >&2
     exit 1
 fi
 
 receipt_result="${receipt_directory}/result.json"
 if test ! -f "${receipt_result}"; then
-    sed -n '1,200p' "${container_log}" >&2
-    echo "run-debian-provider-funded: the Debian gate produced no receipt" >&2
+    sed -n '1,200p' "${container_log}" >"${failure_log}"
+    chmod 0600 "${failure_log}"
+    rm -f "${container_log}"
+    sed -n '1,200p' "${failure_log}" >&2
+    echo "run-debian-provider-funded: the Debian gate produced no receipt; retained bounded console ${failure_log}" >&2
     exit 1
 fi
 mv "${receipt_result}" "${receipt_path}"

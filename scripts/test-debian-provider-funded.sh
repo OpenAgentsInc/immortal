@@ -40,6 +40,10 @@ if ! grep -Fqx '  node --experimental-websocket --test adapters/boltz-web-app/pr
     echo "test-debian-provider-funded: funded web adapter must enable Node WebSocket support" >&2
     exit 1
 fi
+if grep -F -- '--env TMPDIR=' scripts/run-debian-provider-funded.sh >/dev/null; then
+    echo "test-debian-provider-funded: receipt mount must not become the private runtime directory" >&2
+    exit 1
+fi
 
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 scripts/test-provider-funded.sh
