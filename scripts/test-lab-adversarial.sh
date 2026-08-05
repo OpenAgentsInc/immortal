@@ -125,15 +125,42 @@ random_hex() {
 run_case() (
   set -euo pipefail
   local case_id="$1" group="$2" expected="$3" selected_provider="$4"
-  local private_root project_name current_phase compose_ready infrastructure_proven
+  local private_root project_name provider_image_ref current_phase compose_ready infrastructure_proven
   local maximum_seconds case_deadline failure_reason record_path
+  local external_injection external_checkpoint external_target
   private_root="$(mktemp -d "${TMPDIR:-/tmp}/immortal-adversarial-case.XXXXXX")"
   project_name="immortal-18-$(printf '%s' "${case_id}" | cut -c1-24)-$(random_hex 5)"
+  provider_image_ref="${project_name}-provider:local"
   current_phase=initialization
   compose_ready=false
   infrastructure_proven=false
   failure_reason=case_failed
   record_path="${record_dir}/${case_id}.json"
+  external_injection=""
+  external_checkpoint=""
+  external_target=""
+  case "${case_id}" in
+    relay-a-partition)
+      external_injection=relay_loss
+      external_checkpoint=submarine:funding_execution_ready
+      external_target=relay-a
+      ;;
+    relay-b-partition)
+      external_injection=relay_loss
+      external_checkpoint=submarine:funding_execution_ready
+      external_target=relay-b
+      ;;
+    provider-a-crash-restart)
+      external_injection=provider_crash
+      external_checkpoint=submarine:funding_effect_recorded
+      external_target=provider-a
+      ;;
+    provider-b-crash-restart)
+      external_injection=provider_crash
+      external_checkpoint=submarine:funding_effect_recorded
+      external_target=provider-b
+      ;;
+  esac
   maximum_seconds="$(python3 - "${fixture}" <<'PY'
 import json, pathlib, sys
 value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["execution"]["maximum_case_runtime_seconds"]
@@ -150,7 +177,9 @@ PY
   )
 
   compose() {
-    IMMORTAL_ADVERSARIAL_PRIVATE_DIR="${private_root}" "${compose_prefix[@]}" "$@"
+    IMMORTAL_ADVERSARIAL_PRIVATE_DIR="${private_root}" \
+      IMMORTAL_ADVERSARIAL_PROVIDER_IMAGE="${provider_image_ref}" \
+      "${compose_prefix[@]}" "$@"
   }
 
   write_failure_record() {
@@ -283,11 +312,22 @@ PY
       && test "$(bitcoin_cli b getconnectioncount)" -ge 1
   }
 
+  bitcoin_mempool_contains() {
+    local node="$1" transaction_id="$2"
+    bitcoin_cli "${node}" getmempoolentry "${transaction_id}"
+  }
+
   cln_wallet_ready() {
     local service="$1" expected_height="$2" actual_height
     actual_height="$(cln_cli "${service}" getinfo | jq -er .blockheight)"
     test "${actual_height}" -ge "${expected_height}" \
       && cln_cli "${service}" listfunds | jq -e 'any(.outputs[]; .status == "confirmed")'
+  }
+
+  cln_chain_ready() {
+    local service="$1" expected_height="$2" actual_height
+    actual_height="$(cln_cli "${service}" getinfo | jq -er .blockheight)"
+    test "${actual_height}" -ge "${expected_height}"
   }
 
   cln_channels_ready() {
@@ -296,10 +336,192 @@ PY
       | jq -e '[.channels[] | select(.state == "CHANNELD_NORMAL")] | length == 2'
   }
 
+  cln_channel_count_ready() {
+    local service="$1" expected_count="$2"
+    cln_cli "${service}" listpeerchannels \
+      | jq -e --argjson expected_count "${expected_count}" \
+        '[.channels[] | select(.state == "CHANNELD_NORMAL")] | length == $expected_count'
+  }
+
   provider_ready() {
     local provider="$1" port="$2"
     compose exec -T "provider-${provider}" /usr/bin/curl --fail --silent \
       "http://127.0.0.1:${port}/healthz"
+  }
+
+  container_pid() {
+    local service="$1" container
+    container="$(compose ps --quiet "${service}")"
+    test -n "${container}"
+    docker inspect --format '{{.State.Pid}}' "${container}"
+  }
+
+  wait_for_injection_request() {
+    local request_file="$1"
+    for _ in $(seq 1 600); do
+      check_deadline
+      if test -f "${request_file}"; then
+        return 0
+      fi
+      sleep 0.2
+    done
+    echo "test-lab-adversarial: ${case_id}: injection request did not arrive" >&2
+    return 1
+  }
+
+  acknowledge_external_injection() {
+    local request_file acknowledgement_file request_metadata request_run_id request_sha256
+    local before_pid after_pid target_suffix target_port target_provider
+    request_file="${private_root}/state/funded-injection.json"
+    acknowledgement_file="${private_root}/state/funded-continue"
+    wait_for_injection_request "${request_file}"
+    request_metadata="$(python3 - "${request_file}" "${external_injection}" \
+      "${external_checkpoint}" <<'PY'
+import hashlib
+import json
+import pathlib
+import stat
+import sys
+
+path = pathlib.Path(sys.argv[1])
+encoded = path.read_bytes()
+if not encoded or len(encoded) > 4096 or stat.S_IMODE(path.stat().st_mode) != 0o600:
+    raise SystemExit("injection request is empty, unbounded, or not mode 0600")
+request = json.loads(encoded)
+if set(request) != {"schema", "run_id", "journey", "checkpoint", "injection", "requested_at"}:
+    raise SystemExit("injection request has another shape")
+if (
+    request["schema"] != "openagents.immortal.lab-injection.v1"
+    or request["checkpoint"] != sys.argv[3]
+    or request["injection"] != sys.argv[2]
+    or request["journey"] != sys.argv[3].split(":", 1)[0]
+    or not isinstance(request["requested_at"], int)
+):
+    raise SystemExit("injection request does not bind the selected case")
+run_id = request["run_id"]
+if (
+    not isinstance(run_id, str)
+    or not 1 <= len(run_id) <= 128
+    or any(not (character.isascii() and (character.isalnum() or character in "-_") ) for character in run_id)
+):
+    raise SystemExit("injection request has an invalid run id")
+print(run_id, hashlib.sha256(encoded).hexdigest(), sep="\t")
+PY
+)"
+    IFS=$'\t' read -r request_run_id request_sha256 <<<"${request_metadata}"
+
+    before_pid="$(container_pid "${external_target}")"
+    [[ "${before_pid}" =~ ^[1-9][0-9]*$ ]]
+    case "${external_injection}" in
+      relay_loss)
+        current_phase="${external_target}-partition"
+        compose stop "${external_target}" >/dev/null
+        if compose ps --services --status running | grep -Fx "${external_target}" >/dev/null; then
+          echo "test-lab-adversarial: ${case_id}: relay remained running during partition" >&2
+          return 1
+        fi
+        compose up --detach "${external_target}" >/dev/null
+        target_suffix="${external_target#relay-}"
+        target_port=18080
+        target_provider=provider-a
+        if test "${target_suffix}" = b; then
+          target_port=18081
+          target_provider=provider-b
+        fi
+        wait_for "restored ${external_target}" compose run --rm --no-deps \
+          --entrypoint /usr/bin/curl "${target_provider}" --fail --silent \
+          "http://127.0.0.1:${target_port}/health"
+        ;;
+      provider_crash)
+        current_phase="${external_target}-crash-restart"
+        compose kill "${external_target}" >/dev/null
+        if compose ps --services --status running | grep -Fx "${external_target}" >/dev/null; then
+          echo "test-lab-adversarial: ${case_id}: provider remained running after crash" >&2
+          return 1
+        fi
+        compose up --detach "${external_target}" >/dev/null
+        target_suffix="${external_target#provider-}"
+        target_port=9091
+        if test "${target_suffix}" = b; then
+          target_port=9092
+        fi
+        wait_for "restored ${external_target}" provider_ready "${target_suffix}" "${target_port}"
+        ;;
+      *)
+        echo "test-lab-adversarial: ${case_id}: unsupported external injection" >&2
+        return 1
+        ;;
+    esac
+    after_pid="$(container_pid "${external_target}")"
+    [[ "${after_pid}" =~ ^[1-9][0-9]*$ ]]
+    test "${before_pid}" != "${after_pid}"
+
+    current_phase=injection-acknowledgement
+    python3 - "${request_file}" "${acknowledgement_file}" "${request_run_id}" \
+      "${request_sha256}" "${external_injection}" "${external_checkpoint}" \
+      "${external_target}" "${before_pid}" "${after_pid}" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import sys
+
+request_path = pathlib.Path(sys.argv[1])
+acknowledgement_path = pathlib.Path(sys.argv[2])
+encoded = request_path.read_bytes()
+if hashlib.sha256(encoded).hexdigest() != sys.argv[4]:
+    raise SystemExit("injection request changed during process recovery")
+request = json.loads(encoded)
+if (
+    request["schema"] != "openagents.immortal.lab-injection.v1"
+    or request["run_id"] != sys.argv[3]
+    or request["injection"] != sys.argv[5]
+    or request["checkpoint"] != sys.argv[6]
+):
+    raise SystemExit("injection request no longer binds the selected case")
+acknowledgement = {
+    "schema": "openagents.immortal.lab-injection-ack.v1",
+    "run_id": sys.argv[3],
+    "checkpoint": sys.argv[6],
+    "injection": sys.argv[5],
+    "restored": True,
+    "evidence": {
+        "target": sys.argv[7],
+        "before_pid": int(sys.argv[8]),
+        "after_pid": int(sys.argv[9]),
+        "transition": "process_replaced_and_ready",
+    },
+}
+output = json.dumps(acknowledgement, separators=(",", ":")).encode()
+temporary = acknowledgement_path.with_name(acknowledgement_path.name + ".tmp")
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(output)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, acknowledgement_path)
+    os.chmod(acknowledgement_path, 0o600)
+except BaseException:
+    try:
+        temporary.unlink()
+    except FileNotFoundError:
+        pass
+    raise
+PY
+  }
+
+  wait_for_driver_process() {
+    local driver_process="$1"
+    while jobs -pr | grep -Fx "${driver_process}" >/dev/null; do
+      if ! check_deadline; then
+        kill -TERM "${driver_process}" >/dev/null 2>&1 || true
+        wait "${driver_process}" >/dev/null 2>&1 || true
+        return 124
+      fi
+      sleep 0.2
+    done
+    wait "${driver_process}"
   }
 
   umask 077
@@ -482,6 +704,12 @@ IMMORTAL_PROVIDER_FUNDED_SMOKE_EVIDENCE_FILE=/evidence/driver-evidence.json
 IMMORTAL_PROVIDER_FUNDED_SMOKE_TERMINAL_CONFIRMATIONS=3
 IMMORTAL_LAB_STATE_DIR=/state
 EOF
+  if test -n "${external_injection}"; then
+    cat >>"${private_root}/wallet-driver.env" <<EOF
+IMMORTAL_LAB_INJECT_AT=${external_checkpoint}
+IMMORTAL_LAB_INJECTION_TIMEOUT_SECONDS=300
+EOF
+  fi
 
   current_phase=compose-validation
   compose_ready=true
@@ -573,25 +801,57 @@ EOF
     wait_for "${service} wallet funding" cln_wallet_ready "${service}" "${chain_height}"
   done
 
-  current_phase=channel-provisioning
-  local wallet_id provider_b_id
+  current_phase=channel-provider-a-wallet
+  local wallet_id provider_b_id paired_channel_height
+  local provider_a_wallet_channel provider_b_wallet_channel provider_a_wallet_txid provider_b_wallet_txid
   wallet_id="$(cln_cli cln-wallet getinfo | jq -er .id)"
   provider_b_id="$(cln_cli cln-provider-b getinfo | jq -er .id)"
   cln_cli cln-provider-a connect "${wallet_id}@wallet-gateway:19848" >/dev/null
-  cln_cli cln-provider-a -k fundchannel id="${wallet_id}" amount=2000000sat \
-    feerate=253perkw announce=false push_msat=1000000000msat >/dev/null
+  provider_a_wallet_channel="$(cln_cli cln-provider-a -k fundchannel id="${wallet_id}" \
+    amount=2000000sat feerate=253perkw announce=false push_msat=1000000000msat)"
+  provider_a_wallet_txid="$(jq -er .txid <<<"${provider_a_wallet_channel}")"
+  current_phase=channel-provider-b-wallet
   cln_cli cln-provider-b connect "${wallet_id}@wallet-gateway:19848" >/dev/null
-  cln_cli cln-provider-b -k fundchannel id="${wallet_id}" amount=2000000sat \
-    feerate=253perkw announce=false push_msat=1000000000msat >/dev/null
-  bitcoin_cli a -rpcwallet=adversarial-miner generatetoaddress 1 "${miner_address}" >/dev/null
+  provider_b_wallet_channel="$(cln_cli cln-provider-b -k fundchannel id="${wallet_id}" \
+    amount=2000000sat feerate=253perkw announce=false push_msat=1000000000msat)"
+  provider_b_wallet_txid="$(jq -er .txid <<<"${provider_b_wallet_channel}")"
+  wait_for "provider A wallet channel transaction at miner" \
+    bitcoin_mempool_contains a "${provider_a_wallet_txid}"
+  wait_for "provider B wallet channel transaction at miner" \
+    bitcoin_mempool_contains a "${provider_b_wallet_txid}"
+  bitcoin_cli a -rpcwallet=adversarial-miner generatetoaddress 6 "${miner_address}" >/dev/null
   wait_for "paired channel chain synchronization" chains_synced
-  cln_cli cln-provider-a connect "${provider_b_id}@bitcoin-b:19847" >/dev/null
-  cln_cli cln-provider-a -k fundchannel id="${provider_b_id}" amount=1000000sat \
-    feerate=253perkw announce=false push_msat=500000000msat >/dev/null
+  paired_channel_height="$(bitcoin_cli a getblockcount)"
+  wait_for "provider A wallet channel" cln_channel_count_ready cln-provider-a 1
+  wait_for "provider B wallet channel" cln_channel_count_ready cln-provider-b 1
+  wait_for "wallet paired channels" cln_channel_count_ready cln-wallet 2
+  wait_for "provider A confirmed channel change" cln_wallet_ready cln-provider-a "${paired_channel_height}"
+
+  current_phase=channel-connect-provider-a-provider-b
+  if ! cln_cli cln-provider-a connect "${provider_b_id}@bitcoin-b:19847" \
+    >"${private_root}/channel-provider-a-provider-b-connect.log" 2>&1; then
+    sed -n '1,20p' "${private_root}/channel-provider-a-provider-b-connect.log" >&2
+    exit 1
+  fi
+  current_phase=channel-fund-provider-a-provider-b
+  local provider_triangle_channel provider_triangle_txid
+  if ! provider_triangle_channel="$(cln_cli cln-provider-a -k fundchannel \
+    id="${provider_b_id}" amount=1000000sat feerate=253perkw announce=false \
+    push_msat=500000000msat 2>"${private_root}/channel-provider-a-provider-b-fund.log")"; then
+    sed -n '1,20p' "${private_root}/channel-provider-a-provider-b-fund.log" >&2
+    exit 1
+  fi
+  provider_triangle_txid="$(jq -er .txid <<<"${provider_triangle_channel}")"
+  wait_for "provider triangle channel transaction at miner" \
+    bitcoin_mempool_contains a "${provider_triangle_txid}"
   bitcoin_cli a -rpcwallet=adversarial-miner generatetoaddress 6 "${miner_address}" >/dev/null
   wait_for "triangle channel chain synchronization" chains_synced
+
+  current_phase=channel-readiness
   for service in cln-provider-a cln-provider-b cln-wallet; do
     wait_for "${service} balanced channels" cln_channels_ready "${service}"
+    cln_cli "${service}" getinfo >"${private_root}/evidence/${service}-info.json"
+    cln_cli "${service}" listpeerchannels >"${private_root}/evidence/${service}-channels.json"
   done
 
   current_phase=provider-funding
@@ -604,6 +864,10 @@ EOF
   bitcoin_cli a -rpcwallet=adversarial-miner sendtoaddress "${provider_b_address}" 1.0 >/dev/null
   bitcoin_cli a -rpcwallet=adversarial-miner generatetoaddress 2 "${miner_address}" >/dev/null
   wait_for "provider funding chain synchronization" chains_synced
+  chain_height="$(bitcoin_cli a getblockcount)"
+  for service in cln-provider-a cln-provider-b cln-wallet; do
+    wait_for "${service} provider-funding chain height" cln_chain_ready "${service}" "${chain_height}"
+  done
 
   current_phase=provider-startup
   compose up --detach provider-a provider-b \
@@ -739,16 +1003,35 @@ PY
   infrastructure_proven=true
 
   current_phase=wallet-driver
-  local remaining_seconds driver_status
+  local remaining_seconds driver_status driver_process
   remaining_seconds=$((case_deadline - $(date +%s)))
   if test "${remaining_seconds}" -le 0; then
     failure_reason=case_runtime_exceeded
     exit 1
   fi
-  set +e
-  IMMORTAL_ADVERSARIAL_PRIVATE_DIR="${private_root}" python3 - \
-    "${remaining_seconds}" "${compose_prefix[@]}" run --rm --no-deps wallet-driver \
-    >"${private_root}/evidence/driver.json" 2>"${private_root}/driver-error.log" <<'PY'
+  if test -n "${external_injection}"; then
+    set +e
+    compose run --rm --no-deps wallet-driver \
+      >"${private_root}/evidence/driver.json" 2>"${private_root}/driver-error.log" &
+    driver_process=$!
+    set -e
+    if ! acknowledge_external_injection; then
+      failure_reason=external_injection_failed
+      kill -TERM "${driver_process}" >/dev/null 2>&1 || true
+      wait "${driver_process}" >/dev/null 2>&1 || true
+      exit 1
+    fi
+    current_phase=wallet-driver-recovery
+    set +e
+    wait_for_driver_process "${driver_process}"
+    driver_status=$?
+    set -e
+  else
+    set +e
+  IMMORTAL_ADVERSARIAL_PRIVATE_DIR="${private_root}" \
+    IMMORTAL_ADVERSARIAL_PROVIDER_IMAGE="${provider_image_ref}" python3 - \
+      "${remaining_seconds}" "${compose_prefix[@]}" run --rm --no-deps wallet-driver \
+      >"${private_root}/evidence/driver.json" 2>"${private_root}/driver-error.log" <<'PY'
 import subprocess
 import sys
 
@@ -759,9 +1042,27 @@ except subprocess.TimeoutExpired:
     raise SystemExit(124)
 raise SystemExit(result.returncode)
 PY
-  driver_status=$?
-  set -e
+    driver_status=$?
+    set -e
+  fi
   if test "${driver_status}" -ne 0; then
+    python3 - "${private_root}/driver-error.log" <<'PY' >&2
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+encoded = path.read_bytes()[:4096]
+text = encoded.decode("utf-8", errors="replace")
+if re.search(r"(?i)(claim.key|macaroon|password|preimage|private.key|refund.key|seed|secret)", text):
+    print("test-lab-adversarial: wallet driver diagnostic contained a custody term and was redacted")
+else:
+    text = re.sub(r"\b[0-9a-f]{64}\b", "<hex64>", text)
+    lines = text.splitlines()[:12]
+    if lines:
+        print("test-lab-adversarial: bounded wallet driver diagnostic:")
+        print("\n".join(lines))
+PY
     if grep -F 'immortal-lab: unknown command: adversarial-case' \
       "${private_root}/driver-error.log" >/dev/null 2>&1; then
       current_phase=runtime-command-unavailable

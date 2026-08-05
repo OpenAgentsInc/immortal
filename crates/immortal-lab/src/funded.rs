@@ -46,12 +46,12 @@ use crate::state::{
     BoltzAdapterApproval, BoltzAdapterBroadcast, BoltzAdapterFinalizeRequest, BoltzAdapterPrepared,
     FundedCheckpoint, FundedInjectionRequest, LabPaths, clear_boltz_adapter_controls,
     load_boltz_adapter_broadcast, load_boltz_adapter_finalize_request, load_funded_deliveries,
-    load_funded_journey_checkpoint, load_funded_secret, load_funded_signed_exit,
-    load_or_create_funded_run_id, load_or_create_identity, remove_funded_secret,
-    store_boltz_adapter_approval, store_boltz_adapter_complete, store_boltz_adapter_prepared,
-    store_funded_checkpoint, store_funded_deliveries, store_funded_injection,
-    store_funded_journey_checkpoint, store_funded_secret, store_funded_signed_exit,
-    store_funded_snapshot,
+    load_funded_injection_proof, load_funded_journey_checkpoint, load_funded_secret,
+    load_funded_signed_exit, load_or_create_funded_run_id, load_or_create_identity,
+    remove_funded_secret, store_boltz_adapter_approval, store_boltz_adapter_complete,
+    store_boltz_adapter_prepared, store_funded_checkpoint, store_funded_deliveries,
+    store_funded_injection, store_funded_injection_proof, store_funded_journey_checkpoint,
+    store_funded_secret, store_funded_signed_exit, store_funded_snapshot,
 };
 
 const OFFERING_ID: &str = "immortal-funded-btc-lightning";
@@ -178,6 +178,9 @@ enum HarnessInjection {
     SecretLeak,
     RelayLoss,
     ProviderCrash,
+    StatusGap,
+    StatusFork,
+    WrongClaimKey,
 }
 
 impl HarnessInjection {
@@ -189,6 +192,9 @@ impl HarnessInjection {
             "secret_leak" => Ok(Self::SecretLeak),
             "relay_loss" => Ok(Self::RelayLoss),
             "provider_crash" => Ok(Self::ProviderCrash),
+            "status_gap" => Ok(Self::StatusGap),
+            "status_fork" => Ok(Self::StatusFork),
+            "wrong_claim_key" => Ok(Self::WrongClaimKey),
             _ => Err("IMMORTAL_LAB_INJECTION is unsupported".to_owned()),
         }
     }
@@ -201,6 +207,9 @@ impl HarnessInjection {
             Self::SecretLeak => "secret_leak",
             Self::RelayLoss => "relay_loss",
             Self::ProviderCrash => "provider_crash",
+            Self::StatusGap => "status_gap",
+            Self::StatusFork => "status_fork",
+            Self::WrongClaimKey => "wrong_claim_key",
         }
     }
 
@@ -241,8 +250,7 @@ impl StepControl {
             .ok()
             .map(|value| HarnessInjection::parse(&value))
             .transpose()?;
-        if injection_override.is_some()
-            && (stop_after.is_some() || inject_at.is_some() || environment_injection.is_some())
+        if injection_override.is_some() && (stop_after.is_some() || environment_injection.is_some())
         {
             return Err(
                 "adversarial case injection conflicts with funded harness controls".to_owned(),
@@ -329,12 +337,13 @@ impl StepControl {
                             continue_path.display()
                         )
                     })?;
-                    validate_injection_acknowledgement(
+                    let proof = validate_injection_acknowledgement(
                         &acknowledgement,
                         &self.run_id,
                         &qualified,
                         injection,
                     )?;
+                    store_funded_injection_proof(&self.paths, &proof)?;
                     std::fs::remove_file(&continue_path).map_err(|error| {
                         format!(
                             "could not consume injection continuation {}: {error}",
@@ -359,7 +368,7 @@ fn validate_injection_acknowledgement(
     run_id: &str,
     checkpoint: &str,
     injection: HarnessInjection,
-) -> Result<(), String> {
+) -> Result<Value, String> {
     if bytes.is_empty() || bytes.len() > 4_096 {
         return Err("injection continuation is empty or unbounded".to_owned());
     }
@@ -376,7 +385,42 @@ fn validate_injection_acknowledgement(
     {
         return Err("injection continuation does not bind the requested recovery".to_owned());
     }
-    Ok(())
+    if let Some(evidence) = value.get("evidence") {
+        let evidence = evidence
+            .as_object()
+            .ok_or_else(|| "injection evidence is not an object".to_owned())?;
+        if evidence.len() != 4
+            || evidence.keys().any(|name| {
+                !matches!(
+                    name.as_str(),
+                    "target" | "before_pid" | "after_pid" | "transition"
+                )
+            })
+        {
+            return Err("injection evidence has another shape".to_owned());
+        }
+        let target = evidence
+            .get("target")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "injection evidence has no target".to_owned())?;
+        let transition = evidence
+            .get("transition")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "injection evidence has no transition".to_owned())?;
+        let before_pid = evidence.get("before_pid").and_then(Value::as_u64);
+        let after_pid = evidence.get("after_pid").and_then(Value::as_u64);
+        if !matches!(target, "relay-a" | "relay-b" | "provider-a" | "provider-b")
+            || transition != "process_replaced_and_ready"
+            || before_pid.is_none_or(|pid| pid == 0 || pid > i32::MAX as u64)
+            || after_pid.is_none_or(|pid| pid == 0 || pid > i32::MAX as u64)
+            || before_pid == after_pid
+        {
+            return Err(
+                "injection evidence does not prove one bounded process replacement".to_owned(),
+            );
+        }
+    }
+    Ok(value)
 }
 
 #[derive(Clone, Copy)]
@@ -862,13 +906,19 @@ pub fn run_adversarial_funded_journey(
     injection: Option<&str>,
 ) -> Result<Value, String> {
     let injection = injection.map(HarnessInjection::parse).transpose()?;
-    if injection.is_some_and(HarnessInjection::requires_external_control) {
-        return Err("adversarial funded journey cannot drive an external injection".to_owned());
-    }
     let runtime =
         Runtime::new().map_err(|error| format!("could not start lab runtime: {error}"))?;
     let environment = SmokeEnvironment::load_topology_selected(provider_index, injection)?;
-    run_funded_journey_with_environment(&runtime, &environment, journey)
+    let mut result = run_funded_journey_with_environment(&runtime, &environment, journey)?;
+    if injection.is_some_and(HarnessInjection::requires_external_control) {
+        let proof = load_funded_injection_proof(&environment.control.paths)?
+            .ok_or_else(|| "external adversarial injection has no retained proof".to_owned())?;
+        result
+            .as_object_mut()
+            .ok_or_else(|| "funded journey result is not an object".to_owned())?
+            .insert("external_control".to_owned(), proof);
+    }
+    Ok(result)
 }
 
 fn run_funded_journey_with_environment(
@@ -1606,6 +1656,66 @@ fn drive_submarine(
     )
 }
 
+fn reject_wrong_claim_key(
+    environment: &SmokeEnvironment,
+    session: &SessionContext,
+    preimage: [u8; 32],
+) -> Result<Value, String> {
+    let verifier = verifier_for_leg(&session.contract, "destination")?;
+    let raw_funding = required_string(verifier, "funding_transaction")?;
+    let funding_txid = transaction_id(raw_funding)?;
+    let output_index = verifier
+        .get("output_index")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "wrong-claim-key verifier has no bounded output index".to_owned())?;
+    let bitcoin = bitcoin_terms(&session.contract, "destination")?;
+    let destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 9)
+                .map_err(|error| format!("wrong-claim-key destination path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive wrong-claim-key destination: {error}"))?;
+    let wrong_path = WalletPath::new(2, false, 9)
+        .map_err(|error| format!("wrong claim wallet path is invalid: {error}"))?;
+    let destination_value_sat = bitcoin
+        .amount_sat
+        .checked_sub(bitcoin.miner_fee_budget_sat)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "wrong-claim-key fee consumes its output".to_owned())?;
+    let result = SettlementBridge::new(&environment.wallet).claim(
+        &SettlementTemplate {
+            wallet_path: wrong_path,
+            previous_txid_wire: display_txid_wire(&funding_txid)?,
+            previous_output: output_index,
+            prevout_value_sat: bitcoin.amount_sat,
+            prevout_script_pubkey: bitcoin.script_pubkey,
+            destination_value_sat,
+            destination_script_pubkey: destination.script_pubkey.to_vec(),
+            transaction_version: 2,
+            input_sequence: 0xffff_fffe,
+            lock_time: 0,
+            taproot_script: bitcoin.claim_script,
+            taproot_control_block: bitcoin.claim_control_block,
+            maximum_fee_sat: bitcoin.miner_fee_budget_sat,
+            maximum_fee_rate_sat_per_vbyte: 10_000,
+            maximum_weight: 1_600,
+            dust_relay_fee_sat_per_kilobyte: 3_000,
+        },
+        ClaimPreimage::new(preimage),
+    );
+    match result {
+        Ok(_) => Err("wrong claim key produced a signed transaction".to_owned()),
+        Err(error)
+            if error.to_string() == "settlement script does not bind the selected wallet key" =>
+        {
+            Err("wrong claim key rejected before external effect".to_owned())
+        }
+        Err(error) => Err(format!("wrong claim key returned another refusal: {error}")),
+    }
+}
+
 fn continue_submarine(
     runtime: &Runtime,
     environment: &SmokeEnvironment,
@@ -1770,6 +1880,9 @@ fn drive_reverse(
             exit_destination_script_pubkey: &destination.script_pubkey,
         },
     )?;
+    if environment.control.injection == Some(HarnessInjection::WrongClaimKey) {
+        return reject_wrong_claim_key(environment, &session, preimage);
+    }
     session.wait_provider_state("accepted")?;
     let invoice_status = session.wait_provider_state("hold_invoice_ready")?;
     let invoice = record_profile(&invoice_status)?
@@ -2743,10 +2856,110 @@ impl SessionContext {
                 }
                 Err("injected custody material rejected before persistence or funding".to_owned())
             }
+            Some(HarnessInjection::StatusGap) => self.inject_status_gap(),
+            Some(HarnessInjection::StatusFork) => self.inject_status_fork(),
+            Some(HarnessInjection::WrongClaimKey) => Ok(()),
             Some(HarnessInjection::StaleQuote)
             | Some(HarnessInjection::RelayLoss | HarnessInjection::ProviderCrash)
             | None => Ok(()),
         }
+    }
+
+    fn signed_requester_status(
+        &self,
+        sequence: u64,
+        previous: Option<&str>,
+        distinct: &str,
+    ) -> Result<Event, String> {
+        let (event, _) = sign_request(
+            self.factory
+                .status(
+                    ParticipantRole::Requester,
+                    next_created_at(&self.verifier)?,
+                    distinct,
+                    &self.order.id,
+                    StatusState {
+                        sequence,
+                        previous,
+                        base_state: base_state("requester_verification_passed")?,
+                        swp_state: "requester_verification_passed",
+                    },
+                    Map::new(),
+                )
+                .map_err(|error| format!("could not construct adversarial Status: {error}"))?,
+            &self.requester,
+        )?;
+        Ok(event)
+    }
+
+    fn inject_status_gap(&mut self) -> Result<(), String> {
+        let previous = digest(&format!(
+            "missing-requester-status:{}",
+            self.verifier.config().session_id
+        ));
+        let distinct = digest(&format!(
+            "requester-status-gap:{}",
+            self.verifier.config().session_id
+        ));
+        let status = self.signed_requester_status(1, Some(&previous), &distinct)?;
+        if !self
+            .verifier
+            .ingest_signed_record(status)
+            .map_err(|error| format!("could not ingest Status gap record: {error}"))?
+        {
+            return Err("Status gap replayed another record".to_owned());
+        }
+        let error = match self
+            .verifier
+            .status_projection()
+            .and_then(|projection| projection.require_contiguous())
+        {
+            Ok(()) => return Err("Status gap projection was contiguous".to_owned()),
+            Err(error) => error,
+        };
+        if error.code != "swp_status_gap" {
+            return Err(format!("Status gap returned another refusal: {error}"));
+        }
+        Err("swp_status_gap rejected before external effect".to_owned())
+    }
+
+    fn inject_status_fork(&mut self) -> Result<(), String> {
+        let first_distinct = digest(&format!(
+            "requester-status-fork-a:{}",
+            self.verifier.config().session_id
+        ));
+        let first = self.signed_requester_status(0, None, &first_distinct)?;
+        if !self
+            .verifier
+            .ingest_signed_record(first)
+            .map_err(|error| format!("could not establish Status fork prefix: {error}"))?
+        {
+            return Err("Status fork prefix replayed another record".to_owned());
+        }
+        let second_distinct = digest(&format!(
+            "requester-status-fork-b:{}",
+            self.verifier.config().session_id
+        ));
+        let second = self.signed_requester_status(0, None, &second_distinct)?;
+        if !self
+            .verifier
+            .ingest_signed_record(second)
+            .map_err(|error| format!("could not ingest Status fork record: {error}"))?
+        {
+            return Err("Status fork replayed another record".to_owned());
+        }
+        let error = match self
+            .verifier
+            .status_projection()
+            .and_then(|projection| projection.require_contiguous())
+        {
+            Ok(()) => return Err("Status fork projection was contiguous".to_owned()),
+            Err(error) => error,
+        };
+        if error.code != "swp_status_fork" {
+            return Err(format!("Status fork returned another refusal: {error}"));
+        }
+        Err("swp_status_fork rejected before external effect".to_owned())
     }
 
     fn set_authorized_verifier(
@@ -5191,7 +5404,13 @@ mod tests {
             "run_id":"run-1",
             "checkpoint":"reverse:funding_effect_recorded",
             "injection":"provider_crash",
-            "restored":true
+            "restored":true,
+            "evidence":{
+                "target":"provider-a",
+                "before_pid":101,
+                "after_pid":202,
+                "transition":"process_replaced_and_ready",
+            }
         });
         validate_injection_acknowledgement(
             valid.to_string().as_bytes(),
@@ -5212,6 +5431,28 @@ mod tests {
                 })
                 .to_string()
                 .as_bytes(),
+                "run-1",
+                "reverse:funding_effect_recorded",
+                HarnessInjection::ProviderCrash,
+            )
+            .is_err()
+        );
+        let same_pid = json!({
+            "schema":"openagents.immortal.lab-injection-ack.v1",
+            "run_id":"run-1",
+            "checkpoint":"reverse:funding_effect_recorded",
+            "injection":"provider_crash",
+            "restored":true,
+            "evidence":{
+                "target":"provider-a",
+                "before_pid":101,
+                "after_pid":101,
+                "transition":"process_replaced_and_ready",
+            }
+        });
+        assert!(
+            validate_injection_acknowledgement(
+                same_pid.to_string().as_bytes(),
                 "run-1",
                 "reverse:funding_effect_recorded",
                 HarnessInjection::ProviderCrash,

@@ -41,6 +41,39 @@ for name in \
 done
 
 python3 -m unittest "${support_dir}/test_tcp_forward.py"
+bash -n scripts/test-lab-adversarial.sh
+
+python3 - scripts/test-lab-adversarial.sh <<'PY'
+import pathlib
+import sys
+
+runner = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+for phase in (
+    "channel-provider-a-wallet",
+    "channel-provider-b-wallet",
+    "channel-connect-provider-a-provider-b",
+    "channel-fund-provider-a-provider-b",
+    "channel-readiness",
+):
+    if f"current_phase={phase}" not in runner:
+        raise SystemExit(f"adversarial runner lacks granular {phase} receipt")
+for case_id, injection, checkpoint, target in (
+    ("relay-a-partition", "relay_loss", "submarine:funding_execution_ready", "relay-a"),
+    ("relay-b-partition", "relay_loss", "submarine:funding_execution_ready", "relay-b"),
+    ("provider-a-crash-restart", "provider_crash", "submarine:funding_effect_recorded", "provider-a"),
+    ("provider-b-crash-restart", "provider_crash", "submarine:funding_effect_recorded", "provider-b"),
+):
+    case_start = runner.find(f"{case_id})")
+    case_end = runner.find(";;", case_start)
+    case = runner[case_start:case_end]
+    if case_start < 0 or not all(value in case for value in (injection, checkpoint, target)):
+        raise SystemExit(f"{case_id} lacks an exact external control mapping")
+for member in ("before_pid", "after_pid", "process_replaced_and_ready"):
+    if member not in runner:
+        raise SystemExit(f"adversarial acknowledgement lacks {member}")
+if "provider-funding chain height" not in runner:
+    raise SystemExit("provider startup lacks an all-CLN chain-height barrier")
+PY
 
 if ! docker compose version >/dev/null 2>&1; then
   echo "test-adversarial-compose: Docker Compose is required" >&2
@@ -49,6 +82,7 @@ fi
 
 rendered="${private_root}/compose.json"
 IMMORTAL_ADVERSARIAL_PRIVATE_DIR="${private_root}" \
+  IMMORTAL_ADVERSARIAL_PROVIDER_IMAGE=immortal-adversarial-provider-test:local \
   docker compose --file "${compose_file}" config --format json >"${rendered}"
 
 python3 - "${rendered}" <<'PY'
@@ -110,6 +144,8 @@ for provider, own_rpc, own_seed, other_rpc, other_seed in (
         raise SystemExit(f"{provider} does not build the shipped provider target")
     if services[provider].get("command") != ["run"]:
         raise SystemExit(f"{provider} does not run the shipped funded mode")
+if services["provider-a"].get("image") != services["provider-b"].get("image"):
+    raise SystemExit("providers do not bind one shipped image reference")
 def volume_source(service, target):
     matches = [
         volume.get("source")

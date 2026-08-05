@@ -206,6 +206,7 @@ services:
         target: /evidence
 
   provider-a:
+    image: ${IMMORTAL_ADVERSARIAL_PROVIDER_IMAGE:?provider image is required}
     build:
       context: ../../..
       dockerfile: scripts/support/provider-funded/Dockerfile.provider
@@ -232,6 +233,7 @@ services:
         read_only: true
 
   provider-b:
+    image: ${IMMORTAL_ADVERSARIAL_PROVIDER_IMAGE:?provider image is required}
     build:
       context: ../../..
       dockerfile: scripts/support/provider-funded/Dockerfile.provider

@@ -341,6 +341,42 @@ fn journey_proof(
     object.insert(terminal_member.to_owned(), Value::String(terminal_txid));
     if let Some(injection) = injection {
         object.insert("injection".to_owned(), Value::String(injection.to_owned()));
+        if matches!(injection, "relay_loss" | "provider_crash") {
+            let control = result
+                .get("external_control")
+                .and_then(Value::as_object)
+                .ok_or_else(|| "external process injection has no control proof".to_owned())?;
+            let expected_target = match injection {
+                "relay_loss" => format!("relay-{}", if provider_index == 0 { "a" } else { "b" }),
+                "provider_crash" => {
+                    format!("provider-{}", if provider_index == 0 { "a" } else { "b" })
+                }
+                _ => return Err("external process injection is unsupported".to_owned()),
+            };
+            if control.get("schema").and_then(Value::as_str)
+                != Some("openagents.immortal.lab-injection-ack.v1")
+                || control
+                    .get("evidence")
+                    .and_then(Value::as_object)
+                    .and_then(|evidence| evidence.get("target"))
+                    .and_then(Value::as_str)
+                    != Some(expected_target.as_str())
+                || control
+                    .get("evidence")
+                    .and_then(Value::as_object)
+                    .and_then(|evidence| evidence.get("transition"))
+                    .and_then(Value::as_str)
+                    != Some("process_replaced_and_ready")
+            {
+                return Err(
+                    "external process control proof does not bind the selected target".to_owned(),
+                );
+            }
+            object.insert(
+                "external_control".to_owned(),
+                Value::Object(control.clone()),
+            );
+        }
     }
     Ok(proof)
 }
@@ -500,19 +536,51 @@ fn proof_plan(case_id: &str) -> ProofPlan {
             injection: None,
             outcome: JourneyOutcome::Refunded,
         },
-        "relay-a-partition" | "relay-b-partition" => ProofPlan::Unsupported {
-            reason: "the topology runner has no case-bound partition controller",
+        "relay-a-partition" => ProofPlan::Journey {
+            provider_index: 0,
+            journey: FundedJourney::Submarine,
+            injection: Some("relay_loss"),
+            outcome: JourneyOutcome::Claimed,
         },
-        "provider-a-crash-restart" | "provider-b-crash-restart" | "wallet-crash-restart" => {
-            ProofPlan::Unsupported {
-                reason: "the topology runner has no case-bound process crash acknowledgement",
-            }
-        }
+        "relay-b-partition" => ProofPlan::Journey {
+            provider_index: 1,
+            journey: FundedJourney::Submarine,
+            injection: Some("relay_loss"),
+            outcome: JourneyOutcome::Claimed,
+        },
+        "provider-a-crash-restart" => ProofPlan::Journey {
+            provider_index: 0,
+            journey: FundedJourney::Submarine,
+            injection: Some("provider_crash"),
+            outcome: JourneyOutcome::Claimed,
+        },
+        "provider-b-crash-restart" => ProofPlan::Journey {
+            provider_index: 1,
+            journey: FundedJourney::Submarine,
+            injection: Some("provider_crash"),
+            outcome: JourneyOutcome::Claimed,
+        },
+        "wallet-crash-restart" => ProofPlan::Unsupported {
+            reason: "the topology runner has no case-bound wallet process replacement proof",
+        },
         "double-reservation" => ProofPlan::Unsupported {
             reason: "the funded harness has no concurrent reservation driver",
         },
-        "status-gap" | "status-fork" => ProofPlan::Unsupported {
-            reason: "the funded harness has no signed Status mutation driver",
+        "status-gap" => ProofPlan::ExpectedJourneyError {
+            provider_index: 0,
+            journey: FundedJourney::Submarine,
+            injection: "status_gap",
+            evidence: "swp_status_gap rejected before external effect",
+            expected_code: "swp_status_gap",
+            outcome: "rejected_before_effect",
+        },
+        "status-fork" => ProofPlan::ExpectedJourneyError {
+            provider_index: 0,
+            journey: FundedJourney::Submarine,
+            injection: "status_fork",
+            evidence: "swp_status_fork rejected before external effect",
+            expected_code: "swp_status_fork",
+            outcome: "rejected_before_effect",
         },
         "funding-reorg" | "claim-reorg" => ProofPlan::Unsupported {
             reason: "the funded harness has no case-bound regtest reorg controller",
@@ -520,8 +588,13 @@ fn proof_plan(case_id: &str) -> ProofPlan {
         "rbf-conflict" => ProofPlan::Unsupported {
             reason: "the funded harness has no conflicting replacement transaction driver",
         },
-        "wrong-claim-key" => ProofPlan::Unsupported {
-            reason: "the funded harness has no wrong-key signing attempt",
+        "wrong-claim-key" => ProofPlan::ExpectedJourneyError {
+            provider_index: 0,
+            journey: FundedJourney::ReverseClaim,
+            injection: "wrong_claim_key",
+            evidence: "wrong claim key rejected before external effect",
+            expected_code: "rejected_before_effect",
+            outcome: "rejected_before_effect",
         },
         "submarine-provider-noncooperative-refund" => ProofPlan::Unsupported {
             reason: "the funded harness has no requester submarine timeout-refund journey",
@@ -678,7 +751,7 @@ mod tests {
             .keys()
             .filter(|case_id| !matches!(proof_plan(case_id), ProofPlan::Unsupported { .. }))
             .count();
-        assert_eq!(supported, 13);
+        assert_eq!(supported, 20);
         for case_id in cases.keys() {
             if let ProofPlan::Unsupported { reason } = proof_plan(case_id) {
                 assert!(
@@ -781,6 +854,61 @@ mod tests {
         assert_eq!(proof.get("refund_txid"), Some(&Value::String(hash("a"))));
         assert_eq!(proof.get("claim_txid"), None);
         assert_eq!(proof.get("resumed"), Some(&Value::Bool(false)));
+    }
+
+    #[test]
+    fn journey_proof_binds_external_recovery_to_selected_provider() {
+        let result = json!({
+            "step":"submarine",
+            "provider_pubkey":hash("1"),
+            "external_control":{
+                "schema":"openagents.immortal.lab-injection-ack.v1",
+                "run_id":"run-1",
+                "checkpoint":"submarine:funding_effect_recorded",
+                "injection":"provider_crash",
+                "restored":true,
+                "evidence":{
+                    "target":"provider-b",
+                    "before_pid":101,
+                    "after_pid":202,
+                    "transition":"process_replaced_and_ready",
+                }
+            },
+            "journey":{
+                "order_id":hash("2"),
+                "lockup_txid":hash("3"),
+                "lockup_vout":0,
+                "payment_hash":hash("4"),
+                "claim_txid":hash("5"),
+                "result":"claimed",
+            }
+        });
+        let proof = journey_proof(
+            &result,
+            1,
+            FundedJourney::Submarine,
+            Some("provider_crash"),
+            JourneyOutcome::Claimed,
+        )
+        .expect("provider crash proof should bind provider B");
+        assert_eq!(
+            proof.pointer("/external_control/evidence/target"),
+            Some(&Value::String("provider-b".to_owned()))
+        );
+
+        let mut wrong_target = result;
+        wrong_target["external_control"]["evidence"]["target"] =
+            Value::String("provider-a".to_owned());
+        assert!(
+            journey_proof(
+                &wrong_target,
+                1,
+                FundedJourney::Submarine,
+                Some("provider_crash"),
+                JourneyOutcome::Claimed,
+            )
+            .is_err()
+        );
     }
 
     #[test]

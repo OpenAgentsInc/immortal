@@ -81,6 +81,10 @@ impl LabPaths {
         self.root.join("funded-injection.json")
     }
 
+    pub fn funded_injection_proof(&self) -> PathBuf {
+        self.root.join("funded-injection-proof.json")
+    }
+
     pub fn funded_snapshot(&self, journey: &str) -> PathBuf {
         self.root.join(format!("funded-{journey}-session.json"))
     }
@@ -411,6 +415,34 @@ pub fn store_funded_injection(
         return Err("funded injection request is invalid or unbounded".to_owned());
     }
     write_json(&paths.funded_injection(), request)
+}
+
+pub fn store_funded_injection_proof(paths: &LabPaths, proof: &Value) -> Result<(), String> {
+    provider_support::reject_custody_material(proof)
+        .map_err(|error| format!("funded injection proof rejected custody material: {error}"))?;
+    let encoded = serde_json::to_vec(proof)
+        .map_err(|error| format!("could not encode funded injection proof: {error}"))?;
+    if encoded.is_empty() || encoded.len() > 4_096 {
+        return Err("funded injection proof is empty or unbounded".to_owned());
+    }
+    write_bytes(&paths.funded_injection_proof(), &encoded)
+}
+
+pub fn load_funded_injection_proof(paths: &LabPaths) -> Result<Option<Value>, String> {
+    let path = paths.funded_injection_proof();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes =
+        fs::read(&path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    if bytes.is_empty() || bytes.len() > 4_096 {
+        return Err("funded injection proof is empty or unbounded".to_owned());
+    }
+    let proof: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("funded injection proof is invalid JSON: {error}"))?;
+    provider_support::reject_custody_material(&proof)
+        .map_err(|error| format!("funded injection proof contains custody material: {error}"))?;
+    Ok(Some(proof))
 }
 
 pub fn store_funded_snapshot(
