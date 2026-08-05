@@ -60,7 +60,7 @@ else
       echo "dev-relay: install local Postgres tools or Docker/Podman" >&2
       exit 1
     fi
-    container_name="immortal-dev-postgres-$PPID"
+    container_name="immortal-dev-postgres-$PPID-$$"
     "${container_runtime}" run --rm -d \
       --name "${container_name}" \
       -e POSTGRES_HOST_AUTH_METHOD=trust \

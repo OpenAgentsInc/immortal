@@ -117,12 +117,28 @@ grep -q 'RequesterSessionView::from_signed_records' crates/immortal-lab/src/step
 grep -q 'run_funded_topology' crates/immortal-lab/src/funded.rs
 grep -q 'provider-b-postgres' scripts/support/provider-funded/topology-compose.yaml
 grep -q 'PREPARE funded_topology_evidence' scripts/support/provider-funded/topology_evidence.sql
+grep -Fq 'container_name="immortal-dev-postgres-$PPID-$$"' scripts/dev-relay.sh
 
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/immortal-lab-provisioning-test.XXXXXX")"
 cleanup() {
   rm -rf "${test_dir}"
 }
 trap cleanup EXIT INT TERM
+
+bash -c 'printf "%s\n" "immortal-dev-postgres-$PPID-$$"' \
+  >"${test_dir}/relay-a-postgres-name" &
+relay_a_name_pid=$!
+bash -c 'printf "%s\n" "immortal-dev-postgres-$PPID-$$"' \
+  >"${test_dir}/relay-b-postgres-name" &
+relay_b_name_pid=$!
+wait "${relay_a_name_pid}"
+wait "${relay_b_name_pid}"
+test "$(cut -d- -f1-4 "${test_dir}/relay-a-postgres-name")" = \
+  "immortal-dev-postgres-$$"
+test "$(cut -d- -f1-4 "${test_dir}/relay-b-postgres-name")" = \
+  "immortal-dev-postgres-$$"
+test "$(cat "${test_dir}/relay-a-postgres-name")" != \
+  "$(cat "${test_dir}/relay-b-postgres-name")"
 
 IMMORTAL_LAB_DIR="${test_dir}/lab" \
   IMMORTAL_LAB_STATE_DIR="${test_dir}/wallet" \
