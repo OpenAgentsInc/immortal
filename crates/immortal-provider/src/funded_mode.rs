@@ -9,7 +9,10 @@ use immortal_client::mkt_swp_client::{
     Cancellation, CloseOutcome, CooperativePrevout, CooperativeSigningAction,
     CooperativeSigningContext, CooperativeSigningMessage, ExitPackage, MktSigningRequest,
     ParticipantRole, StatusState,
-    provider_support::{canonical_json, cooperative_signing_message, effect_id},
+    provider_support::{
+        build_provider_submarine_claim_exit_package, canonical_json, cooperative_signing_message,
+        effect_id, validate_provider_submarine_claim_exit_package,
+    },
 };
 use immortal_core::{
     domain::{
@@ -124,6 +127,57 @@ struct HeldHtlcSummary {
     htlc_count: usize,
     total_msat: u64,
     minimum_cltv_expiry: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CooperativeProviderStep {
+    Wait,
+    NonceCommitment,
+    PublicNonce,
+    PartialSignature,
+    FinalSignature,
+    Aborted,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct CooperativeTranscriptPresence {
+    provider_commitment: bool,
+    requester_commitment: bool,
+    provider_public_nonce: bool,
+    requester_public_nonce: bool,
+    provider_partial_signature: bool,
+    requester_partial_signature: bool,
+    provider_final_signature: bool,
+    provider_aborted: bool,
+    requester_aborted: bool,
+}
+
+fn cooperative_provider_step(presence: CooperativeTranscriptPresence) -> CooperativeProviderStep {
+    if presence.provider_final_signature || presence.provider_aborted {
+        CooperativeProviderStep::Wait
+    } else if presence.requester_aborted {
+        CooperativeProviderStep::Aborted
+    } else if presence.provider_partial_signature {
+        if presence.requester_partial_signature {
+            CooperativeProviderStep::FinalSignature
+        } else {
+            CooperativeProviderStep::Wait
+        }
+    } else if presence.provider_public_nonce {
+        if presence.requester_public_nonce {
+            CooperativeProviderStep::PartialSignature
+        } else {
+            CooperativeProviderStep::Wait
+        }
+    } else if presence.provider_commitment {
+        if presence.requester_commitment {
+            CooperativeProviderStep::PublicNonce
+        } else {
+            CooperativeProviderStep::Wait
+        }
+    } else {
+        CooperativeProviderStep::NonceCommitment
+    }
 }
 
 impl HeldHtlcSummary {
@@ -804,7 +858,6 @@ impl FundedMode {
         }
         let records = session.signed_records();
         let order = exactly_one_kind(records, MKT_ORDER_KIND, "Order")?;
-        let quote = exactly_one_kind(records, MKT_QUOTE_KIND, "Quote")?;
         let requester_contract = exactly_one_kind_by_author(
             records,
             MKT_SWP_SWAP_CONTRACT_KIND,
@@ -852,7 +905,6 @@ impl FundedMode {
         require_contract_effect_binding(contract, "cooperative_sign", leg_id)?;
         require_contract_effect_binding(contract, exit_role, leg_id)?;
         let verifier = contract_entry(contract, "verifier_inputs", leg_id, "Bitcoin verifier")?;
-        let leg = contract_entry(contract, "legs", leg_id, "Bitcoin leg")?;
         let terms = chain_terms(session, swap_type)?;
         let funding_raw = terms
             .committed_funding_transaction
@@ -911,89 +963,30 @@ impl FundedMode {
         let unsigned_bytes = unsigned
             .serialize(false)
             .map_err(|error| format!("cooperative transaction serialization failed: {error}"))?;
-        let confirmation_policy = leg
-            .get("confirmation_policy")
-            .ok_or_else(|| "cooperative Bitcoin leg has no confirmation policy".to_owned())?;
-        let confirmation_policy_sha256 = value_digest(confirmation_policy)?;
         let recovery = verifier
             .get("provider_exit_policy")
             .and_then(Value::as_object)
             .ok_or_else(|| "cooperative verifier has no provider exit policy".to_owned())?;
-        let earliest = required_string(recovery, "earliest_broadcast_height")?;
         let latest = required_string(recovery, "latest_safe_broadcast_height")?;
-        let verifier_digest = value_digest(&Value::Object(verifier.clone()))?;
-        let (taproot_script, taproot_control_block) = if path == "claim" {
-            (
-                required_string(&verifier, "claim_script")?,
-                required_string(&verifier, "taproot_claim_control_block")?,
-            )
-        } else {
-            (
-                required_string(&verifier, "refund_script")?,
-                required_string(&verifier, "taproot_refund_control_block")?,
-            )
-        };
-        let unilateral_effect_id = effect_id(&order.id, exit_role, leg_id)
-            .map_err(|error| format!("cooperative unilateral effect ID failed: {error}"))?;
-        let public_package = json!({
-            "asset_id":leg.get("asset_id").cloned().ok_or_else(|| "cooperative leg has no asset ID".to_owned())?,
-            "contract_sha256":contract_sha256,
-            "effect_id":unilateral_effect_id,
-            "exit":{
-                "destination_script_pubkey":lower_hex(&settlement.destination_script_pubkey),
-                "earliest_broadcast_height":earliest,
-                "fee_policy":{
-                    "bump_mode":required_string(recovery, "bump_mode")?,
-                    "maximum_fee":required_string(recovery, "maximum_fee")?,
-                    "target_blocks":recovery.get("target_blocks").cloned().ok_or_else(|| "cooperative exit policy has no target blocks".to_owned())?,
-                },
-                "input_sequence":settlement.input_sequence,
-                "latest_safe_broadcast_height":latest,
-                "lock_time":settlement.lock_time,
-                "mode":"external_signer",
-                "path":path,
-                "sighash_type":"DEFAULT",
-                "signed_transaction":null,
-                "signer_ref":provider_exit_signer_ref,
-                "transaction_template_sha256":lower_hex(&sha256(&unsigned_bytes)),
-                "transaction_version":settlement.transaction_version,
-            },
-            "funding":{
-                "amount":terms.amount_sat.to_string(),
-                "confirmation_policy_sha256":confirmation_policy_sha256,
-                "output_index":output_index,
-                "script_pubkey":lower_hex(&terms.script_pubkey),
-                "transaction_id":funding_txid,
-                "transaction_template":funding_raw,
-                "transaction_template_sha256":lower_hex(&sha256(&funding_bytes)),
-            },
-            "leg_id":leg_id,
-            "network_id":leg.get("network_id").cloned().ok_or_else(|| "cooperative leg has no network ID".to_owned())?,
-            "order_id":order.id,
-            "participant_role":"provider",
-            "profile":"mkt-swp",
-            "profile_version":1,
-            "schema":"openagents.mkt-swp.exit.v1",
-            "secret_commitments":{
-                "payment_hash":terms.payment_hash,
-                "preimage_recovery_ref":null,
-            },
-            "swap_contract_ids":[requester_contract.id,provider_contract.id],
-            "verification":{
-                "quote_id":quote.id,
-                "swap_tree_sha256":required_string(&verifier, "swap_tree_sha256")?,
-                "taproot_control_block":taproot_control_block,
-                "taproot_script":taproot_script,
-                "taproot_tree":verifier.get("taproot_tree").cloned().ok_or_else(|| "cooperative verifier has no Taproot tree".to_owned())?,
-                "verifier_digest":verifier_digest,
-            },
-        });
-        let package = ExitPackage::parse(public_package)
-            .map_err(|error| format!("provider cooperative exit package is invalid: {error}"))?;
+        let package = build_provider_submarine_claim_exit_package(session.config(), records)
+            .map_err(|error| format!("provider cooperative exit package build failed: {error}"))?;
+        validate_provider_submarine_claim_exit_package(session.config(), records, &package)
+            .map_err(|error| {
+                format!("provider cooperative exit package verification failed: {error}")
+            })?;
+        if package
+            .unsigned_transaction()
+            .map_err(|error| format!("provider cooperative exit transaction failed: {error}"))?
+            != unsigned_bytes
+        {
+            return Err(
+                "provider cooperative exit package differs from the funded settlement template"
+                    .to_owned(),
+            );
+        }
         let package_sha256 = package
             .commitment_sha256()
             .map_err(|error| format!("provider cooperative exit package digest failed: {error}"))?;
-        require_provider_exit_commitment(contract, leg_id, path, &package_sha256)?;
         let participant_keys = cooperative_participant_keys(&verifier)?;
         let public_keys = participant_keys
             .iter()
@@ -1251,25 +1244,67 @@ impl FundedMode {
         let records = session.signed_records();
         let provider = &session.config().provider_pubkey;
         let requester = &session.config().requester_pubkey;
-        if has_cooperative_action(
-            records,
-            provider,
-            ParticipantRole::Provider,
-            CooperativeSigningAction::FinalSignature,
-        )? || has_cooperative_action(
-            records,
-            provider,
-            ParticipantRole::Provider,
-            CooperativeSigningAction::Aborted,
-        )? {
+        let presence = CooperativeTranscriptPresence {
+            provider_commitment: has_cooperative_action(
+                records,
+                provider,
+                ParticipantRole::Provider,
+                CooperativeSigningAction::NonceCommitment,
+            )?,
+            requester_commitment: has_cooperative_action(
+                records,
+                requester,
+                ParticipantRole::Requester,
+                CooperativeSigningAction::NonceCommitment,
+            )?,
+            provider_public_nonce: has_cooperative_action(
+                records,
+                provider,
+                ParticipantRole::Provider,
+                CooperativeSigningAction::PublicNonce,
+            )?,
+            requester_public_nonce: has_cooperative_action(
+                records,
+                requester,
+                ParticipantRole::Requester,
+                CooperativeSigningAction::PublicNonce,
+            )?,
+            provider_partial_signature: has_cooperative_action(
+                records,
+                provider,
+                ParticipantRole::Provider,
+                CooperativeSigningAction::PartialSignature,
+            )?,
+            requester_partial_signature: has_cooperative_action(
+                records,
+                requester,
+                ParticipantRole::Requester,
+                CooperativeSigningAction::PartialSignature,
+            )?,
+            provider_final_signature: has_cooperative_action(
+                records,
+                provider,
+                ParticipantRole::Provider,
+                CooperativeSigningAction::FinalSignature,
+            )?,
+            provider_aborted: has_cooperative_action(
+                records,
+                provider,
+                ParticipantRole::Provider,
+                CooperativeSigningAction::Aborted,
+            )?,
+            requester_aborted: has_cooperative_action(
+                records,
+                requester,
+                ParticipantRole::Requester,
+                CooperativeSigningAction::Aborted,
+            )?,
+        };
+        let step = cooperative_provider_step(presence);
+        if step == CooperativeProviderStep::Wait {
             return Ok(None);
         }
-        if has_cooperative_action(
-            records,
-            requester,
-            ParticipantRole::Requester,
-            CooperativeSigningAction::Aborted,
-        )? {
+        if step == CooperativeProviderStep::Aborted {
             return self
                 .cooperative_actors
                 .get_mut(session_id)
@@ -1284,18 +1319,8 @@ impl FundedMode {
             .cooperative_actors
             .get_mut(session_id)
             .ok_or_else(|| "cooperative actor disappeared during advance".to_owned())?;
-        if has_cooperative_action(
-            records,
-            provider,
-            ParticipantRole::Provider,
-            CooperativeSigningAction::PartialSignature,
-        )? && has_cooperative_action(
-            records,
-            requester,
-            ParticipantRole::Requester,
-            CooperativeSigningAction::PartialSignature,
-        )? {
-            return active
+        match step {
+            CooperativeProviderStep::FinalSignature => active
                 .actor
                 .final_signature_status(
                     session,
@@ -1304,20 +1329,8 @@ impl FundedMode {
                     current_height,
                 )
                 .map(Some)
-                .map_err(|error| format!("could not finalize cooperative signature: {error}"));
-        }
-        if has_cooperative_action(
-            records,
-            provider,
-            ParticipantRole::Provider,
-            CooperativeSigningAction::PublicNonce,
-        )? && has_cooperative_action(
-            records,
-            requester,
-            ParticipantRole::Requester,
-            CooperativeSigningAction::PublicNonce,
-        )? {
-            return active
+                .map_err(|error| format!("could not finalize cooperative signature: {error}")),
+            CooperativeProviderStep::PartialSignature => active
                 .actor
                 .partial_signature_status(
                     session,
@@ -1326,30 +1339,21 @@ impl FundedMode {
                     current_height,
                 )
                 .map(Some)
-                .map_err(|error| format!("could not construct cooperative partial: {error}"));
-        }
-        if has_cooperative_action(
-            records,
-            provider,
-            ParticipantRole::Provider,
-            CooperativeSigningAction::NonceCommitment,
-        )? && has_cooperative_action(
-            records,
-            requester,
-            ParticipantRole::Requester,
-            CooperativeSigningAction::NonceCommitment,
-        )? {
-            return active
+                .map_err(|error| format!("could not construct cooperative partial: {error}")),
+            CooperativeProviderStep::PublicNonce => active
                 .actor
                 .public_nonce_status(session, created_at, current_height)
                 .map(Some)
-                .map_err(|error| format!("could not reveal cooperative nonce: {error}"));
+                .map_err(|error| format!("could not reveal cooperative nonce: {error}")),
+            CooperativeProviderStep::NonceCommitment => active
+                .actor
+                .nonce_commitment_status(session, created_at)
+                .map(Some)
+                .map_err(|error| format!("could not commit cooperative nonce: {error}")),
+            CooperativeProviderStep::Wait | CooperativeProviderStep::Aborted => {
+                Err("cooperative phase changed during action selection".to_owned())
+            }
         }
-        active
-            .actor
-            .nonce_commitment_status(session, created_at)
-            .map(Some)
-            .map_err(|error| format!("could not commit cooperative nonce: {error}"))
     }
 
     fn observe_cooperative_record(
@@ -4501,33 +4505,6 @@ fn require_contract_effect_binding(
     }
 }
 
-fn require_provider_exit_commitment(
-    contract: &Map<String, Value>,
-    leg_id: &str,
-    path: &str,
-    package_sha256: &str,
-) -> Result<(), String> {
-    if contract
-        .get("exit_package_commitments")
-        .and_then(Value::as_array)
-        .is_some_and(|commitments| {
-            commitments.iter().any(|commitment| {
-                commitment.get("participant_role").and_then(Value::as_str) == Some("provider")
-                    && commitment.get("leg_id").and_then(Value::as_str) == Some(leg_id)
-                    && commitment.get("path").and_then(Value::as_str) == Some(path)
-                    && commitment.get("package_mode").and_then(Value::as_str)
-                        == Some("external_signer")
-                    && commitment.get("package_sha256").and_then(Value::as_str)
-                        == Some(package_sha256)
-            })
-        })
-    {
-        Ok(())
-    } else {
-        Err("cooperative provider exit package is not committed by the contract".to_owned())
-    }
-}
-
 fn cooperative_participant_keys(verifier: &Map<String, Value>) -> Result<[[u8; 33]; 2], String> {
     let declared = verifier
         .get("cooperative_pubkeys")
@@ -5454,9 +5431,10 @@ mod tests {
     use crate::funding::SignedFundingTransaction;
 
     use super::{
-        ChainTerms, HoldStateDecision, ReverseInvoiceCancellationAction, base_state,
-        bind_reverse_funding_profile, bitcoin_spend_reference, canonical_json,
-        chain_observation_from_response, decode_hex, execute_before_exclusive_deadline,
+        ChainTerms, CooperativeProviderStep, CooperativeTranscriptPresence, HoldStateDecision,
+        ReverseInvoiceCancellationAction, base_state, bind_reverse_funding_profile,
+        bitcoin_spend_reference, canonical_json, chain_observation_from_response,
+        cooperative_provider_step, decode_hex, execute_before_exclusive_deadline,
         extract_hold_invoice, finalized_from_signed_message, funded_cancel_pre_effect,
         hold_state_decision, latest_status_state, lower_hex, require_chain_finality,
         required_chain_confirmations, reverse_invoice_cancellation_action, reverse_spend_decision,
@@ -5563,6 +5541,48 @@ mod tests {
             transaction.serialize(false).expect("stripped transaction"),
             unsigned_bytes
         );
+    }
+
+    #[test]
+    fn cooperative_runtime_fixture_emits_each_provider_phase_once() {
+        let fixture: Value = serde_json::from_slice(COOPERATIVE_RUNTIME_FIXTURE)
+            .expect("cooperative runtime fixture");
+        let cases = fixture["phase_table"]
+            .as_array()
+            .expect("cooperative phase table");
+        for case in cases {
+            let contains = |participant: &str, action: &str| {
+                case[participant]
+                    .as_array()
+                    .is_some_and(|actions| actions.iter().any(|value| value == action))
+            };
+            let presence = CooperativeTranscriptPresence {
+                provider_commitment: contains("provider", "nonce_commitment"),
+                requester_commitment: contains("requester", "nonce_commitment"),
+                provider_public_nonce: contains("provider", "public_nonce"),
+                requester_public_nonce: contains("requester", "public_nonce"),
+                provider_partial_signature: contains("provider", "partial_signature"),
+                requester_partial_signature: contains("requester", "partial_signature"),
+                provider_final_signature: contains("provider", "final_signature"),
+                provider_aborted: contains("provider", "aborted"),
+                requester_aborted: contains("requester", "aborted"),
+            };
+            let expected = match case["next"].as_str().expect("next phase") {
+                "wait" => CooperativeProviderStep::Wait,
+                "nonce_commitment" => CooperativeProviderStep::NonceCommitment,
+                "public_nonce" => CooperativeProviderStep::PublicNonce,
+                "partial_signature" => CooperativeProviderStep::PartialSignature,
+                "final_signature" => CooperativeProviderStep::FinalSignature,
+                "aborted" => CooperativeProviderStep::Aborted,
+                value => panic!("unsupported fixture phase {value}"),
+            };
+            assert_eq!(
+                cooperative_provider_step(presence),
+                expected,
+                "{}",
+                case["name"].as_str().expect("case name")
+            );
+        }
     }
 
     #[test]

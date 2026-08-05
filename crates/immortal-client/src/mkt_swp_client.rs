@@ -2371,6 +2371,7 @@ pub mod provider_support {
                 | ("requester_lock_verified", "requester_claim_pending")
                 | ("requester_lock_verified", "cooperative_signing_pending")
                 | ("cooperative_signing_pending", "requester_claim_pending")
+                | ("requester_funding_broadcast", "cooperative_signing_pending")
                 | ("funding_final", "provider_refund_prepared")
                 | ("provider_refund_prepared", "provider_refund_pending")
                 | ("provider_refund_pending", "provider_refunded")
@@ -2880,6 +2881,21 @@ pub mod provider_support {
             package,
             Some(ParticipantRole::Provider),
         )
+    }
+
+    pub fn build_provider_submarine_claim_exit_package(
+        config: &SwapClientConfig,
+        records: &[Event],
+    ) -> Result<ExitPackage, SwapClientError> {
+        super::build_provider_submarine_claim_exit_package(config, records)
+    }
+
+    pub fn validate_provider_submarine_claim_exit_package(
+        config: &SwapClientConfig,
+        records: &[Event],
+        package: &ExitPackage,
+    ) -> Result<(), SwapClientError> {
+        super::validate_provider_submarine_claim_exit_package(config, records, package)
     }
 }
 
@@ -10919,6 +10935,294 @@ fn validate_lightning_readiness(
     Ok(())
 }
 
+fn build_provider_submarine_claim_exit_package(
+    config: &SwapClientConfig,
+    records: &[Event],
+) -> Result<ExitPackage, SwapClientError> {
+    config.validate()?;
+    let bound = BoundSession::from_records(config, records)?;
+    bound.verify_contract_terms()?;
+    bound.verify_requester_topology()?;
+    build_provider_submarine_claim_exit_package_for_bound(&bound)
+}
+
+fn build_provider_submarine_claim_exit_package_for_bound(
+    bound: &BoundSession<'_>,
+) -> Result<ExitPackage, SwapClientError> {
+    if bound.swap_type != SwapType::Submarine {
+        return Err(SwapClientError::new(
+            "swp_exit_package_mismatch",
+            "provider cooperative claim package requires a submarine swap",
+        ));
+    }
+    let contract = object(&bound.contract, "Swap Contract")?;
+    if contract.get("musig2_execution").and_then(Value::as_bool) != Some(true) {
+        return Err(SwapClientError::new(
+            "swp_exit_package_mismatch",
+            "provider cooperative claim package requires cooperative execution",
+        ));
+    }
+    let leg_id = "source";
+    let effect_bindings = contract
+        .get("effect_bindings")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_exit_package_mismatch",
+                "Swap Contract has no cooperative effect bindings",
+            )
+        })?;
+    for role in ["cooperative_sign", "chain_claim"] {
+        if !effect_bindings.iter().any(|binding| {
+            binding.get("role").and_then(Value::as_str) == Some(role)
+                && binding.get("leg_id").and_then(Value::as_str) == Some(leg_id)
+        }) {
+            return Err(SwapClientError::new(
+                "swp_exit_package_mismatch",
+                format!("provider cooperative claim package has no {role} effect binding"),
+            ));
+        }
+    }
+    let verifier = verifier_for_leg(contract, leg_id)?;
+    let leg = contract
+        .get("legs")
+        .and_then(Value::as_array)
+        .and_then(|legs| {
+            legs.iter()
+                .find(|leg| leg.get("leg_id").and_then(Value::as_str) == Some(leg_id))
+        })
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_exit_package_mismatch",
+                "provider cooperative claim package has no source leg",
+            )
+        })?;
+    let funding_transaction = require_string(
+        verifier,
+        "funding_transaction",
+        None,
+        "swp_exit_package_mismatch",
+    )?;
+    let funding_bytes = decode_hex(funding_transaction, "provider claim funding transaction")?;
+    if verifier
+        .get("funding_transaction_sha256")
+        .and_then(Value::as_str)
+        != Some(lower_hex(&sha256(&funding_bytes)).as_str())
+    {
+        return Err(SwapClientError::new(
+            "swp_exit_package_mismatch",
+            "provider claim funding transaction differs from its contract digest",
+        ));
+    }
+    let funding = Transaction::parse(&funding_bytes).map_err(|error| {
+        SwapClientError::new(
+            "swp_exit_package_unusable",
+            format!("provider claim funding transaction is invalid: {error}"),
+        )
+    })?;
+    let output_index = required_u32(verifier, "output_index")?;
+    let output = funding
+        .outputs
+        .get(usize::try_from(output_index).map_err(|_| {
+            SwapClientError::new(
+                "swp_exit_package_mismatch",
+                "provider claim funding output index exceeds platform bounds",
+            )
+        })?)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_exit_package_mismatch",
+                "provider claim funding output does not exist",
+            )
+        })?;
+    let amount = canonical_amount(require_string(
+        verifier,
+        "amount",
+        None,
+        "swp_exit_package_mismatch",
+    )?)?;
+    let funding_script = decode_hex(
+        require_string(verifier, "script_pubkey", None, "swp_exit_package_mismatch")?,
+        "provider claim funding scriptPubKey",
+    )?;
+    if output.value_sat != amount || output.script_pubkey != funding_script {
+        return Err(SwapClientError::new(
+            "swp_exit_package_mismatch",
+            "provider claim funding output differs from the accepted contract",
+        ));
+    }
+    let policy = object(
+        verifier.get("provider_exit_policy").unwrap_or(&Value::Null),
+        "provider cooperative exit policy",
+    )?;
+    let maximum_fee = canonical_amount(require_string(
+        policy,
+        "maximum_fee",
+        None,
+        "swp_exit_package_mismatch",
+    )?)?;
+    let destination_value = amount
+        .checked_sub(maximum_fee)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_exit_package_unusable",
+                "provider claim fee consumes the funding amount",
+            )
+        })?;
+    let destination_script = decode_hex(
+        require_string(
+            verifier,
+            "provider_exit_destination_script_pubkey",
+            None,
+            "swp_exit_package_mismatch",
+        )?,
+        "provider claim destination scriptPubKey",
+    )?;
+    let funding_txid = lower_hex(&funding.txid().map_err(|error| {
+        SwapClientError::new(
+            "swp_exit_package_unusable",
+            format!("provider claim funding txid failed: {error}"),
+        )
+    })?);
+    let mut previous_txid = decode_hex_32(&funding_txid, "provider claim funding txid")?;
+    previous_txid.reverse();
+    let unsigned = Transaction::new(
+        2,
+        vec![crate::mkt_swp_verify::TransactionInput {
+            previous_txid,
+            previous_output: output_index,
+            script_sig: Vec::new(),
+            sequence: 0xffff_fffe,
+            witness: Vec::new(),
+        }],
+        vec![TransactionOutput {
+            value_sat: destination_value,
+            script_pubkey: destination_script.clone(),
+        }],
+        0,
+    );
+    let unsigned_bytes = unsigned.serialize(false).map_err(|error| {
+        SwapClientError::new(
+            "swp_exit_package_unusable",
+            format!("provider claim transaction serialization failed: {error}"),
+        )
+    })?;
+    let confirmation_policy = leg.get("confirmation_policy").ok_or_else(|| {
+        SwapClientError::new(
+            "swp_exit_package_mismatch",
+            "provider claim source leg has no confirmation policy",
+        )
+    })?;
+    let confirmation_policy_sha256 = lower_hex(&sha256(&canonical_json(confirmation_policy)?));
+    let verifier_digest = lower_hex(&sha256(&canonical_json(&Value::Object(verifier.clone()))?));
+    let signer_ref = require_string(
+        verifier,
+        "provider_exit_signer_ref",
+        None,
+        "swp_exit_package_mismatch",
+    )?;
+    if signer_ref != "immortal-provider:source:claim" {
+        return Err(SwapClientError::new(
+            "swp_exit_package_mismatch",
+            "provider claim signer reference differs from the supported executable path",
+        ));
+    }
+    let effect_id = effect_id(&bound.order.id, "chain_claim", leg_id)?;
+    let package = ExitPackage::parse(json!({
+        "asset_id":leg.get("asset_id").cloned().ok_or_else(|| SwapClientError::new("swp_exit_package_mismatch", "provider claim source leg has no asset ID"))?,
+        "contract_sha256":bound.contract_sha256,
+        "effect_id":effect_id,
+        "exit":{
+            "destination_script_pubkey":lower_hex(&destination_script),
+            "earliest_broadcast_height":require_string(policy, "earliest_broadcast_height", None, "swp_exit_package_mismatch")?,
+            "fee_policy":{
+                "bump_mode":require_string(policy, "bump_mode", None, "swp_exit_package_mismatch")?,
+                "maximum_fee":maximum_fee.to_string(),
+                "target_blocks":policy.get("target_blocks").cloned().ok_or_else(|| SwapClientError::new("swp_exit_package_mismatch", "provider claim exit policy has no target block count"))?,
+            },
+            "input_sequence":0xffff_fffe_u32,
+            "latest_safe_broadcast_height":require_string(policy, "latest_safe_broadcast_height", None, "swp_exit_package_mismatch")?,
+            "lock_time":0,
+            "mode":"external_signer",
+            "path":"claim",
+            "sighash_type":"DEFAULT",
+            "signed_transaction":null,
+            "signer_ref":signer_ref,
+            "transaction_template_sha256":lower_hex(&sha256(&unsigned_bytes)),
+            "transaction_version":2,
+        },
+        "funding":{
+            "amount":amount.to_string(),
+            "confirmation_policy_sha256":confirmation_policy_sha256,
+            "output_index":output_index,
+            "script_pubkey":lower_hex(&funding_script),
+            "transaction_id":funding_txid,
+            "transaction_template":funding_transaction,
+            "transaction_template_sha256":lower_hex(&sha256(&funding_bytes)),
+        },
+        "leg_id":leg_id,
+        "network_id":leg.get("network_id").cloned().ok_or_else(|| SwapClientError::new("swp_exit_package_mismatch", "provider claim source leg has no network ID"))?,
+        "order_id":bound.order.id,
+        "participant_role":"provider",
+        "profile":MKT_SWP_PROFILE_ID,
+        "profile_version":MKT_SWP_PROFILE_VERSION,
+        "schema":EXIT_SCHEMA,
+        "secret_commitments":{
+            "payment_hash":bound.payment_hash,
+            "preimage_recovery_ref":null,
+        },
+        "swap_contract_ids":bound.contract_ids(),
+        "verification":{
+            "quote_id":bound.quote.id,
+            "swap_tree_sha256":require_string(verifier, "swap_tree_sha256", None, "swp_exit_package_mismatch")?,
+            "taproot_control_block":require_string(verifier, "taproot_claim_control_block", None, "swp_exit_package_mismatch")?,
+            "taproot_script":require_string(verifier, "claim_script", None, "swp_exit_package_mismatch")?,
+            "taproot_tree":verifier.get("taproot_tree").cloned().ok_or_else(|| SwapClientError::new("swp_exit_package_mismatch", "provider claim verifier has no Taproot tree"))?,
+            "verifier_digest":verifier_digest,
+        },
+    }))?;
+    Ok(package)
+}
+
+fn validate_provider_submarine_claim_exit_package(
+    config: &SwapClientConfig,
+    records: &[Event],
+    package: &ExitPackage,
+) -> Result<(), SwapClientError> {
+    let expected = build_provider_submarine_claim_exit_package(config, records)?;
+    if &expected != package {
+        return Err(SwapClientError::new(
+            "swp_exit_package_mismatch",
+            "provider claim package differs from the deterministic accepted-session package",
+        ));
+    }
+    let bound = BoundSession::from_records(config, records)?;
+    let contract = object(&bound.contract, "Swap Contract")?;
+    let digest = package.commitment_sha256()?;
+    let matching = contract
+        .get("exit_package_commitments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|commitment| {
+            commitment.get("participant_role").and_then(Value::as_str) == Some("provider")
+                && commitment.get("leg_id").and_then(Value::as_str) == Some("source")
+                && commitment.get("path").and_then(Value::as_str) == Some("claim")
+                && commitment.get("package_mode").and_then(Value::as_str) == Some("external_signer")
+                && commitment.get("package_sha256").and_then(Value::as_str) == Some(digest.as_str())
+        })
+        .count();
+    if matching != 1 {
+        return Err(SwapClientError::new(
+            "swp_exit_package_mismatch",
+            "provider claim package has no unique exact Swap Contract commitment",
+        ));
+    }
+    Ok(())
+}
+
 fn verify_exit_packages(
     packages: &[ExitPackage],
     bound: &BoundSession<'_>,
@@ -10989,6 +11293,40 @@ fn verify_exit_packages(
         let leg = require_string(document, "leg_id", None, "swp_exit_package_mismatch")?;
         let path = package.path()?;
         let mode = package.mode()?;
+        if role == "provider" {
+            let expected = build_provider_submarine_claim_exit_package_for_bound(bound)?;
+            if &expected != package {
+                return Err(SwapClientError::new(
+                    "swp_exit_package_mismatch",
+                    "provider claim package differs from the deterministic accepted-session package",
+                ));
+            }
+            let admitted = commitments
+                .iter()
+                .enumerate()
+                .find_map(|(index, commitment)| {
+                    (commitment.get("participant_role").and_then(Value::as_str) == Some("provider")
+                        && commitment.get("leg_id").and_then(Value::as_str) == Some(leg)
+                        && commitment.get("path").and_then(Value::as_str) == Some(path)
+                        && commitment.get("package_mode").and_then(Value::as_str) == Some(mode)
+                        && commitment.get("package_sha256").and_then(Value::as_str)
+                            == Some(digest.as_str()))
+                    .then_some(index)
+                })
+                .ok_or_else(|| {
+                    SwapClientError::new(
+                        "swp_exit_package_mismatch",
+                        "provider exit package has no exact Swap Contract commitment",
+                    )
+                })?;
+            if !matched_commitments.insert(admitted) {
+                return Err(SwapClientError::new(
+                    "swp_exit_package_mismatch",
+                    "multiple exit packages satisfy one Swap Contract commitment",
+                ));
+            }
+            continue;
+        }
         let expected_exit = requester_topology(bound.swap_type)
             .exits
             .iter()
@@ -11249,7 +11587,11 @@ fn verify_exit_packages(
         })
         .map(|(index, _)| index)
         .collect::<BTreeSet<_>>();
-    if matched_commitments != required_requester_commitments {
+    let matched_requester_commitments = matched_commitments
+        .intersection(&required_requester_commitments)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if matched_requester_commitments != required_requester_commitments {
         return Err(SwapClientError::new(
             "swp_exit_package_missing",
             "not every requester exit commitment has a persisted package",
@@ -12844,6 +13186,7 @@ fn cooperative_status_transition(
                     | "source_funding_final"
                     | "destination_funding_final"
                     | "lightning_paid"
+                    | "requester_funding_broadcast"
             )
             && matches!(
                 current.action,
@@ -12889,12 +13232,19 @@ pub fn validate_cooperative_signing_exchange(
         let mut public_nonces: [Option<[u8; 66]>; 2] = [None, None];
         let mut partial_signatures: [Option<[u8; 32]>; 2] = [None, None];
         let mut final_signature = false;
-        let mut aborted = false;
+        let mut aborted = [false; 2];
         for index in indexes {
             let (role, message) = messages
                 .get(*index)
                 .ok_or_else(|| musig_error("cooperative signing index is invalid"))?;
-            if aborted {
+            if final_signature {
+                return Err(musig_error(
+                    "cooperative transcript continues after a final signature",
+                ));
+            }
+            if aborted.iter().any(|aborted| *aborted)
+                && message.action != CooperativeSigningAction::Aborted
+            {
                 return Err(musig_error(
                     "cooperative transcript continues after an abort",
                 ));
@@ -12992,10 +13342,10 @@ pub fn validate_cooperative_signing_exchange(
                     }
                     final_signature = true;
                 }
-                CooperativeSigningAction::Aborted => aborted = true,
+                CooperativeSigningAction::Aborted => aborted[participant] = true,
             }
         }
-        if aborted && final_signature {
+        if aborted.iter().any(|aborted| *aborted) && final_signature {
             return Err(musig_error(
                 "cooperative transcript cannot be both finalized and aborted",
             ));

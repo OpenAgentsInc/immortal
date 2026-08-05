@@ -409,8 +409,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json",
-      "sha256": "08a500d8eda33b96cb88260c79909c633d25d83a0ef0ef08a5d830505183c778",
-      "bytes": 1367,
+      "sha256": "59bd0a50003b259fa1057ab23e9adfce464c0551da2d65bbb1fca27707871660",
+      "bytes": 3184,
       "scope": "provider"
     },
     {

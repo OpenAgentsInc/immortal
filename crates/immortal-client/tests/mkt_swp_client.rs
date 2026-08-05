@@ -1253,12 +1253,38 @@ fn cooperative_signing_exchange_verifies_and_aborts_to_script_path() {
         (ParticipantRole::Provider, abort.clone()),
     ])
     .unwrap();
+    let requester_abort = CooperativeSigningMessage::aborted(
+        context.clone(),
+        ParticipantRole::Requester,
+        "counterparty_unavailable",
+    )
+    .unwrap();
+    validate_cooperative_signing_exchange(&[
+        (ParticipantRole::Requester, commitments[0].clone()),
+        (ParticipantRole::Provider, commitments[1].clone()),
+        (ParticipantRole::Provider, abort.clone()),
+        (ParticipantRole::Requester, requester_abort.clone()),
+    ])
+    .unwrap();
     assert!(
         validate_cooperative_signing_exchange(&[
             (ParticipantRole::Requester, commitments[0].clone()),
             (ParticipantRole::Provider, commitments[1].clone()),
             (ParticipantRole::Provider, abort),
             (ParticipantRole::Requester, reveals[0].clone()),
+        ])
+        .is_err()
+    );
+    assert!(
+        validate_cooperative_signing_exchange(&[
+            (ParticipantRole::Requester, commitments[0].clone()),
+            (ParticipantRole::Provider, commitments[1].clone()),
+            (ParticipantRole::Requester, reveals[0].clone()),
+            (ParticipantRole::Provider, reveals[1].clone()),
+            (ParticipantRole::Requester, partial_messages[0].clone()),
+            (ParticipantRole::Provider, partial_messages[1].clone()),
+            (ParticipantRole::Provider, final_message.clone()),
+            (ParticipantRole::Requester, requester_abort),
         ])
         .is_err()
     );

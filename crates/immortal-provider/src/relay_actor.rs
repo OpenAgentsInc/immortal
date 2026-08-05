@@ -415,12 +415,8 @@ impl<M: ProviderMode> RelayActor<M> {
         }
 
         self.sessions.clear();
-        for (session_id, mut records) in sessions {
-            records.sort_by(|left, right| {
-                recovery_rank(left, self.signer.pubkey())
-                    .cmp(&recovery_rank(right, self.signer.pubkey()))
-                    .then_with(|| left.id.cmp(&right.id))
-            });
+        for (session_id, records) in sessions {
+            let records = order_recovery_records(records, self.signer.pubkey());
             let Some(actor) = self.recover_session_group(&session_id, records)? else {
                 continue;
             };
@@ -1438,12 +1434,7 @@ fn recovery_rank(event: &Event, provider_pubkey: &str) -> (u8, u64) {
         MKT_ORDER_KIND => (2, 0),
         MKT_SWP_SWAP_CONTRACT_KIND if event.pubkey != provider_pubkey => (3, 0),
         MKT_SWP_SWAP_CONTRACT_KIND => (4, 0),
-        MKT_STATUS_KIND => (
-            5,
-            tag_value(event, "seq")
-                .and_then(|sequence| sequence.parse::<u64>().ok())
-                .unwrap_or(u64::MAX),
-        ),
+        MKT_STATUS_KIND => (5, 0),
         MKT_CANCEL_KIND => match tag_value(event, "action") {
             Some("request") => (6, 0),
             Some("accepted" | "rejected") => (7, 0),
@@ -1453,6 +1444,75 @@ fn recovery_rank(event: &Event, provider_pubkey: &str) -> (u8, u64) {
         MKT_CLOSE_KIND => (10, 0),
         _ => (u8::MAX, 0),
     }
+}
+
+fn order_recovery_records(records: Vec<Event>, provider_pubkey: &str) -> Vec<Event> {
+    let mut before_status = Vec::new();
+    let mut status_streams = BTreeMap::<String, Vec<Event>>::new();
+    let mut after_status = Vec::new();
+    for record in records {
+        let rank = recovery_rank(&record, provider_pubkey).0;
+        if record.kind == MKT_STATUS_KIND {
+            status_streams
+                .entry(record.pubkey.clone())
+                .or_default()
+                .push(record);
+        } else if rank < 5 {
+            before_status.push(record);
+        } else {
+            after_status.push(record);
+        }
+    }
+    let sort_non_status = |records: &mut Vec<Event>| {
+        records.sort_by(|left, right| {
+            recovery_rank(left, provider_pubkey)
+                .cmp(&recovery_rank(right, provider_pubkey))
+                .then_with(|| left.created_at.cmp(&right.created_at))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+    };
+    sort_non_status(&mut before_status);
+    sort_non_status(&mut after_status);
+    for stream in status_streams.values_mut() {
+        stream.sort_by(|left, right| {
+            status_sequence(right)
+                .cmp(&status_sequence(left))
+                .then_with(|| right.created_at.cmp(&left.created_at))
+                .then_with(|| right.id.cmp(&left.id))
+        });
+    }
+    let mut statuses = Vec::new();
+    loop {
+        let next_author = status_streams
+            .iter()
+            .filter_map(|(author, stream)| {
+                stream.last().map(|event| {
+                    (
+                        event.created_at,
+                        author.as_str(),
+                        event.id.as_str(),
+                        author.clone(),
+                    )
+                })
+            })
+            .min()
+            .map(|(_, _, _, author)| author);
+        let Some(author) = next_author else {
+            break;
+        };
+        if let Some(record) = status_streams.get_mut(&author).and_then(Vec::pop) {
+            statuses.push(record);
+        }
+    }
+    before_status.extend(statuses);
+    before_status.extend(after_status);
+    before_status
+}
+
+fn status_sequence(event: &Event) -> u64 {
+    tag_value(event, "seq")
+        .and_then(|sequence| sequence.parse::<u64>().ok())
+        .unwrap_or(u64::MAX)
 }
 
 fn random_wrap_material() -> Result<WrapMaterial, String> {
@@ -1978,40 +2038,46 @@ mod tests {
     }
 
     #[test]
-    fn recovery_order_is_causal_when_event_timestamps_are_reversed() {
+    fn recovery_order_keeps_lifecycle_phases_and_causally_merges_status_streams() {
         let provider_pubkey = "11".repeat(32);
-        let event = |kind, created_at, tags| Event {
-            id: format!("{:02x}", kind % 256).repeat(32),
-            pubkey: provider_pubkey.clone(),
+        let requester_pubkey = "33".repeat(32);
+        let event = |id: u8, pubkey: &str, kind, created_at, sequence: Option<u64>| Event {
+            id: format!("{id:02x}").repeat(32),
+            pubkey: pubkey.to_owned(),
             created_at,
             kind,
-            tags,
+            tags: sequence
+                .map(|sequence| {
+                    vec![immortal_core::domain::Tag::new(vec![
+                        "seq".to_owned(),
+                        sequence.to_string(),
+                    ])]
+                })
+                .unwrap_or_default(),
             content: "{}".to_owned(),
             sig: "22".repeat(64),
         };
-        let rfq = event(MKT_RFQ_KIND, 1_000, Vec::new());
-        let quote = event(MKT_QUOTE_KIND, 1, Vec::new());
-        assert!(recovery_rank(&rfq, &provider_pubkey) < recovery_rank(&quote, &provider_pubkey));
-
-        let status_zero = event(
-            MKT_STATUS_KIND,
-            1_000,
-            vec![immortal_core::domain::Tag::new(vec![
-                "seq".to_owned(),
-                "0".to_owned(),
-            ])],
+        let ordered = order_recovery_records(
+            vec![
+                event(6, &provider_pubkey, MKT_STATUS_KIND, 100, Some(1)),
+                event(2, &provider_pubkey, MKT_QUOTE_KIND, 1, None),
+                event(5, &requester_pubkey, MKT_STATUS_KIND, 60, Some(1)),
+                event(4, &requester_pubkey, MKT_STATUS_KIND, 50, Some(0)),
+                event(3, &provider_pubkey, MKT_STATUS_KIND, 40, Some(0)),
+                event(1, &requester_pubkey, MKT_RFQ_KIND, 1_000, None),
+            ],
+            &provider_pubkey,
         );
-        let status_one = event(
-            MKT_STATUS_KIND,
-            1,
-            vec![immortal_core::domain::Tag::new(vec![
-                "seq".to_owned(),
-                "1".to_owned(),
-            ])],
-        );
-        assert!(
-            recovery_rank(&status_zero, &provider_pubkey)
-                < recovery_rank(&status_one, &provider_pubkey)
+        let expected = [1_u8, 2, 3, 4, 5, 6]
+            .iter()
+            .map(|id| format!("{id:02x}").repeat(32))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|record| record.id.clone())
+                .collect::<Vec<_>>(),
+            expected
         );
     }
 

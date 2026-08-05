@@ -31,6 +31,31 @@
     "secret_nonce_recreated": false,
     "final_signature_recovery": "reconstruct_witness_from_signed_status_then_replay_watch"
   },
+  "phase_table": [
+    {"name":"start","provider":[],"requester":[],"next":"nonce_commitment"},
+    {"name":"wait-requester-commitment","provider":["nonce_commitment"],"requester":[],"next":"wait"},
+    {"name":"reveal-on-both-commitments","provider":["nonce_commitment"],"requester":["nonce_commitment"],"next":"public_nonce"},
+    {"name":"wait-requester-public-nonce","provider":["nonce_commitment","public_nonce"],"requester":["nonce_commitment"],"next":"wait"},
+    {"name":"partial-on-both-public-nonces","provider":["nonce_commitment","public_nonce"],"requester":["nonce_commitment","public_nonce"],"next":"partial_signature"},
+    {"name":"wait-requester-partial","provider":["nonce_commitment","public_nonce","partial_signature"],"requester":["nonce_commitment","public_nonce"],"next":"wait"},
+    {"name":"final-on-both-partials","provider":["nonce_commitment","public_nonce","partial_signature"],"requester":["nonce_commitment","public_nonce","partial_signature"],"next":"final_signature"},
+    {"name":"terminal-final","provider":["nonce_commitment","public_nonce","partial_signature","final_signature"],"requester":["nonce_commitment","public_nonce","partial_signature"],"next":"wait"},
+    {"name":"counterparty-abort","provider":["nonce_commitment"],"requester":["aborted"],"next":"aborted"},
+    {"name":"terminal-abort","provider":["nonce_commitment","aborted"],"requester":["aborted"],"next":"wait"}
+  ],
+  "provider_exit_package": {
+    "swap_type": "submarine",
+    "participant_role": "provider",
+    "leg_id": "source",
+    "path": "claim",
+    "mode": "external_signer",
+    "deterministic_from_accepted_contract": true,
+    "exact_commitment_required": true
+  },
+  "recovery_status_merge": {
+    "per_author_order": "seq",
+    "cross_author_order": "created_at_then_pubkey_then_event_id"
+  },
   "custody": {
     "database_secret_nonce": false,
     "database_spend_key": false,
