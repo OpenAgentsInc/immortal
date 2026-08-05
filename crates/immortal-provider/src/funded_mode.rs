@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     env,
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -28,9 +29,10 @@ use crate::{
     ProviderEffectReceipt, ProviderEffectRequest, ProviderSession, ReservationConfirmation,
     ReservationRequest,
     bitcoind::{BitcoindClient, BitcoindError, ChainTip, RpcRequestId},
-    cln::{ClnClient, ClnError, ClnRequestId, Millisatoshi},
+    cln::Millisatoshi,
     cooperative::ProviderCooperativeActor,
     funding::{FundingInput, FundingRequest, SignedFundingTransaction, build_funding_transaction},
+    lightning::{LightningPreimage, LightningRail},
     liquidity::{WalletScanPolicy, discover_wallet_utxos},
     pricing::{
         CapacityBounds, DerivedQuote, PricingConfig, QuoteRequest, QuoteSide,
@@ -60,6 +62,8 @@ const PROVIDER_ID: &str = "immortal-funded";
 const OFFERING_ID: &str = "immortal-funded-btc-lightning";
 const SETTLEMENT_MAXIMUM_WEIGHT: u64 = 1_600;
 const DUST_RELAY_FEE_SAT_PER_KILOBYTE: u64 = 3_000;
+const HOLD_INVOICE_EXPIRY_SECONDS: u32 = 604_800;
+const HOLD_INVOICE_CLTV_EXPIRY: u32 = 80;
 pub(crate) const MAXIMUM_WATCH_ATTEMPTS: u16 = 32;
 pub(crate) const QUOTE_RAIL_SYNC_ATTEMPTS: usize = 40;
 pub(crate) const QUOTE_RAIL_SYNC_DELAY: Duration = Duration::from_millis(250);
@@ -69,7 +73,7 @@ pub(crate) struct FundedMode {
     store: ProviderStore,
     wallet: ProviderWallet,
     bitcoind: BitcoindClient,
-    cln: ClnClient,
+    lightning: Arc<dyn LightningRail>,
     network: BitcoinNetwork,
     network_id: String,
     minimum_confirmations: u32,
@@ -146,6 +150,12 @@ enum HoldStateDecision {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReverseInvoiceCancellationAction {
+    CancelRemotely,
+    CompleteLocally,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReverseSpendDecision {
     Wait,
     ProviderRefund,
@@ -209,7 +219,7 @@ impl FundedMode {
         store: ProviderStore,
         wallet: ProviderWallet,
         bitcoind: BitcoindClient,
-        cln: ClnClient,
+        lightning: Arc<dyn LightningRail>,
         policy: FundedModePolicy,
     ) -> Self {
         Self {
@@ -217,7 +227,7 @@ impl FundedMode {
             store,
             wallet,
             bitcoind,
-            cln,
+            lightning,
             network: policy.network,
             network_id: network_id(policy.network).to_owned(),
             minimum_confirmations: policy.minimum_confirmations,
@@ -397,7 +407,7 @@ impl FundedMode {
         session_id: &str,
     ) -> Result<Option<(ChainTip, u32)>, String> {
         let tip_request_id = rpc_id("quote-tip", session_id)?;
-        let cln_request_id = cln_id("quote-height", session_id)?;
+        let lightning_request_id = lightning_id("quote-height", session_id)?;
         for attempt in 0..QUOTE_RAIL_SYNC_ATTEMPTS {
             let chain_tip = match self
                 .handle
@@ -412,18 +422,21 @@ impl FundedMode {
                     return Err(format!("could not read chain tip for Quote: {error}"));
                 }
             };
-            let lightning_info = match self.handle.block_on(self.cln.node_info(&cln_request_id)) {
+            let lightning_info = match self
+                .handle
+                .block_on(self.lightning.node_info(&lightning_request_id))
+            {
                 Ok(info) => info,
-                Err(error) if transient_cln_error(&error) => {
+                Err(error) if error.is_transient() => {
                     self.wait_for_quote_rail_retry(attempt);
                     continue;
                 }
                 Err(error) => {
-                    return Err(format!("could not read CLN state for Quote: {error}"));
+                    return Err(format!("could not read Lightning state for Quote: {error}"));
                 }
             };
-            if lightning_info.network != cln_network_name(self.network) {
-                return Err("CLN network differs from provider configuration".to_owned());
+            if lightning_info.network != network_name(self.network) {
+                return Err("Lightning network differs from provider configuration".to_owned());
             }
             let chain_height = u32::try_from(chain_tip.height)
                 .map_err(|_| "bitcoind height exceeds the funded-v1 range".to_owned())?;
@@ -435,7 +448,9 @@ impl FundedMode {
             }
             self.wait_for_quote_rail_retry(attempt);
         }
-        eprintln!("immortal-provider: deferring Quote until bitcoind and CLN heights synchronize");
+        eprintln!(
+            "immortal-provider: deferring Quote until bitcoind and Lightning heights synchronize"
+        );
         Ok(None)
     }
 
@@ -467,13 +482,15 @@ impl FundedMode {
                 .and_then(Value::as_str)
                 .ok_or_else(|| "reverse RFQ has no input amount".to_owned())?,
         )?;
-        let request_id = cln_id("hold-invoice", session)?;
+        let request_id = lightning_id("hold-invoice", session)?;
         let result = self.handle.block_on(
-            self.cln.hold_invoice(
+            self.lightning.hold_invoice(
                 &request_id,
                 payment_hash,
                 Millisatoshi::from_satoshis(amount_sat)
                     .map_err(|error| format!("reverse amount is invalid: {error}"))?,
+                HOLD_INVOICE_EXPIRY_SECONDS,
+                HOLD_INVOICE_CLTV_EXPIRY,
             ),
         );
         let invoice = match result {
@@ -482,9 +499,9 @@ impl FundedMode {
                 let listed = self
                     .handle
                     .block_on(
-                        self.cln.list_hold_invoices(
-                            &cln_id("hold-recover", session)?,
-                            Some(payment_hash),
+                        self.lightning.hold_invoice_state(
+                            &lightning_id("hold-recover", session)?,
+                            payment_hash,
                         ),
                     )
                     .map_err(|error| format!("could not recover reverse hold invoice: {error}"))?;
@@ -697,31 +714,12 @@ impl FundedMode {
     }
 
     fn lightning_capacity_for_session(&self, session_id: &str) -> Result<u64, String> {
-        let response = self
-            .handle
+        self.handle
             .block_on(
-                self.cln
-                    .call(&cln_id("listfunds", session_id)?, "listfunds", json!({})),
+                self.lightning
+                    .channel_capacity_sat(&lightning_id("capacity", session_id)?),
             )
-            .map_err(|error| format!("could not inspect Lightning liquidity: {error}"))?;
-        response
-            .get("channels")
-            .and_then(Value::as_array)
-            .ok_or_else(|| "CLN listfunds returned no channel set".to_owned())?
-            .iter()
-            .filter(|channel| channel.get("connected").and_then(Value::as_bool) == Some(true))
-            .try_fold(0_u64, |total, channel| {
-                let value = channel
-                    .get("spendable_msat")
-                    .or_else(|| channel.get("our_amount_msat"))
-                    .ok_or_else(|| "CLN channel has no spendable amount".to_owned())?;
-                let amount = Millisatoshi::parse(value)
-                    .and_then(Millisatoshi::to_satoshis_exact)
-                    .map_err(|error| format!("CLN channel amount is invalid: {error}"))?;
-                total
-                    .checked_add(amount)
-                    .ok_or_else(|| "Lightning capacity overflowed".to_owned())
-            })
+            .map_err(|error| format!("could not inspect Lightning liquidity: {error}"))
     }
 
     fn observe_chain_funding(
@@ -1840,10 +1838,10 @@ impl FundedMode {
             .map_err(|error| format!("Lightning fee budget is invalid: {error}"))?;
         let (payment, released_preimage) = self
             .handle
-            .block_on(self.cln.pay_with_released_preimage(
-                &cln_id("invoice-pay", session_id)?,
+            .block_on(self.lightning.pay_with_released_preimage(
+                &lightning_id("invoice-pay", session_id)?,
                 invoice,
-                Some(maximum_fee),
+                maximum_fee,
             ))
             .map_err(|error| format!("submarine invoice payment failed: {error}"))?;
         let routing_fee_msat = payment
@@ -1937,10 +1935,10 @@ impl FundedMode {
             .map_err(|error| format!("Lightning fee budget is invalid: {error}"))?;
         let (_, released_preimage) = self
             .handle
-            .block_on(self.cln.pay_with_released_preimage(
-                &cln_id("invoice-pay-fallback", session_id)?,
+            .block_on(self.lightning.pay_with_released_preimage(
+                &lightning_id("invoice-pay-fallback", session_id)?,
                 invoice,
-                Some(maximum_fee),
+                maximum_fee,
             ))
             .map_err(|error| format!("could not recover submarine claim preimage: {error}"))?;
         let template =
@@ -1986,34 +1984,21 @@ impl FundedMode {
         invoice: &str,
         payment_hash: &str,
     ) -> Result<u64, String> {
-        let response = self
-            .handle
-            .block_on(
-                self.cln
-                    .list_pays(&cln_id("invoice-pay-time", session_id)?, Some(invoice)),
-            )
-            .map_err(|error| format!("could not recover completed Lightning payment: {error}"))?;
-        response
-            .get("pays")
-            .and_then(Value::as_array)
-            .and_then(|pays| {
-                pays.iter().find(|pay| {
-                    pay.get("payment_hash").and_then(Value::as_str) == Some(payment_hash)
-                        && pay.get("status").and_then(Value::as_str) == Some("complete")
-                })
-            })
-            .and_then(|pay| pay.get("completed_at"))
-            .and_then(Value::as_u64)
-            .filter(|settled_at| *settled_at > 0)
-            .ok_or_else(|| "completed Lightning payment has no stable settlement time".to_owned())
+        self.handle
+            .block_on(self.lightning.payment_settled_at(
+                &lightning_id("invoice-pay-time", session_id)?,
+                invoice,
+                payment_hash,
+            ))
+            .map_err(|error| format!("could not recover completed Lightning payment: {error}"))
     }
 
     fn reverse_hold_state(&self, session_id: &str, payment_hash: &str) -> Result<String, String> {
         let response = self
             .handle
             .block_on(
-                self.cln
-                    .list_hold_invoices(&cln_id("hold-state", session_id)?, Some(payment_hash)),
+                self.lightning
+                    .hold_invoice_state(&lightning_id("hold-state", session_id)?, payment_hash),
             )
             .map_err(|error| format!("could not inspect reverse hold invoice: {error}"))?;
         let invoice = matching_hold_invoice(&response, payment_hash)?;
@@ -2032,10 +2017,13 @@ impl FundedMode {
     ) -> Result<HeldHtlcSummary, ReverseHoldSafetyError> {
         let response = self
             .handle
-            .block_on(self.cln.list_hold_invoices(
-                &cln_id("hold-safety", session_id).map_err(ReverseHoldSafetyError::Unavailable)?,
-                Some(&terms.payment_hash),
-            ))
+            .block_on(
+                self.lightning.hold_invoice_state(
+                    &lightning_id("hold-safety", session_id)
+                        .map_err(ReverseHoldSafetyError::Unavailable)?,
+                    &terms.payment_hash,
+                ),
+            )
             .map_err(|error| {
                 ReverseHoldSafetyError::Unavailable(format!(
                     "could not inspect held HTLC safety: {error}"
@@ -2300,12 +2288,14 @@ impl FundedMode {
         });
         let (effect_id, request_sha256) =
             self.persist_effect_request(session_id, "invoice_settle", public_request, now)?;
-        let mut encoded_preimage = lower_hex(preimage);
-        let settle_result = self.handle.block_on(
-            self.cln
-                .settle_hold_invoice(&cln_id("hold-settle", session_id)?, &encoded_preimage),
+        let preimage = LightningPreimage::new(
+            <[u8; 32]>::try_from(preimage.as_slice())
+                .map_err(|_| "reverse claim preimage has another length".to_owned())?,
         );
-        encoded_preimage.clear();
+        let settle_result = self.handle.block_on(
+            self.lightning
+                .settle_hold_invoice(&lightning_id("hold-settle", session_id)?, preimage),
+        );
         settle_result.map_err(|error| format!("could not settle reverse hold invoice: {error}"))?;
         self.complete_reverse_settlement_effect(
             session_id,
@@ -2405,12 +2395,43 @@ impl FundedMode {
         let public_request = json!({"payment_hash":payment_hash});
         let (effect_id, request_sha256) =
             self.persist_effect_request(session_id, "invoice_cancel", public_request, now)?;
-        self.handle
-            .block_on(
-                self.cln
-                    .cancel_hold_invoice(&cln_id("hold-cancel", session_id)?, payment_hash),
-            )
-            .map_err(|error| format!("could not cancel reverse hold invoice: {error}"))?;
+        let response = self
+            .handle
+            .block_on(self.lightning.hold_invoice_state(
+                &lightning_id("hold-cancel-state", session_id)?,
+                payment_hash,
+            ))
+            .map_err(|error| format!("could not inspect reverse hold invoice: {error}"))?;
+        let invoice = matching_hold_invoice(&response, payment_hash)?;
+        let state = hold_invoice_state(invoice)?;
+        if reverse_invoice_cancellation_action(&state)?
+            == ReverseInvoiceCancellationAction::CancelRemotely
+        {
+            self.handle
+                .block_on(
+                    self.lightning.cancel_hold_invoice(
+                        &lightning_id("hold-cancel", session_id)?,
+                        payment_hash,
+                    ),
+                )
+                .map_err(|error| format!("could not cancel reverse hold invoice: {error}"))?;
+            let response = self
+                .handle
+                .block_on(self.lightning.hold_invoice_state(
+                    &lightning_id("hold-cancel-confirm", session_id)?,
+                    payment_hash,
+                ))
+                .map_err(|error| {
+                    format!("could not confirm reverse hold invoice cancellation: {error}")
+                })?;
+            let invoice = matching_hold_invoice(&response, payment_hash)?;
+            let state = hold_invoice_state(invoice)?;
+            if reverse_invoice_cancellation_action(&state)?
+                != ReverseInvoiceCancellationAction::CompleteLocally
+            {
+                return Err("reverse hold invoice cancellation was not confirmed".to_owned());
+            }
+        }
         let result = json!({"payment_hash":payment_hash,"state":"cancelled"});
         self.complete_effect(
             &effect_id,
@@ -2442,42 +2463,17 @@ impl FundedMode {
             .ok_or_else(|| "reverse RFQ has no cancellation payment hash".to_owned())?;
         let response = self
             .handle
-            .block_on(self.cln.list_hold_invoices(
-                &cln_id("hold-cancel-state", session_id)?,
-                Some(payment_hash),
+            .block_on(self.lightning.hold_invoice_state(
+                &lightning_id("hold-cancel-state", session_id)?,
+                payment_hash,
             ))
             .map_err(|error| format!("could not inspect reverse hold invoice: {error}"))?;
         let Some(invoice) = matching_hold_invoice_optional(&response, payment_hash) else {
             return Ok(());
         };
-        let state = invoice
-            .get("state")
-            .or_else(|| invoice.get("status"))
-            .and_then(Value::as_str)
-            .map(str::to_ascii_lowercase)
-            .ok_or_else(|| "reverse hold invoice has no state".to_owned())?;
-        match state.as_str() {
-            "unpaid" | "accepted" | "held" => {
-                self.cancel_reverse_invoice(session_id, payment_hash, now)?;
-                Ok(())
-            }
-            "cancelled" => {
-                let public_request = json!({"payment_hash":payment_hash});
-                let (effect_id, request_sha256) =
-                    self.persist_effect_request(session_id, "invoice_cancel", public_request, now)?;
-                self.complete_effect(
-                    &effect_id,
-                    &request_sha256,
-                    json!({"payment_hash":payment_hash,"state":"cancelled"}),
-                    payment_hash,
-                    now,
-                )
-            }
-            "paid" | "settled" => Err(
-                "reverse invoice settled before an unfunded cancellation could complete".to_owned(),
-            ),
-            _ => Err("reverse hold invoice has an unsupported cancellation state".to_owned()),
-        }
+        hold_invoice_state(invoice)?;
+        self.cancel_reverse_invoice(session_id, payment_hash, now)?;
+        Ok(())
     }
 
     fn dispose_unfunded_session(
@@ -2506,9 +2502,9 @@ impl FundedMode {
         let terms = chain_terms(session, "reverse")?;
         let response = self
             .handle
-            .block_on(self.cln.list_hold_invoices(
-                &cln_id("hold-recover", session_id)?,
-                Some(&terms.payment_hash),
+            .block_on(self.lightning.hold_invoice_state(
+                &lightning_id("hold-recover", session_id)?,
+                &terms.payment_hash,
             ))
             .map_err(|error| format!("could not recover reverse hold invoice: {error}"))?;
         let invoice_record = matching_hold_invoice(&response, &terms.payment_hash)?;
@@ -4815,6 +4811,28 @@ fn matching_hold_invoice_optional<'a>(
         })
 }
 
+fn hold_invoice_state(invoice: &Value) -> Result<String, String> {
+    invoice
+        .get("state")
+        .or_else(|| invoice.get("status"))
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| "reverse hold invoice has no state".to_owned())
+}
+
+fn reverse_invoice_cancellation_action(
+    state: &str,
+) -> Result<ReverseInvoiceCancellationAction, String> {
+    match state {
+        "unpaid" | "accepted" | "held" => Ok(ReverseInvoiceCancellationAction::CancelRemotely),
+        "cancelled" => Ok(ReverseInvoiceCancellationAction::CompleteLocally),
+        "paid" | "settled" => {
+            Err("reverse invoice settled before an unfunded cancellation could complete".to_owned())
+        }
+        _ => Err("reverse hold invoice has an unsupported cancellation state".to_owned()),
+    }
+}
+
 fn validate_held_htlcs(
     invoice: &Value,
     terms: &ChainTerms,
@@ -5234,9 +5252,19 @@ fn rpc_id(label: &str, session_id: &str) -> Result<RpcRequestId, String> {
         .map_err(|error| error.to_string())
 }
 
-fn cln_id(label: &str, session_id: &str) -> Result<ClnRequestId, String> {
-    ClnRequestId::new(format!("provider:{label}:{}", &session_id[..16]))
-        .map_err(|error| error.to_string())
+fn lightning_id(label: &str, session_id: &str) -> Result<String, String> {
+    let prefix = session_id
+        .get(..16)
+        .ok_or_else(|| "provider session ID is shorter than its request prefix".to_owned())?;
+    let value = format!("provider:{label}:{prefix}");
+    if value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err("provider Lightning request ID is invalid".to_owned());
+    }
+    Ok(value)
 }
 
 fn network_id(network: BitcoinNetwork) -> &'static str {
@@ -5248,9 +5276,9 @@ fn network_id(network: BitcoinNetwork) -> &'static str {
     }
 }
 
-fn cln_network_name(network: BitcoinNetwork) -> &'static str {
+fn network_name(network: BitcoinNetwork) -> &'static str {
     match network {
-        BitcoinNetwork::Mainnet => "bitcoin",
+        BitcoinNetwork::Mainnet => "mainnet",
         BitcoinNetwork::Testnet => "testnet",
         BitcoinNetwork::Signet => "signet",
         BitcoinNetwork::Regtest => "regtest",
@@ -5266,17 +5294,6 @@ fn transient_bitcoind_error(error: &BitcoindError) -> bool {
             | BitcoindError::Io(_)
             | BitcoindError::HttpStatus(_)
             | BitcoindError::Rpc { .. }
-    )
-}
-
-fn transient_cln_error(error: &ClnError) -> bool {
-    matches!(
-        error,
-        ClnError::ConnectionFailed
-            | ClnError::TimedOut(_)
-            | ClnError::Io(_)
-            | ClnError::Rpc { .. }
-            | ClnError::Unsynced(_)
     )
 }
 
@@ -5317,13 +5334,14 @@ mod tests {
     use crate::funding::SignedFundingTransaction;
 
     use super::{
-        ChainTerms, HoldStateDecision, base_state, bind_reverse_funding_profile,
-        bitcoin_spend_reference, canonical_json, chain_observation_from_response, decode_hex,
-        execute_before_exclusive_deadline, extract_hold_invoice, finalized_from_signed_message,
-        hold_state_decision, latest_status_state, lower_hex, require_chain_finality,
-        required_chain_confirmations, reverse_spend_decision, settlement_destination_path, sha256,
-        status_transaction_id, status_transaction_reference, terminal_evidence_expectations,
-        validate_executable_reverse_funding, validate_held_htlcs,
+        ChainTerms, HoldStateDecision, ReverseInvoiceCancellationAction, base_state,
+        bind_reverse_funding_profile, bitcoin_spend_reference, canonical_json,
+        chain_observation_from_response, decode_hex, execute_before_exclusive_deadline,
+        extract_hold_invoice, finalized_from_signed_message, hold_state_decision,
+        latest_status_state, lower_hex, require_chain_finality, required_chain_confirmations,
+        reverse_invoice_cancellation_action, reverse_spend_decision, settlement_destination_path,
+        sha256, status_transaction_id, status_transaction_reference,
+        terminal_evidence_expectations, validate_executable_reverse_funding, validate_held_htlcs,
     };
 
     const RUNTIME_FIXTURE: &[u8] =
@@ -5742,6 +5760,42 @@ mod tests {
             panic!("cancelled invoice state must choose cancellation");
         };
         assert_eq!(failure_code, fixture_string(&case, "expected_failure_code"));
+    }
+
+    #[test]
+    fn provider_runtime_fixture_replays_reverse_invoice_cancellation_recovery() {
+        let case = runtime_fixture_case("provider-v1-reverse-invoice-cancellation-recovery");
+        assert_eq!(
+            case["runtime_assertion"],
+            "reverse_invoice_cancellation_action"
+        );
+        assert_eq!(case["effect_persisted_before_remote_lookup"], true);
+        assert_eq!(case["crash_after_remote_apply"], true);
+        assert_eq!(fixture_string(&case, "expected_action"), "complete_locally");
+        assert_eq!(case["repeat_remote_cancel"], false);
+        assert_eq!(
+            reverse_invoice_cancellation_action(fixture_string(&case, "remote_state_on_restart")),
+            Ok(ReverseInvoiceCancellationAction::CompleteLocally)
+        );
+    }
+
+    #[test]
+    fn reverse_invoice_cancellation_requires_remote_confirmation() {
+        for state in ["unpaid", "accepted", "held"] {
+            assert_eq!(
+                reverse_invoice_cancellation_action(state),
+                Ok(ReverseInvoiceCancellationAction::CancelRemotely)
+            );
+        }
+        for state in ["paid", "settled"] {
+            assert_eq!(
+                reverse_invoice_cancellation_action(state),
+                Err(
+                    "reverse invoice settled before an unfunded cancellation could complete"
+                        .to_owned()
+                )
+            );
+        }
     }
 
     #[test]

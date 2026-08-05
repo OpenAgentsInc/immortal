@@ -31,16 +31,18 @@
     ],
     "providers": [
       {
-        "id": "provider-a",
-        "relay": "relay-a",
-        "lightning_node": "provider-a-cln",
-        "database": "disposable-provider-a-postgres"
+      "id": "provider-a",
+      "relay": "relay-a",
+      "lightning_node": "provider-a-cln",
+      "eligible_lightning_rails": ["cln", "lnd"],
+      "database": "disposable-provider-a-postgres"
       },
       {
-        "id": "provider-b",
-        "relay": "relay-b",
-        "lightning_node": "provider-b-cln",
-        "database": "disposable-provider-b-postgres"
+      "id": "provider-b",
+      "relay": "relay-b",
+      "lightning_node": "provider-b-cln",
+      "eligible_lightning_rails": ["cln", "lnd"],
+      "database": "disposable-provider-b-postgres"
       }
     ],
     "wallet_harness": {
@@ -99,18 +101,21 @@
       ]
     ]
   },
-  "extensions": [
+  "provider_rail_variants": [
     {
       "id": "lnd",
       "issue": 29,
-      "state": "hook-only",
-      "hook_environment": "IMMORTAL_LAB_LND_HOOK",
-      "ports": {
-        "p2p": 19736,
-        "rpc": 19009,
-        "rest": 19080
-      }
-    },
+      "state": "implemented-feature-gated",
+      "cargo_feature": "lnd",
+      "native_hold_invoices": true,
+      "provider_slot_eligible": true,
+      "clean_host_evidence": false,
+      "live_deployment_evidence": false,
+      "process_gate": "IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL=lnd scripts/test-provider-funded.sh",
+      "image": "lightninglabs/lnd:v0.20.1-beta@sha256:f0a2bdc4b8bc89cb3b31b6e12d6b16ac5145defd916d8152cf0c1c07d8697cff"
+    }
+  ],
+  "extensions": [
     {
       "id": "elementsd",
       "issue": 27,

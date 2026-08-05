@@ -20,6 +20,7 @@ const FUNDED_SMOKE_FIXTURE: &[u8] =
 const PRICING_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/nipmkt/swp-pricing-v1.json");
 const COOPERATIVE_RUNTIME_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json");
+const LND_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/provider/lnd-rest-v1.json");
 
 #[test]
 fn provider_contract_is_canonical_byte_stable_and_matches_export() {
@@ -60,6 +61,7 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
             "tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json",
             COOPERATIVE_RUNTIME_FIXTURE,
         ),
+        ("tests/fixtures/provider/lnd-rest-v1.json", LND_FIXTURE),
     ] {
         let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();
         assert_eq!(entry["bytes"], bytes.len());
@@ -168,6 +170,46 @@ fn provider_contract_distinguishes_required_and_optional_environment() {
             && variable["optional_in_modes"] == json!(["funded"])
             && variable["defaulted"] == json!(false)
     }));
+    let selector = variables
+        .iter()
+        .find(|variable| variable["name"] == "IMMORTAL_PROVIDER_LIGHTNING_RAIL")
+        .unwrap();
+    assert_eq!(selector["choices"], json!(["cln", "lnd"]));
+    assert_eq!(selector["implicit_choice_when_absent"], "cln");
+
+    let cln = variables
+        .iter()
+        .find(|variable| variable["name"] == "IMMORTAL_PROVIDER_CLN_RPC_PATH")
+        .unwrap();
+    assert_eq!(
+        cln["required_when"],
+        json!({
+            "environment":"IMMORTAL_PROVIDER_LIGHTNING_RAIL",
+            "equals":"cln",
+            "or_selector_absent":true,
+        })
+    );
+    for name in [
+        "IMMORTAL_PROVIDER_LND_HOST",
+        "IMMORTAL_PROVIDER_LND_PORT",
+        "IMMORTAL_PROVIDER_LND_TLS_CERT_FILE",
+        "IMMORTAL_PROVIDER_LND_READONLY_MACAROON_FILE",
+        "IMMORTAL_PROVIDER_LND_INVOICE_MACAROON_FILE",
+        "IMMORTAL_PROVIDER_LND_ROUTER_MACAROON_FILE",
+    ] {
+        let variable = variables
+            .iter()
+            .find(|variable| variable["name"] == name)
+            .unwrap();
+        assert_eq!(
+            variable["required_when"],
+            json!({
+                "environment":"IMMORTAL_PROVIDER_LIGHTNING_RAIL",
+                "equals":"lnd",
+                "or_selector_absent":false,
+            })
+        );
+    }
     assert!(variables.iter().any(|variable| {
         variable["name"] == "IMMORTAL_PROVIDER_RESERVATION_TIER"
             && variable["choices"] == json!(["hard"])

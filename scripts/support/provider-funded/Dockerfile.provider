@@ -14,6 +14,11 @@ RUN cargo build --locked --release \
     -p immortal-provider --bin immortal-provider \
     -p immortal-lab --bin immortal-lab
 
+FROM build AS build-lnd
+
+RUN cargo build --locked --release \
+    -p immortal-provider --bin immortal-provider --features lnd
+
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS provider
 
 RUN apt-get update \
@@ -23,6 +28,10 @@ RUN apt-get update \
 COPY --from=build /build/target/release/immortal-provider /usr/local/bin/immortal-provider
 
 ENTRYPOINT ["/usr/local/bin/immortal-provider"]
+
+FROM provider AS provider-lnd
+
+COPY --from=build-lnd /build/target/release/immortal-provider /usr/local/bin/immortal-provider
 
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS driver
 

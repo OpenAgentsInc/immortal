@@ -24,12 +24,13 @@ The products:
 - **The provider daemon** (`immortal-provider`): the runnable
   liquidity-provider daemon for the swap network. Its no-spend mode rehearses
   complete sessions without rail effects. Funded mode reserves operator-owned
-  Bitcoin and Lightning capacity, drives bitcoind and Core Lightning, and
+  Bitcoin and Lightning capacity, drives bitcoind plus either Core Lightning
+  or feature-gated LND, and
   executes script-path claim/refund recovery. Its allowlist-only MuSig2
   foundation and signed actor support the cooperative key-path protocol. The
   actor is fail-closed on exact stored Status bytes and the pre-committed
   provider exit package, while signer capability and runtime execution remain
-  disabled until FundedMode integration and the funded-process lab gate pass.
+  disabled until the funded-process activation gate passes.
   Reverse Quotes bind the exact
   reserve-selected funding transaction before either contract is signed;
   signed action deadlines, durable competing-path watches, and signer-local
@@ -145,6 +146,10 @@ therefore establish local regtest conformance for submarine settlement,
 reverse settlement, and noncooperative refund. This is not Debian or live
 deployment evidence; issue #19 owns that release proof.
 
+The feature-gated LND provider repeated the same three-journey process gate on
+2026-08-05 on macOS 26.4 arm64. This is local eligibility for the #18 lab; it
+is not clean-host or live deployment evidence.
+
 The relay also contains the off-by-default Boltz released-client handoff
 described in `docs/protocol/boltz-facade.md`. It redirects bounded compatibility
 requests to the external provider without reading their bodies and adds the
@@ -237,13 +242,14 @@ through Close between two throwaway actors, and
 through restart and all three swap shapes. See the
 [`local development runbook`](docs/deployment/runbook-local-dev.md).
 `scripts/test-provider-funded.sh` is the separate manual regtest gate for the
-normal funded daemon: Bitcoin Core, two Core Lightning nodes, the hold plugin,
-separate product databases, and submarine, reverse, and noncooperative refund
-journeys. Its topology and public evidence contract are documented in
+normal funded daemon: Bitcoin Core, separate product databases, a provider
+using CLN by default or LND with
+`IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL=lnd`, and submarine, reverse, and
+noncooperative refund journeys. Its topology and public evidence contract are documented in
 [`provider-funded-smoke.md`](docs/conformance/provider-funded-smoke.md).
 Operators should follow the
 [`immortal-provider` Debian runbook](docs/deployment/runbook-provider-debian.md)
-for its separate database, wallet file, bitcoind, CLN hold plugin, health,
+for its separate database, wallet file, bitcoind, selected Lightning rail, health,
 backup, and upgrade boundaries.
 
 ## Quick start

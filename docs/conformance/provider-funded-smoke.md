@@ -3,8 +3,11 @@
 `scripts/test-provider-funded.sh` is the local, manually run gate for the
 funded `immortal-provider` process. It starts one disposable provider, one
 relay, separate provider and relay Postgres databases, Bitcoin Core regtest,
-two Core Lightning nodes, and the Boltz hold-invoice plugin. It then requires
-an external client actor to complete:
+and a wallet-side Core Lightning node. The default provider rail is a second
+CLN node with the Boltz hold-invoice plugin. Setting
+`IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL=lnd` instead builds the provider with
+its optional rustls feature and starts a pinned LND provider rail with native
+hold invoices. Both variants require an external client actor to complete:
 
 1. a submarine swap ending in a confirmed provider claim and a paid ordinary
    Lightning invoice;
@@ -28,7 +31,8 @@ The funded journey process succeeding is insufficient. The shell harness reads
 `tests/fixtures/provider/funded-smoke-v1.json` and independently checks the
 reported transaction IDs through bitcoind, verifies that each terminal
 transaction spends its journey's exact lockup outpoint, checks the ordinary
-and hold invoice states through the two CLN sockets, and requires the
+and hold invoice states through the selected provider rail and wallet CLN
+socket, and requires the
 provider's pending and unresolved watch-job metrics to return to zero without
 an operator alert. It then runs a checked-in prepared query against the
 private provider Postgres, binding each reported order ID to exactly one of
@@ -60,8 +64,10 @@ step opens and balances both wallet spokes and the provider-to-provider edge.
 This is the two-provider lab topology; the smaller funded smoke described
 above continues to use its own disposable two-node Compose topology.
 
-`scripts/lab-extensions.sh` reserves loopback allocations and an executable
-hook contract for LND (#29), elementsd (#27), and arkd (#20). These entries
+The LND provider is a legal #18 participant through the built-in funded-smoke
+variant above; it does not require an external rail hook.
+`scripts/lab-extensions.sh` continues to reserve loopback allocations and
+executable hook contracts for elementsd (#27) and arkd (#20). Those entries
 remain `hook-only`: the wrapper does not claim those rails are implemented.
 It passes only the extension id, owning issue, non-secret run id, isolated
 state directory, and port manifest. Credentials remain in the owning
@@ -88,10 +94,9 @@ scripts/lab-topology.sh
 
 Stop extensions first, if any, then run `scripts/lab-cln.sh down` before
 `scripts/lab-bitcoind.sh down`. An extension owner plugs into the reserved
-boundary by setting the manifest-named variable, for example
-`IMMORTAL_LAB_LND_HOOK=/absolute/path/to/hook`, and invoking
-`scripts/lab-extensions.sh up lnd`. An absent hook exits 2 and creates no
-state.
+boundary by setting the manifest-named variable and invoking
+`scripts/lab-extensions.sh up <extension>`. An absent hook exits 2 and creates
+no state.
 
 Regtest has no fee history for a useful `estimatesmartfee` result. The harness
 therefore sets `IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB=2` explicitly
@@ -119,6 +124,15 @@ replacement run completed all three journeys and the independent durable
 evidence checks. This remains local-machine evidence, not the clean macOS or
 Debian execution required to close #32.
 
+The LND rail gate also passed on macOS 26.4 arm64 on 2026-08-05 with
+`IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL=lnd
+scripts/test-provider-funded.sh`. The pinned LND process completed the same
+submarine, reverse, and noncooperative-refund journeys, including restart and
+durable-effect checks, and the harness removed its private credential and
+state directory after teardown. This makes LND eligible for a #18 provider
+slot under the feature-gated local-lab profile. It does not supply the clean
+host or live deployment evidence owned by #32 and #19.
+
 ## Pinned rail software
 
 The test images support Linux `amd64` and `arm64`, including Docker Desktop on
@@ -129,6 +143,7 @@ Apple silicon and Intel macOS.
 | Bitcoin Core | 31.1 official Linux binaries | [Bitcoin Core 31.1 downloads and SHA256SUMS](https://bitcoincore.org/bin/bitcoin-core-31.1/) |
 | Core Lightning | `elementsproject/lightningd:v26.06.6@sha256:094be3630f865c795649d6063a8796afa0f78e82a0c311bb34f2b0bd570c819a` | [Core Lightning v26.06.6](https://github.com/ElementsProject/lightning/releases/tag/v26.06.6) and [official Docker instructions](https://docs.corelightning.org/docs/docker-images) |
 | CLN hold plugin | Boltz `v0.3.3` release assets, independently SHA-256 checked per architecture | [BoltzExchange/hold v0.3.3](https://github.com/BoltzExchange/hold/releases/tag/v0.3.3) and [command documentation](https://github.com/BoltzExchange/hold#commands) |
+| LND | `lightninglabs/lnd:v0.20.1-beta@sha256:f0a2bdc4b8bc89cb3b31b6e12d6b16ac5145defd916d8152cf0c1c07d8697cff` | [LND v0.20.1-beta](https://github.com/lightningnetwork/lnd/releases/tag/v0.20.1-beta) and the official Lightning Labs image |
 | Postgres | `postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193` | [Docker Official Image packaging source](https://github.com/docker-library/postgres) |
 
 `Dockerfile.bitcoin` downloads from `bitcoincore.org` and checks the committed
@@ -154,10 +169,11 @@ CLN writes `lightning-rpc` into a separate socket-only volume: the provider
 receives the provider socket and the external actor receives the peer socket,
 without either process receiving a CLN wallet data volume.
 
-The CLN rail uses its native Unix JSON-RPC socket. LND is excluded from v1, so
-this topology creates no macaroon. The hold plugin's optional TLS gRPC server
-is disabled; the provider probes and uses only the CLN plugin commands over
-the native socket. Generated preimages stay in a mode-0600 `immortal-lab`
+The CLN rail uses its native Unix JSON-RPC socket, with the hold plugin's
+optional TLS gRPC server disabled. The LND variant copies its self-signed TLS
+certificate and separate readonly, invoices, and router macaroons into a
+mode-0700 directory, mounts each exact mode-0600 file read-only into the
+provider, and never exposes the admin macaroon. Generated preimages stay in a mode-0600 `immortal-lab`
 wallet-state record and the involved CLN process; the record is removed after
 terminal Close. The public evidence file contains hashes and
 transaction IDs and rejects custody-field names.
@@ -177,6 +193,7 @@ Start Docker Desktop (or a Podman service with Compose support) and run:
 cargo test --locked -p immortal-provider --lib provider_runtime_fixture
 ./scripts/export-provider-contract.sh --check
 ./scripts/test-provider-funded.sh
+IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL=lnd ./scripts/test-provider-funded.sh
 ```
 
 The first command replays the provider runtime fixture through the production

@@ -67,9 +67,9 @@ workspace product:
 2. **Per-crate dependency allowlists, owner-approved.** The relay keeps
    exactly its current seven. The provider daemon launches with the
    *same seven* (analysis in §4) — no new dependencies are required for
-   the v1 rails. The conditionally approved `rustls` chain extends to
-   the provider path that genuinely needs TLS (LND REST), behind a
-   feature flag, only when that rail lands.
+   the default CLN rail. The conditionally approved `rustls` chain extends to
+   the provider's LND REST path behind the off-by-default `lnd` feature; the
+   default and CLN dependency trees remain unchanged.
 3. **Write the primitives in this repository.** Already extended in
    practice by #10: the Nostr primitives rule now also covers Bitcoin
    and Lightning primitives (tagged hashes, taproot key/tree logic,
@@ -84,7 +84,8 @@ workspace product:
    server plus the product's declared prerequisites must yield a
    running instance in minutes with only the README and runbook. For
    the relay: apt Postgres. For the provider: apt Postgres, bitcoind,
-   and a CLN node — real prerequisites, honestly declared.
+   and the selected CLN or feature-gated LND node — real prerequisites,
+   honestly declared.
 6. **No secrets in the repo; no GitHub-billed automation.** Unchanged.
 7. **Custody boundary as a rule, not a convention.** New rule: the
    relay crate must never link wallet, signing, or spend-capable code;
@@ -114,15 +115,16 @@ milliseconds — so seconds-granularity polling is honest. The poller is
 a watchtower input, so its failure mode must be loud (alerting, §6),
 never silent.
 
-**Lightning (required rail): CLN first.** Core Lightning's native
+**Lightning (required rail): CLN or feature-gated LND.** Core Lightning's native
 interface is JSON-RPC over a Unix socket — `tokio::net::UnixStream`
 plus `serde_json`, zero new dependencies. Hold-invoice semantics on CLN
 come from a plugin (Boltz maintains `hold` precisely because vanilla
 CLN lacks it); the runbook declares the plugin as a rail prerequisite,
-exactly as it declares bitcoind. LND support comes later: its REST API
-needs TLS and macaroon headers — the conditionally approved `rustls`
-chain, behind a feature flag, when that packet lands. gRPC/`tonic` is
-rejected outright.
+exactly as it declares bitcoind. The optional LND adapter uses bounded REST
+over TLS with an operator-pinned certificate and separate readonly, invoices,
+and router macaroons. It adds only the approved `tokio-rustls`/rustls/ring/
+zeroize chain behind the `lnd` feature. LND native hold invoices need no
+plugin; gRPC/`tonic` remains rejected.
 
 **Postgres.** `tokio-postgres`, prepared statements, transactional
 state transitions, idempotency bindings between Order IDs and every
@@ -158,10 +160,11 @@ conditionally approved) behind the same feature flag as LND, or v1
 providers quote without a feed term (legal per the spec — a
 Bitcoin/Lightning-only provider does not need an exchange rate).
 
-Conclusion: `immortal-provider` v1 = the same seven crates, one new
-binary, hand-written HTTP and Unix-socket clients, mandatory script-path
-exits plus the in-repo cooperative-signing foundation, and CLN + bitcoind
-rails. Every dependency the Boltz stack
+Conclusion: the default CLN `immortal-provider` profile uses the same seven
+crates, one new binary, hand-written HTTP and Unix-socket clients, mandatory
+script-path exits plus the in-repo cooperative-signing foundation, and CLN +
+bitcoind rails. The optional LND profile adds only the approved rustls chain
+for its in-repo HTTPS REST client. Every dependency the Boltz stack
 carries and we refuse (ZMQ, gRPC, ORM, Redis, a web framework) is
 refused by a named decision above, not by omission.
 
@@ -214,8 +217,9 @@ Mapping the eight-item infrastructure list from
    provider actor remains as the daemon's `--no-spend` mode: the same
    binary, spend paths disabled — useful for the demo counterparty and
    for operators rehearsing before funding.
-2. **Rail executors** — bitcoind RPC client, CLN Unix-socket client,
-   chain poller with confirmation policy and reorg handling.
+2. **Rail executors** — bitcoind RPC client, CLN Unix-socket client, optional
+   LND pinned-certificate REST client, and chain poller with confirmation
+   policy and reorg handling.
 3. **Wallet** — key file loading, address derivation, UTXO tracking in
    Postgres (state, never keys), transaction construction and schnorr
    signing via the in-repo primitives, script-path claim and refund
@@ -236,12 +240,13 @@ Mapping the eight-item infrastructure list from
    validation, same contract style as the relay
    (`docs/deployment/configuration.md`).
 8. **Runbook** — `docs/deployment/runbook-provider-debian.md`: Debian,
-   apt Postgres, bitcoind, CLN + hold plugin, the binary, systemd
-   hardening, backup timer, funding procedure, drain/exit procedure.
+   apt Postgres, bitcoind, either CLN + hold plugin or LND native hold
+   invoices, the binary, systemd hardening, backup timer, funding procedure,
+   and drain/exit procedure.
 
 Explicitly out of the first funded release: Liquid (`elementsd`), Ark
 (`arkd`), EVM and Cashu rails (extension issues #20-#23), automated MuSig2
-actor execution before the #18 lab gate (§4), LND (feature-flagged later), autoswap/inventory strategy beyond the
+actor execution before the #18 lab gate (§4), autoswap/inventory strategy beyond the
 reservation ledger (operator policy, not daemon authority).
 
 ## 7. What changes where
@@ -272,10 +277,10 @@ Each step keeps the tree green and the deployed relay upgradeable:
 2. **Provider crate, no-spend first.** `immortal-provider` embedding
    the session logic (#14's scope, relocated), `--no-spend` actor
    parity with the seeded dev-market actor, and session fixtures.
-3. **Rails.** bitcoind RPC client + poller; CLN client; wallet and
-   script-path claim/refund construction over the in-repo primitives;
-   watchtower; reservation ledger against real Postgres; deterministic
-   provider contract export.
+3. **Rails.** bitcoind RPC client + poller; default CLN client and optional
+   feature-gated LND client; wallet and script-path claim/refund construction
+   over the in-repo primitives; watchtower; reservation ledger against real
+   Postgres; deterministic provider contract export.
 4. **Lab.** #18 executes with two funded `immortal-provider` instances
    (independent keys), multiple relays, and the failure matrix, on
    regtest.

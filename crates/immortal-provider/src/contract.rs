@@ -21,6 +21,8 @@ const COOPERATIVE_RUNTIME_FIXTURE_PATH: &str =
     "tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json";
 const COOPERATIVE_RUNTIME_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json");
+const LND_FIXTURE_PATH: &str = "tests/fixtures/provider/lnd-rest-v1.json";
+const LND_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/provider/lnd-rest-v1.json");
 const NIP_MANIFEST: &str = include_str!("../../../nips/manifest.json");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +75,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
             "funded":{
                 "custody_bearing":true,
                 "rail_access":true,
-                "prerequisites":["postgres","bitcoind","cln","cln_hold_plugin"]
+                "prerequisites":["postgres","bitcoind","configured_lightning_rail"]
             },
             "no_spend":{
                 "custody_bearing":false,
@@ -102,7 +104,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 }
             },
             "cln":{
-                "required_in_modes":["funded"],
+                "selected_by":"IMMORTAL_PROVIDER_LIGHTNING_RAIL=cln",
                 "transport":"bounded_newline_json_rpc_over_unix_socket",
                 "one_request_per_connection":true,
                 "startup_probe_method":"help",
@@ -117,6 +119,33 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                     "listpays",
                     "listfunds",
                     "getinfo"
+                ],
+                "quote_height_sync":{
+                    "attempts_per_pass":40,
+                    "delay_milliseconds":250,
+                    "maximum_lag":"configured_reorg_safety_blocks",
+                    "unsynchronized_action":"defer_quote",
+                    "network_mismatch_action":"fail_closed"
+                }
+            },
+            "lnd":{
+                "available_with_feature":"lnd",
+                "selected_by":"IMMORTAL_PROVIDER_LIGHTNING_RAIL=lnd",
+                "transport":"bounded_http_1_1_rest_over_operator_pinned_tls",
+                "network_scope":"resolved_and_connected_loopback_only",
+                "authentication":"separate_mode_0600_readonly_invoice_router_macaroons",
+                "redirects":false,
+                "one_request_per_connection":true,
+                "required_operations":[
+                    "getinfo",
+                    "listchannels",
+                    "addholdinvoice",
+                    "lookupinvoice",
+                    "settleinvoice",
+                    "cancelinvoice",
+                    "sendpaymentv2",
+                    "trackpaymentv2",
+                    "registerblockepochntfn"
                 ],
                 "quote_height_sync":{
                     "attempts_per_pass":40,
@@ -243,7 +272,6 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
         "v1_exclusions":[
             "zmq",
             "musig2_automated_actor_path",
-            "lnd",
             "outbound_https_price_feeds",
             "liquid",
             "ark",
@@ -259,7 +287,8 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 fixture_entry(SETTLEMENT_FIXTURE_PATH, SETTLEMENT_FIXTURE),
                 fixture_entry(FUNDED_SMOKE_FIXTURE_PATH, FUNDED_SMOKE_FIXTURE),
                 fixture_entry(PRICING_FIXTURE_PATH, PRICING_FIXTURE),
-                fixture_entry(COOPERATIVE_RUNTIME_FIXTURE_PATH, COOPERATIVE_RUNTIME_FIXTURE)
+                fixture_entry(COOPERATIVE_RUNTIME_FIXTURE_PATH, COOPERATIVE_RUNTIME_FIXTURE),
+                fixture_entry(LND_FIXTURE_PATH, LND_FIXTURE)
             ]
         },
         "relay_contract_affected":false,
@@ -295,6 +324,13 @@ fn limits_contract() -> Value {
             "cln":{
                 "request_bytes":crate::cln::DEFAULT_MAX_REQUEST_BYTES,
                 "response_bytes":crate::cln::DEFAULT_MAX_RESPONSE_BYTES
+            },
+            "lnd":{
+                "header_bytes":16384,
+                "request_bytes":1048576,
+                "response_bytes":8388608,
+                "stream_messages":64,
+                "resolved_addresses":8
             }
         },
         "store":{
@@ -355,7 +391,8 @@ fn limits_contract() -> Value {
                 "response_bytes":16777216,
                 "resolved_addresses":8
             },
-            "cln":{"request_bytes":1048576,"response_bytes":8388608}
+            "cln":{"request_bytes":1048576,"response_bytes":8388608},
+            "lnd":{"header_bytes":16384,"request_bytes":1048576,"response_bytes":8388608,"stream_messages":64,"resolved_addresses":8}
         },
         "store":{
             "records_per_session":512,
@@ -502,6 +539,7 @@ pub fn validate_provider_contract(value: &Value) -> Result<(), ProviderContractE
                 .bytes()
                 .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
             || !valid_mode_scope(variable)
+            || !valid_lightning_environment_contract(name, variable)
         {
             return Err(ProviderContractError::InvalidShape);
         }
@@ -772,13 +810,94 @@ fn environment_contract() -> Value {
             true,
             None
         ),
-        env_string(
-            "IMMORTAL_PROVIDER_CLN_RPC_PATH",
-            &["funded"],
-            1,
-            4096,
-            true,
-            Some("absolute_unix_socket_path")
+        lightning_selector_environment(),
+        conditional_lightning_environment(
+            optional_env_string(
+                "IMMORTAL_PROVIDER_CLN_RPC_PATH",
+                &["funded"],
+                1,
+                4096,
+                true,
+                Some("absolute_unix_socket_path"),
+                false
+            ),
+            "cln",
+            true
+        ),
+        conditional_lightning_environment(
+            optional_env_string(
+                "IMMORTAL_PROVIDER_LND_HOST",
+                &["funded"],
+                1,
+                253,
+                false,
+                Some("loopback_host"),
+                false
+            ),
+            "lnd",
+            false
+        ),
+        conditional_lightning_environment(
+            optional_env_integer_without_default(
+                "IMMORTAL_PROVIDER_LND_PORT",
+                &["funded"],
+                1,
+                65535
+            ),
+            "lnd",
+            false
+        ),
+        conditional_lightning_environment(
+            optional_env_string(
+                "IMMORTAL_PROVIDER_LND_TLS_CERT_FILE",
+                &["funded"],
+                1,
+                4096,
+                false,
+                Some("absolute_regular_file"),
+                false
+            ),
+            "lnd",
+            false
+        ),
+        conditional_lightning_environment(
+            optional_env_string(
+                "IMMORTAL_PROVIDER_LND_READONLY_MACAROON_FILE",
+                &["funded"],
+                1,
+                4096,
+                true,
+                Some("absolute_mode_0600_regular_file"),
+                false
+            ),
+            "lnd",
+            false
+        ),
+        conditional_lightning_environment(
+            optional_env_string(
+                "IMMORTAL_PROVIDER_LND_INVOICE_MACAROON_FILE",
+                &["funded"],
+                1,
+                4096,
+                true,
+                Some("absolute_mode_0600_regular_file"),
+                false
+            ),
+            "lnd",
+            false
+        ),
+        conditional_lightning_environment(
+            optional_env_string(
+                "IMMORTAL_PROVIDER_LND_ROUTER_MACAROON_FILE",
+                &["funded"],
+                1,
+                4096,
+                true,
+                Some("absolute_mode_0600_regular_file"),
+                false
+            ),
+            "lnd",
+            false
         ),
         env_string(
             "IMMORTAL_PROVIDER_WALLET_SEED_FILE",
@@ -926,6 +1045,29 @@ fn optional_env_choice(name: &'static str, modes: &[&str], choices: &[&str]) -> 
     optional_environment(env_choice(name, modes, choices), modes, true)
 }
 
+fn lightning_selector_environment() -> Value {
+    let mut value = optional_env_choice(
+        "IMMORTAL_PROVIDER_LIGHTNING_RAIL",
+        &["funded"],
+        &["cln", "lnd"],
+    );
+    value["implicit_choice_when_absent"] = Value::String("cln".to_owned());
+    value
+}
+
+fn conditional_lightning_environment(
+    mut value: Value,
+    choice: &'static str,
+    selector_absent: bool,
+) -> Value {
+    value["required_when"] = json!({
+        "environment":"IMMORTAL_PROVIDER_LIGHTNING_RAIL",
+        "equals":choice,
+        "or_selector_absent":selector_absent,
+    });
+    value
+}
+
 fn optional_environment(mut value: Value, modes: &[&str], defaulted: bool) -> Value {
     if let Some(object) = value.as_object_mut() {
         object.remove("required_in_modes");
@@ -986,6 +1128,9 @@ fn environment_name_is_secret(name: &str) -> bool {
             "IMMORTAL_PROVIDER_DATABASE_URL"
                 | "IMMORTAL_PROVIDER_BITCOIND_RPC_USER"
                 | "IMMORTAL_PROVIDER_CLN_RPC_PATH"
+                | "IMMORTAL_PROVIDER_LND_READONLY_MACAROON_FILE"
+                | "IMMORTAL_PROVIDER_LND_INVOICE_MACAROON_FILE"
+                | "IMMORTAL_PROVIDER_LND_ROUTER_MACAROON_FILE"
         )
 }
 
@@ -1009,6 +1154,44 @@ fn valid_mode_scope(variable: &Map<String, Value>) -> bool {
         .and_then(Value::as_array)
         .is_some_and(|modes| !modes.is_empty());
     required ^ optional
+}
+
+fn valid_lightning_environment_contract(name: &str, variable: &Map<String, Value>) -> bool {
+    let implicit_choice = variable
+        .get("implicit_choice_when_absent")
+        .and_then(Value::as_str);
+    let required_when = variable.get("required_when").and_then(Value::as_object);
+    if name == "IMMORTAL_PROVIDER_LIGHTNING_RAIL" {
+        return implicit_choice == Some("cln") && required_when.is_none();
+    }
+    let expected = if name == "IMMORTAL_PROVIDER_CLN_RPC_PATH" {
+        Some(("cln", true))
+    } else if matches!(
+        name,
+        "IMMORTAL_PROVIDER_LND_HOST"
+            | "IMMORTAL_PROVIDER_LND_PORT"
+            | "IMMORTAL_PROVIDER_LND_TLS_CERT_FILE"
+            | "IMMORTAL_PROVIDER_LND_READONLY_MACAROON_FILE"
+            | "IMMORTAL_PROVIDER_LND_INVOICE_MACAROON_FILE"
+            | "IMMORTAL_PROVIDER_LND_ROUTER_MACAROON_FILE"
+    ) {
+        Some(("lnd", false))
+    } else {
+        None
+    };
+    match (expected, required_when) {
+        (None, None) => implicit_choice.is_none(),
+        (Some((choice, selector_absent)), Some(condition)) => {
+            implicit_choice.is_none()
+                && condition.len() == 3
+                && condition.get("environment").and_then(Value::as_str)
+                    == Some("IMMORTAL_PROVIDER_LIGHTNING_RAIL")
+                && condition.get("equals").and_then(Value::as_str) == Some(choice)
+                && condition.get("or_selector_absent").and_then(Value::as_bool)
+                    == Some(selector_absent)
+        }
+        _ => false,
+    }
 }
 
 fn normalize_name(name: &str) -> String {

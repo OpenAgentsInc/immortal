@@ -83,9 +83,12 @@ wallet harness       none (outbound only)        crates/immortal-lab; identity a
                                                  pubkey: $(harness_identity)
                                                  CLN socket owned by wallet CLN
 
+provider rail variants
+----------------------
+LND (#29):       implemented behind provider feature lnd; gate with IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL=lnd scripts/test-provider-funded.sh
+
 extension hooks (inactive until their owning issues land)
 ----------------------------------------------------------
-LND (#29):       $(extension_status lnd)
 elementsd (#27): $(extension_status elementsd)
 arkd (#20):      $(extension_status arkd)
 

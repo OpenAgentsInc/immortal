@@ -25,6 +25,7 @@ sha2 = "0.11.0"
 tokio = { version = "1.53.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-postgres = "0.7.18"
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 
 immortal-core = { path = "crates/immortal-core", default-features = false }
 immortal-client = { path = "crates/immortal-client" }

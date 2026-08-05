@@ -21,7 +21,7 @@ enum FundedError {
     Runtime,
     Database(String),
     Bitcoind(String),
-    Cln(String),
+    Lightning(String),
     Wallet(String),
     Health(String),
     Watchtower(String),
@@ -37,7 +37,9 @@ impl fmt::Display for FundedError {
             Self::Runtime => formatter.write_str("provider async runtime could not start"),
             Self::Database(error) => write!(formatter, "provider database startup failed: {error}"),
             Self::Bitcoind(error) => write!(formatter, "provider bitcoind startup failed: {error}"),
-            Self::Cln(error) => write!(formatter, "provider CLN startup failed: {error}"),
+            Self::Lightning(error) => {
+                write!(formatter, "provider Lightning startup failed: {error}")
+            }
             Self::Wallet(error) => write!(formatter, "provider wallet startup failed: {error}"),
             Self::Health(error) => write!(formatter, "provider health server failed: {error}"),
             Self::Watchtower(error) => write!(formatter, "provider watchtower failed: {error}"),
@@ -86,11 +88,11 @@ async fn run_async() -> Result<(), FundedError> {
     let signer = signer_from_environment().map_err(FundedError::Configuration)?;
     verify_bitcoind(&config).await?;
     config
-        .cln
-        .probe_required_capabilities("provider-startup")
+        .lightning
+        .probe("provider-startup")
         .await
-        .map_err(|error| FundedError::Cln(error.to_string()))?;
-    verify_cln(&config).await?;
+        .map_err(|error| FundedError::Lightning(error.to_string()))?;
+    verify_lightning(&config).await?;
     config
         .wallet
         .derive_address(
@@ -113,7 +115,7 @@ async fn run_async() -> Result<(), FundedError> {
     let relay_url = config.relay_url.clone();
     let mode_bitcoind = config.bitcoind.clone();
     let watch_bitcoind = config.bitcoind.clone();
-    let mode_cln = config.cln.clone();
+    let mode_lightning = config.lightning.clone();
     let network = config.network;
     let health_bind = config.health_bind;
     let alert_endpoint = config.alert_endpoint.clone();
@@ -128,7 +130,7 @@ async fn run_async() -> Result<(), FundedError> {
         provider_store,
         wallet,
         mode_bitcoind,
-        mode_cln,
+        mode_lightning,
         FundedModePolicy {
             network,
             cooperative_signing: false,
@@ -241,18 +243,15 @@ async fn verify_bitcoind(config: &FundedProviderConfig) -> Result<(), FundedErro
     Ok(())
 }
 
-async fn verify_cln(config: &FundedProviderConfig) -> Result<(), FundedError> {
+async fn verify_lightning(config: &FundedProviderConfig) -> Result<(), FundedError> {
     let info = config
-        .cln
-        .node_info(
-            &crate::cln::ClnRequestId::new("provider-startup:getinfo")
-                .map_err(|error| FundedError::Cln(error.to_string()))?,
-        )
+        .lightning
+        .node_info("provider-startup:getinfo")
         .await
-        .map_err(|error| FundedError::Cln(error.to_string()))?;
-    if info.network != cln_network_name(config.network) {
-        return Err(FundedError::Cln(
-            "CLN network differs from provider configuration".to_owned(),
+        .map_err(|error| FundedError::Lightning(error.to_string()))?;
+    if info.network != network_name(config.network) {
+        return Err(FundedError::Lightning(
+            "Lightning network differs from provider configuration".to_owned(),
         ));
     }
     Ok(())
@@ -278,15 +277,6 @@ async fn await_shutdown<T>(
 fn network_name(network: BitcoinNetwork) -> &'static str {
     match network {
         BitcoinNetwork::Mainnet => "mainnet",
-        BitcoinNetwork::Testnet => "testnet",
-        BitcoinNetwork::Signet => "signet",
-        BitcoinNetwork::Regtest => "regtest",
-    }
-}
-
-fn cln_network_name(network: BitcoinNetwork) -> &'static str {
-    match network {
-        BitcoinNetwork::Mainnet => "bitcoin",
         BitcoinNetwork::Testnet => "testnet",
         BitcoinNetwork::Signet => "signet",
         BitcoinNetwork::Regtest => "regtest",

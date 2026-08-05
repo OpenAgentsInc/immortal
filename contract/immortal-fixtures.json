@@ -91,8 +91,8 @@
     },
     {
       "path": "tests/fixtures/lab/provisioning-v1.json",
-      "sha256": "4c925828030ec0b00a0429f0a2fbcb95a88bf845c720085eeca7c4e3eaeae661",
-      "bytes": 3364,
+      "sha256": "cf01761ad46bc62cd4b9ded836ca64b33bccf07507ebe23c0b694388a365ad70",
+      "bytes": 3758,
       "scope": "client"
     },
     {

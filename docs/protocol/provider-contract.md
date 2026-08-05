@@ -4,7 +4,8 @@ The provider runtime exports its machine-readable v1 surface separately from
 the relay contract. The canonical artifact is
 `tests/fixtures/provider/provider-contract-v1.json`; its provider-only source
 fixtures include `provider-runtime-v1.json` and
-`settlement-construction-v1.json`.
+`settlement-construction-v1.json`; the optional LND wire surface is pinned by
+`lnd-rest-v1.json`.
 
 That runtime fixture is executable, not descriptive metadata. Provider unit
 tests replay its held-HTLC amount/state/expiry refusals, signed exclusive
@@ -24,7 +25,10 @@ The v1 relay transport is a bounded `ws://` URL whose resolved and connected
 peer is loopback. Both funded and no-spend modes reject public or TLS relay
 URLs before entering their run loops; TLS relay support would require the
 conditionally approved TLS dependency path. The CLN surface records `help` as
-the startup probe plus the ten exact methods whose presence it verifies.
+the startup probe plus the ten exact methods whose presence it verifies. The
+feature-gated LND surface records its bounded HTTPS REST methods, exact
+operator-pinned certificate policy, three least-privilege macaroon scopes,
+loopback-only DNS/peer checks, and native hold-invoice operations.
 `getinfo` must name the configured network and carry no bitcoind or lightningd
 sync warning; its height anchors the minimum acceptable shortest incoming-HTLC
 expiry in reverse Quotes.

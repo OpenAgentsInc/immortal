@@ -18,6 +18,14 @@ inject_at="${IMMORTAL_PROVIDER_FUNDED_INJECT_AT:-}"
 driver_outcome=complete
 expected_driver_error=""
 injection_timeout_seconds="${IMMORTAL_PROVIDER_FUNDED_INJECTION_TIMEOUT_SECONDS:-300}"
+lightning_rail="${IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL:-cln}"
+provider_service=provider
+if test "${lightning_rail}" = lnd; then
+  provider_service=provider-lnd
+elif test "${lightning_rail}" != cln; then
+  echo "test-provider-funded: Lightning rail must be cln or lnd" >&2
+  exit 1
+fi
 
 cleanup() {
   local exit_status=$?
@@ -53,7 +61,12 @@ umask 077
 mkdir -m 0700 "${private_root}/evidence" \
   "${private_root}/evidence/chain" \
   "${private_root}/evidence/lightning" \
-  "${private_root}/state"
+  "${private_root}/state" \
+  "${private_root}/lnd-credentials"
+for credential_name in tls.cert readonly.macaroon invoice.macaroon router.macaroon; do
+  : >"${private_root}/lnd-credentials/${credential_name}"
+done
+chmod 0600 "${private_root}/lnd-credentials"/*
 
 random_hex() {
   local byte_count="$1"
@@ -186,6 +199,8 @@ rpcallowip=0.0.0.0/0
 rpcport=18443
 rpcuser=immortal-smoke
 rpcpassword=${bitcoin_rpc_password}
+zmqpubrawblock=tcp://127.0.0.1:28332
+zmqpubrawtx=tcp://127.0.0.1:28333
 EOF
 
 cat >"${private_root}/cln-provider.conf" <<EOF
@@ -219,6 +234,29 @@ announce-addr=cln-peer:19847
 log-level=info
 EOF
 
+cat >"${private_root}/lnd-provider.conf" <<EOF
+[Application Options]
+debuglevel=info
+listen=0.0.0.0:19735
+rpclisten=127.0.0.1:10009
+restlisten=127.0.0.1:18081
+noseedbackup=1
+tlsextraip=127.0.0.1
+protocol.wumbo-channels=1
+
+[Bitcoin]
+bitcoin.active=1
+bitcoin.regtest=1
+bitcoin.node=bitcoind
+
+[Bitcoind]
+bitcoind.rpchost=127.0.0.1:18443
+bitcoind.rpcuser=immortal-smoke
+bitcoind.rpcpass=${bitcoin_rpc_password}
+bitcoind.zmqpubrawblock=tcp://127.0.0.1:28332
+bitcoind.zmqpubrawtx=tcp://127.0.0.1:28333
+EOF
+
 cat >"${private_root}/relay.env" <<EOF
 DATABASE_URL=postgres://immortal_relay:${relay_postgres_password}@relay-postgres:5432/immortal_relay
 IMMORTAL_BIND_ADDR=127.0.0.1
@@ -238,6 +276,38 @@ IMMORTAL_PROVIDER_BITCOIND_PORT=18443
 IMMORTAL_PROVIDER_BITCOIND_RPC_USER=immortal-smoke
 IMMORTAL_PROVIDER_BITCOIND_RPC_PASSWORD=${bitcoin_rpc_password}
 IMMORTAL_PROVIDER_CLN_RPC_PATH=/rail/cln-provider/lightning-rpc
+IMMORTAL_PROVIDER_WALLET_SEED_FILE=/run/immortal-private/provider-wallet-seed
+IMMORTAL_PROVIDER_HEALTH_BIND=127.0.0.1:9091
+IMMORTAL_PROVIDER_ALERT_URL=http://127.0.0.1:19092/provider-alert
+IMMORTAL_PROVIDER_CHAIN_POLL_SECONDS=1
+IMMORTAL_PROVIDER_CHAIN_STALE_SECONDS=10
+IMMORTAL_PROVIDER_MINIMUM_CONFIRMATIONS=${minimum_confirmations}
+IMMORTAL_PROVIDER_REORG_SAFETY_BLOCKS=${reorg_safety_blocks}
+IMMORTAL_PROVIDER_SPREAD_BPS=100
+IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB=2
+IMMORTAL_PROVIDER_QUOTE_MIN_SAT=10000
+IMMORTAL_PROVIDER_QUOTE_MAX_SAT=1000000
+IMMORTAL_PROVIDER_QUOTE_EXPIRY_SECONDS=600
+IMMORTAL_PROVIDER_RESERVATION_TIER=hard
+IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM=2900
+EOF
+
+cat >"${private_root}/provider-lnd.env" <<EOF
+IMMORTAL_PROVIDER_DATABASE_URL=postgres://immortal_provider:${provider_postgres_password}@provider-postgres:5432/immortal_provider
+IMMORTAL_PROVIDER_RELAY_URL=ws://127.0.0.1:18080
+IMMORTAL_PROVIDER_IDENTITY_SECRET=${provider_identity_secret}
+IMMORTAL_PROVIDER_BITCOIN_NETWORK=regtest
+IMMORTAL_PROVIDER_BITCOIND_HOST=127.0.0.1
+IMMORTAL_PROVIDER_BITCOIND_PORT=18443
+IMMORTAL_PROVIDER_BITCOIND_RPC_USER=immortal-smoke
+IMMORTAL_PROVIDER_BITCOIND_RPC_PASSWORD=${bitcoin_rpc_password}
+IMMORTAL_PROVIDER_LIGHTNING_RAIL=lnd
+IMMORTAL_PROVIDER_LND_HOST=127.0.0.1
+IMMORTAL_PROVIDER_LND_PORT=18081
+IMMORTAL_PROVIDER_LND_TLS_CERT_FILE=/run/immortal-lnd/tls.cert
+IMMORTAL_PROVIDER_LND_READONLY_MACAROON_FILE=/run/immortal-lnd/readonly.macaroon
+IMMORTAL_PROVIDER_LND_INVOICE_MACAROON_FILE=/run/immortal-lnd/invoice.macaroon
+IMMORTAL_PROVIDER_LND_ROUTER_MACAROON_FILE=/run/immortal-lnd/router.macaroon
 IMMORTAL_PROVIDER_WALLET_SEED_FILE=/run/immortal-private/provider-wallet-seed
 IMMORTAL_PROVIDER_HEALTH_BIND=127.0.0.1:9091
 IMMORTAL_PROVIDER_ALERT_URL=http://127.0.0.1:19092/provider-alert
@@ -327,6 +397,37 @@ cln_cli() {
     "$@"
 }
 
+lnd_cli() {
+  compose exec -T lnd-provider lncli \
+    --network=regtest \
+    --lnddir=/root/.lnd \
+    "$@"
+}
+
+lnd_wallet_ready() {
+  local expected_height="$1"
+  local actual_height
+  actual_height="$(lnd_cli getinfo | json_field block_height)"
+  if test "${actual_height}" -lt "${expected_height}"; then
+    return 1
+  fi
+  lnd_cli walletbalance | python3 -c '
+import json, sys
+balance = json.load(sys.stdin).get("confirmed_balance", "0")
+raise SystemExit(0 if int(balance) > 0 else 1)
+'
+}
+
+lnd_channel_ready() {
+  local peer_node_id="$1"
+  lnd_cli listchannels | python3 -c '
+import json, sys
+peer = sys.argv[1]
+channels = json.load(sys.stdin).get("channels", [])
+raise SystemExit(0 if any(channel.get("remote_pubkey") == peer and channel.get("active") is True for channel in channels) else 1)
+' "${peer_node_id}"
+}
+
 cln_channel_ready() {
   local peer_node_id="$1"
   cln_cli cln-provider listpeerchannels | python3 -c '
@@ -360,12 +461,12 @@ json_field() {
 
 wait_for_provider() {
   for _ in $(seq 1 180); do
-    if compose exec -T provider /usr/bin/curl \
+    if compose exec -T "${provider_service}" /usr/bin/curl \
       --fail --silent --show-error http://127.0.0.1:9091/healthz \
       >/dev/null 2>&1; then
       return 0
     fi
-    if ! compose ps --services --status running | grep -qx provider; then
+    if ! compose ps --services --status running | grep -qx "${provider_service}"; then
       echo "test-provider-funded: funded provider daemon exited before readiness" >&2
       return 1
     fi
@@ -398,11 +499,17 @@ raise SystemExit(0 if transactions == [] else 1)
     echo "test-provider-funded: rejected injection left a Bitcoin transaction in the mempool" >&2
     return 1
   fi
-  if ! cln_cli cln-provider listpays | python3 -c '
+  if test "${lightning_rail}" = cln; then
+    provider_payments="$(cln_cli cln-provider listpays)"
+  else
+    provider_payments="$(lnd_cli listpayments)"
+  fi
+  if ! python3 -c '
 import json, sys
-pays = json.load(sys.stdin).get("pays")
+response = json.load(sys.stdin)
+pays = response.get("pays", response.get("payments", []))
 raise SystemExit(0 if pays == [] else 1)
-'; then
+' <<<"${provider_payments}"; then
     echo "test-provider-funded: rejected injection started a provider Lightning payment" >&2
     return 1
   fi
@@ -474,19 +581,19 @@ PY
         return 1
       fi
       compose up --detach relay >/dev/null
-      wait_for "restored relay" compose run --rm --no-deps --entrypoint /usr/bin/curl provider \
+      wait_for "restored relay" compose run --rm --no-deps --entrypoint /usr/bin/curl "${provider_service}" \
         --fail --silent --show-error http://127.0.0.1:18080/health
-      compose up --detach --force-recreate provider >/dev/null
+      compose up --detach --force-recreate "${provider_service}" >/dev/null
       wait_for_provider
       ;;
     provider_crash)
       current_phase=provider-crash-injection
-      compose kill provider >/dev/null
-      if compose ps --services --status running | grep -qx provider; then
+      compose kill "${provider_service}" >/dev/null
+      if compose ps --services --status running | grep -qx "${provider_service}"; then
         echo "test-provider-funded: provider remained running after the crash injection" >&2
         return 1
       fi
-      compose up --detach provider >/dev/null
+      compose up --detach "${provider_service}" >/dev/null
       wait_for_provider
       ;;
     *)
@@ -556,8 +663,11 @@ if ! compose config --quiet; then
   exit 1
 fi
 current_phase=image-build
-if ! compose build bitcoin cln-provider cln-peer relay provider driver alert-sink \
-  >"${private_root}/build.log" 2>&1; then
+build_services=(bitcoin cln-peer relay driver alert-sink "${provider_service}")
+if test "${lightning_rail}" = cln; then
+  build_services+=(cln-provider)
+fi
+if ! compose build "${build_services[@]}" >"${private_root}/build.log" 2>&1; then
   echo "test-provider-funded: disposable images did not build" >&2
   exit 1
 fi
@@ -574,14 +684,33 @@ wait_for "relay Postgres" compose exec -T relay-postgres \
   pg_isready -U immortal_relay -d immortal_relay
 wait_for "Bitcoin Core regtest" bitcoin_cli getblockchaininfo
 current_phase=rail-startup
-if ! compose up --detach relay cln-provider cln-peer alert-sink \
+lightning_services=(cln-peer)
+if test "${lightning_rail}" = cln; then
+  lightning_services+=(cln-provider)
+else
+  lightning_services+=(lnd-provider)
+fi
+if ! compose up --detach relay "${lightning_services[@]}" alert-sink \
   >>"${private_root}/startup.log" 2>&1; then
   echo "test-provider-funded: relay and Lightning services did not start" >&2
   exit 1
 fi
-wait_for "provider CLN" cln_cli cln-provider getinfo
 wait_for "peer CLN" cln_cli cln-peer getinfo
-wait_for "relay" compose run --rm --no-deps --entrypoint /usr/bin/curl provider \
+if test "${lightning_rail}" = cln; then
+  wait_for "provider CLN" cln_cli cln-provider getinfo
+else
+  wait_for "provider LND" lnd_cli getinfo
+  compose cp "lnd-provider:/root/.lnd/tls.cert" \
+    "${private_root}/lnd-credentials/tls.cert" >/dev/null
+  compose cp "lnd-provider:/root/.lnd/data/chain/bitcoin/regtest/readonly.macaroon" \
+    "${private_root}/lnd-credentials/readonly.macaroon" >/dev/null
+  compose cp "lnd-provider:/root/.lnd/data/chain/bitcoin/regtest/invoices.macaroon" \
+    "${private_root}/lnd-credentials/invoice.macaroon" >/dev/null
+  compose cp "lnd-provider:/root/.lnd/data/chain/bitcoin/regtest/router.macaroon" \
+    "${private_root}/lnd-credentials/router.macaroon" >/dev/null
+  chmod 0600 "${private_root}/lnd-credentials"/*
+fi
+wait_for "relay" compose run --rm --no-deps --entrypoint /usr/bin/curl "${provider_service}" \
   --fail --silent --show-error http://127.0.0.1:18080/health
 wait_for "provider alert sink" compose exec -T alert-sink python3 -c '
 import urllib.request
@@ -589,12 +718,14 @@ with urllib.request.urlopen("http://127.0.0.1:19092/healthz", timeout=2) as resp
     raise SystemExit(0 if response.status == 200 and response.read() == b"ready\n" else 1)
 '
 
-for method_name in holdinvoice listholdinvoices settleholdinvoice cancelholdinvoice; do
-  if ! cln_cli cln-provider help "${method_name}" >/dev/null 2>&1; then
-    echo "test-provider-funded: provider CLN hold-plugin capability probe failed" >&2
-    exit 1
-  fi
-done
+if test "${lightning_rail}" = cln; then
+  for method_name in holdinvoice listholdinvoices settleholdinvoice cancelholdinvoice; do
+    if ! cln_cli cln-provider help "${method_name}" >/dev/null 2>&1; then
+      echo "test-provider-funded: provider CLN hold-plugin capability probe failed" >&2
+      exit 1
+    fi
+  done
+fi
 
 current_phase=rail-funding
 bitcoin_cli createwallet smoke-miner >/dev/null
@@ -602,34 +733,52 @@ miner_address="$(bitcoin_cli -rpcwallet=smoke-miner getnewaddress)"
 bitcoin_cli -rpcwallet=smoke-miner generatetoaddress 110 "${miner_address}" >/dev/null
 
 current_phase=rail-funding-cln-addresses
-provider_cln_address="$(cln_cli cln-provider newaddr bech32 | json_field bech32)"
 peer_cln_address="$(cln_cli cln-peer newaddr bech32 | json_field bech32)"
+if test "${lightning_rail}" = cln; then
+  provider_lightning_address="$(cln_cli cln-provider newaddr bech32 | json_field bech32)"
+else
+  provider_lightning_address="$(lnd_cli newaddress p2wkh | json_field address)"
+fi
 current_phase=rail-funding-cln-wallets
-bitcoin_cli -rpcwallet=smoke-miner sendtoaddress "${provider_cln_address}" 3.0 >/dev/null
+bitcoin_cli -rpcwallet=smoke-miner sendtoaddress "${provider_lightning_address}" 3.0 >/dev/null
 bitcoin_cli -rpcwallet=smoke-miner sendtoaddress "${peer_cln_address}" 1.0 >/dev/null
 bitcoin_cli -rpcwallet=smoke-miner generatetoaddress 6 "${miner_address}" >/dev/null
 chain_height="$(bitcoin_cli getblockcount)"
-wait_for "provider CLN wallet" cln_wallet_ready cln-provider "${chain_height}"
 wait_for "peer CLN wallet" cln_wallet_ready cln-peer "${chain_height}"
+if test "${lightning_rail}" = cln; then
+  wait_for "provider CLN wallet" cln_wallet_ready cln-provider "${chain_height}"
+else
+  wait_for "provider LND wallet" lnd_wallet_ready "${chain_height}"
+fi
 
 current_phase=rail-funding-connect
 peer_node_id="$(cln_cli cln-peer getinfo | json_field id)"
-cln_cli cln-provider connect "${peer_node_id}@cln-peer:19847" >/dev/null
 current_phase=rail-funding-channel
-cln_cli cln-provider -k fundchannel \
-  id="${peer_node_id}" \
-  amount=2000000sat \
-  feerate=253perkw \
-  announce=false \
-  push_msat=1000000000msat >/dev/null
+if test "${lightning_rail}" = cln; then
+  cln_cli cln-provider connect "${peer_node_id}@cln-peer:19847" >/dev/null
+  cln_cli cln-provider -k fundchannel \
+    id="${peer_node_id}" \
+    amount=2000000sat \
+    feerate=253perkw \
+    announce=false \
+    push_msat=1000000000msat >/dev/null
+else
+  lnd_cli connect "${peer_node_id}@cln-peer:19847" >/dev/null
+  lnd_cli openchannel --private --min_confs=1 --sat_per_vbyte=2 \
+    --push_amt=1000000 "${peer_node_id}" 2000000 >/dev/null
+fi
 bitcoin_cli -rpcwallet=smoke-miner generatetoaddress 6 "${miner_address}" >/dev/null
 
 current_phase=rail-funding-channel-readiness
-wait_for "balanced CLN channel" cln_channel_ready "${peer_node_id}"
+if test "${lightning_rail}" = cln; then
+  wait_for "balanced CLN channel" cln_channel_ready "${peer_node_id}"
+else
+  wait_for "balanced LND channel" lnd_channel_ready "${peer_node_id}"
+fi
 
 current_phase=provider-funding
 provider_address_log="${private_root}/provider-address.log"
-if ! compose run --rm --no-deps provider address \
+if ! compose run --rm --no-deps "${provider_service}" address \
   >"${provider_address_log}" 2>"${private_root}/provider-address-error.log"; then
   echo "test-provider-funded: provider address command failed" >&2
   exit 1
@@ -643,12 +792,12 @@ bitcoin_cli -rpcwallet=smoke-miner sendtoaddress "${provider_address}" 1.0 >/dev
 bitcoin_cli -rpcwallet=smoke-miner generatetoaddress 2 "${miner_address}" >/dev/null
 
 current_phase=provider-startup
-if ! compose up --detach provider >>"${private_root}/startup.log" 2>&1; then
+if ! compose up --detach "${provider_service}" >>"${private_root}/startup.log" 2>&1; then
   echo "test-provider-funded: provider container did not start" >&2
   exit 1
 fi
 wait_for_provider
-compose exec -T provider /usr/bin/curl --fail --silent --show-error \
+compose exec -T "${provider_service}" /usr/bin/curl --fail --silent --show-error \
   http://127.0.0.1:9091/metrics >"${private_root}/evidence/metrics-before.txt"
 if ! grep -qx 'immortal_provider_ready 1' "${private_root}/evidence/metrics-before.txt"; then
   echo "test-provider-funded: provider metrics did not report readiness" >&2
@@ -794,8 +943,23 @@ for journey_name in submarine reverse reverse_refund; do
         >"${private_root}/evidence/lightning/${journey_name}.json"
       ;;
     provider:hold)
-      cln_cli cln-provider listholdinvoices "${payment_hash}" \
-        >"${private_root}/evidence/lightning/${journey_name}.json"
+      if test "${lightning_rail}" = cln; then
+        cln_cli cln-provider listholdinvoices "${payment_hash}" \
+          >"${private_root}/evidence/lightning/${journey_name}.json"
+      else
+        lnd_cli lookupinvoice --rhash "${payment_hash}" | python3 -c '
+import json, sys
+payment_hash, output_path = sys.argv[1:]
+invoice = json.load(sys.stdin)
+states = {"SETTLED": "paid", "CANCELED": "cancelled"}
+state = states.get(invoice.get("state"))
+if state is None:
+    raise SystemExit("LND hold invoice is not terminal")
+with open(output_path, "w", encoding="utf-8") as output:
+    json.dump({"holdinvoices": [{"payment_hash": payment_hash, "state": state}]}, output, separators=(",", ":"))
+    output.write("\n")
+' "${payment_hash}" "${private_root}/evidence/lightning/${journey_name}.json"
+      fi
       ;;
     *)
       echo "test-provider-funded: manifest has an unsupported Lightning evidence owner or kind" >&2
@@ -806,7 +970,7 @@ done
 chmod 0600 "${private_root}/evidence/chain"/*.json \
   "${private_root}/evidence/lightning"/*.json
 
-compose exec -T provider /usr/bin/curl --fail --silent --show-error \
+compose exec -T "${provider_service}" /usr/bin/curl --fail --silent --show-error \
   http://127.0.0.1:9091/metrics >"${private_root}/evidence/metrics-after.txt"
 if ! grep -qx 'immortal_provider_ready 1' "${private_root}/evidence/metrics-after.txt" \
   || ! grep -qx 'immortal_provider_watch_jobs_pending 0' "${private_root}/evidence/metrics-after.txt" \

@@ -167,12 +167,14 @@ including byte bounds and secret classifications, is exported by
 `immortal-provider contract` and documented in
 [`provider-contract.md`](../protocol/provider-contract.md).
 
-The funded v1 process connects only to a `ws://` relay whose resolved and
-connected peer is loopback, a loopback bitcoind JSON-RPC endpoint, and an
-absolute CLN Unix socket. This keeps the seven-dependency build free of a TLS
-stack. A provider operator can run a separately configured local relay product
-on the same host; public `wss://` provider transport requires the approved TLS
-feature path and is not claimed by v1.
+The funded process connects only to a `ws://` relay whose resolved and
+connected peer is loopback, a loopback bitcoind JSON-RPC endpoint, and one
+selected Lightning rail. The default `cln` rail uses an absolute Unix socket
+and keeps the seven-dependency build free of a TLS stack. The optional `lnd`
+feature adds the owner-approved rustls chain and speaks bounded REST over TLS
+to a loopback LND endpoint whose exact leaf certificate is operator-pinned.
+A provider operator can run a separately configured local relay product on
+the same host; public `wss://` provider transport is not claimed.
 
 ### Provider required variables
 
@@ -186,17 +188,25 @@ feature path and is not claimed by v1.
 | `IMMORTAL_PROVIDER_BITCOIND_PORT` | funded | JSON-RPC port, 1–65,535. |
 | `IMMORTAL_PROVIDER_BITCOIND_RPC_USER` | funded | Basic-auth username, 1–256 bytes. |
 | `IMMORTAL_PROVIDER_BITCOIND_RPC_PASSWORD` | funded | Basic-auth password, 1–1,024 bytes. |
-| `IMMORTAL_PROVIDER_CLN_RPC_PATH` | funded | Absolute CLN Unix-socket path, 1–4,096 bytes. Startup probes `help` for every required standard and hold-plugin command. |
+| `IMMORTAL_PROVIDER_CLN_RPC_PATH` | funded with `cln` rail | Absolute CLN Unix-socket path, 1–4,096 bytes. Startup probes `help` for every required standard and hold-plugin command. |
+| `IMMORTAL_PROVIDER_LND_HOST` | funded with `lnd` rail | Host that resolves and connects only to loopback. |
+| `IMMORTAL_PROVIDER_LND_PORT` | funded with `lnd` rail | LND REST TLS port, 1–65,535. |
+| `IMMORTAL_PROVIDER_LND_TLS_CERT_FILE` | funded with `lnd` rail | Absolute path to the operator-reviewed LND PEM certificate. The client pins the exact single leaf certificate and still verifies the TLS handshake signature. |
+| `IMMORTAL_PROVIDER_LND_READONLY_MACAROON_FILE` | funded with `lnd` rail | Absolute mode-`0600` readonly macaroon path for node, channel, and block observation. |
+| `IMMORTAL_PROVIDER_LND_INVOICE_MACAROON_FILE` | funded with `lnd` rail | Absolute mode-`0600` invoices macaroon path for native hold-invoice create, lookup, settle, and cancel. |
+| `IMMORTAL_PROVIDER_LND_ROUTER_MACAROON_FILE` | funded with `lnd` rail | Absolute mode-`0600` router macaroon path for bounded send and track operations. |
 | `IMMORTAL_PROVIDER_WALLET_SEED_FILE` | funded | Absolute UTF-8 path, 1–4,096 bytes, to a nonsymlink regular file owned by the operator and mode `0600`. The file contains exactly 32 lowercase-hex bytes with an optional final newline. |
 
-The identity, database credential, RPC credentials, CLN socket path, and
-wallet seed path are sensitive. They must not appear in argv, logs, fixtures,
-provider Postgres, relay state, or the contract artifact.
+The identity, database credential, RPC credentials, CLN socket path, LND
+macaroon paths, and wallet seed path are sensitive. They must not appear in
+argv, logs, fixtures, provider Postgres, relay state, or configured values in
+the contract artifact.
 
 ### Provider optional variables
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `IMMORTAL_PROVIDER_LIGHTNING_RAIL` | `cln` | Selected internal Lightning rail: `cln` or, when built with `--features lnd`, `lnd`. Selecting unavailable or incomplete rail configuration fails startup. |
 | `IMMORTAL_PROVIDER_HEALTH_BIND` | `127.0.0.1:9091` | Private or loopback health/metrics listener. Public addresses fail startup. |
 | `IMMORTAL_PROVIDER_ALERT_URL` | disabled | Bounded plaintext HTTP URL on a private numeric or loopback address. HTTPS is outside the v1 dependency profile. |
 | `IMMORTAL_PROVIDER_CHAIN_POLL_SECONDS` | `5` | Chain polling interval, 1–300 seconds. |

@@ -1,0 +1,164 @@
+{
+  "schema": "openagents.immortal.provider-lnd-rest.v1",
+  "source": {
+    "project": "lightningnetwork/lnd",
+    "interface": "REST",
+    "reference": "https://api.lightning.community/api/lnd/rest-endpoints/"
+  },
+  "transport": {
+    "tls": "operator_pinned_certificate",
+    "authentication_header": "Grpc-Metadata-Macaroon",
+    "macaroon_encoding": "lowercase_hex",
+    "redirects": false,
+    "one_request_per_connection": true,
+    "stream_encoding": "newline_delimited_grpc_gateway_json"
+  },
+  "cases": [
+    {
+      "name": "node_info",
+      "method": "GET",
+      "path": "/v1/getinfo",
+      "request": null,
+      "response": {
+        "block_height": 144,
+        "synced_to_chain": true,
+        "synced_to_graph": true,
+        "chains": [{"chain": "bitcoin", "network": "regtest"}]
+      }
+    },
+    {
+      "name": "channel_capacity",
+      "method": "GET",
+      "path": "/v1/channels?active_only=true",
+      "request": null,
+      "response": {
+        "channels": [
+          {
+            "active": true,
+            "local_balance": "21000",
+            "commit_fee": "500",
+            "pending_htlcs": [{"incoming": false, "amount": "100"}],
+            "local_constraints": {"chan_reserve_sat": "1000"},
+            "remote_constraints": {"max_pending_amt_msat": "50000000", "max_accepted_htlcs": 30}
+          },
+          {
+            "active": false,
+            "local_balance": "999999999",
+            "commit_fee": "0",
+            "pending_htlcs": [],
+            "local_constraints": {"chan_reserve_sat": "0"},
+            "remote_constraints": {"max_pending_amt_msat": "999999999000", "max_accepted_htlcs": 30}
+          },
+          {
+            "active": true,
+            "local_balance": "50000",
+            "commit_fee": "500",
+            "pending_htlcs": [{"incoming": false, "amount": "100"}],
+            "local_constraints": {"chan_reserve_sat": "1000"},
+            "remote_constraints": {"max_pending_amt_msat": "50000000", "max_accepted_htlcs": 1}
+          }
+        ]
+      }
+    },
+    {
+      "name": "hold_invoice",
+      "method": "POST",
+      "path": "/v2/invoices/hodl",
+      "request": {
+        "hash": "lsdyqCn7fHgEEPHYXPEqieizx4wLrF+0f2J1i/lh7DA=",
+        "value_msat": "1000000",
+        "expiry": "604800",
+        "cltv_expiry": "80",
+        "private": true
+      },
+      "response": {
+        "payment_request": "lnbc10u1p3unwfusp5t9r3yymhpfqculx78u027lxspgxcr2n2987mx2j55nnfs95nxnzqpp5jmrh92pfld78spqs78v9euf2385t83uvpwk9ldrlvf6ch7tpascqhp5zvkrmemgth3tufcvflmzjzfvjt023nazlhljz2n9hattj4f8jq8qxqyjw5qcqpjrzjqtc4fc44feggv7065fqe5m4ytjarg3repr5j9el35xhmtfexc42yczarjuqqfzqqqqqqqqlgqqqqqqgq9q9qxpqysgq079nkq507a5tw7xgttmj4u990j7wfggtrasah5gd4ywfr2pjcn29383tphp4t48gquelz9z78p4cq7ml3nrrphw5w6eckhjwmhezhnqpy6gyf0",
+        "add_index": "7"
+      }
+    },
+    {
+      "name": "channel_capacity_invalid_pending_direction",
+      "method": "GET",
+      "path": "/v1/channels?active_only=true",
+      "request": null,
+      "response": {
+        "channels": [
+          {
+            "active": true,
+            "local_balance": "21000",
+            "commit_fee": "500",
+            "pending_htlcs": [{"incoming": "false", "amount": "100"}],
+            "local_constraints": {"chan_reserve_sat": "1000"},
+            "remote_constraints": {"max_pending_amt_msat": "50000000", "max_accepted_htlcs": 30}
+          }
+        ]
+      }
+    },
+    {
+      "name": "lookup_invoice",
+      "method": "GET",
+      "path": "/v1/invoice/96c772a829fb7c780410f1d85cf12a89e8b3c78c0bac5fb47f62758bf961ec30",
+      "request": null,
+      "response": {
+        "r_hash": "lsdyqCn7fHgEEPHYXPEqieizx4wLrF+0f2J1i/lh7DA=",
+        "payment_request": "lnbc10u1p3unwfusp5t9r3yymhpfqculx78u027lxspgxcr2n2987mx2j55nnfs95nxnzqpp5jmrh92pfld78spqs78v9euf2385t83uvpwk9ldrlvf6ch7tpascqhp5zvkrmemgth3tufcvflmzjzfvjt023nazlhljz2n9hattj4f8jq8qxqyjw5qcqpjrzjqtc4fc44feggv7065fqe5m4ytjarg3repr5j9el35xhmtfexc42yczarjuqqfzqqqqqqqqlgqqqqqqgq9q9qxpqysgq079nkq507a5tw7xgttmj4u990j7wfggtrasah5gd4ywfr2pjcn29383tphp4t48gquelz9z78p4cq7ml3nrrphw5w6eckhjwmhezhnqpy6gyf0",
+        "value_msat": "1000000",
+        "state": "ACCEPTED",
+        "htlcs": [{"state": "ACCEPTED", "amt_msat": "1000000", "expiry_height": 224}]
+      }
+    },
+    {
+      "name": "settle_invoice",
+      "method": "POST",
+      "path": "/v2/invoices/settle",
+      "request": {"preimage": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="},
+      "response": {}
+    },
+    {
+      "name": "cancel_invoice",
+      "method": "POST",
+      "path": "/v2/invoices/cancel",
+      "request": {"payment_hash": "lsdyqCn7fHgEEPHYXPEqieizx4wLrF+0f2J1i/lh7DA="},
+      "response": {}
+    },
+    {
+      "name": "send_payment",
+      "method": "POST",
+      "path": "/v2/router/send",
+      "request": {
+        "payment_request": "lnbcrt10u1p489c7rpp5vvxu62txcsekdygj23ythvjmfl6p9fyuwvkm9j9tcxu9sx7hzrwsdq6d9kk6mmjw3skcttxd9u8gatjv5cqzzsxqyjw5qsp5cn6jpj7y8erx4ptq053e3wxsuqmzd2vf89spv0gnqwjyqpffy7lq9qxpqysgq7a3ujjdmarghmnawvwcrn0vcvt2wklkh8lccnp00geuxye5xaj09j2pjg3d0wf6gcvelgrhy23acaa7uu9ra30wfjr3qwswm3yvkc7gp7dllky",
+        "fee_limit_msat": "10000",
+        "timeout_seconds": 60,
+        "no_inflight_updates": true
+      },
+      "response_stream": [
+        {"result": {"status": "SUCCEEDED", "payment_hash": "630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd", "payment_preimage": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "value_msat": "1000000", "fee_msat": "9000", "creation_time_ns": "1674164540000000000", "htlcs": [{"resolve_time_ns": "1674164541000000000"}]}}
+      ]
+    },
+    {
+      "name": "track_payment",
+      "method": "GET",
+      "path": "/v2/router/track/Yw3NKWbEM2aRElRIu7JbT_QSpJxzLbLIq8G4WBvXEN0=?no_inflight_updates=true",
+      "request": null,
+      "response_stream": [
+        {"result": {"status": "SUCCEEDED", "payment_hash": "630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd", "payment_preimage": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f", "value_msat": "1000000", "fee_msat": "9000", "creation_time_ns": "1674164540000000000", "htlcs": [{"resolve_time_ns": "1674164541000000000"}]}}
+      ]
+    },
+    {
+      "name": "block_epoch",
+      "method": "POST",
+      "path": "/v2/chainnotifier/register/blocks",
+      "request": {},
+      "response_stream": [{"result": {"height": 144, "hash": "ERERERERERERERERERERERERERERERERERERERERERE="}}]
+    }
+  ],
+  "limits": {
+    "request_bytes": 1048576,
+    "response_bytes": 8388608,
+    "header_bytes": 16384,
+    "stream_messages": 64,
+    "resolved_addresses": 8,
+    "connect_timeout_seconds": 5,
+    "io_timeout_seconds": 30
+  }
+}

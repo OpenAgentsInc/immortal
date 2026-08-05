@@ -1,9 +1,10 @@
-use std::{env, fmt, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{env, fmt, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use crate::{
     bitcoind::{BitcoindAuth, BitcoindClient, BitcoindEndpoint, BitcoindLimits},
     cln::{ClnClient, ClnEndpoint, ClnLimits},
     health::{AlertEndpoint, private_or_loopback},
+    lightning::{ClnLightningRail, LightningRail},
     pricing::{PricingConfig, PricingConfigError, ReservationTier},
     relay_actor,
     wallet::{BitcoinNetwork, ProviderWallet},
@@ -24,6 +25,7 @@ pub enum ConfigError {
     Invalid(&'static str),
     Bitcoind,
     Cln,
+    Lnd,
     Wallet,
     Alert,
     Pricing(PricingConfigError),
@@ -36,6 +38,7 @@ impl fmt::Display for ConfigError {
             Self::Invalid(name) => write!(formatter, "provider setting {name} is invalid"),
             Self::Bitcoind => formatter.write_str("bitcoind settings are invalid"),
             Self::Cln => formatter.write_str("CLN settings are invalid"),
+            Self::Lnd => formatter.write_str("LND settings are invalid"),
             Self::Wallet => formatter.write_str("provider wallet settings are invalid"),
             Self::Alert => formatter.write_str("provider alert endpoint is invalid"),
             Self::Pricing(error) => write!(formatter, "provider {error}"),
@@ -64,7 +67,7 @@ pub struct FundedProviderConfig {
     database_url: DatabaseUrl,
     pub relay_url: String,
     pub bitcoind: BitcoindClient,
-    pub cln: ClnClient,
+    pub lightning: Arc<dyn LightningRail>,
     pub wallet: ProviderWallet,
     pub network: BitcoinNetwork,
     pub health_bind: SocketAddr,
@@ -83,7 +86,7 @@ impl fmt::Debug for FundedProviderConfig {
             .field("database_url", &self.database_url)
             .field("relay_url", &self.relay_url)
             .field("bitcoind", &self.bitcoind)
-            .field("cln", &self.cln)
+            .field("lightning", &self.lightning)
             .field("wallet", &self.wallet)
             .field("network", &self.network)
             .field("health_bind", &self.health_bind)
@@ -124,12 +127,7 @@ impl FundedProviderConfig {
         )
         .map_err(|_| ConfigError::Bitcoind)?;
 
-        let cln = ClnClient::new(
-            ClnEndpoint::new(PathBuf::from(required("IMMORTAL_PROVIDER_CLN_RPC_PATH")?))
-                .map_err(|_| ConfigError::Cln)?,
-            ClnLimits::default(),
-        )
-        .map_err(|_| ConfigError::Cln)?;
+        let lightning = lightning_from_environment()?;
         let wallet =
             ProviderWallet::load_from_environment(network).map_err(|_| ConfigError::Wallet)?;
 
@@ -179,7 +177,7 @@ impl FundedProviderConfig {
             database_url: DatabaseUrl(database_url),
             relay_url,
             bitcoind,
-            cln,
+            lightning,
             wallet,
             network,
             health_bind,
@@ -195,6 +193,63 @@ impl FundedProviderConfig {
     pub fn database_url(&self) -> &str {
         &self.database_url.0
     }
+}
+
+fn lightning_from_environment() -> Result<Arc<dyn LightningRail>, ConfigError> {
+    match optional("IMMORTAL_PROVIDER_LIGHTNING_RAIL").as_deref() {
+        None | Some("cln") => {
+            let client = ClnClient::new(
+                ClnEndpoint::new(PathBuf::from(required("IMMORTAL_PROVIDER_CLN_RPC_PATH")?))
+                    .map_err(|_| ConfigError::Cln)?,
+                ClnLimits::default(),
+            )
+            .map_err(|_| ConfigError::Cln)?;
+            Ok(Arc::new(ClnLightningRail::new(client)))
+        }
+        Some("lnd") => lnd_from_environment(),
+        Some(_) => Err(ConfigError::Invalid("IMMORTAL_PROVIDER_LIGHTNING_RAIL")),
+    }
+}
+
+#[cfg(feature = "lnd")]
+fn lnd_from_environment() -> Result<Arc<dyn LightningRail>, ConfigError> {
+    use crate::{
+        lightning::LndLightningRail,
+        lnd::{LndClient, LndEndpoint, LndLimits, LndMacaroon, LndMacaroons},
+    };
+
+    let port = parse_number::<u16>(
+        "IMMORTAL_PROVIDER_LND_PORT",
+        &required("IMMORTAL_PROVIDER_LND_PORT")?,
+    )?;
+    let client = LndClient::new(
+        LndEndpoint::new(required("IMMORTAL_PROVIDER_LND_HOST")?, port)
+            .map_err(|_| ConfigError::Lnd)?,
+        &PathBuf::from(required("IMMORTAL_PROVIDER_LND_TLS_CERT_FILE")?),
+        LndMacaroons::new(
+            LndMacaroon::load(&PathBuf::from(required(
+                "IMMORTAL_PROVIDER_LND_READONLY_MACAROON_FILE",
+            )?))
+            .map_err(|_| ConfigError::Lnd)?,
+            LndMacaroon::load(&PathBuf::from(required(
+                "IMMORTAL_PROVIDER_LND_INVOICE_MACAROON_FILE",
+            )?))
+            .map_err(|_| ConfigError::Lnd)?,
+            LndMacaroon::load(&PathBuf::from(required(
+                "IMMORTAL_PROVIDER_LND_ROUTER_MACAROON_FILE",
+            )?))
+            .map_err(|_| ConfigError::Lnd)?,
+        )
+        .map_err(|_| ConfigError::Lnd)?,
+        LndLimits::default(),
+    )
+    .map_err(|_| ConfigError::Lnd)?;
+    Ok(Arc::new(LndLightningRail::new(client)))
+}
+
+#[cfg(not(feature = "lnd"))]
+fn lnd_from_environment() -> Result<Arc<dyn LightningRail>, ConfigError> {
+    Err(ConfigError::Invalid("IMMORTAL_PROVIDER_LIGHTNING_RAIL"))
 }
 
 fn required(name: &'static str) -> Result<String, ConfigError> {

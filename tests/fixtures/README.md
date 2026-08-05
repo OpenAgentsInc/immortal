@@ -92,14 +92,19 @@ paths, and the source/unit-versus-process coverage boundary.
   unsigned bytes, signature messages, sighashes, deterministic signatures,
   witnesses, signed bytes, transaction IDs, fees, weights, and virtual sizes.
   The provider contract exports its exact digest.
+- `provider/lnd-rest-v1.json` pins the optional LND rail's exact REST methods,
+  scoped macaroon selection, lowercase-hex payment result fields, native hold
+  invoice states, and bounded stream responses. It contains synthetic public
+  hashes and responses only; no certificate, macaroon, preimage retained by a
+  running node, or configured endpoint appears in the fixture.
 - `lab/provisioning-v1.json` pins the non-secret #18 machine allocation: the
   shared regtest Bitcoin helpers including explicit RBF replacement, two
   provider-owned CLN nodes with required hold RPCs, a separate wallet CLN
   node, two relay/provider identities, balanced channel edges, teardown
   ownership checks, the digest-checked funded-smoke CLN-plus-hold image build,
-  and hook-only LND/elementsd/arkd extension boundaries.
-  It contains no node credentials or custody material and does not claim the
-  owning rail issues are implemented.
+  the implemented feature-gated LND process gate, and hook-only elementsd/arkd
+  extension boundaries. It contains no node credentials or custody material;
+  unimplemented rail hooks remain explicit.
 - `lab/funded-checkpoints-v1.json` pins the wallet driver's restart labels,
   exact Bitcoin/Lightning recovery rules, bounded failure vocabulary, and
   custody-free request/acknowledgement control. `lab/funded-matrix-v1.json`

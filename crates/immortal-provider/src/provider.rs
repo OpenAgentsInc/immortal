@@ -30,7 +30,11 @@ pub mod funding;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub mod health;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
+pub mod lightning;
+#[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub mod liquidity;
+#[cfg(all(feature = "lnd", not(target_arch = "wasm32")))]
+pub mod lnd;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub mod quote;
 #[cfg(all(

@@ -89,6 +89,12 @@ impl From<crate::cln::ReleasedPaymentPreimage> for ClaimPreimage {
     }
 }
 
+impl From<crate::lightning::LightningPaymentPreimage> for ClaimPreimage {
+    fn from(preimage: crate::lightning::LightningPaymentPreimage) -> Self {
+        Self::new(preimage.into_bytes())
+    }
+}
+
 impl Drop for ClaimPreimage {
     fn drop(&mut self) {
         self.0.fill(0);

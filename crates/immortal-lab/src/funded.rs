@@ -53,6 +53,7 @@ const OUTPUT_AMOUNT_SAT: u64 = 98_400;
 const NETWORK_ID: &str = "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4";
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const JOURNEY_TIMEOUT: Duration = Duration::from_secs(180);
+const LIGHTNING_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 const FULL_SESSION_FIXTURES: &str =
     include_str!("../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json");
 
@@ -2363,6 +2364,7 @@ fn complete_contract(
         "amount_equation",
         "rounding",
         "script_mode",
+        "musig2_execution",
         "desired_completion_time",
         "clock_skew_seconds",
         "legs",
@@ -2725,26 +2727,46 @@ fn verify_reverse_before_fund(
         .verify_before_fund_with_lightning(
             input,
             |request| {
-                let info = runtime
-                    .block_on(environment.peer_cln.node_info(&readiness_id))
-                    .map_err(|error| {
-                        format!("could not inspect requester CLN readiness: {error}")
+                let final_cltv_delta = u32::try_from(request.minimum_final_cltv_delta)
+                    .map_err(|_| "invoice final CLTV delta exceeds u32".to_owned())?;
+                let deadline = Instant::now() + LIGHTNING_READINESS_TIMEOUT;
+                let info = loop {
+                    let info = runtime
+                        .block_on(environment.peer_cln.node_info(&readiness_id))
+                        .map_err(|error| {
+                            format!("could not inspect requester CLN readiness: {error}")
+                        })?;
+                    let minimum_outgoing_expiry = info
+                        .block_height
+                        .checked_add(final_cltv_delta)
+                        .ok_or_else(|| {
+                        "requester CLN expiry calculation overflowed".to_owned()
                     })?;
+                    if minimum_outgoing_expiry >= request.hold_expiry_height
+                        || Instant::now() >= deadline
+                    {
+                        break info;
+                    }
+                    thread::sleep(Duration::from_millis(250));
+                };
                 let minimum_outgoing_expiry = info
                     .block_height
-                    .checked_add(
-                        u32::try_from(request.minimum_final_cltv_delta)
-                            .map_err(|_| "invoice final CLTV delta exceeds u32".to_owned())?,
-                    )
+                    .checked_add(final_cltv_delta)
                     .ok_or_else(|| "requester CLN expiry calculation overflowed".to_owned())?;
                 if info.network != request.network
                     || !request.hold_invoice_required
                     || info.block_height >= request.hold_expiry_height
                     || minimum_outgoing_expiry < request.hold_expiry_height
                 {
-                    return Err(
-                        "requester CLN cannot satisfy the bound hold-invoice timing".to_owned()
-                    );
+                    return Err(format!(
+                        "requester CLN cannot satisfy the bound hold-invoice timing: network={}, expected_network={}, height={}, hold_expiry_height={}, minimum_final_cltv_delta={}, hold_required={}",
+                        info.network,
+                        request.network,
+                        info.block_height,
+                        request.hold_expiry_height,
+                        request.minimum_final_cltv_delta,
+                        request.hold_invoice_required,
+                    ));
                 }
                 Ok(LocalLightningReadiness {
                     invoice_sha256: request.invoice_sha256.clone(),

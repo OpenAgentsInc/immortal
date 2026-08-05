@@ -175,6 +175,15 @@
       "expected_failure_code": "hold_invoice_cancelled"
     },
     {
+      "name": "provider-v1-reverse-invoice-cancellation-recovery",
+      "runtime_assertion": "reverse_invoice_cancellation_action",
+      "effect_persisted_before_remote_lookup": true,
+      "crash_after_remote_apply": true,
+      "remote_state_on_restart": "cancelled",
+      "expected_action": "complete_locally",
+      "repeat_remote_cancel": false
+    },
+    {
       "name": "provider-v1-cooperative-reverse-refund-watch-retirement",
       "runtime_assertion": "reverse_spend_decision",
       "spending_transaction_id": "4444444444444444444444444444444444444444444444444444444444444444",

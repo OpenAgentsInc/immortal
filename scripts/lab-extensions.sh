@@ -14,10 +14,10 @@ usage() {
 usage: scripts/lab-extensions.sh <command> [extension]
 
 commands:
-  manifest [lnd|elementsd|arkd]  print the pinned extension registry
-  up <lnd|elementsd|arkd>        invoke the configured extension hook
-  status <lnd|elementsd|arkd>    report hook and ownership state
-  down <lnd|elementsd|arkd>      tear down a wrapper-created extension
+  manifest [elementsd|arkd]  print the pinned extension registry
+  up <elementsd|arkd>        invoke the configured extension hook
+  status <elementsd|arkd>    report hook and ownership state
+  down <elementsd|arkd>      tear down a wrapper-created extension
 
 Each hook is an executable configured by the manifest's hook_environment
 field. It receives up, status, or down as argv[1] and these non-secret values:
@@ -42,7 +42,7 @@ extension_json() {
 require_extension() {
   local extension="${1:-}"
   if test -z "${extension}" || ! extension_json "${extension}" >/dev/null; then
-    echo "lab-extensions: extension must be lnd, elementsd, or arkd" >&2
+    echo "lab-extensions: extension must be elementsd or arkd" >&2
     exit 1
   fi
   echo "${extension}"

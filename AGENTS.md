@@ -29,6 +29,10 @@ Read `README.md` and `docs/MONOREPO.md` first.
      deployment path, behind a feature flag. The Debian single-box, Google
      Cloud Unix-socket, bitcoind-localhost, and CLN Unix-socket paths do not
      use it.
+   - `tokio-rustls` with its `rustls`, `ring`, and `zeroize` chain (owner
+     approval recorded by the LND rail decision, 2026-08-05). Purpose: the
+     provider's optional, feature-gated LND REST rail with an operator-pinned
+     certificate. Default builds and the CLN rail must not include this chain.
 
    MuSig2 decision (2026-08-05): retain `secp256k1` 0.31.1 and add no
    dependency. BIP-327 orchestration, nonce lifecycle, scalar arithmetic,

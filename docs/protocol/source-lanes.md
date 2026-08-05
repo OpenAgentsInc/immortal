@@ -552,12 +552,12 @@ precedence, and leaves the issue #11 collision result unchanged. The relay
 contract, relay Postgres schema, NIP-11 document, and relay
 executable-profile set are unaffected.
 
-The #25 `immortal-provider` funded-mode packet adopts Bitcoin Core JSON-RPC
+The #25 `immortal-provider` funded-mode packet adopted Bitcoin Core JSON-RPC
 over bounded loopback HTTP/1.1 and Core Lightning JSON-RPC over a bounded Unix
 socket. Bitcoin state is polled with bounded backoff; ZMQ is not adopted.
-Core Lightning is the only v1 Lightning implementation, with the Boltz hold
-plugin declared as an operator prerequisite. LND and its TLS dependency chain
-remain deferred. Dynamic Bitcoin/Lightning Quotes require no external price
+Core Lightning was the first Lightning implementation, with the Boltz hold
+plugin declared as an operator prerequisite; the later #29 decision below
+adds the optional LND rail. Dynamic Bitcoin/Lightning Quotes require no external price
 feed: submarine RFQs carry the requester invoice, while reverse Quotes carry
 the provider-created hold invoice and its digest. A reverse Quote derives its
 minimum acceptable shortest incoming-HTLC expiry from CLN's synchronized
@@ -799,3 +799,38 @@ and only then passed unchanged to broadcast. This changes no source-lane
 precedence, kind allocation, endpoint denominator, or emulation count. The
 external provider listener and actual process replay remain the next #15
 adoption evidence.
+
+## M12 LND provider-rail decision (2026-08-05)
+
+Issue #29 changes no NIP source pin, event-kind allocation, relay behavior,
+relay Postgres schema, or NIP-11 advertisement. It adds LND as a second
+implementation of the provider's narrow internal Lightning rail; provider
+sessions continue to consume the same node-height, channel-capacity,
+hold-invoice, payment, settlement-time, settle, and cancel operations without
+LND-specific state or vocabulary.
+
+The default provider and CLN builds retain their existing direct dependency
+set. The off-by-default `lnd` feature adopts the owner-approved direct
+`tokio-rustls` dependency and its rustls, ring, and zeroize transitive chain.
+No gRPC, tonic, protobuf, macaroon, HTTP, or URL crate is added. The in-repo
+adapter speaks bounded HTTP/1.1 REST over a Tokio TCP/TLS stream, requires DNS
+resolution and the connected peer to remain loopback, pins the exact single
+operator-supplied leaf certificate, and still verifies the TLS handshake
+signature. Redirects and public endpoints fail closed.
+
+Authentication uses separate mode-0600 readonly, invoices, and router
+macaroon files, encoded only into the scoped request header and redacted from
+debug output. The provider never requests or mounts an admin macaroon. LND's
+native hold-invoice RPCs replace the CLN hold-plugin operations; payment
+results bind the requested BOLT11 hash and amount, validate the released
+preimage, and recover an already-started payment by tracking its exact hash.
+Macaroons, certificates, and released preimages are never stored in provider
+Postgres or relay state.
+
+`provider/lnd-rest-v1.json` pins the exact REST paths, JSON/base64/hex wire
+shapes, stream bounds, and macaroon scopes. On 2026-08-05, the LND funded-smoke
+variant passed the same submarine, reverse-claim, reverse-refund, restart,
+public-chain, invoice-state, durable-effect, and zero-watch assertions as the
+CLN variant against the pinned official LND image. That recorded local gate
+makes an LND provider a legal #18 lab participant; it is not clean-host or
+live-deployment evidence, and #19 still owns any public replacement claim.

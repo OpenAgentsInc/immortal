@@ -96,6 +96,20 @@ services:
     networks:
       - smoke
 
+  lnd-provider:
+    image: lightninglabs/lnd:v0.20.1-beta@sha256:f0a2bdc4b8bc89cb3b31b6e12d6b16ac5145defd916d8152cf0c1c07d8697cff
+    command: ["--configfile=/run/immortal-private/lnd-provider.conf"]
+    depends_on:
+      - bitcoin
+    network_mode: service:bitcoin
+    restart: "no"
+    volumes:
+      - lnd-provider-data:/root/.lnd
+      - type: bind
+        source: ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/lnd-provider.conf
+        target: /run/immortal-private/lnd-provider.conf
+        read_only: true
+
   alert-sink:
     build:
       context: .
@@ -137,6 +151,44 @@ services:
         target: /run/immortal-private/provider-wallet-seed
         read_only: true
 
+  provider-lnd:
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.provider
+      target: provider-lnd
+    command: ["run"]
+    env_file:
+      - ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/provider-lnd.env
+    network_mode: service:bitcoin
+    depends_on:
+      - bitcoin
+      - lnd-provider
+      - provider-postgres
+      - relay
+      - alert-sink
+    restart: "no"
+    volumes:
+      - type: bind
+        source: ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/provider-wallet-seed
+        target: /run/immortal-private/provider-wallet-seed
+        read_only: true
+      - type: bind
+        source: ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/lnd-credentials/tls.cert
+        target: /run/immortal-lnd/tls.cert
+        read_only: true
+      - type: bind
+        source: ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/lnd-credentials/readonly.macaroon
+        target: /run/immortal-lnd/readonly.macaroon
+        read_only: true
+      - type: bind
+        source: ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/lnd-credentials/invoice.macaroon
+        target: /run/immortal-lnd/invoice.macaroon
+        read_only: true
+      - type: bind
+        source: ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/lnd-credentials/router.macaroon
+        target: /run/immortal-lnd/router.macaroon
+        read_only: true
+
   driver:
     build:
       context: ../../..
@@ -173,5 +225,6 @@ volumes:
   cln-peer-rpc:
   cln-provider-data:
   cln-provider-rpc:
+  lnd-provider-data:
   provider-postgres-data:
   relay-postgres-data:

@@ -2,9 +2,10 @@
 
 This is the operator contract for the custody-bearing `immortal-provider` v1
 binary. It runs as a product separate from the `immortal` relay, owns a
-separate Postgres database, and drives operator-owned Bitcoin Core and Core
-Lightning nodes. The wallet seed, CLN wallet, node credentials, private keys,
-and unreleased preimages never enter provider Postgres or relay state.
+separate Postgres database, and drives operator-owned Bitcoin Core and either
+Core Lightning or LND. The wallet seed, Lightning wallet, node credentials,
+private keys, and unreleased preimages never enter provider Postgres or relay
+state.
 
 The M12 closing packet (#19) records the clean-host execution evidence and
 adds the network shadow/cutover procedure. The commands and boundaries here
@@ -16,9 +17,14 @@ Use Debian 13 on amd64 or arm64 with:
 
 - Postgres 17 from apt;
 - Bitcoin Core with JSON-RPC reachable only on loopback;
-- Core Lightning with its native Unix JSON-RPC socket;
-- Boltz `hold` plugin v0.3.3; and
 - a separately configured loopback Immortal relay product.
+
+Choose one Lightning rail:
+
+- Core Lightning with its native Unix JSON-RPC socket and Boltz `hold` plugin
+  v0.3.3; or
+- LND v0.20.1-beta with its TLS REST listener bound to loopback, native hold
+  invoices, and separate readonly, invoices, and router macaroons.
 
 The local conformance gate pins Bitcoin Core 31.1, Core Lightning v26.06.6,
 and `hold` v0.3.3. Its independently checked hold archives and hashes are in
@@ -26,7 +32,7 @@ and `hold` v0.3.3. Its independently checked hold archives and hashes are in
 release manually, download it from the upstream release, verify the matching
 SHA-256 before extraction, and install the binary root-owned and mode `0755`.
 
-The provider uses CLN's Unix socket only. Disable the hold plugin's optional
+For CLN, the provider uses the Unix socket only. Disable the hold plugin's optional
 gRPC/TLS listener and configure it as a normal `lightningd` plugin:
 
 ```ini
@@ -42,13 +48,19 @@ holdinvoice listholdinvoices settleholdinvoice cancelholdinvoice
 invoice pay listinvoices listpays listfunds getinfo
 ```
 
-Provider startup performs the same ten probes and exits on the first missing
+CLN startup performs the same ten probes and exits on the first missing
 capability. Its first `getinfo` must name the configured network and contain
 neither sync warning. Quote construction then waits in bounded 250 ms polls
 when CLN temporarily trails bitcoind, and defers the Quote after 40 attempts;
-an RFQ is not rejected merely because the local rails are converging. LND,
-ZMQ, MuSig2 key-path settlement, HTTPS price feeds, and public
-`wss://` provider transport are not v1 capabilities.
+an RFQ is not rejected merely because the local rails are converging.
+
+For LND, bind REST TLS to loopback and leave its native hold-invoice service
+enabled. The provider pins the exact operator-supplied leaf certificate,
+authenticates each operation with the least-privilege macaroon, validates the
+TLS handshake signature, and refuses a public resolved or connected peer. It
+probes `getinfo` and the block notifier before becoming ready. No gRPC client,
+LND admin macaroon, or hold plugin is used. ZMQ, HTTPS price feeds, and public
+`wss://` provider transport remain excluded.
 
 ## 2. Build and install
 
@@ -57,7 +69,11 @@ Install the build and database packages, then build only the provider product:
 ```sh
 sudo apt-get update
 sudo apt-get install -y postgresql curl ca-certificates cargo build-essential
+# CLN/default build
 cargo build --locked --release -p immortal-provider --bin immortal-provider
+
+# LND build; the optional rustls chain is present only in this product build
+cargo build --locked --release -p immortal-provider --bin immortal-provider --features lnd
 ```
 
 Create a service account and immutable release directory:
@@ -125,6 +141,7 @@ IMMORTAL_PROVIDER_BITCOIND_HOST=127.0.0.1
 IMMORTAL_PROVIDER_BITCOIND_PORT=8332
 IMMORTAL_PROVIDER_BITCOIND_RPC_USER=<BITCOIND_RPC_USER>
 IMMORTAL_PROVIDER_BITCOIND_RPC_PASSWORD=<BITCOIND_RPC_PASSWORD>
+IMMORTAL_PROVIDER_LIGHTNING_RAIL=cln
 IMMORTAL_PROVIDER_CLN_RPC_PATH=/run/lightning/bitcoin/lightning-rpc
 IMMORTAL_PROVIDER_WALLET_SEED_FILE=/var/lib/immortal-provider/wallet.seed
 IMMORTAL_PROVIDER_HEALTH_BIND=127.0.0.1:9091
@@ -139,6 +156,27 @@ IMMORTAL_PROVIDER_QUOTE_EXPIRY_SECONDS=300
 IMMORTAL_PROVIDER_RESERVATION_TIER=hard
 IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM=1000
 ```
+
+For LND, replace the CLN selector/path with the following values. Copy or
+provision the certificate and least-privilege macaroon files through the
+operator's custody system; each macaroon file must be a nonsymlink regular
+file owned by the provider service account and mode `0600`.
+
+```ini
+IMMORTAL_PROVIDER_LIGHTNING_RAIL=lnd
+IMMORTAL_PROVIDER_LND_HOST=127.0.0.1
+IMMORTAL_PROVIDER_LND_PORT=8080
+IMMORTAL_PROVIDER_LND_TLS_CERT_FILE=/etc/immortal-provider/lnd/tls.cert
+IMMORTAL_PROVIDER_LND_READONLY_MACAROON_FILE=/etc/immortal-provider/lnd/readonly.macaroon
+IMMORTAL_PROVIDER_LND_INVOICE_MACAROON_FILE=/etc/immortal-provider/lnd/invoices.macaroon
+IMMORTAL_PROVIDER_LND_ROUTER_MACAROON_FILE=/etc/immortal-provider/lnd/router.macaroon
+```
+
+Do not configure `admin.macaroon`. The certificate is a public identity pin,
+but its reviewed bytes must still be changed only as an explicit LND
+certificate rotation. The macaroons are custody-bearing node credentials and
+must never enter provider Postgres, relay state, logs, fixtures, or backups of
+the provider database.
 
 Do not set `IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB` in this production
 example. The daemon uses bitcoind's conservative two-block `estimatesmartfee`
@@ -201,9 +239,11 @@ ReadOnlyPaths=/var/lib/immortal-provider/wallet.seed
 WantedBy=multi-user.target
 ```
 
-Adjust only the CLN unit name and socket path to match the installed CLN
-service. Keep Postgres, bitcoind, relay, health, and alert traffic on loopback.
-Then verify and start:
+For CLN, adjust the Lightning unit name and socket path to match the installed
+service. For LND, replace `lightningd.service` with the local LND unit and add
+all four configured credential paths to `ReadOnlyPaths`. Keep Postgres,
+bitcoind, relay, Lightning REST, health, and alert traffic on loopback. Then
+verify and start:
 
 ```sh
 sudo systemd-analyze verify /etc/systemd/system/immortal-provider.service
@@ -214,8 +254,9 @@ journalctl -u immortal-provider.service -n 30 --no-pager
 ```
 
 Startup must fail if the configured networks disagree, bitcoind lacks the
-required RPCs, CLN lacks a required method, the wallet file is unsafe, the
-provider migration is unknown, or any endpoint exceeds its allowed scope.
+required RPCs, the selected Lightning rail lacks a required capability, an
+LND certificate or macaroon is unsafe, the wallet file is unsafe, the provider
+migration is unknown, or any endpoint exceeds its allowed scope.
 
 ## 7. Health, funding, and liquidity
 
@@ -237,10 +278,10 @@ sudo -u immortal-provider env \
 ```
 
 Fund that address according to the operator's hot-wallet policy. Lightning
-inventory remains in the operator's CLN wallet and channels; the provider
-reads `listfunds` and will not issue a hard reservation without durable
-capacity. Channel balancing, fee policy, and capital limits remain operator
-responsibilities.
+inventory remains in the operator's Lightning wallet and channels; the
+provider reads the selected rail's channel balance and will not issue a hard
+reservation without durable capacity. Channel balancing, fee policy, and
+capital limits remain operator responsibilities.
 
 The reverse hard-reservation gate selects exact controlled UTXOs before the
 Quote binds a signed funding transaction, its SHA-256 digest, and output index.
@@ -267,10 +308,11 @@ an operator incident; the persisted watchtower state exists for restart, not
 as permission to stop casually.
 
 Back up the provider database with `pg_dump` and immediately test restore into
-a disposable database. Back up the wallet seed and CLN recovery material
+a disposable database. Back up the wallet seed and Lightning recovery material
 separately through the operator's encrypted custody system. Database backups
-must never contain either. A CLN restore follows the supported CLN recovery
-procedure; copying only provider Postgres cannot recover Lightning funds.
+must never contain either. Restore the selected Lightning node through its
+supported recovery procedure; copying only provider Postgres cannot recover
+Lightning funds.
 
 For an upgrade:
 
@@ -296,14 +338,15 @@ architecture:
 cargo test --locked -p immortal-provider --lib provider_runtime_fixture
 ./scripts/export-provider-contract.sh --check
 ./scripts/test-provider-funded.sh
+IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL=lnd ./scripts/test-provider-funded.sh
 ```
 
 The runtime fixture command exercises the held-HTLC, signed-deadline,
 hold-cancellation, and cooperative watch-retirement transitions through the
 production helpers. The contract check binds that fixture's exact digest. A
 passing process gate then proves submarine settlement, reverse settlement, and
-a noncooperative reverse refund with real bitcoind, CLN, hold-plugin, relay,
-provider database, and watchtower processes. Its public evidence rules are
+a noncooperative reverse refund with real bitcoind, the selected Lightning
+rail, relay, provider database, and watchtower processes. Its public evidence rules are
 documented in
 [`provider-funded-smoke.md`](../conformance/provider-funded-smoke.md).
 
