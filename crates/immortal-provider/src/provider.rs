@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod pricing;
 pub mod session;
 
 #[cfg(all(feature = "no-spend", not(target_arch = "wasm32")))]

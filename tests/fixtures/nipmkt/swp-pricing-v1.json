@@ -1,0 +1,552 @@
+{
+  "schema": "openagents.mkt-swp.provider-pricing-fixtures.v1",
+  "source": {
+    "lane": "openagents",
+    "commit": "a7f5522c0a7430f9f5b1cfa09477dae2d16d3682",
+    "specification": "nips/openagents/MKT-SWP.md",
+    "issue": "OpenAgentsInc/immortal#28",
+    "profile": "mkt-swp",
+    "version": 1,
+    "scope": "deterministic provider quote derivation: spread, miner-fee pass-through, dynamic limits, expiry, reservation tier"
+  },
+  "weights": {
+    "claim_leaf_script_bytes": 69,
+    "refund_leaf_script_bytes": 40,
+    "claim_spend_vbytes": 154,
+    "refund_spend_vbytes": 138,
+    "lockup_vbytes": 155,
+    "worst_case_redeem_vbytes": {
+      "submarine": 154,
+      "reverse": 293,
+      "chain": 309
+    }
+  },
+  "vectors": [
+    {
+      "name": "swp-pricing-v1-submarine-live-input-mid",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "100000" },
+      "created_at": 1785859200,
+      "expect": {
+        "quote": {
+          "swap_type": "submarine",
+          "side": "input",
+          "input_amount": "100000",
+          "output_amount": "98110",
+          "fee_bps": "25",
+          "provider_fee": "250",
+          "miner_fee_budget": "1540",
+          "lightning_routing_fee_budget": "100",
+          "maximum_total_fee": "1890",
+          "min_input": "10000",
+          "max_input": "500000",
+          "quote_created_at": 1785859200,
+          "quote_expires_at": 1785859500,
+          "reservation": "soft",
+          "capacity_bucket_id": "bucket-1",
+          "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+          "worst_case_vbytes": 154,
+          "amount_equation": "input_minus_provider_and_quoted_fees",
+          "rounding": "floor_output_sats"
+        }
+      }
+    },
+    {
+      "name": "swp-pricing-v1-submarine-at-min",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "10000" },
+      "created_at": 1785859200,
+      "expect": {
+        "quote": {
+          "swap_type": "submarine",
+          "side": "input",
+          "input_amount": "10000",
+          "output_amount": "8425",
+          "fee_bps": "25",
+          "provider_fee": "25",
+          "miner_fee_budget": "1540",
+          "lightning_routing_fee_budget": "10",
+          "maximum_total_fee": "1575",
+          "min_input": "10000",
+          "max_input": "500000",
+          "quote_created_at": 1785859200,
+          "quote_expires_at": 1785859500,
+          "reservation": "soft",
+          "capacity_bucket_id": "bucket-1",
+          "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+          "worst_case_vbytes": 154,
+          "amount_equation": "input_minus_provider_and_quoted_fees",
+          "rounding": "floor_output_sats"
+        }
+      }
+    },
+    {
+      "name": "swp-pricing-v1-submarine-below-min",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "9999" },
+      "created_at": 1785859200,
+      "expect": { "error": "swp_invalid_amount" }
+    },
+    {
+      "name": "swp-pricing-v1-submarine-at-capacity-clamped-max",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "500000" },
+      "created_at": 1785859200,
+      "expect": {
+        "quote": {
+          "swap_type": "submarine",
+          "side": "input",
+          "input_amount": "500000",
+          "output_amount": "496710",
+          "fee_bps": "25",
+          "provider_fee": "1250",
+          "miner_fee_budget": "1540",
+          "lightning_routing_fee_budget": "500",
+          "maximum_total_fee": "3290",
+          "min_input": "10000",
+          "max_input": "500000",
+          "quote_created_at": 1785859200,
+          "quote_expires_at": 1785859500,
+          "reservation": "soft",
+          "capacity_bucket_id": "bucket-1",
+          "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+          "worst_case_vbytes": 154,
+          "amount_equation": "input_minus_provider_and_quoted_fees",
+          "rounding": "floor_output_sats"
+        }
+      }
+    },
+    {
+      "name": "swp-pricing-v1-submarine-above-capacity-clamped-max",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "500001" },
+      "created_at": 1785859200,
+      "expect": { "error": "swp_invalid_amount" }
+    },
+    {
+      "name": "swp-pricing-v1-submarine-fallback-feerate-regtest",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "fallback" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "100000" },
+      "created_at": 1785859200,
+      "expect": {
+        "quote": {
+          "swap_type": "submarine",
+          "side": "input",
+          "input_amount": "100000",
+          "output_amount": "99342",
+          "fee_bps": "25",
+          "provider_fee": "250",
+          "miner_fee_budget": "308",
+          "lightning_routing_fee_budget": "100",
+          "maximum_total_fee": "658",
+          "min_input": "10000",
+          "max_input": "500000",
+          "quote_created_at": 1785859200,
+          "quote_expires_at": 1785859500,
+          "reservation": "soft",
+          "capacity_bucket_id": "bucket-1",
+          "feerate": { "kind": "fallback", "sat_per_vb": 2 },
+          "worst_case_vbytes": 154,
+          "amount_equation": "input_minus_provider_and_quoted_fees",
+          "rounding": "floor_output_sats"
+        }
+      }
+    },
+    {
+      "name": "swp-pricing-v1-refuse-no-live-no-fallback",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": null,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "none" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "100000" },
+      "created_at": 1785859200,
+      "expect": { "error": "swp_invalid_fee" }
+    },
+    {
+      "name": "swp-pricing-v1-refuse-live-feerate-zero",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 0, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "100000" },
+      "created_at": 1785859200,
+      "expect": { "error": "swp_invalid_fee" }
+    },
+    {
+      "name": "swp-pricing-v1-reverse-lockup-plus-refund-budget",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "reverse", "side": "input", "amount": "100000" },
+      "created_at": 1785859200,
+      "expect": {
+        "quote": {
+          "swap_type": "reverse",
+          "side": "input",
+          "input_amount": "100000",
+          "output_amount": "96820",
+          "fee_bps": "25",
+          "provider_fee": "250",
+          "miner_fee_budget": "2930",
+          "lightning_routing_fee_budget": "0",
+          "maximum_total_fee": "3180",
+          "min_input": "10000",
+          "max_input": "500000",
+          "quote_created_at": 1785859200,
+          "quote_expires_at": 1785859500,
+          "reservation": "soft",
+          "capacity_bucket_id": "bucket-1",
+          "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+          "worst_case_vbytes": 293,
+          "amount_equation": "input_minus_provider_and_quoted_fees",
+          "rounding": "floor_output_sats"
+        }
+      }
+    },
+    {
+      "name": "swp-pricing-v1-chain-lockup-plus-claim-budget",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "chain", "side": "input", "amount": "100000" },
+      "created_at": 1785859200,
+      "expect": {
+        "quote": {
+          "swap_type": "chain",
+          "side": "input",
+          "input_amount": "100000",
+          "output_amount": "96660",
+          "fee_bps": "25",
+          "provider_fee": "250",
+          "miner_fee_budget": "3090",
+          "lightning_routing_fee_budget": "0",
+          "maximum_total_fee": "3340",
+          "min_input": "10000",
+          "max_input": "500000",
+          "quote_created_at": 1785859200,
+          "quote_expires_at": 1785859500,
+          "reservation": "soft",
+          "capacity_bucket_id": "bucket-1",
+          "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+          "worst_case_vbytes": 309,
+          "amount_equation": "input_minus_provider_and_quoted_fees",
+          "rounding": "floor_output_sats"
+        }
+      }
+    },
+    {
+      "name": "swp-pricing-v1-expiry-edge-one-second",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 1,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "100000" },
+      "created_at": 1785859200,
+      "expect": {
+        "quote": {
+          "swap_type": "submarine",
+          "side": "input",
+          "input_amount": "100000",
+          "output_amount": "98110",
+          "fee_bps": "25",
+          "provider_fee": "250",
+          "miner_fee_budget": "1540",
+          "lightning_routing_fee_budget": "100",
+          "maximum_total_fee": "1890",
+          "min_input": "10000",
+          "max_input": "500000",
+          "quote_created_at": 1785859200,
+          "quote_expires_at": 1785859201,
+          "reservation": "soft",
+          "capacity_bucket_id": "bucket-1",
+          "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+          "worst_case_vbytes": 154,
+          "amount_equation": "input_minus_provider_and_quoted_fees",
+          "rounding": "floor_output_sats"
+        }
+      }
+    },
+    {
+      "name": "swp-pricing-v1-expiry-overflow-refused",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "100000" },
+      "created_at": 18446744073709551615,
+      "expect": { "error": "swp_quote_expired" }
+    },
+    {
+      "name": "swp-pricing-v1-miner-floor-raises-min-refusal",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 1000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "1000000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "1000" },
+      "created_at": 1785859200,
+      "expect": { "error": "swp_invalid_amount" }
+    },
+    {
+      "name": "swp-pricing-v1-miner-floor-raises-min-at-floor",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 1000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "1000000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "1545" },
+      "created_at": 1785859200,
+      "expect": {
+        "quote": {
+          "swap_type": "submarine",
+          "side": "input",
+          "input_amount": "1545",
+          "output_amount": "1",
+          "fee_bps": "25",
+          "provider_fee": "3",
+          "miner_fee_budget": "1540",
+          "lightning_routing_fee_budget": "1",
+          "maximum_total_fee": "1544",
+          "min_input": "1545",
+          "max_input": "1000000",
+          "quote_created_at": 1785859200,
+          "quote_expires_at": 1785859500,
+          "reservation": "soft",
+          "capacity_bucket_id": "bucket-1",
+          "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+          "worst_case_vbytes": 154,
+          "amount_equation": "input_minus_provider_and_quoted_fees",
+          "rounding": "floor_output_sats"
+        }
+      }
+    },
+    {
+      "name": "swp-pricing-v1-output-side-smallest-covering-input",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "submarine", "side": "output", "amount": "98110" },
+      "created_at": 1785859200,
+      "expect": {
+        "quote": {
+          "swap_type": "submarine",
+          "side": "output",
+          "input_amount": "99998",
+          "output_amount": "98110",
+          "fee_bps": "25",
+          "provider_fee": "249",
+          "miner_fee_budget": "1540",
+          "lightning_routing_fee_budget": "99",
+          "maximum_total_fee": "1888",
+          "min_input": "10000",
+          "max_input": "500000",
+          "quote_created_at": 1785859200,
+          "quote_expires_at": 1785859500,
+          "reservation": "soft",
+          "capacity_bucket_id": "bucket-1",
+          "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+          "worst_case_vbytes": 154,
+          "amount_equation": "input_minus_provider_and_quoted_fees",
+          "rounding": "floor_output_sats"
+        }
+      }
+    },
+    {
+      "name": "swp-pricing-v1-capacity-below-min-disables-side",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "5000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "12000" },
+      "created_at": 1785859200,
+      "expect": { "error": "swp_side_disabled" }
+    },
+    {
+      "name": "swp-pricing-v1-zero-capacity-disables-side",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "soft",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "0" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "10000" },
+      "created_at": 1785859200,
+      "expect": { "error": "swp_side_disabled" }
+    },
+    {
+      "name": "swp-pricing-v1-hard-reservation-tier",
+      "config": {
+        "spread_bps": 25,
+        "fallback_feerate_sat_per_vb": 2,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "quote_expiry_seconds": 300,
+        "reservation_tier": "hard",
+        "lightning_routing_fee_ppm": 1000
+      },
+      "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+      "capacity": { "capacity_bucket_id": "bucket-1", "available_capacity": "500000" },
+      "request": { "swap_type": "submarine", "side": "input", "amount": "100000" },
+      "created_at": 1785859200,
+      "expect": {
+        "quote": {
+          "swap_type": "submarine",
+          "side": "input",
+          "input_amount": "100000",
+          "output_amount": "98110",
+          "fee_bps": "25",
+          "provider_fee": "250",
+          "miner_fee_budget": "1540",
+          "lightning_routing_fee_budget": "100",
+          "maximum_total_fee": "1890",
+          "min_input": "10000",
+          "max_input": "500000",
+          "quote_created_at": 1785859200,
+          "quote_expires_at": 1785859500,
+          "reservation": "hard",
+          "capacity_bucket_id": "bucket-1",
+          "feerate": { "kind": "live", "sat_per_vb": 10, "source": "bitcoind-estimatesmartfee-2" },
+          "worst_case_vbytes": 154,
+          "amount_equation": "input_minus_provider_and_quoted_fees",
+          "rounding": "floor_output_sats"
+        }
+      }
+    }
+  ]
+}
