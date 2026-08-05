@@ -253,6 +253,22 @@ cargo test --locked -p immortal-provider --lib provider_runtime_fixture
 IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL=lnd ./scripts/test-provider-funded.sh
 ```
 
+The disposable Debian 13 process gate copies an exact committed tree into a
+fresh Debian environment, installs only the build and Docker client tools the
+funded smoke needs, and writes a bounded public receipt only after cleanup.
+It refuses tracked changes and refuses to overwrite a record:
+
+```sh
+scripts/run-debian-provider-funded.sh \
+  --receipt docs/conformance/records/2026-08-05-funded-smoke-debian.json
+```
+
+The caller supplies Docker only to start a privileged Debian 13 container. The
+gate starts a new Docker daemon with an empty data root inside that container,
+then removes the entire container after the smoke. The receipt records that
+container boundary instead of describing it as an independent VM or live
+deployment.
+
 The first command replays the provider runtime fixture through the production
 held-HTLC, deadline, hold-state, and reverse-spend/watch-retirement helpers.
 The second proves that the runtime fixture digest is the one exported in the
@@ -396,9 +412,9 @@ retains case names, manifest and console-log digests, tool versions, and the
 zero-container cleanup result. The console log and per-case runtime artifacts
 were not retained. The receipt labels this as a development-host run.
 
-This is local process evidence. It does not establish a clean macOS or Debian
-run, full funded execution through the reusable three-node/two-provider
-topology, multi-provider Quote comparison, or chain-to-chain support.
+This matrix record alone is local process evidence. It does not establish a
+clean macOS or Debian run, the reusable three-node/two-provider topology,
+multi-provider Quote comparison, or chain-to-chain support.
 
 ### 2026-08-05 local multi-provider negotiation record
 
