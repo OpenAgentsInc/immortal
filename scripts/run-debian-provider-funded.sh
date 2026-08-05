@@ -51,8 +51,9 @@ case "$(basename "${receipt_directory}")" in
         exit 1
         ;;
 esac
+container_log="${receipt_directory}/container.log"
 
-docker run --rm \
+if ! docker run --rm \
     --privileged \
     --cpus 4 \
     --memory 6G \
@@ -100,13 +101,19 @@ docker run --rm \
         done
         cd /work
         scripts/test-debian-provider-funded.sh
-    '
+    ' >"${container_log}" 2>&1; then
+    sed -n '1,200p' "${container_log}" >&2
+    echo "run-debian-provider-funded: Debian gate failed; retained ${receipt_directory}" >&2
+    exit 1
+fi
 
 receipt_result="${receipt_directory}/result.json"
 if test ! -f "${receipt_result}"; then
+    sed -n '1,200p' "${container_log}" >&2
     echo "run-debian-provider-funded: the Debian gate produced no receipt" >&2
     exit 1
 fi
 mv "${receipt_result}" "${receipt_path}"
+rm -f "${container_log}"
 rmdir "${receipt_directory}"
 echo "run-debian-provider-funded: wrote ${receipt_relative_path}"
