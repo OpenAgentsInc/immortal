@@ -343,9 +343,12 @@ name = "immortal-lab"
 version = "0.0.1"
 dependencies = [
  "immortal-client",
+ "immortal-core",
+ "immortal-provider",
  "serde",
  "serde_json",
  "sha2",
+ "tokio",
  "tokio-tungstenite",
 ]
 

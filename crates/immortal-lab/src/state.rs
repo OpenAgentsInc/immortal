@@ -6,7 +6,8 @@
 //! mid-write never leaves a torn record.
 
 use std::{
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -59,6 +60,42 @@ impl LabPaths {
     pub fn current_session(&self) -> PathBuf {
         self.root.join("current-session")
     }
+
+    pub fn funded_run_id(&self) -> PathBuf {
+        self.root.join("funded-run-id")
+    }
+
+    pub fn funded_checkpoint(&self) -> PathBuf {
+        self.root.join("funded-checkpoint.json")
+    }
+
+    pub fn funded_continue(&self) -> PathBuf {
+        self.root.join("funded-continue")
+    }
+
+    pub fn funded_snapshot(&self, journey: &str) -> PathBuf {
+        self.root.join(format!("funded-{journey}-session.json"))
+    }
+
+    pub fn funded_secret(&self, journey: &str) -> PathBuf {
+        self.root.join(format!("funded-{journey}-secret"))
+    }
+
+    pub fn funded_signed_exit(&self, journey: &str) -> PathBuf {
+        self.root.join(format!("funded-{journey}-signed-exit.hex"))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FundedCheckpoint {
+    pub schema: String,
+    pub run_id: String,
+    pub journey: String,
+    pub label: String,
+    pub safe_to_stop: bool,
+    pub updated_at: u64,
+    pub details: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,6 +246,118 @@ pub fn resolve_session_id(paths: &LabPaths) -> Result<String, String> {
     Ok(session_id.trim().to_owned())
 }
 
+pub fn load_or_create_funded_run_id(paths: &LabPaths) -> Result<String, String> {
+    if let Ok(run_id) = std::env::var("IMMORTAL_LAB_RUN_ID") {
+        validate_run_id(&run_id)?;
+        return Ok(run_id);
+    }
+    if paths.funded_run_id().exists() {
+        let run_id = fs::read_to_string(paths.funded_run_id()).map_err(|error| {
+            format!(
+                "could not read {}: {error}",
+                paths.funded_run_id().display()
+            )
+        })?;
+        let run_id = run_id.trim().to_owned();
+        validate_run_id(&run_id)?;
+        return Ok(run_id);
+    }
+    let run_id = lower_hex(&random_secret()?);
+    write_bytes(&paths.funded_run_id(), run_id.as_bytes())?;
+    Ok(run_id)
+}
+
+pub fn store_funded_checkpoint(
+    paths: &LabPaths,
+    checkpoint: &FundedCheckpoint,
+) -> Result<(), String> {
+    write_json(&paths.funded_checkpoint(), checkpoint)
+}
+
+pub fn store_funded_snapshot(
+    paths: &LabPaths,
+    journey: &str,
+    snapshot: &[u8],
+) -> Result<(), String> {
+    if !journey
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+    {
+        return Err("funded journey name is invalid".to_owned());
+    }
+    write_bytes(&paths.funded_snapshot(journey), snapshot)
+}
+
+pub fn store_funded_secret(
+    paths: &LabPaths,
+    journey: &str,
+    secret: &[u8; 32],
+) -> Result<(), String> {
+    if !journey
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+    {
+        return Err("funded journey name is invalid".to_owned());
+    }
+    write_bytes(&paths.funded_secret(journey), secret)
+}
+
+pub fn load_funded_secret(paths: &LabPaths, journey: &str) -> Result<[u8; 32], String> {
+    let bytes = fs::read(paths.funded_secret(journey)).map_err(|error| {
+        format!(
+            "could not read private {} custody record: {error}",
+            paths.funded_secret(journey).display()
+        )
+    })?;
+    bytes
+        .try_into()
+        .map_err(|_| "private funded custody record is not 32 bytes".to_owned())
+}
+
+pub fn remove_funded_secret(paths: &LabPaths, journey: &str) -> Result<(), String> {
+    let path = paths.funded_secret(journey);
+    if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|error| format!("could not remove private {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+pub fn store_funded_signed_exit(
+    paths: &LabPaths,
+    journey: &str,
+    transaction: &str,
+) -> Result<(), String> {
+    if transaction.is_empty()
+        || transaction.len() > 800_000
+        || transaction.len() % 2 != 0
+        || !transaction.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("signed exit transaction is not bounded hexadecimal".to_owned());
+    }
+    write_bytes(&paths.funded_signed_exit(journey), transaction.as_bytes())
+}
+
+pub fn load_funded_checkpoint(paths: &LabPaths) -> Result<Option<FundedCheckpoint>, String> {
+    if paths.funded_checkpoint().exists() {
+        read_json(&paths.funded_checkpoint()).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+fn validate_run_id(run_id: &str) -> Result<(), String> {
+    if (1..=128).contains(&run_id.len())
+        && run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        Ok(())
+    } else {
+        Err("IMMORTAL_LAB_RUN_ID must be 1-128 ASCII letters, digits, '-' or '_'".to_owned())
+    }
+}
+
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
     let bytes =
         fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
@@ -228,11 +377,50 @@ fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    restrict_directory_permissions(parent)?;
     let temporary = path.with_extension("tmp");
-    fs::write(&temporary, bytes)
+    let mut file = open_private_file(&temporary)?;
+    file.write_all(bytes)
         .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+    file.sync_all()
+        .map_err(|error| format!("could not sync {}: {error}", temporary.display()))?;
     fs::rename(&temporary, path)
-        .map_err(|error| format!("could not commit {}: {error}", path.display()))
+        .map_err(|error| format!("could not commit {}: {error}", path.display()))?;
+    restrict_permissions(path)
+}
+
+#[cfg(unix)]
+fn open_private_file(path: &Path) -> Result<fs::File, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| format!("could not open {}: {error}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn open_private_file(path: &Path) -> Result<fs::File, String> {
+    OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|error| format!("could not open {}: {error}", path.display()))
+}
+
+#[cfg(unix)]
+fn restrict_directory_permissions(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("could not restrict {}: {error}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn restrict_directory_permissions(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -315,6 +503,65 @@ mod tests {
             load_session(&paths, &session.session_id).expect("updated session should reload");
         assert_eq!(session, updated);
         fs::remove_dir_all(paths.root()).expect("scratch state should be removable");
+    }
+
+    #[test]
+    fn funded_checkpoint_is_private_and_round_trips() {
+        let paths = scratch("funded-checkpoint");
+        let checkpoint = FundedCheckpoint {
+            schema: "openagents.immortal.lab-checkpoint.v1".to_owned(),
+            run_id: "run-1".to_owned(),
+            journey: "submarine".to_owned(),
+            label: "funding_authorized".to_owned(),
+            safe_to_stop: true,
+            updated_at: 10,
+            details: serde_json::json!({"order_id": "ab".repeat(32)}),
+        };
+        store_funded_checkpoint(&paths, &checkpoint).expect("checkpoint should persist");
+        assert_eq!(
+            load_funded_checkpoint(&paths).expect("checkpoint should load"),
+            Some(checkpoint)
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(paths.funded_checkpoint())
+                .expect("checkpoint metadata should exist")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        fs::remove_dir_all(paths.root()).expect("scratch state should be removable");
+    }
+
+    #[test]
+    fn funded_checkpoint_fixture_matches_the_persisted_schema() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/lab/funded-checkpoints-v1.json"
+        ))
+        .expect("funded checkpoint fixture should parse");
+        assert_eq!(
+            fixture.get("checkpoint_schema").and_then(Value::as_str),
+            Some("openagents.immortal.lab-checkpoint.v1")
+        );
+        let forbidden = fixture
+            .get("forbidden_checkpoint_members")
+            .and_then(Value::as_array)
+            .expect("fixture should name forbidden checkpoint members");
+        let checkpoint = serde_json::to_value(FundedCheckpoint {
+            schema: "openagents.immortal.lab-checkpoint.v1".to_owned(),
+            run_id: "fixture".to_owned(),
+            journey: "reverse".to_owned(),
+            label: "funding_authorized".to_owned(),
+            safe_to_stop: true,
+            updated_at: 1,
+            details: serde_json::json!({"session_id": "ab".repeat(32)}),
+        })
+        .expect("checkpoint should serialize");
+        for member in forbidden {
+            let member = member.as_str().expect("forbidden member should be text");
+            assert!(checkpoint.get(member).is_none());
+        }
     }
 
     #[test]

@@ -30,6 +30,12 @@
   },
   "fixtures": [
     {
+      "path": "tests/fixtures/lab/funded-checkpoints-v1.json",
+      "sha256": "1ec75223c39e38815b367a1e30c7ca25cdbea79dcb723c927a0768ea32566351",
+      "bytes": 1038,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/nip01/events.json",
       "sha256": "a1a74424da21fb04e22d5a689ef17204aa2cb46f3937cfa8727a11d952f5bd3a",
       "bytes": 630,

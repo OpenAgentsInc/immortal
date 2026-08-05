@@ -21,10 +21,6 @@ name = "immortal-provider"
 path = "src/main.rs"
 
 [[test]]
-name = "funded_live"
-required-features = ["funded"]
-
-[[test]]
 name = "no_spend_live"
 required-features = ["no-spend"]
 

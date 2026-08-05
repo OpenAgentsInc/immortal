@@ -10,7 +10,9 @@ COPY migrations ./migrations
 COPY crates ./crates
 COPY nips ./nips
 COPY tests ./tests
-RUN cargo build --locked --release -p immortal-provider --bin immortal-provider
+RUN cargo build --locked --release \
+    -p immortal-provider --bin immortal-provider \
+    -p immortal-lab --bin immortal-lab
 
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS provider
 
@@ -22,6 +24,8 @@ COPY --from=build /build/target/release/immortal-provider /usr/local/bin/immorta
 
 ENTRYPOINT ["/usr/local/bin/immortal-provider"]
 
-FROM build AS driver
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS driver
 
-ENTRYPOINT ["cargo", "test", "--locked", "-p", "immortal-provider", "--test", "funded_live", "funded_provider_completes_submarine_reverse_and_refund", "--", "--ignored", "--exact", "--nocapture"]
+COPY --from=build /build/target/release/immortal-lab /usr/local/bin/immortal-lab
+
+ENTRYPOINT ["/usr/local/bin/immortal-lab", "funded-smoke"]

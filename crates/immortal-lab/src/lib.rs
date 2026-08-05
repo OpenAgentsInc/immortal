@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cli;
+pub mod funded;
 pub mod relay;
 pub mod state;
 pub mod steps;

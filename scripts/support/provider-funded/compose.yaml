@@ -160,6 +160,9 @@ services:
       - type: bind
         source: ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/evidence
         target: /evidence
+      - type: bind
+        source: ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/state
+        target: /state
 
 networks:
   smoke:

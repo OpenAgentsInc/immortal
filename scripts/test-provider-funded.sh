@@ -44,7 +44,8 @@ trap cleanup EXIT INT TERM
 umask 077
 mkdir -m 0700 "${private_root}/evidence" \
   "${private_root}/evidence/chain" \
-  "${private_root}/evidence/lightning"
+  "${private_root}/evidence/lightning" \
+  "${private_root}/state"
 
 random_hex() {
   local byte_count="$1"
@@ -83,7 +84,6 @@ bitcoin_rpc_password="$(random_hex 32)"
 provider_postgres_password="$(random_hex 32)"
 relay_postgres_password="$(random_hex 32)"
 provider_identity_secret="$(random_hex 32)"
-client_identity_secret="$(random_hex 32)"
 provider_wallet_seed="$(random_hex 32)"
 client_wallet_seed="$(random_hex 32)"
 
@@ -181,10 +181,10 @@ IMMORTAL_PROVIDER_FUNDED_SMOKE_BITCOIND_PORT=18443
 IMMORTAL_PROVIDER_FUNDED_SMOKE_BITCOIND_RPC_USER=immortal-smoke
 IMMORTAL_PROVIDER_FUNDED_SMOKE_BITCOIND_RPC_PASSWORD=${bitcoin_rpc_password}
 IMMORTAL_PROVIDER_FUNDED_SMOKE_CLN_RPC_PATH=/rail/cln-peer/lightning-rpc
-IMMORTAL_PROVIDER_FUNDED_SMOKE_CLIENT_IDENTITY_SECRET=${client_identity_secret}
 IMMORTAL_PROVIDER_FUNDED_SMOKE_CLIENT_WALLET_SEED_FILE=/run/immortal-private/client-wallet-seed
 IMMORTAL_PROVIDER_FUNDED_SMOKE_EVIDENCE_FILE=/evidence/funded-smoke.json
 IMMORTAL_PROVIDER_FUNDED_SMOKE_TERMINAL_CONFIRMATIONS=${terminal_confirmations}
+IMMORTAL_LAB_STATE_DIR=/state
 EOF
 
 cat >"${private_root}/compose.env" <<EOF
@@ -398,7 +398,33 @@ if ! grep -qx 'immortal_provider_ready 1' "${private_root}/evidence/metrics-befo
   exit 1
 fi
 
-current_phase=journey-driver
+current_phase=harness-controlled-stop
+if compose run --rm --no-deps \
+  --env IMMORTAL_LAB_STOP_AFTER=submarine:funding_authorized \
+  driver >"${private_root}/driver-stop.log" 2>&1; then
+  echo "test-provider-funded: harness ignored the controlled stop" >&2
+  exit 1
+fi
+if ! python3 -c '
+import json, pathlib, sys
+state = pathlib.Path(sys.argv[1])
+with (state / "funded-checkpoint.json").open(encoding="utf-8") as source:
+    checkpoint = json.load(source)
+if checkpoint.get("journey") != "submarine":
+    raise SystemExit("controlled-stop checkpoint has another journey")
+if checkpoint.get("label") != "funding_authorized":
+    raise SystemExit("controlled-stop checkpoint has another label")
+if checkpoint.get("safe_to_stop") is not True:
+    raise SystemExit("controlled-stop checkpoint is not money-safe")
+snapshot = state / "funded-submarine-session.json"
+if not snapshot.is_file():
+    raise SystemExit("controlled-stop session snapshot is absent")
+' "${private_root}/state"; then
+  echo "test-provider-funded: harness did not persist its safe restart boundary" >&2
+  exit 1
+fi
+
+current_phase=harness-restart
 if ! compose run --rm --no-deps driver \
   >"${private_root}/driver.log" 2>&1; then
   echo "test-provider-funded: external funded-swap driver failed" >&2

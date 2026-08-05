@@ -1,5 +1,4 @@
-//! The implemented lab steps: discover, rfq, quote, verify — plus explicit
-//! blocked stubs for the funded steps that cannot exist before immortal#25.
+//! The discovery and negotiation-preflight lab steps.
 //!
 //! Every step loads its inputs from and persists its outputs to the state
 //! directory, so the harness can be killed after any step and restarted.
@@ -20,8 +19,8 @@ use crate::{
     relay::RelayClient,
     state::{
         DiscoveredOffering, DiscoveredProvider, Discovery, LabPaths, SessionRecord, list_sessions,
-        load_discovery, load_identity, load_or_create_identity, load_session, resolve_session_id,
-        set_current_session, store_discovery, store_session,
+        load_discovery, load_funded_checkpoint, load_identity, load_or_create_identity,
+        load_session, resolve_session_id, set_current_session, store_discovery, store_session,
     },
     util::{digest, random_32, unix_now},
 };
@@ -35,18 +34,6 @@ const MKT_RFQ_KIND_U64: u64 = 39_604;
 const DEFAULT_RFQ_EXPIRY_SECONDS: u64 = 300;
 const DEFAULT_QUOTE_WAIT_SECONDS: u64 = 30;
 const LIVE_READ_WINDOW_SECONDS: u64 = 5;
-
-/// Exit status for steps that are explicitly blocked on immortal#25.
-pub const BLOCKED_EXIT_CODE: i32 = 2;
-
-pub fn blocked_message(step: &str) -> String {
-    format!(
-        "immortal-lab {step}: BLOCKED on immortal#25 (provider rails: bitcoind RPC, \
-         CLN unix-socket, wallet, script-path settlement, watchtower).\n\
-         The verify-before-fund gate (`immortal-lab verify`) is the last implemented \
-         step; {step} lands once the funded provider binary exists. Nothing was sent."
-    )
-}
 
 /// Step 1: collect Provider Profiles and Offerings from the relay and
 /// persist a discovery snapshot.
@@ -366,7 +353,7 @@ pub fn verify(paths: &LabPaths) -> Result<Value, String> {
         "quote_id": quote.id,
         "overall": if passed { "pass" } else { "fail" },
         "gate": if passed {
-            "verify-before-fund gate OPEN: funding would be authorized once #25 lands"
+            "verify-before-fund gate OPEN"
         } else {
             "verify-before-fund gate CLOSED: do not fund"
         },
@@ -416,16 +403,14 @@ pub fn status(paths: &LabPaths) -> Result<Value, String> {
             })
         })
         .collect::<Vec<_>>();
+    let funded_checkpoint = load_funded_checkpoint(paths)?;
     Ok(json!({
         "state_dir": paths.root().display().to_string(),
         "identity_pubkey": identity_pubkey,
         "discovery": discovery,
         "sessions": sessions,
-        "blocked_steps": {
-            "fund": "immortal#25",
-            "claim": "immortal#25",
-            "refund": "immortal#25",
-        },
+        "funded_steps": ["fund", "claim", "refund"],
+        "funded_checkpoint": funded_checkpoint,
     }))
 }
 
@@ -544,15 +529,6 @@ mod tests {
             let profile = fixture_profile(swap_type)
                 .unwrap_or_else(|error| panic!("{swap_type} fixture profile: {error}"));
             assert!(profile.is_object(), "{swap_type} profile must be an object");
-        }
-    }
-
-    #[test]
-    fn blocked_message_names_the_blocking_issue() {
-        for step in ["fund", "claim", "refund"] {
-            let message = blocked_message(step);
-            assert!(message.contains("immortal#25"));
-            assert!(message.contains(step));
         }
     }
 }

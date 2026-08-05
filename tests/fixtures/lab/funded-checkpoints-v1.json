@@ -1,0 +1,38 @@
+{
+  "schema": "openagents.immortal.lab-checkpoint-manifest.v1",
+  "checkpoint_schema": "openagents.immortal.lab-checkpoint.v1",
+  "persisted_snapshot_schema": "openagents.mkt-swp.client-snapshot.v2",
+  "state_file_mode": "0600",
+  "smoke_restart_checkpoint": "submarine:funding_authorized",
+  "controls": {
+    "stop_after": "IMMORTAL_LAB_STOP_AFTER",
+    "inject_at": "IMMORTAL_LAB_INJECT_AT",
+    "continue_file": "funded-continue",
+    "maximum_injection_wait_seconds": 3600
+  },
+  "journeys": {
+    "submarine": {
+      "restartable": ["funding_authorized", "completed"],
+      "terminal": "completed"
+    },
+    "reverse": {
+      "restartable": ["funding_authorized", "completed"],
+      "terminal": "completed"
+    },
+    "reverse_refund": {
+      "restartable": ["funding_authorized", "refunded"],
+      "terminal": "refunded"
+    }
+  },
+  "forbidden_checkpoint_members": [
+    "claim_key",
+    "macaroon",
+    "password",
+    "preimage",
+    "private_key",
+    "raw_transaction",
+    "refund_key",
+    "seed",
+    "secret"
+  ]
+}

@@ -13,12 +13,13 @@ COMMANDS:
                         Open a session and send a wrapped MKT-SWP RFQ
     quote               Wait for the provider's Quote and persist it
     verify              Run the verify-before-fund gate over RFQ + Quote
-    fund                BLOCKED on immortal#25 (provider rails) — stub
-    claim               BLOCKED on immortal#25 (provider rails) — stub
-    refund              BLOCKED on immortal#25 (provider rails) — stub
+    fund                Run the funded submarine journey through settlement
+    claim               Run the reverse journey through requester claim
+    refund              Run the reverse noncooperative-refund journey
+    funded-smoke        Run fund, claim, and refund; write conformance evidence
     status              Print persisted lab state
-    run [--to STEP]     Run discover -> rfq -> quote -> verify up to STEP
-                        (STEP defaults to verify)
+    run [--to STEP]     Run through STEP (discover, rfq, quote, verify, fund,
+                        claim, or refund; defaults to verify)
     help                Print this text
 
 ENVIRONMENT:
@@ -29,15 +30,24 @@ ENVIRONMENT:
     IMMORTAL_LAB_PROVIDER_PUBKEY
     IMMORTAL_LAB_OFFERING_ADDRESS
                                 pin the discovery selection used by rfq
+
+FUNDED ENVIRONMENT:
+    The funded commands require the loopback bitcoind, peer CLN socket,
+    provider health URL, client wallet seed, and evidence variables emitted
+    by scripts/test-provider-funded.sh.
 ";
 
-/// The four implemented lab steps, in execution order.
+/// Lab steps in execution order. Each funded rail outcome uses its own swap
+/// session so claim and refund cannot share custody state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Step {
     Discover,
     Rfq,
     Quote,
     Verify,
+    Fund,
+    Claim,
+    Refund,
 }
 
 impl Step {
@@ -47,10 +57,9 @@ impl Step {
             "rfq" => Ok(Self::Rfq),
             "quote" => Ok(Self::Quote),
             "verify" => Ok(Self::Verify),
-            "fund" | "claim" | "refund" => Err(format!(
-                "step {value} is blocked on immortal#25 (provider rails); \
-                 run stops at verify"
-            )),
+            "fund" => Ok(Self::Fund),
+            "claim" => Ok(Self::Claim),
+            "refund" => Ok(Self::Refund),
             other => Err(format!("unknown step: {other}")),
         }
     }
@@ -61,6 +70,9 @@ impl Step {
             Self::Rfq => "rfq",
             Self::Quote => "quote",
             Self::Verify => "verify",
+            Self::Fund => "fund",
+            Self::Claim => "claim",
+            Self::Refund => "refund",
         }
     }
 }
@@ -104,6 +116,7 @@ pub enum Command {
     Fund,
     Claim,
     Refund,
+    FundedSmoke,
     Status,
     Run { to: Step },
     Help,
@@ -137,6 +150,7 @@ pub fn parse(arguments: &[String]) -> Result<Command, String> {
         "fund" => Command::Fund,
         "claim" => Command::Claim,
         "refund" => Command::Refund,
+        "funded-smoke" => Command::FundedSmoke,
         "status" => Command::Status,
         "run" => {
             let mut to = Step::Verify;
@@ -179,6 +193,7 @@ mod tests {
         assert_eq!(parse(&args(&["fund"])), Ok(Command::Fund));
         assert_eq!(parse(&args(&["claim"])), Ok(Command::Claim));
         assert_eq!(parse(&args(&["refund"])), Ok(Command::Refund));
+        assert_eq!(parse(&args(&["funded-smoke"])), Ok(Command::FundedSmoke));
         assert_eq!(parse(&args(&["status"])), Ok(Command::Status));
         assert_eq!(parse(&args(&["help"])), Ok(Command::Help));
     }
@@ -204,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn run_defaults_to_verify_and_bounds_at_verify() {
+    fn run_defaults_to_verify_and_accepts_funded_steps() {
         assert_eq!(
             parse(&args(&["run"])),
             Ok(Command::Run { to: Step::Verify })
@@ -213,9 +228,10 @@ mod tests {
             parse(&args(&["run", "--to", "quote"])),
             Ok(Command::Run { to: Step::Quote })
         );
-        let blocked = parse(&args(&["run", "--to", "fund"]));
-        assert!(blocked.is_err());
-        assert!(blocked.unwrap_err().contains("immortal#25"));
+        assert_eq!(
+            parse(&args(&["run", "--to", "fund"])),
+            Ok(Command::Run { to: Step::Fund })
+        );
     }
 
     #[test]
@@ -223,6 +239,9 @@ mod tests {
         assert!(Step::Discover < Step::Rfq);
         assert!(Step::Rfq < Step::Quote);
         assert!(Step::Quote < Step::Verify);
+        assert!(Step::Verify < Step::Fund);
+        assert!(Step::Fund < Step::Claim);
+        assert!(Step::Claim < Step::Refund);
     }
 
     #[test]

@@ -15,14 +15,15 @@ path = "src/lib.rs"
 name = "immortal-lab"
 path = "src/main.rs"
 
-# Owner-approved allowlist: the workspace's seven external crates. This lab
-# harness currently needs only four of them (tokio-tungstenite for the
-# blocking tungstenite client it re-exports, serde, serde_json, sha2) plus
-# the workspace client crate; tokio, tokio-postgres, and direct secp256k1 are
-# unused so far and must not be added without the funded rail work (#25).
+# Owner-approved allowlist: the workspace's seven external crates. The funded
+# harness reuses the in-repo provider rail/wallet implementation; products do
+# not depend on this dev-only crate.
 [dependencies]
 immortal-client.workspace = true
+immortal-core.workspace = true
+immortal-provider = { path = "../immortal-provider" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tokio.workspace = true
 tokio-tungstenite.workspace = true

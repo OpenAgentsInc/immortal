@@ -2,6 +2,7 @@
 
 use immortal_lab::{
     cli::{self, Command, Step},
+    funded::{self, FundedJourney},
     relay::relay_url_from_env,
     state::LabPaths,
     steps,
@@ -22,16 +23,11 @@ fn main() {
             eprintln!("immortal-lab: {error}");
             std::process::exit(1);
         }
-        Err(Exit::Blocked(message)) => {
-            eprintln!("{message}");
-            std::process::exit(steps::BLOCKED_EXIT_CODE);
-        }
     }
 }
 
 enum Exit {
     Failure(String),
-    Blocked(String),
 }
 
 fn execute(command: Command) -> Result<(), Exit> {
@@ -47,10 +43,21 @@ fn execute(command: Command) -> Result<(), Exit> {
         Command::Quote => emit(steps::quote(&paths, &relay_url)),
         Command::Verify => emit(steps::verify(&paths)),
         Command::Status => emit(steps::status(&paths)),
-        Command::Fund => Err(Exit::Blocked(steps::blocked_message("fund"))),
-        Command::Claim => Err(Exit::Blocked(steps::blocked_message("claim"))),
-        Command::Refund => Err(Exit::Blocked(steps::blocked_message("refund"))),
+        Command::Fund => emit(funded::run_funded_journey(FundedJourney::Submarine)),
+        Command::Claim => emit(funded::run_funded_journey(FundedJourney::ReverseClaim)),
+        Command::Refund => emit(funded::run_funded_journey(FundedJourney::ReverseRefund)),
+        Command::FundedSmoke => funded::run_funded_smoke().map_err(Exit::Failure),
         Command::Run { to } => {
+            if to >= Step::Fund {
+                emit(funded::run_funded_journey(FundedJourney::Submarine))?;
+                if to >= Step::Claim {
+                    emit(funded::run_funded_journey(FundedJourney::ReverseClaim))?;
+                }
+                if to >= Step::Refund {
+                    emit(funded::run_funded_journey(FundedJourney::ReverseRefund))?;
+                }
+                return Ok(());
+            }
             emit(steps::discover(&paths, &relay_url))?;
             if to >= Step::Rfq {
                 emit(steps::rfq(&paths, &relay_url, cli::SwapShape::Submarine))?;

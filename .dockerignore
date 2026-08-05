@@ -8,5 +8,6 @@ tests
 !tests/fixtures
 deploy
 scripts
+!scripts/dev-work-items.json
 PROVENANCE.md
 README.md

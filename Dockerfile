@@ -9,6 +9,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY migrations ./migrations
 COPY crates ./crates
 COPY nips ./nips
+COPY scripts/dev-work-items.json ./scripts/dev-work-items.json
 COPY tests ./tests
 RUN cargo build --locked --release -p immortal-relay --bin immortal \
     && strip target/release/immortal

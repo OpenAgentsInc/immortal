@@ -13,8 +13,9 @@ an external client actor to complete:
 3. a reverse swap whose client does not claim, ending in the provider's
    confirmed script-path refund and a cancelled hold invoice.
 
-The external actor uses the production client engine for each journey. Before
-either participant funds, it reconstructs the bilateral contract, binds and
+The external actor is `immortal-lab funded-smoke` and uses the production
+client engine for each journey. Before either participant funds, it
+reconstructs the bilateral contract, binds and
 parses the requester `ExitPackage`, and completes the applicable
 verify-before-fund transition. In the reverse journeys, the provider may add
 the exact funding transaction only after its hard reservation has durably
@@ -23,7 +24,7 @@ authoring `requester_lock_verified`, and the provider must broadcast those
 same bytes. Each journey finishes only after the client engine accepts the
 provider's signer-local terminal Close (`completed` or `refunded`).
 
-The driver succeeding is insufficient. The harness reads
+The funded journey process succeeding is insufficient. The shell harness reads
 `tests/fixtures/provider/funded-smoke-v1.json` and independently checks the
 reported transaction IDs through bitcoind, verifies that each terminal
 transaction spends its journey's exact lockup outpoint, checks the ordinary
@@ -50,9 +51,11 @@ the same pricing engine used by funded production Quotes.
 
 **Passed locally.** On 2026-08-04, `scripts/test-provider-funded.sh` completed
 on macOS 26.4 arm64 with `test-provider-funded: submarine, reverse, and
-noncooperative refund passed`. This records local disposable-regtest
-conformance. It is not a clean-Debian installation, live-network, or deployment
-claim; issue #19 owns that evidence.
+noncooperative refund passed` after stopping the first `immortal-lab` process
+at `submarine:funding_authorized` and completing with a new process restored
+from the persisted engine snapshot. This records local disposable-regtest
+conformance. It is not a clean-Debian installation, live-network, or
+deployment claim; issue #19 owns that evidence.
 
 ## Pinned rail software
 
@@ -92,8 +95,9 @@ without either process receiving a CLN wallet data volume.
 The CLN rail uses its native Unix JSON-RPC socket. LND is excluded from v1, so
 this topology creates no macaroon. The hold plugin's optional TLS gRPC server
 is disabled; the provider probes and uses only the CLN plugin commands over
-the native socket. Generated preimages stay inside the external driver and
-the involved CLN process. The public evidence file contains hashes and
+the native socket. Generated preimages stay in a mode-0600 `immortal-lab`
+wallet-state record and the involved CLN process; the record is removed after
+terminal Close. The public evidence file contains hashes and
 transaction IDs and rejects custody-field names.
 
 The provider, relay, client driver, and alert receiver share bitcoind's
@@ -126,9 +130,11 @@ deleted during cleanup. The Postgres query returns counts, state names, and
 dispositions rather than stored events or custody-bearing records. No GitHub
 workflow or billed runner is involved.
 
-The external actor is the ignored integration test
-`funded_provider_completes_submarine_reverse_and_refund` in
-`crates/immortal-provider/tests/funded_live.rs`. Its only success artifact is
+The external actor is `crates/immortal-lab/src/funded.rs`, built as the
+`immortal-lab` binary in the disposable driver image. The script first stops
+that process at `submarine:funding_authorized`, validates its private engine
+snapshot and money-safe checkpoint, then starts a new process which restores
+the same session and completes all three journeys. Its only success artifact is
 the private evidence set validated by the harness; a missing test, missing
 artifact, unconfirmed transaction, wrong invoice state, nonterminal database
 row, wrong watch disposition, or unresolved watchtower job fails the gate.
@@ -140,6 +146,7 @@ macOS 26.4 through the local Apple Container BuildKit. The resulting Bitcoin
 image reported `Bitcoin Core daemon version v31.1.0`; the hold binary loaded
 all required shared libraries in the pinned CLN image. Shell syntax, fixture
 JSON, evidence-validator Python, and Compose expansion also passed locally.
-The same 2026-08-04 run completed all three journeys and the aggregate durable
-evidence check. Future platform or release claims require their own successful
-invocation; this record applies only to the local macOS 26.4 arm64 run.
+The same 2026-08-04 run completed the scripted harness restart, all three
+journeys, and the aggregate durable evidence check. Future platform or release
+claims require their own successful invocation; this record applies only to
+the local macOS 26.4 arm64 run.
