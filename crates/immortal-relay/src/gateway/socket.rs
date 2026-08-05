@@ -24,7 +24,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct HttpHead {
     pub method: String,
     pub path: String,
-    headers: HashMap<String, String>,
+    pub(crate) headers: HashMap<String, String>,
 }
 
 impl HttpHead {

@@ -373,6 +373,14 @@ fixtures. Its disposable three-journey funded gate passed locally on
 2026-08-04 on macOS 26.4 arm64. Later packets follow the dependency table and
 subledger; #19 still owns Debian and deployment evidence.
 
+The relay-side #15 compatibility handoff is implemented off by default after
+the workspace/provider packets: exact-digest activation, safe external-provider
+`307` routing, sensitive-body non-read proof, and the submarine finalize seam.
+It is not endpoint emulation. #15 remains incomplete until the funded provider
+serves the released-client API and the adapted Go/web process gate reaches
+100% of its invoked call set. #18 replacement scenarios wait for that gate;
+relay handoff custody/failure cases may proceed independently.
+
 ### M12 provider-runtime subledger (2026-08-04)
 
 The monorepo expansion decision (`docs/MONOREPO.md`): this repo ships the

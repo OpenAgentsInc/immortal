@@ -1,5 +1,9 @@
 use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
 
+use crate::boltz_facade::{
+    BOLTZ_FACADE_CONFORMANCE_ENV, BOLTZ_FACADE_PROVIDER_BASE_URL_ENV, BoltzFacadeConfig,
+    same_origin,
+};
 use crate::domain::RelaySigner;
 use crate::mkt_swp_coordination::{
     MKT_SWP_COORDINATION_CONFORMANCE_ENV, MKT_SWP_COORDINATION_DEFAULT_SWEEP_SECONDS,
@@ -95,6 +99,7 @@ pub struct GatewayConfig {
     pub shutdown_grace: Duration,
     pub expiration_sweep: Duration,
     pub mkt_swp_coordination: Option<MktSwpCoordinationConfig>,
+    pub boltz_facade: Option<BoltzFacadeConfig>,
     pub import_nostr_effect: bool,
     pub legacy_import_sweep: Duration,
     pub media: Option<MediaConfig>,
@@ -117,6 +122,7 @@ impl GatewayConfig {
             shutdown_grace: Duration::from_secs(10),
             expiration_sweep: Duration::from_secs(60),
             mkt_swp_coordination: None,
+            boltz_facade: None,
             import_nostr_effect: false,
             legacy_import_sweep: Duration::from_secs(10),
             media: None,
@@ -163,6 +169,20 @@ impl GatewayConfig {
                 },
             )
             .transpose()?;
+        let boltz_conformance = optional_string(BOLTZ_FACADE_CONFORMANCE_ENV)?;
+        let boltz_provider_base = optional_string(BOLTZ_FACADE_PROVIDER_BASE_URL_ENV)?;
+        config.boltz_facade = match (boltz_conformance, boltz_provider_base) {
+            (Some(conformance_sha256), Some(provider_base_url)) => Some(BoltzFacadeConfig {
+                conformance_sha256,
+                provider_base_url,
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(GatewayError::Config(format!(
+                    "{BOLTZ_FACADE_CONFORMANCE_ENV} and {BOLTZ_FACADE_PROVIDER_BASE_URL_ENV} must be configured together"
+                )));
+            }
+        };
         config.import_nostr_effect = parse_bool("IMMORTAL_IMPORT_NOSTR_EFFECT", false)?;
         config.legacy_import_sweep =
             Duration::from_secs(parse_or("IMMORTAL_LEGACY_IMPORT_SWEEP_SECONDS", "10")?);
@@ -261,6 +281,19 @@ impl GatewayConfig {
                 return Err(config(format!(
                     "{MKT_SWP_COORDINATION_SWEEP_ENV} must be between 1 and 3600"
                 )));
+            }
+        }
+        if let Some(boltz_facade) = &self.boltz_facade {
+            boltz_facade.validate()?;
+            if self.relay_url.is_some()
+                && same_origin(
+                    &self.absolute_http_url("")?,
+                    &boltz_facade.provider_base_url,
+                )
+            {
+                return Err(config(
+                    "IMMORTAL_BOLTZ_FACADE_PROVIDER_BASE_URL must not resolve back to the relay origin",
+                ));
             }
         }
         if self.legacy_import_sweep.is_zero()

@@ -28,6 +28,21 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-05 — Codex 5.6 Sol, M12 Boltz compatibility handoff / issue #15
+
+- Added a fixture-pinned released-client route profile and an off-by-default,
+  exact-digest relay handoff to an independently deployed provider origin.
+  Safe `307` construction preserves method and body while the relay reads no
+  body and persists no compatibility session state.
+- Added the pre-broadcast submarine finalize route required to retain matching
+  bilateral MKT-SWP Contracts, plus explicit script-path client settings and a
+  sensitive-body non-read proof. No provider, client, wallet, spend, preimage,
+  signer, node, or rail dependency entered the relay crate.
+- Recorded all 53 pinned v2 route dispositions and the released-client gate.
+  Redirects count as 0 emulated endpoints; the external provider API and
+  adapted-client process proof remain blockers, so no replacement or issue
+  completion claim is made.
+
 ### 2026-08-04 — Codex 5.6 Sol, M12 MKT-SWP provider sessions / issue #14
 
 - Implemented the transport-neutral provider engine in

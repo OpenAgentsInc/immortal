@@ -435,6 +435,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use crate::{
+        boltz_facade::{BoltzFacadeConfig, boltz_facade_conformance_sha256},
         domain::{MKT_MAX_PRIVATE_EVENT_BYTES, RelaySigner},
         mkt_swp_coordination::{MKT_SWP_COORDINATION_EXTENSION, coordination_conformance_sha256},
         store::RelayPolicy,
@@ -602,6 +603,17 @@ mod tests {
                     .contains(&json!(disabled))
             );
         }
+        config.boltz_facade = Some(BoltzFacadeConfig {
+            conformance_sha256: boltz_facade_conformance_sha256(),
+            provider_base_url: "https://provider.example".to_owned(),
+        });
+        config.validate().unwrap();
+        let with_boltz = serde_json::from_str::<Value>(&nip11_json(&config, &policy)).unwrap();
+        assert_eq!(
+            with_boltz["supported_extensions"], actual["supported_extensions"],
+            "the external-provider handoff is never a NIP-11 extension"
+        );
+        config.boltz_facade = None;
         config.relay_signer = Some(RelaySigner::from_secret_hex(&"09".repeat(32)).unwrap());
         config.mkt_swp_coordination = Some(MktSwpCoordinationConfig {
             conformance_sha256: coordination_conformance_sha256(),

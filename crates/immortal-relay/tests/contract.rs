@@ -95,6 +95,20 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
         descriptor.mkt.mkt_swp.client_engine.status,
         "implemented_client_only"
     );
+    assert!(!descriptor.mkt.mkt_swp.boltz_facade.enabled_by_default);
+    assert!(!descriptor.mkt.mkt_swp.boltz_facade.relay_reads_request_body);
+    assert!(
+        !descriptor
+            .mkt
+            .mkt_swp
+            .boltz_facade
+            .relay_persists_session_state
+    );
+    assert!(!descriptor.mkt.mkt_swp.boltz_facade.nip11_advertised);
+    assert_eq!(
+        descriptor.mkt.mkt_swp.boltz_facade.completion_gate,
+        "external_provider_process_released_client_conformance"
+    );
     assert_eq!(
         descriptor.mkt.mkt_swp.client_engine.requester_flows,
         ["submarine", "reverse", "chain"]

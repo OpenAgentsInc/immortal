@@ -3,6 +3,11 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    boltz_compat::BOLTZ_MAPPING_REVISION,
+    boltz_facade::{
+        BOLTZ_FACADE_CONFORMANCE_ENV, BOLTZ_FACADE_PROVIDER_BASE_URL_ENV,
+        boltz_facade_conformance_sha256,
+    },
     domain::{
         EventClass, MKT_CANCEL_ACTIONS, MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_DESCRIPTOR_STATUSES,
         MKT_ENVELOPE_SCHEMA, MKT_EXECUTABLE_PROFILES, MKT_IDENTIFIER_MAX_BYTES,
@@ -175,6 +180,23 @@ pub struct MktSwpGrammar {
     pub upstream_fixture_cases: usize,
     pub coordination: MktSwpCoordinationGrammar,
     pub client_engine: MktSwpClientContract,
+    pub boltz_facade: BoltzFacadeContract,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltzFacadeContract {
+    pub mapping_revision: &'static str,
+    pub enabled_by_default: bool,
+    pub activation_environment: &'static str,
+    pub provider_base_url_environment: &'static str,
+    pub conformance_sha256: String,
+    pub handoff: &'static str,
+    pub relay_reads_request_body: bool,
+    pub relay_persists_session_state: bool,
+    pub submarine_finalize_path: &'static str,
+    pub nip11_advertised: bool,
+    pub completion_gate: &'static str,
+    pub fixture: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1228,6 +1250,20 @@ fn mkt_grammar() -> MktGrammar {
                     "explicit_unresolved_loss",
                 ],
                 fixture: "tests/fixtures/nipmkt/swp-client-engine-v1.json",
+            },
+            boltz_facade: BoltzFacadeContract {
+                mapping_revision: BOLTZ_MAPPING_REVISION,
+                enabled_by_default: false,
+                activation_environment: BOLTZ_FACADE_CONFORMANCE_ENV,
+                provider_base_url_environment: BOLTZ_FACADE_PROVIDER_BASE_URL_ENV,
+                conformance_sha256: boltz_facade_conformance_sha256(),
+                handoff: "http_307_external_provider_preserve_method_and_body",
+                relay_reads_request_body: false,
+                relay_persists_session_state: false,
+                submarine_finalize_path: "/v2/swap/submarine/:id/finalize",
+                nip11_advertised: false,
+                completion_gate: "external_provider_process_released_client_conformance",
+                fixture: "tests/fixtures/nipmkt/boltz-facade-v2.json",
             },
         },
         mkt_pfi: MktPfiGrammar {

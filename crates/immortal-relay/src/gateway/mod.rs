@@ -1,6 +1,7 @@
 //! Bounded NIP-01 WebSocket and NIP-11 HTTP gateway.
 
 mod auth;
+mod boltz;
 mod config;
 mod db;
 mod error;

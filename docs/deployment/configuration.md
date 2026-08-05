@@ -70,6 +70,8 @@ Platform + Managed Postgres unsupported for the current binary.
 | `IMMORTAL_MANAGEMENT_PUBKEY` | for NIP-86 | — | Exact 32-byte owner public key as 64 lowercase hexadecimal characters. Enables the NIP-98-authenticated management endpoint. `IMMORTAL_RELAY_URL` is required so HTTP authorization can bind the public URL. |
 | `IMMORTAL_MKT_SWP_COORDINATION_CONFORMANCE_SHA256` | to enable MKT-SWP coordination | — | Exact compiled fixture/migration/configuration digest printed at `.mkt.mkt_swp.coordination.conformance_sha256` by `immortal contract`. A missing value keeps the handler disabled; a stale or different value fails startup. Requires relay URL and relay secret. |
 | `IMMORTAL_MKT_SWP_COORDINATION_SWEEP_SECONDS` | no | `30` | Reservation-release sweep interval when coordination is active (1–3,600). The sweep releases reservation accounting only. |
+| `IMMORTAL_BOLTZ_FACADE_CONFORMANCE_SHA256` | to enable the Boltz handoff | — | Exact compiled digest at `.mkt.mkt_swp.boltz_facade.conformance_sha256` in `immortal contract`. A stale value fails startup. This does not advertise or claim a provider API. |
+| `IMMORTAL_BOLTZ_FACADE_PROVIDER_BASE_URL` | with the Boltz digest | — | External provider compatibility origin. It must be HTTPS, except loopback HTTP is accepted for local development. The relay issues bounded `307` handoffs without reading request bodies. |
 
 ### Media
 
@@ -103,6 +105,10 @@ guarantee, dispute authority, or custody surface. The separate
 `mkt-swp-coordination:1` extension appears only when the exact conformance
 digest, relay URL, and relay signer activate the noncustodial handler described
 in `docs/protocol/mkt-swp-coordination.md`.
+
+The Boltz compatibility handoff is never a NIP-11 extension. Its external
+provider origin must be reachable by the client, and direct provider
+WebSocket configuration is required. See `docs/protocol/boltz-facade.md`.
 
 The Block extension handlers need no additional service or database. NIP-AO
 uses the dedicated observer rates below. NIP-IA and NIP-DV require

@@ -40,6 +40,7 @@ use crate::{
 use super::{
     GatewayConfig, GatewayError,
     auth::{AuthState, make_challenge, read_process_secret},
+    boltz::{is_boltz_request, serve_boltz},
     db::{DbPool, DbProtocolConfig},
     management::{is_management_request, serve_management},
     media::{MediaStorage, is_media_request, serve_media},
@@ -496,6 +497,14 @@ async fn handle_socket(
     let Some(connection_permit) = state.rate.connect(ip) else {
         return Ok(());
     };
+    if state.config.boltz_facade.is_some() && is_boltz_request(&head) {
+        let _connection_permit = connection_permit;
+        let config =
+            state.config.boltz_facade.as_ref().ok_or_else(|| {
+                GatewayError::Internal("Boltz facade configuration vanished".into())
+            })?;
+        return serve_boltz(stream, &head, config, &state.rate, ip).await;
+    }
     if !is_websocket_upgrade(&head) {
         let _connection_permit = connection_permit;
         if is_media_request(&head) {
