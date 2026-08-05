@@ -171,9 +171,9 @@ impl BroadcastWatchPayload {
             validate_hash(&input.txid)?;
         }
         match job.job_kind.as_str() {
-            "refund_broadcast" if self.claim_release.is_none() => {}
+            "refund_broadcast" | "cooperative_broadcast" if self.claim_release.is_none() => {}
             "claim_broadcast" if self.claim_release.is_some() => {}
-            "refund_broadcast" | "claim_broadcast" => {
+            "refund_broadcast" | "claim_broadcast" | "cooperative_broadcast" => {
                 return Err(WatchtowerError::InvalidPayload(
                     "claim release evidence does not match the job kind",
                 ));
@@ -776,7 +776,30 @@ fn unix_now() -> Result<u64, WatchtowerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        bitcoind::{BitcoindAuth, BitcoindEndpoint, BitcoindLimits},
+        store::{ProviderStoreError, StoreWriteOutcome, WatchJobRequest},
+    };
     use immortal_core::mkt_swp_verify::{TransactionInput, TransactionOutput};
+    use std::{
+        io::{self, ErrorKind},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+        net::{TcpListener, TcpStream},
+        task::JoinHandle,
+    };
+
+    enum TestRpcOutcome {
+        Result(Value),
+        Error(i64),
+    }
+
+    struct TestRpcExpectation {
+        method: &'static str,
+        outcome: TestRpcOutcome,
+    }
 
     #[test]
     fn refund_payload_binds_transaction_id_and_inputs() -> Result<(), Box<dyn std::error::Error>> {
@@ -812,6 +835,253 @@ mod tests {
         )?;
         assert!(payload.claim_release.is_some());
         assert!(!payload.public_value()?.to_string().contains("preimage"));
+        Ok(())
+    }
+
+    #[test]
+    fn cooperative_payload_requires_no_release_and_exact_transaction_bindings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let raw = test_transaction()?;
+        let payload = BroadcastWatchPayload::cooperative_key_path(raw.clone())?;
+        let job = test_watch_job("cooperative_broadcast", &payload)?;
+        assert_eq!(decode_job_payload(&job)?, payload);
+
+        let released = BroadcastWatchPayload::released_claim(
+            raw,
+            ClaimReleaseEvidence {
+                payment_hash: "22".repeat(32),
+                settled_at: 100,
+            },
+        )?;
+        let released_job = test_watch_job("cooperative_broadcast", &released)?;
+        assert!(matches!(
+            decode_job_payload(&released_job),
+            Err(WatchtowerError::InvalidPayload(
+                "claim release evidence does not match the job kind"
+            ))
+        ));
+
+        let mut changed_outpoint = payload.clone();
+        changed_outpoint.inputs[0].vout += 1;
+        let changed_outpoint_job = test_watch_job("cooperative_broadcast", &changed_outpoint)?;
+        assert!(decode_job_payload(&changed_outpoint_job).is_err());
+
+        let mut changed_transaction_id = payload;
+        changed_transaction_id.expected_txid = "33".repeat(32);
+        let changed_transaction_id_job =
+            test_watch_job("cooperative_broadcast", &changed_transaction_id)?;
+        assert!(decode_job_payload(&changed_transaction_id_job).is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cooperative_watch_broadcast_and_confirmation_survive_store_restarts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let Some(database_url) = provider_test_database_url() else {
+            return Ok(());
+        };
+        let namespace = test_namespace("cooperative-confirmation")?;
+        let payload = BroadcastWatchPayload::cooperative_key_path(test_transaction()?)?;
+        let request = cooperative_watch_request(&namespace, "confirmation", &payload)?;
+        let (store, _) = ProviderStore::connect(&database_url).await?;
+        assert_eq!(
+            store.enqueue_watch_job(&request).await?,
+            StoreWriteOutcome::Stored
+        );
+        assert_eq!(
+            store.enqueue_watch_job(&request).await?,
+            StoreWriteOutcome::Replay
+        );
+        let mut changed_effect = request.clone();
+        changed_effect.effect_id = Some(test_digest(&namespace, "changed-effect"));
+        assert!(matches!(
+            store.enqueue_watch_job(&changed_effect).await,
+            Err(ProviderStoreError::Conflict(_))
+        ));
+        let mut changed_deadline = request.clone();
+        changed_deadline.due_at = Some(12);
+        assert!(matches!(
+            store.enqueue_watch_job(&changed_deadline).await,
+            Err(ProviderStoreError::Conflict(_))
+        ));
+        drop(store);
+
+        let mut restarted = ProviderStore::connect_verified(&database_url).await?;
+        let claimed = restarted.claim_due_watch_jobs(0, 10, 40, 8).await?;
+        let claimed = claimed
+            .into_iter()
+            .find(|job| job.job_id == request.job_id)
+            .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "cooperative watch was not due"))?;
+        assert_eq!(claimed.effect_id, request.effect_id);
+        assert_eq!(claimed.due_at, request.due_at);
+        assert_eq!(claimed.due_height, request.due_height);
+        assert_eq!(decode_job_payload(&claimed)?, payload);
+        let (bitcoind, server) = spawn_test_bitcoind(vec![TestRpcExpectation {
+            method: "sendrawtransaction",
+            outcome: TestRpcOutcome::Result(Value::String(payload.expected_txid.clone())),
+        }])
+        .await?;
+        let mut watchtower = test_watchtower(restarted, bitcoind)?;
+        watchtower.broadcast_job(&claimed, 10).await?;
+        server.await??;
+        let broadcast = watchtower
+            .store
+            .watch_job(&request.job_id)
+            .await?
+            .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "broadcast watch disappeared"))?;
+        assert_eq!(broadcast.state, "broadcast");
+        assert_eq!(
+            broadcast.broadcast_txid,
+            Some(payload.expected_txid.clone())
+        );
+        drop(watchtower);
+
+        let restarted = ProviderStore::connect_verified(&database_url).await?;
+        let observation = restarted
+            .watch_jobs_for_observation(8)
+            .await?
+            .into_iter()
+            .find(|job| job.job_id == request.job_id)
+            .ok_or_else(|| {
+                io::Error::new(
+                    ErrorKind::NotFound,
+                    "cooperative broadcast was not restored for observation",
+                )
+            })?;
+        let block_hash = test_digest(&namespace, "confirmation-block");
+        let tip_hash = test_digest(&namespace, "confirmation-tip");
+        let (bitcoind, server) = spawn_test_bitcoind(vec![
+            TestRpcExpectation {
+                method: "gettxout",
+                outcome: TestRpcOutcome::Result(Value::Null),
+            },
+            TestRpcExpectation {
+                method: "getrawtransaction",
+                outcome: TestRpcOutcome::Result(json!({
+                    "blockhash":block_hash,
+                    "confirmations":2,
+                    "txid":payload.expected_txid,
+                })),
+            },
+        ])
+        .await?;
+        let mut watchtower = test_watchtower(restarted, bitcoind)?;
+        watchtower.observe_job(&observation, &tip_hash, 11).await?;
+        server.await??;
+        drop(watchtower);
+
+        let restarted = ProviderStore::connect_verified(&database_url).await?;
+        let confirmed = restarted
+            .watch_job(&request.job_id)
+            .await?
+            .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "confirmed watch disappeared"))?;
+        assert_eq!(confirmed.state, "confirmed");
+        assert_eq!(confirmed.confirmations, 2);
+        assert_eq!(
+            confirmed.observed_block_hash.as_deref(),
+            Some(block_hash.as_str())
+        );
+        assert_eq!(confirmed.effect_id, request.effect_id);
+        assert_eq!(confirmed.due_at, request.due_at);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cooperative_watch_already_known_broadcast_is_restart_idempotent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let Some(database_url) = provider_test_database_url() else {
+            return Ok(());
+        };
+        let namespace = test_namespace("cooperative-already-known")?;
+        let payload = BroadcastWatchPayload::cooperative_key_path(test_transaction()?)?;
+        let request = cooperative_watch_request(&namespace, "already-known", &payload)?;
+        let (store, _) = ProviderStore::connect(&database_url).await?;
+        store.enqueue_watch_job(&request).await?;
+        drop(store);
+
+        let mut restarted = ProviderStore::connect_verified(&database_url).await?;
+        let claimed = restarted
+            .claim_due_watch_jobs(0, 10, 40, 8)
+            .await?
+            .into_iter()
+            .find(|job| job.job_id == request.job_id)
+            .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "cooperative watch was not due"))?;
+        let (bitcoind, server) = already_known_bitcoind(&payload).await?;
+        let mut watchtower = test_watchtower(restarted, bitcoind)?;
+        watchtower.broadcast_job(&claimed, 10).await?;
+        server.await??;
+        drop(watchtower);
+
+        let restarted = ProviderStore::connect_verified(&database_url).await?;
+        let replay = restarted
+            .watch_job(&request.job_id)
+            .await?
+            .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "broadcast replay disappeared"))?;
+        let (bitcoind, server) = already_known_bitcoind(&payload).await?;
+        let mut watchtower = test_watchtower(restarted, bitcoind)?;
+        watchtower.broadcast_job(&replay, 11).await?;
+        server.await??;
+        drop(watchtower);
+
+        let restarted = ProviderStore::connect_verified(&database_url).await?;
+        let replayed = restarted
+            .watch_job(&request.job_id)
+            .await?
+            .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "replayed watch disappeared"))?;
+        assert_eq!(replayed.state, "broadcast");
+        assert_eq!(
+            replayed.broadcast_txid.as_deref(),
+            Some(payload.expected_txid.as_str())
+        );
+        assert!(replayed.result_sha256.is_some());
+        assert!(replayed.public_result.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cooperative_watch_rejects_released_claim_after_store_restart()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let Some(database_url) = provider_test_database_url() else {
+            return Ok(());
+        };
+        let namespace = test_namespace("cooperative-invalid-release")?;
+        let payload = BroadcastWatchPayload::released_claim(
+            test_transaction()?,
+            ClaimReleaseEvidence {
+                payment_hash: test_digest(&namespace, "payment-hash"),
+                settled_at: 10,
+            },
+        )?;
+        let request = cooperative_watch_request(&namespace, "invalid-release", &payload)?;
+        let (store, _) = ProviderStore::connect(&database_url).await?;
+        store.enqueue_watch_job(&request).await?;
+        drop(store);
+
+        let mut restarted = ProviderStore::connect_verified(&database_url).await?;
+        let claimed = restarted
+            .claim_due_watch_jobs(0, 10, 40, 8)
+            .await?
+            .into_iter()
+            .find(|job| job.job_id == request.job_id)
+            .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "invalid watch was not due"))?;
+        let bitcoind = test_bitcoind(BitcoindEndpoint::new("127.0.0.1", 1)?)?;
+        let mut watchtower = test_watchtower(restarted, bitcoind)?;
+        assert!(matches!(
+            watchtower.broadcast_job(&claimed, 10).await,
+            Err(WatchtowerError::InvalidPayload(
+                "claim release evidence does not match the job kind"
+            ))
+        ));
+        drop(watchtower);
+
+        let restarted = ProviderStore::connect_verified(&database_url).await?;
+        let refused = restarted
+            .watch_job(&request.job_id)
+            .await?
+            .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "invalid watch disappeared"))?;
+        assert_eq!(refused.state, "running");
+        assert!(refused.broadcast_txid.is_none());
+        assert!(refused.public_result.is_none());
         Ok(())
     }
 
@@ -853,6 +1123,200 @@ mod tests {
         assert!(validate_mempool(&json!(["11".repeat(32)])).is_ok());
         assert!(validate_mempool(&json!({})).is_err());
         assert!(validate_mempool(&json!(["not-a-hash"])).is_err());
+    }
+
+    fn test_watch_job(
+        job_kind: &str,
+        payload: &BroadcastWatchPayload,
+    ) -> Result<WatchJob, WatchtowerError> {
+        Ok(WatchJob {
+            job_id: "44".repeat(32),
+            session_id: "55".repeat(32),
+            effect_id: Some("66".repeat(32)),
+            job_kind: job_kind.to_owned(),
+            request_sha256: payload.request_sha256()?,
+            public_payload: payload.public_value()?,
+            state: "running".to_owned(),
+            due_height: None,
+            due_at: Some(100),
+            attempt_count: 1,
+            maximum_attempts: 8,
+            result_sha256: None,
+            public_result: None,
+            broadcast_txid: None,
+            replacement_txid: None,
+            confirmations: 0,
+            observed_block_hash: None,
+            last_chain_event: None,
+            page_code: None,
+        })
+    }
+
+    fn provider_test_database_url() -> Option<String> {
+        match std::env::var("IMMORTAL_PROVIDER_TEST_DATABASE_URL") {
+            Ok(database_url) => Some(database_url),
+            Err(_) => {
+                eprintln!(
+                    "skipping cooperative watch Postgres test: IMMORTAL_PROVIDER_TEST_DATABASE_URL is unset"
+                );
+                None
+            }
+        }
+    }
+
+    fn test_namespace(label: &str) -> Result<String, WatchtowerError> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| WatchtowerError::Clock)?
+            .as_nanos();
+        Ok(format!("{}:{label}:{timestamp}", std::process::id()))
+    }
+
+    fn test_digest(namespace: &str, label: &str) -> String {
+        lower_hex(&Sha256::digest(format!("{namespace}:{label}").as_bytes()))
+    }
+
+    fn cooperative_watch_request(
+        namespace: &str,
+        label: &str,
+        payload: &BroadcastWatchPayload,
+    ) -> Result<WatchJobRequest, WatchtowerError> {
+        Ok(WatchJobRequest {
+            job_id: test_digest(namespace, &format!("{label}:job")),
+            session_id: test_digest(namespace, &format!("{label}:session")),
+            effect_id: Some(test_digest(namespace, &format!("{label}:effect"))),
+            job_kind: "cooperative_broadcast".to_owned(),
+            request_sha256: payload.request_sha256()?,
+            public_payload: payload.public_value()?,
+            due_height: None,
+            due_at: Some(10),
+            maximum_attempts: 8,
+            created_at: 10,
+        })
+    }
+
+    fn test_watchtower(
+        store: ProviderStore,
+        bitcoind: BitcoindClient,
+    ) -> Result<Watchtower, WatchtowerError> {
+        Watchtower::new(
+            store,
+            bitcoind,
+            Arc::new(ProviderHealth::default()),
+            None,
+            Duration::from_secs(1),
+            Duration::from_secs(10),
+            2,
+        )
+    }
+
+    async fn already_known_bitcoind(
+        payload: &BroadcastWatchPayload,
+    ) -> Result<(BitcoindClient, JoinHandle<io::Result<()>>), Box<dyn std::error::Error>> {
+        spawn_test_bitcoind(vec![
+            TestRpcExpectation {
+                method: "sendrawtransaction",
+                outcome: TestRpcOutcome::Error(-27),
+            },
+            TestRpcExpectation {
+                method: "getrawtransaction",
+                outcome: TestRpcOutcome::Result(Value::String(payload.raw_transaction.clone())),
+            },
+        ])
+        .await
+    }
+
+    async fn spawn_test_bitcoind(
+        expectations: Vec<TestRpcExpectation>,
+    ) -> Result<(BitcoindClient, JoinHandle<io::Result<()>>), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            for expectation in expectations {
+                let (mut stream, _) = listener.accept().await?;
+                let request = read_test_rpc_request(&mut stream).await?;
+                if request.get("method").and_then(Value::as_str) != Some(expectation.method) {
+                    return Err(io::Error::new(
+                        ErrorKind::InvalidData,
+                        format!("unexpected RPC method in request: {request}"),
+                    ));
+                }
+                let id = request.get("id").cloned().ok_or_else(|| {
+                    io::Error::new(ErrorKind::InvalidData, "RPC request has no ID")
+                })?;
+                let (status, response) = match expectation.outcome {
+                    TestRpcOutcome::Result(result) => {
+                        (200, json!({"error":null,"id":id,"result":result}))
+                    }
+                    TestRpcOutcome::Error(code) => (
+                        500,
+                        json!({
+                            "error":{"code":code,"message":"test RPC error"},
+                            "id":id,
+                            "result":null,
+                        }),
+                    ),
+                };
+                let body = serde_json::to_vec(&response)
+                    .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
+                let response = format!(
+                    "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await?;
+                stream.write_all(&body).await?;
+                stream.shutdown().await?;
+            }
+            Ok(())
+        });
+        let endpoint = BitcoindEndpoint::new("127.0.0.1", address.port())?;
+        Ok((test_bitcoind(endpoint)?, server))
+    }
+
+    fn test_bitcoind(endpoint: BitcoindEndpoint) -> Result<BitcoindClient, BitcoindError> {
+        BitcoindClient::new(
+            endpoint,
+            BitcoindAuth::new("rpc-user", "rpc-password")?,
+            BitcoindLimits::default(),
+        )
+    }
+
+    async fn read_test_rpc_request(stream: &mut TcpStream) -> io::Result<Value> {
+        let mut reader = BufReader::new(stream);
+        let mut content_length = None;
+        loop {
+            let mut line = String::new();
+            let bytes = reader.read_line(&mut line).await?;
+            if bytes == 0 {
+                return Err(io::Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "RPC request ended before its body",
+                ));
+            }
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.strip_prefix("Content-Length: ") {
+                content_length = Some(
+                    value
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?,
+                );
+            }
+        }
+        let content_length = content_length.ok_or_else(|| {
+            io::Error::new(ErrorKind::InvalidData, "RPC request has no Content-Length")
+        })?;
+        if content_length > 1024 * 1024 {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "RPC test request exceeds its byte bound",
+            ));
+        }
+        let mut body = vec![0; content_length];
+        reader.read_exact(&mut body).await?;
+        serde_json::from_slice(&body).map_err(|error| io::Error::new(ErrorKind::InvalidData, error))
     }
 
     fn test_transaction() -> Result<String, Box<dyn std::error::Error>> {
