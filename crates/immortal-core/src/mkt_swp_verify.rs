@@ -958,33 +958,68 @@ pub fn musig2_nonce_gen(
     extra_input: &[u8],
     randomness: [u8; 32],
 ) -> Result<Musig2SecretNonce, VerificationError> {
-    if message.len() > MAX_MUSIG_MESSAGE_BYTES {
+    let public_key = PublicKey::from_secret_key(&Secp256k1::signing_only(), secret_key);
+    musig2_nonce_gen_internal(
+        Some(secret_key),
+        &public_key,
+        Some(aggregate_key),
+        Some(message),
+        Some(extra_input),
+        randomness,
+    )
+}
+
+fn musig2_nonce_gen_internal(
+    secret_key: Option<&SecretKey>,
+    public_key: &PublicKey,
+    aggregate_key: Option<&[u8; 32]>,
+    message: Option<&[u8]>,
+    extra_input: Option<&[u8]>,
+    randomness: [u8; 32],
+) -> Result<Musig2SecretNonce, VerificationError> {
+    let message_length = message.map_or(0, <[u8]>::len);
+    if message_length > MAX_MUSIG_MESSAGE_BYTES {
         return Err(VerificationError::Bounds("MuSig2 message byte length"));
     }
-    if extra_input.len() > MAX_MUSIG_EXTRA_INPUT_BYTES {
+    let extra_input_length = extra_input.map_or(0, <[u8]>::len);
+    if extra_input_length > MAX_MUSIG_EXTRA_INPUT_BYTES {
         return Err(VerificationError::Bounds("MuSig2 extra input byte length"));
     }
-    let public_key = PublicKey::from_secret_key(&Secp256k1::signing_only(), secret_key).serialize();
-    let auxiliary = tagged_hash("MuSig/aux", &randomness);
-    let mut randomized_secret = secret_key.secret_bytes();
-    for (secret, mask) in randomized_secret.iter_mut().zip(auxiliary) {
-        *secret ^= mask;
+    let public_key = public_key.serialize();
+    let mut randomized_secret = randomness;
+    if let Some(secret_key) = secret_key {
+        let auxiliary = tagged_hash("MuSig/aux", &randomness);
+        randomized_secret = secret_key.secret_bytes();
+        for (secret, mask) in randomized_secret.iter_mut().zip(auxiliary) {
+            *secret ^= mask;
+        }
     }
     let mut input = Vec::with_capacity(
-        32 + 1 + public_key.len() + 1 + 32 + 1 + 8 + message.len() + 4 + extra_input.len() + 1,
+        32 + 1 + public_key.len() + 1 + 32 + 1 + 8 + message_length + 4 + extra_input_length + 1,
     );
     input.extend_from_slice(&randomized_secret);
     input.push(public_key.len() as u8);
     input.extend_from_slice(&public_key);
-    input.push(32);
-    input.extend_from_slice(aggregate_key);
-    input.push(1);
-    input.extend_from_slice(
-        &u64::try_from(message.len())
-            .map_err(|_| VerificationError::Bounds("MuSig2 message byte length"))?
-            .to_be_bytes(),
-    );
-    input.extend_from_slice(message);
+    match aggregate_key {
+        Some(aggregate_key) => {
+            input.push(32);
+            input.extend_from_slice(aggregate_key);
+        }
+        None => input.push(0),
+    }
+    match message {
+        Some(message) => {
+            input.push(1);
+            input.extend_from_slice(
+                &u64::try_from(message.len())
+                    .map_err(|_| VerificationError::Bounds("MuSig2 message byte length"))?
+                    .to_be_bytes(),
+            );
+            input.extend_from_slice(message);
+        }
+        None => input.push(0),
+    }
+    let extra_input = extra_input.unwrap_or_default();
     input.extend_from_slice(
         &u32::try_from(extra_input.len())
             .map_err(|_| VerificationError::Bounds("MuSig2 extra input byte length"))?
@@ -1011,6 +1046,94 @@ pub fn musig2_nonce_gen(
     })
 }
 
+pub fn musig2_aggregate_public_nonces(
+    public_nonces: &[[u8; 66]],
+) -> Result<[u8; 66], VerificationError> {
+    if public_nonces.is_empty() || public_nonces.len() > MAX_MUSIG_KEYS {
+        return Err(VerificationError::Bounds("MuSig2 public nonce count"));
+    }
+    let (first, second) = musig2_aggregate_nonces(public_nonces)?;
+    let mut aggregate = [0_u8; 66];
+    aggregate[..33].copy_from_slice(&first.serialize_extended());
+    aggregate[33..].copy_from_slice(&second.serialize_extended());
+    Ok(aggregate)
+}
+
+pub fn musig2_deterministic_sign(
+    secret_key: &SecretKey,
+    aggregate_other_nonce: &[u8; 66],
+    keys: &[PublicKey],
+    tweaks: &[Musig2Tweak],
+    message: &[u8],
+    randomness: Option<[u8; 32]>,
+) -> Result<([u8; 66], [u8; 32]), VerificationError> {
+    if keys.is_empty() || keys.len() > MAX_MUSIG_KEYS {
+        return Err(VerificationError::Bounds("MuSig2 participant count"));
+    }
+    if tweaks.len() > MAX_MUSIG_TWEAKS {
+        return Err(VerificationError::Bounds("MuSig2 tweak count"));
+    }
+    if message.len() > MAX_MUSIG_MESSAGE_BYTES {
+        return Err(VerificationError::Bounds("MuSig2 message byte length"));
+    }
+    let public_key = PublicKey::from_secret_key(&Secp256k1::signing_only(), secret_key);
+    let signer_index =
+        keys.iter()
+            .position(|key| key == &public_key)
+            .ok_or(VerificationError::Invalid(
+                "MuSig2 signer is not a participant",
+            ))?;
+    let aggregate_key = musig2_tweaked_aggregate_key(keys, tweaks)?.serialize();
+    let mut randomized_secret = secret_key.secret_bytes();
+    if let Some(randomness) = randomness {
+        for (secret, mask) in randomized_secret
+            .iter_mut()
+            .zip(tagged_hash("MuSig/aux", &randomness))
+        {
+            *secret ^= mask;
+        }
+    }
+    let mut nonce_input = Vec::with_capacity(32 + 66 + 32 + 8 + message.len() + 1);
+    nonce_input.extend_from_slice(&randomized_secret);
+    nonce_input.extend_from_slice(aggregate_other_nonce);
+    nonce_input.extend_from_slice(&aggregate_key);
+    nonce_input.extend_from_slice(
+        &u64::try_from(message.len())
+            .map_err(|_| VerificationError::Bounds("MuSig2 message byte length"))?
+            .to_be_bytes(),
+    );
+    nonce_input.extend_from_slice(message);
+    let first = musig2_deterministic_nonce_scalar(&nonce_input, 0)?;
+    let second = musig2_deterministic_nonce_scalar(&nonce_input, 1)?;
+    randomized_secret.fill(0);
+    nonce_input.fill(0);
+    let secp = Secp256k1::signing_only();
+    let first_public = PublicKey::from_secret_key(&secp, &first).serialize();
+    let second_public = PublicKey::from_secret_key(&secp, &second).serialize();
+    let mut public_nonce = [0_u8; 66];
+    public_nonce[..33].copy_from_slice(&first_public);
+    public_nonce[33..].copy_from_slice(&second_public);
+    let aggregate_nonce = musig2_aggregate_public_nonces(&[public_nonce, *aggregate_other_nonce])?;
+    let mut secret_nonce = Musig2SecretNonce {
+        first: first.secret_bytes(),
+        second: second.secret_bytes(),
+        public_key: public_key.serialize(),
+        public_nonce,
+        consumed: false,
+    };
+    let partial = musig2_partial_sign_with_aggregate_nonce(
+        &mut secret_nonce,
+        secret_key,
+        keys,
+        signer_index,
+        &public_nonce,
+        &aggregate_nonce,
+        tweaks,
+        message,
+    )?;
+    Ok((public_nonce, partial))
+}
+
 pub fn musig2_partial_sign(
     secret_nonce: &mut Musig2SecretNonce,
     secret_key: &SecretKey,
@@ -1020,13 +1143,7 @@ pub fn musig2_partial_sign(
     message: &[u8],
 ) -> Result<[u8; 32], VerificationError> {
     validate_musig2_session_bounds(keys, public_nonces, tweaks, message)?;
-    let mut consumed_nonce = secret_nonce.consume()?;
     let public_key = PublicKey::from_secret_key(&Secp256k1::signing_only(), secret_key);
-    if public_key.serialize() != consumed_nonce.public_key {
-        return Err(VerificationError::Invalid(
-            "MuSig2 nonce key changed before signing",
-        ));
-    }
     let signer_index =
         keys.iter()
             .position(|key| key == &public_key)
@@ -1038,7 +1155,49 @@ pub fn musig2_partial_sign(
             "MuSig2 signer public nonce mismatch",
         ));
     }
-    let session = musig2_session_values(keys, public_nonces, tweaks, message)?;
+    let aggregate_nonce = musig2_aggregate_public_nonces(public_nonces)?;
+    musig2_partial_sign_with_aggregate_nonce(
+        secret_nonce,
+        secret_key,
+        keys,
+        signer_index,
+        &public_nonces[signer_index],
+        &aggregate_nonce,
+        tweaks,
+        message,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn musig2_partial_sign_with_aggregate_nonce(
+    secret_nonce: &mut Musig2SecretNonce,
+    secret_key: &SecretKey,
+    keys: &[PublicKey],
+    signer_index: usize,
+    signer_public_nonce: &[u8; 66],
+    aggregate_nonce: &[u8; 66],
+    tweaks: &[Musig2Tweak],
+    message: &[u8],
+) -> Result<[u8; 32], VerificationError> {
+    let mut consumed_nonce = secret_nonce.consume()?;
+    let public_key = PublicKey::from_secret_key(&Secp256k1::signing_only(), secret_key);
+    if public_key.serialize() != consumed_nonce.public_key {
+        return Err(VerificationError::Invalid(
+            "MuSig2 nonce key changed before signing",
+        ));
+    }
+    if keys.get(signer_index) != Some(&public_key) {
+        return Err(VerificationError::Invalid(
+            "MuSig2 signer is not a participant",
+        ));
+    }
+    if signer_public_nonce != &secret_nonce.public_nonce {
+        return Err(VerificationError::Invalid(
+            "MuSig2 signer public nonce mismatch",
+        ));
+    }
+    let session =
+        musig2_session_values_from_aggregate_nonce(keys, aggregate_nonce, tweaks, message)?;
     let mut first = SecretKey::from_byte_array(consumed_nonce.first)
         .map_err(|_| VerificationError::Crypto("MuSig2 first secret nonce"))?;
     consumed_nonce.first.fill(0);
@@ -1078,9 +1237,10 @@ pub fn musig2_partial_sign(
     erase_secret_term(&mut nonce_term);
     erase_secret_term(&mut key_term);
     erase_secret_term(&mut partial_term);
-    verify_musig2_partial_signature_with_tweaks(
+    verify_musig2_partial_signature_with_aggregate_nonce(
         keys,
-        public_nonces,
+        signer_public_nonce,
+        aggregate_nonce,
         tweaks,
         signer_index,
         message,
@@ -1121,9 +1281,41 @@ pub fn verify_musig2_partial_signature_with_tweaks(
     if *partial_signature >= CURVE_ORDER {
         return Err(VerificationError::Crypto("MuSig2 partial signature scalar"));
     }
-    let session = musig2_session_values(keys, public_nonces, tweaks, message)?;
-    let signer_nonce = musig2_effective_signer_nonce(
+    let aggregate_nonce = musig2_aggregate_public_nonces(public_nonces)?;
+    verify_musig2_partial_signature_with_aggregate_nonce(
+        keys,
         &public_nonces[signer_index],
+        &aggregate_nonce,
+        tweaks,
+        signer_index,
+        message,
+        partial_signature,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_musig2_partial_signature_with_aggregate_nonce(
+    keys: &[PublicKey],
+    signer_public_nonce: &[u8; 66],
+    aggregate_nonce: &[u8; 66],
+    tweaks: &[Musig2Tweak],
+    signer_index: usize,
+    message: &[u8],
+    partial_signature: &[u8; 32],
+) -> Result<(), VerificationError> {
+    if keys.is_empty() || keys.len() > MAX_MUSIG_KEYS || signer_index >= keys.len() {
+        return Err(VerificationError::Bounds("MuSig2 signer index"));
+    }
+    if tweaks.len() > MAX_MUSIG_TWEAKS || message.len() > MAX_MUSIG_MESSAGE_BYTES {
+        return Err(VerificationError::Bounds("MuSig2 session context"));
+    }
+    if *partial_signature >= CURVE_ORDER {
+        return Err(VerificationError::Crypto("MuSig2 partial signature scalar"));
+    }
+    let session =
+        musig2_session_values_from_aggregate_nonce(keys, aggregate_nonce, tweaks, message)?;
+    let signer_nonce = musig2_effective_signer_nonce(
+        signer_public_nonce,
         &session.nonce_coefficient,
         session.nonce_odd,
     )?;
@@ -1640,6 +1832,22 @@ fn musig2_nonce_scalar(input: &[u8], index: u8) -> Result<SecretKey, Verificatio
     nonce
 }
 
+fn musig2_deterministic_nonce_scalar(
+    input: &[u8],
+    index: u8,
+) -> Result<SecretKey, VerificationError> {
+    let mut nonce_input = Vec::with_capacity(input.len() + 1);
+    nonce_input.extend_from_slice(input);
+    nonce_input.push(index);
+    let mut value = scalar_bytes_from_hash(tagged_hash("MuSig/deterministic/nonce", &nonce_input));
+    nonce_input.fill(0);
+    let nonce = SecretKey::from_byte_array(value).map_err(|_| {
+        VerificationError::Crypto("MuSig2 deterministic nonce generation produced zero")
+    });
+    value.fill(0);
+    nonce
+}
+
 fn musig2_key_context(
     keys: &[PublicKey],
     tweaks: &[Musig2Tweak],
@@ -1677,13 +1885,30 @@ fn musig2_session_values(
     message: &[u8],
 ) -> Result<Musig2SessionValues, VerificationError> {
     validate_musig2_session_bounds(keys, public_nonces, tweaks, message)?;
+    let aggregate_nonce = musig2_aggregate_public_nonces(public_nonces)?;
+    musig2_session_values_from_aggregate_nonce(keys, &aggregate_nonce, tweaks, message)
+}
+
+fn musig2_session_values_from_aggregate_nonce(
+    keys: &[PublicKey],
+    aggregate_nonce: &[u8; 66],
+    tweaks: &[Musig2Tweak],
+    message: &[u8],
+) -> Result<Musig2SessionValues, VerificationError> {
+    if keys.is_empty() || keys.len() > MAX_MUSIG_KEYS {
+        return Err(VerificationError::Bounds("MuSig2 participant count"));
+    }
+    if tweaks.len() > MAX_MUSIG_TWEAKS {
+        return Err(VerificationError::Bounds("MuSig2 tweak count"));
+    }
+    if message.len() > MAX_MUSIG_MESSAGE_BYTES {
+        return Err(VerificationError::Bounds("MuSig2 message byte length"));
+    }
     let key_context = musig2_key_context(keys, tweaks)?;
-    let (aggregate_first, aggregate_second) = musig2_aggregate_nonces(public_nonces)?;
-    let mut aggregate_nonce = [0_u8; 66];
-    aggregate_nonce[..33].copy_from_slice(&aggregate_first.serialize_extended());
-    aggregate_nonce[33..].copy_from_slice(&aggregate_second.serialize_extended());
+    let aggregate_first = aggregate_point_from_extended(&aggregate_nonce[..33])?;
+    let aggregate_second = aggregate_point_from_extended(&aggregate_nonce[33..])?;
     let mut coefficient_input = Vec::with_capacity(98 + message.len());
-    coefficient_input.extend_from_slice(&aggregate_nonce);
+    coefficient_input.extend_from_slice(aggregate_nonce);
     coefficient_input.extend_from_slice(&key_context.key.x_only_public_key().0.serialize());
     coefficient_input.extend_from_slice(message);
     let nonce_coefficient = scalar_from_hash(tagged_hash("MuSig/noncecoef", &coefficient_input))?;
@@ -1721,6 +1946,15 @@ fn musig2_aggregate_nonces(
         second = second.add(AggregatePoint::Point(second_point))?;
     }
     Ok((first, second))
+}
+
+fn aggregate_point_from_extended(bytes: &[u8]) -> Result<AggregatePoint, VerificationError> {
+    if bytes == [0_u8; 33] {
+        return Ok(AggregatePoint::Infinity);
+    }
+    PublicKey::from_slice(bytes)
+        .map(AggregatePoint::Point)
+        .map_err(|_| VerificationError::Crypto("MuSig2 aggregate public nonce"))
 }
 
 fn musig2_effective_signer_nonce(
@@ -2370,26 +2604,22 @@ mod tests {
     fn bip327_nonce_generation_secnonce_vectors() {
         let vectors: Value = serde_json::from_str(NONCE_GEN_VECTORS).expect("nonce_gen vectors");
         let cases = vectors["test_cases"].as_array().expect("test cases");
-        let mut replayed = 0;
 
         for (case_index, case) in cases.iter().enumerate() {
-            // The all-optional-inputs-absent case has no representable
-            // argument; see the fixture README.
-            if case["sk"].is_null()
-                || case["aggpk"].is_null()
-                || case["msg"].is_null()
-                || case["extra_in"].is_null()
-            {
-                continue;
-            }
-            let secret_key =
-                SecretKey::from_byte_array(vector_fixed::<32>(vector_text(&case["sk"])))
-                    .expect("official secret key");
-            let nonce = musig2_nonce_gen(
-                &secret_key,
-                &vector_fixed::<32>(vector_text(&case["aggpk"])),
-                &vector_decode(vector_text(&case["msg"])),
-                &vector_decode(vector_text(&case["extra_in"])),
+            let secret_key = case["sk"].as_str().map(|value| {
+                SecretKey::from_byte_array(vector_fixed::<32>(value)).expect("official secret key")
+            });
+            let public_key = PublicKey::from_slice(&vector_fixed::<33>(vector_text(&case["pk"])))
+                .expect("official public key");
+            let aggregate_key = case["aggpk"].as_str().map(vector_fixed::<32>);
+            let message = case["msg"].as_str().map(vector_decode);
+            let extra_input = case["extra_in"].as_str().map(vector_decode);
+            let nonce = musig2_nonce_gen_internal(
+                secret_key.as_ref(),
+                &public_key,
+                aggregate_key.as_ref(),
+                message.as_deref(),
+                extra_input.as_deref(),
                 vector_fixed::<32>(vector_text(&case["rand_"])),
             )
             .expect("official nonce generation");
@@ -2411,10 +2641,9 @@ mod tests {
                 expected[64..],
                 "nonce_gen case {case_index} bound public key differs",
             );
-            replayed += 1;
         }
 
-        assert_eq!(replayed, 3);
+        assert_eq!(cases.len(), 4);
     }
 
     #[test]

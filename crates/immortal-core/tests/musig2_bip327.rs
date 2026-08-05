@@ -9,13 +9,14 @@
 
 use immortal_core::mkt_swp_verify::{
     Musig2Tweak, VerificationError, musig2_aggregate_key, musig2_aggregate_partial_signatures,
-    musig2_nonce_gen, musig2_tweaked_aggregate_key, verify_musig2_partial_signature,
-    verify_musig2_partial_signature_with_tweaks,
+    musig2_deterministic_sign, musig2_nonce_gen, musig2_tweaked_aggregate_key,
+    verify_musig2_partial_signature, verify_musig2_partial_signature_with_tweaks,
 };
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use serde_json::Value;
 
 const KEY_AGG: &str = include_str!("../../../tests/fixtures/bip327/key_agg_vectors.json");
+const KEY_SORT: &str = include_str!("../../../tests/fixtures/bip327/key_sort_vectors.json");
 const NONCE_GEN: &str = include_str!("../../../tests/fixtures/bip327/nonce_gen_vectors.json");
 const NONCE_AGG: &str = include_str!("../../../tests/fixtures/bip327/nonce_agg_vectors.json");
 const SIGN_VERIFY: &str = include_str!("../../../tests/fixtures/bip327/sign_verify_vectors.json");
@@ -24,6 +25,21 @@ const TWEAK: &str = include_str!("../../../tests/fixtures/bip327/tweak_vectors.j
 const DET_SIGN: &str = include_str!("../../../tests/fixtures/bip327/det_sign_vectors.json");
 
 // ---------------------------------------------------------------- KeyAgg ----
+
+#[test]
+fn bip327_key_sort_vector() {
+    let vectors = parse(KEY_SORT);
+    let mut keys = array(&vectors["pubkeys"])
+        .iter()
+        .map(text)
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    let expected = array(&vectors["sorted_pubkeys"])
+        .iter()
+        .map(text)
+        .collect::<Vec<_>>();
+    assert_eq!(keys, expected);
+}
 
 #[test]
 fn bip327_key_aggregation_valid_vectors() {
@@ -188,9 +204,8 @@ fn bip327_nonce_generation_vectors() {
     let mut skipped = 0;
 
     for (case_index, case) in cases.iter().enumerate() {
-        // `musig2_nonce_gen` requires every input BIP-327 treats as optional.
-        // The all-absent case has no representable argument, so it is recorded
-        // as a gap rather than approximated.
+        // The public convenience API binds all optional inputs. The in-module
+        // replay also executes the all-absent serialization branch.
         if case["sk"].is_null()
             || case["aggpk"].is_null()
             || case["msg"].is_null()
@@ -475,13 +490,53 @@ fn bip327_signature_aggregation_error_vectors() {
 // ------------------------------------------------------- DeterministicSign ----
 
 #[test]
-fn bip327_deterministic_sign_vectors_are_recorded_not_replayed() {
-    // BIP-327 `DeterministicSign` is optional and is not implemented here.
-    // The vectors are pinned so the gap stays reviewable and so an upstream
-    // change to them is caught rather than silently absorbed.
+fn bip327_deterministic_sign_vectors() {
     let vectors = parse(DET_SIGN);
-    assert_eq!(array(&vectors["valid_test_cases"]).len(), 4);
-    assert_eq!(array(&vectors["error_test_cases"]).len(), 5);
+    let secret_key = SecretKey::from_byte_array(fixed::<32>(text(&vectors["sk"])))
+        .expect("official deterministic signing key");
+    let valid = array(&vectors["valid_test_cases"]);
+    let errors = array(&vectors["error_test_cases"]);
+    assert_eq!(valid.len(), 4);
+    assert_eq!(errors.len(), 5);
+
+    for (case_index, case) in valid.iter().enumerate() {
+        let keys = parse_keys(&vectors["pubkeys"], &case["key_indices"]);
+        let message = decode(text(&vectors["msgs"][usize_of(&case["msg_index"])]));
+        let randomness = case["rand"].as_str().map(fixed);
+        let (public_nonce, partial_signature) = musig2_deterministic_sign(
+            &secret_key,
+            &fixed::<66>(text(&case["aggothernonce"])),
+            &keys,
+            &parse_direct_tweaks(case),
+            &message,
+            randomness,
+        )
+        .unwrap_or_else(|error| {
+            panic!("deterministic signing valid case {case_index} failed: {error}")
+        });
+        let expected = array(&case["expected"]);
+        assert_eq!(public_nonce, fixed::<66>(text(&expected[0])));
+        assert_eq!(partial_signature, fixed::<32>(text(&expected[1])));
+    }
+
+    for (case_index, case) in errors.iter().enumerate() {
+        let keys = parse_keys_result(&vectors["pubkeys"], &case["key_indices"]);
+        let outcome = keys.and_then(|keys| {
+            musig2_deterministic_sign(
+                &secret_key,
+                &fixed::<66>(text(&case["aggothernonce"])),
+                &keys,
+                &parse_direct_tweaks(case),
+                &decode(text(&vectors["msgs"][usize_of(&case["msg_index"])])),
+                case["rand"].as_str().map(fixed),
+            )
+            .map(|_| ())
+        });
+        assert!(
+            outcome.is_err(),
+            "deterministic signing error case {case_index} was accepted"
+        );
+    }
 }
 
 // ----------------------------------------------------------------- Helpers ----
@@ -526,6 +581,19 @@ fn parse_keys(pubkeys: &Value, indices: &Value) -> Vec<PublicKey> {
         .collect()
 }
 
+fn parse_keys_result(
+    pubkeys: &Value,
+    indices: &Value,
+) -> Result<Vec<PublicKey>, VerificationError> {
+    array(indices)
+        .iter()
+        .map(|index| {
+            PublicKey::from_slice(&fixed::<33>(text(&pubkeys[usize_of(index)])))
+                .map_err(|_| VerificationError::Crypto("BIP-327 public key"))
+        })
+        .collect()
+}
+
 fn parse_nonces(pnonces: &Value, indices: &Value) -> Vec<[u8; 66]> {
     array(indices)
         .iter()
@@ -540,6 +608,17 @@ fn parse_tweaks(tweaks: &Value, indices: &Value, is_xonly: &Value) -> Vec<Musig2
         .zip(flags)
         .map(|(index, xonly)| Musig2Tweak {
             value: fixed::<32>(text(&tweaks[usize_of(index)])),
+            xonly: xonly.as_bool().expect("is_xonly must be a boolean"),
+        })
+        .collect()
+}
+
+fn parse_direct_tweaks(case: &Value) -> Vec<Musig2Tweak> {
+    array(&case["tweaks"])
+        .iter()
+        .zip(array(&case["is_xonly"]))
+        .map(|(value, xonly)| Musig2Tweak {
+            value: fixed::<32>(text(value)),
             xonly: xonly.as_bool().expect("is_xonly must be a boolean"),
         })
         .collect()

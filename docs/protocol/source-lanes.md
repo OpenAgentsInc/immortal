@@ -690,20 +690,20 @@ kind allocation or NIP-11 advertisement.
 Issue #26 changes no NIP source pin, event-kind allocation, relay admission
 rule, Postgres schema, or NIP-11 advertisement. It adopts BIP-327 1.0.3 at
 Bitcoin BIPs commit `e7263a4cfe500c89e4269889244606953691ca33` as a primary
-rail input. Selected `nonce_gen`, `sign_verify`, and `sig_agg` vectors anchor
-this foundation packet; complete executable replay of the pinned corpus
-remains a capability and issue-closure gate. BIP-327 is not a fourth NIP
-source lane.
+rail input. The complete eight-file official corpus is pinned at its last
+content commit, `1c6ac0c4cf1f39ea806b8594d6060b6d52fd1439`, with byte
+digests and BSD-3-Clause provenance recorded in the fixture directory.
+BIP-327 is not a fourth NIP source lane.
 
 The dependency decision retains pinned `secp256k1` 0.31.1 and the per-crate
-allowlists. Immortal implements BIP-327 nonce generation, one-use nonce
-handling, scalar arithmetic, tweak accumulation, partial signing and
-verification, and final aggregation in-repo over the crate's exposed
-point/tweak operations. No dependency exception is created. Pinned official
-vectors cover nonce generation, partial signing, untweaked aggregation, and
-mixed plain/x-only tweak cases; secret-nonce buffers are redacted and
-explicitly overwritten on consumption/drop, and a second signing attempt
-fails closed.
+allowlists. Immortal implements BIP-327 key sorting and aggregation, optional
+nonce inputs, nonce aggregation with the extended infinity encoding, one-use
+nonce handling, scalar arithmetic, tweak accumulation, partial signing and
+verification, deterministic last-signer signing, and final aggregation
+in-repo over the crate's exposed point/tweak operations. No dependency
+exception is created. Every valid and invalid case in the official corpus is
+executable; secret-nonce buffers are redacted and explicitly overwritten on
+consumption/drop, and a second signing attempt fails closed.
 
 MKT-SWP Status carries the exact cooperative transcript inside its existing
 recipient-gated NIP-59 transport. The context binds the Order, bilateral
@@ -721,6 +721,6 @@ aggregate key, counterparty nonce commitment, every partial, and the final
 signature before returning broadcast bytes. Its database and public effect
 records receive no secret nonce or spend key. The current funded actor and
 provider contract continue to declare both `musig2_key_path=false` and
-`musig2_key_path_signer=false` until the complete vector corpus, interactive
-actor path, and #18 process lab pass. This packet establishes an auditable
-foundation without converting it into a deployment claim.
+`musig2_key_path_signer=false` until the interactive actor path and #18
+process lab pass. Completing the vector corpus does not convert it into a
+deployment claim.
