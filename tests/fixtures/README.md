@@ -124,6 +124,11 @@ the pinned upstream applications.
   labels and injections on a fresh disposable topology. Its exclusions keep
   clean-machine, full three-node/two-provider, and chain-to-chain evidence out
   of a local scripted result.
+- `lab/topology-quotes-v1.json` pins the reusable three-CLN-role,
+  two-relay/two-provider negotiation gate, the production requester-view
+  input, deterministic Quote ordering, execution bounds, and custody-free
+  retained-record schema. It excludes funded two-provider and clean-host
+  claims.
 - `nipmkt/swp-profile-v1.json` pins the relay-observable MKT-SWP v1 adoption
   at OpenAgents commit `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`:
   Offering grammar, kind-39610 profile binding and immutable wrapped

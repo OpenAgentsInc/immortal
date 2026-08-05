@@ -159,7 +159,7 @@ verify_hold_plugin() {
     return 1
   fi
   for command in holdinvoice listholdinvoices settleholdinvoice cancelholdinvoice; do
-    if ! cln_cli "${runtime}" "${node}" help "${command}" |
+    if ! cln_cli "${runtime}" "${node}" -J -k help command="${command}" |
       jq -e --arg command "${command}" '.help | length > 0 and any(.[]; .command | startswith($command))' >/dev/null; then
       echo "lab-cln: $(node_role "${node}") hold plugin does not expose ${command}" >&2
       return 1
@@ -382,7 +382,8 @@ open_and_balance_channel() {
   label="lab-rebalance-${source}-${destination}-$(date +%s)"
   invoice="$(cln_cli "${runtime}" "${destination}" invoice "${rebalance_msat}" "${label}" "lab channel balancing" | jq -er .bolt11)"
   cln_cli "${runtime}" "${source}" pay "${invoice}" >/dev/null
-  to_us_msat="$(cln_cli "${runtime}" "${source}" listpeerchannels "${destination_id}" | jq -er '.channels[0].to_us_msat.msat')"
+  to_us_msat="$(cln_cli "${runtime}" "${source}" listpeerchannels "${destination_id}" |
+    jq -er '.channels[0].to_us_msat | if type == "object" then .msat else . end')"
   if test "${to_us_msat}" -ge "$((channel_sat * 1000))"; then
     echo "lab-cln: balancing payment did not move liquidity on the direct $(node_role "${source}") -> $(node_role "${destination}") channel" >&2
     return 1

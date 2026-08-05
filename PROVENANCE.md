@@ -28,6 +28,20 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-05 — Codex 5.6 Sol, M13 multi-provider negotiation / issue #32
+
+- Added the reusable three-CLN-role, two-relay, two-provider process gate. One
+  requester discovers both independently keyed no-spend providers, retains the
+  exact wrapped deliveries privately, reconstructs both production requester
+  Quote views, and applies a fixture-pinned total ordering.
+- Added bounded success and failure records that retain only public topology
+  counts and identifiers, normalized Quote terms, and the selected Quote. The
+  live macOS run passed with both channels normal on every CLN node and removed
+  all disposable containers and the mode-0700 private root afterward.
+- This packet proves negotiation only. It makes no funded two-provider,
+  clean-host, deployment, or replacement claim; funded execution through the
+  reusable topology remains issue #32 work.
+
 ### 2026-08-05 — Codex 5.6 Sol, M12 Boltz compatibility handoff / issue #15
 
 - Added a fixture-pinned released-client route profile and an off-by-default,

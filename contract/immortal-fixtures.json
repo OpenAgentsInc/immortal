@@ -96,6 +96,12 @@
       "scope": "client"
     },
     {
+      "path": "tests/fixtures/lab/topology-quotes-v1.json",
+      "sha256": "e46fae23667e103f2c8c9a278e7e9d54ca40c6a87ff0021c278ba919e1b01289",
+      "bytes": 2043,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/nip01/events.json",
       "sha256": "a1a74424da21fb04e22d5a689ef17204aa2cb46f3937cfa8727a11d952f5bd3a",
       "bytes": 630,

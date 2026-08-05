@@ -12,6 +12,8 @@ COMMANDS:
     rfq [--swap-type submarine|reverse|chain]
                         Open a session and send a wrapped MKT-SWP RFQ
     quote               Wait for the provider's Quote and persist it
+    topology-quotes     Discover two relays, collect two provider Quotes, and
+                        select one with the fixture-pinned deterministic policy
     verify              Run the verify-before-fund gate over RFQ + Quote
     fund                Run the funded submarine journey through settlement
     claim               Run the reverse journey through requester claim
@@ -26,6 +28,8 @@ COMMANDS:
 ENVIRONMENT:
     IMMORTAL_LAB_RELAY_URL      ws:// loopback relay; falls back to
                                 IMMORTAL_DEV_RELAY_URL, then ws://127.0.0.1:18080
+    IMMORTAL_LAB_RELAY_URLS     exactly two distinct comma-separated loopback
+                                relay URLs for topology-quotes
     IMMORTAL_LAB_STATE_DIR      session store directory (default target/lab-state)
     IMMORTAL_LAB_SESSION        act on this session id instead of the current one
     IMMORTAL_LAB_PROVIDER_PUBKEY
@@ -113,6 +117,7 @@ pub enum Command {
     Discover,
     Rfq { swap_type: SwapShape },
     Quote,
+    TopologyQuotes,
     Verify,
     Fund,
     Claim,
@@ -148,6 +153,7 @@ pub fn parse(arguments: &[String]) -> Result<Command, String> {
             return Ok(Command::Rfq { swap_type });
         }
         "quote" => Command::Quote,
+        "topology-quotes" => Command::TopologyQuotes,
         "verify" => Command::Verify,
         "fund" => Command::Fund,
         "claim" => Command::Claim,
@@ -192,6 +198,10 @@ mod tests {
     fn parses_every_bare_command() {
         assert_eq!(parse(&args(&["discover"])), Ok(Command::Discover));
         assert_eq!(parse(&args(&["quote"])), Ok(Command::Quote));
+        assert_eq!(
+            parse(&args(&["topology-quotes"])),
+            Ok(Command::TopologyQuotes)
+        );
         assert_eq!(parse(&args(&["verify"])), Ok(Command::Verify));
         assert_eq!(parse(&args(&["fund"])), Ok(Command::Fund));
         assert_eq!(parse(&args(&["claim"])), Ok(Command::Claim));

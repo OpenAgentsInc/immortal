@@ -17,6 +17,7 @@ primitives) against a loopback dev relay — the same wire
 | `discover` | Queries the relay for Provider Profiles (39600) and Offerings (39601), validates them with `validate_mkt_public_event`, persists a discovery snapshot. Needs no authentication. |
 | `rfq` | Creates (or reloads) the persisted lab identity, opens a session, builds an MKT-SWP RFQ through `SwapRecordFactory` from the pinned full-session fixture profile (`tests/fixtures/nipmkt/swp-full-sessions-v1.json`), signs it, gift-wraps it twice (counterparty + recovery), and publishes both wraps. `--swap-type submarine|reverse|chain`. |
 | `quote` | NIP-42-authenticates, reads the recipient-gated kind-1059 subscription (stored history first, then a bounded live wait), unwraps with `unwrap_mkt_record`, and persists the session's Quote. Safe to re-run until the Quote arrives. |
+| `topology-quotes` | Uses one wallet identity to discover exactly one independently keyed provider on each of two loopback relays, collect both wrapped firm Quotes, reconstruct both production `RequesterSessionView` projections from exact delivery evidence, and apply the fixture-pinned total ordering. Requires `IMMORTAL_LAB_RELAY_URLS`. |
 | `verify` | The verify-before-fund gate rendered from the engine's real verification output: structural revalidation of the signed Quote bytes, quote/reservation/expiration tag grammar, staleness, `validate_quote_profile`, and `validate_quote_against_rfq`. Prints a JSON verdict; a failing gate exits non-zero and marks the session `verification_failed`. |
 | `fund` | Runs a funded submarine session through bilateral contract verification, a persisted engine funding authorization, exact regtest transaction broadcast, and locally verified terminal Close. |
 | `claim` | Runs a reverse session, persists its wallet-only preimage before RFQ publication, pays the provider hold invoice, and broadcasts the requester script-path claim. |
@@ -34,7 +35,8 @@ All state lives under one directory (`IMMORTAL_LAB_STATE_DIR`, default
   0600. It signs loopback regtest records only; never fund or reuse it.
 - `discovery.json` — last discovery snapshot.
 - `sessions/<session_id>.json` — one append-style record per session:
-  RFQ, Quote, verification verdict, and the last completed step.
+  RFQ, Quote, the exact Quote wrap and observation time, verification verdict,
+  and the last completed step.
 - `current-session` — pointer used when `IMMORTAL_LAB_SESSION` is unset.
 - `funded-run-id` — stable identifier that prevents a restarted process from
   creating a timestamp fork in the same journey.
@@ -129,3 +131,9 @@ cargo run -p immortal-lab -- status
 The regtest node fixtures are provisioned by `scripts/lab-bitcoind.sh` and
 `scripts/lab-cln.sh`;
 `scripts/lab-topology.sh` prints the port/datadir/identity manifest.
+`scripts/test-lab-topology-quotes.sh` owns a disposable three-CLN-role,
+two-relay, two-provider run and retains only its normalized public selection
+record at `target/lab-evidence/topology-quotes-v1.json`. Provider processes
+run the production no-spend actor for this negotiation gate, so the record
+claims signed discovery and Quote comparison and no funded two-provider rail
+execution.

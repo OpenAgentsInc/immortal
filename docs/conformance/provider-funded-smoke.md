@@ -129,6 +129,32 @@ boundary by setting the manifest-named variable and invoking
 `scripts/lab-extensions.sh up <extension>`. An absent hook exits 2 and creates
 no state.
 
+The reusable negotiation process gate owns that bring-up and teardown in one
+command:
+
+```sh
+scripts/test-lab-topology-quotes.sh
+```
+
+It requires the balanced provider-a/provider-b/wallet CLN graph, starts two
+relay processes and two independently keyed production no-spend provider
+actors, then uses one wallet identity to discover and request a Quote through
+each relay. The wallet reconstructs each `RequesterSessionView` from its
+locally signed RFQ and exact gift-wrap delivery. Candidates must be fresh,
+firm, reserved, and economically comparable. Selection is total and
+fixture-pinned: highest output, lowest maximum total fee, provider pubkey,
+then Quote ID. The first two terms express the economic preference; the final
+two make equal Quotes independent of relay or arrival order.
+
+Private roots contain the throwaway provider and wallet signing material,
+exact wraps, and process logs and are removed by identity-checked teardown.
+The retained mode-0600 record contains only platform data, public CLN node
+IDs and channel counts, the wallet pubkey, normalized public Quote terms, and
+the selection. Its recursive allowlist excludes credentials, custody fields,
+and raw signed or wrap events. This gate proves discovery and negotiation; its
+providers run `--no-spend`, so funded execution through both provider CLN
+nodes remains a separate #32 closure claim.
+
 Regtest has no fee history for a useful `estimatesmartfee` result. The harness
 therefore sets `IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB=2` explicitly
 and pins spread and routing policy so the submarine invoice amount comes from
@@ -373,3 +399,19 @@ were not retained. The receipt labels this as a development-host run.
 This is local process evidence. It does not establish a clean macOS or Debian
 run, full funded execution through the reusable three-node/two-provider
 topology, multi-provider Quote comparison, or chain-to-chain support.
+
+### 2026-08-05 local multi-provider negotiation record
+
+`scripts/test-lab-topology-quotes.sh` passed on macOS 26.4 arm64. It created
+three distinct CLN roles with two normal channels per node, two relay
+processes, and two independently keyed provider processes in `--no-spend`
+mode. One requester discovered exactly one active provider and Offering on
+each relay, reconstructed and verified both signed Quote deliveries through
+the production requester engine, and selected one Quote using the
+fixture-pinned total order. The mode-0600 retained record contains only public
+node and event identifiers, normalized Quote terms, and the selection result;
+the disposable containers and private root were absent after cleanup.
+
+This record proves the reusable topology's multi-provider negotiation gate. It
+does not prove funded two-provider execution, a clean-machine run, or a public
+replacement claim.

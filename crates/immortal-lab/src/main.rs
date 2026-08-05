@@ -3,7 +3,7 @@
 use immortal_lab::{
     cli::{self, Command, Step},
     funded::{self, FundedJourney},
-    relay::relay_url_from_env,
+    relay::{relay_url_from_env, topology_relay_urls_from_env},
     state::LabPaths,
     steps,
 };
@@ -41,6 +41,10 @@ fn execute(command: Command) -> Result<(), Exit> {
         Command::Discover => emit(steps::discover(&paths, &relay_url)),
         Command::Rfq { swap_type } => emit(steps::rfq(&paths, &relay_url, swap_type)),
         Command::Quote => emit(steps::quote(&paths, &relay_url)),
+        Command::TopologyQuotes => {
+            let relay_urls = topology_relay_urls_from_env().map_err(Exit::Failure)?;
+            emit(steps::topology_quotes(&paths, &relay_urls))
+        }
         Command::Verify => emit(steps::verify(&paths)),
         Command::Status => emit(steps::status(&paths)),
         Command::Fund => emit(funded::run_funded_journey(FundedJourney::Submarine)),

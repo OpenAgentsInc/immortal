@@ -6,6 +6,7 @@
 //! publication.
 
 use std::{
+    collections::BTreeSet,
     net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
     time::Duration,
 };
@@ -20,6 +21,8 @@ use tokio_tungstenite::tungstenite::{Message, WebSocket, client};
 use crate::util::{random_32, random_secret, unix_now};
 
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_RELAY_URL_BYTES: usize = 2_048;
+const TOPOLOGY_RELAY_COUNT: usize = 2;
 
 pub type RelaySocket = WebSocket<TcpStream>;
 
@@ -34,6 +37,39 @@ pub fn relay_url_from_env() -> String {
     std::env::var("IMMORTAL_LAB_RELAY_URL")
         .or_else(|_| std::env::var("IMMORTAL_DEV_RELAY_URL"))
         .unwrap_or_else(|_| "ws://127.0.0.1:18080".to_owned())
+}
+
+pub fn topology_relay_urls_from_env() -> Result<Vec<String>, String> {
+    let value = std::env::var("IMMORTAL_LAB_RELAY_URLS").map_err(|_| {
+        "IMMORTAL_LAB_RELAY_URLS is required for the two-relay topology gate".to_owned()
+    })?;
+    parse_topology_relay_urls(&value)
+}
+
+pub fn parse_topology_relay_urls(value: &str) -> Result<Vec<String>, String> {
+    let relay_urls = value.split(',').map(str::to_owned).collect::<Vec<_>>();
+    if relay_urls.len() != TOPOLOGY_RELAY_COUNT {
+        return Err(format!(
+            "the topology gate requires exactly {TOPOLOGY_RELAY_COUNT} comma-separated relay URLs"
+        ));
+    }
+    let mut unique = BTreeSet::new();
+    for relay_url in &relay_urls {
+        if relay_url.is_empty()
+            || relay_url.len() > MAX_RELAY_URL_BYTES
+            || relay_url.bytes().any(|byte| byte.is_ascii_control())
+        {
+            return Err(
+                "topology relay URL is empty, oversized, or contains a control character"
+                    .to_owned(),
+            );
+        }
+        loopback_addresses(relay_url)?;
+        if !unique.insert(relay_url.clone()) {
+            return Err("topology relay URLs must be distinct".to_owned());
+        }
+    }
+    Ok(relay_urls)
 }
 
 impl RelayClient {
@@ -282,5 +318,17 @@ mod tests {
             loopback_addresses("ws://127.0.0.1:18080").expect("loopback should be accepted");
         assert!(!addresses.is_empty());
         assert!(addresses.iter().all(|address| address.ip().is_loopback()));
+    }
+
+    #[test]
+    fn topology_relay_list_is_exact_distinct_and_loopback_only() {
+        assert_eq!(
+            parse_topology_relay_urls("ws://127.0.0.1:18080,ws://127.0.0.1:18081")
+                .expect("two distinct loopback relays should be accepted"),
+            ["ws://127.0.0.1:18080", "ws://127.0.0.1:18081"]
+        );
+        assert!(parse_topology_relay_urls("ws://127.0.0.1:18080").is_err());
+        assert!(parse_topology_relay_urls("ws://127.0.0.1:18080,ws://127.0.0.1:18080").is_err());
+        assert!(parse_topology_relay_urls("ws://127.0.0.1:18080,wss://relay.example.com").is_err());
     }
 }

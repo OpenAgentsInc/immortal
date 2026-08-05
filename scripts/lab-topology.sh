@@ -114,4 +114,7 @@ notes
 - Bring-up order: lab-bitcoind.sh up -> lab-cln.sh up ->
   lab-cln.sh fund -> lab-cln.sh channel -> dev-relay.sh (per relay) ->
   dev-market-provider.sh (per provider) -> immortal-lab.
+- The owned discovery/Quote process proof is scripts/test-lab-topology-quotes.sh;
+  its provider actors use --no-spend and its retained record makes no funded
+  two-provider claim.
 MANIFEST

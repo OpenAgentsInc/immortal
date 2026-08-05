@@ -238,6 +238,10 @@ pub struct SessionRecord {
     pub step: String,
     pub rfq: Option<Event>,
     pub quote: Option<Event>,
+    #[serde(default)]
+    pub quote_wrap: Option<Event>,
+    #[serde(default)]
+    pub quote_observed_at: Option<u64>,
     pub verification: Option<Value>,
 }
 
@@ -742,6 +746,8 @@ mod tests {
             step: "rfq_sent".to_owned(),
             rfq: None,
             quote: None,
+            quote_wrap: None,
+            quote_observed_at: None,
             verification: Some(serde_json::json!({"overall": "pending"})),
         }
     }

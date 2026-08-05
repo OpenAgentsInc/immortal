@@ -7,8 +7,10 @@ scripts=(
   scripts/lab-cln.sh
   scripts/lab-extensions.sh
   scripts/lab-topology.sh
+  scripts/test-lab-topology-quotes.sh
 )
 manifest="tests/fixtures/lab/provisioning-v1.json"
+topology_quote_manifest="tests/fixtures/lab/topology-quotes-v1.json"
 
 for script in "${scripts[@]}"; do
   bash -n "${script}"
@@ -56,10 +58,37 @@ jq -e '
   and .teardown.created_image_identity_match_required == true
 ' "${manifest}" >/dev/null
 
+jq -e '
+  .schema == "openagents.immortal.lab-topology-quotes.v1" and
+  .process_gate == "scripts/test-lab-topology-quotes.sh" and
+  .wallet_command == "immortal-lab topology-quotes" and
+  .topology.relay_count == 2 and
+  .topology.provider_count == 2 and
+  .topology.cln_roles == ["provider-a", "provider-b", "wallet"] and
+  .topology.distinct_provider_keys == true and
+  .topology.one_provider_per_relay == true and
+  .topology.wallet_discovers_every_relay == true and
+  .topology.provider_mode == "no_spend" and
+  .quote_comparison.candidate_count == 2 and
+  .quote_comparison.required_quote_class == "firm" and
+  .quote_comparison.accepted_reservation_classes == ["soft", "hard"] and
+  .quote_comparison.ordering == ["output_amount_desc", "maximum_total_fee_asc", "provider_pubkey_asc", "quote_id_asc"] and
+  .quote_comparison.stale_quotes_eligible == false and
+  .retained_record.contains_raw_signed_events == false and
+  .retained_record.contains_raw_wrap_events == false and
+  .retained_record.contains_credentials == false and
+  .retained_record.contains_custody_material == false and
+  .claims.funded_two_provider_execution == false and
+  .claims.clean_host_evidence == false and
+  .claims.live_deployment_evidence == false
+' "${topology_quote_manifest}" >/dev/null
+
 scripts/lab-bitcoind.sh help | grep -q 'rbf-replace'
 scripts/lab-cln.sh help | grep -q 'wallet (3)'
 scripts/lab-extensions.sh manifest elementsd | jq -e '.issue == 27 and .state == "hook-only"' >/dev/null
 test -f "$(jq -r '.lightning.container_build_source' "${manifest}")"
+grep -q 'Command::TopologyQuotes' crates/immortal-lab/src/cli.rs
+grep -q 'RequesterSessionView::from_signed_records' crates/immortal-lab/src/steps.rs
 
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/immortal-lab-provisioning-test.XXXXXX")"
 cleanup() {

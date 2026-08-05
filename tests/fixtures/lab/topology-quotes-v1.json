@@ -1,0 +1,73 @@
+{
+  "schema": "openagents.immortal.lab-topology-quotes.v1",
+  "process_gate": "scripts/test-lab-topology-quotes.sh",
+  "wallet_command": "immortal-lab topology-quotes",
+  "topology": {
+    "relay_count": 2,
+    "provider_count": 2,
+    "cln_roles": [
+      "provider-a",
+      "provider-b",
+      "wallet"
+    ],
+    "distinct_provider_keys": true,
+    "one_provider_per_relay": true,
+    "wallet_discovers_every_relay": true,
+    "provider_mode": "no_spend",
+    "provider_mode_scope": "signed discovery and wrapped negotiation only; no rail effect"
+  },
+  "quote_comparison": {
+    "candidate_count": 2,
+    "required_quote_class": "firm",
+    "accepted_reservation_classes": [
+      "soft",
+      "hard"
+    ],
+    "comparable_fields": [
+      "swap_type",
+      "input_asset_id",
+      "output_asset_id",
+      "input_amount",
+      "amount_equation",
+      "rounding"
+    ],
+    "ordering": [
+      "output_amount_desc",
+      "maximum_total_fee_asc",
+      "provider_pubkey_asc",
+      "quote_id_asc"
+    ],
+    "stale_quotes_eligible": false,
+    "input": "requester_session_view_from_exact_signed_rfq_and_gift_wrap_delivery"
+  },
+  "retained_record": {
+    "schema": "openagents.immortal.lab-topology-quote-record.v1",
+    "failure_schema": "openagents.immortal.lab-topology-quote-failure.v1",
+    "default_path": "target/lab-evidence/topology-quotes-v1.json",
+    "file_mode": "0600",
+    "directory_mode": "0700",
+    "allowed_sections": [
+      "platform",
+      "cln",
+      "wallet",
+      "candidates",
+      "selection"
+    ],
+    "contains_raw_signed_events": false,
+    "contains_raw_wrap_events": false,
+    "contains_credentials": false,
+    "contains_custody_material": false
+  },
+  "bounds": {
+    "relay_count": 2,
+    "maximum_discovery_events_per_relay": 512,
+    "maximum_quote_wait_seconds": 120,
+    "maximum_retained_record_bytes": 32768
+  },
+  "claims": {
+    "local_process_evidence": true,
+    "funded_two_provider_execution": false,
+    "clean_host_evidence": false,
+    "live_deployment_evidence": false
+  }
+}
