@@ -922,3 +922,29 @@ public-chain, invoice-state, durable-effect, and zero-watch assertions as the
 CLN variant against the pinned official LND image. That recorded local gate
 makes an LND provider a legal #18 lab participant; it is not clean-host or
 live-deployment evidence, and #19 still owns any public replacement claim.
+
+## M12 provider direct-recovery decision (2026-08-05)
+
+Issue #18 adopts MKT-SWP section 12.1's existing
+`direct_or_relay_agnostic` recovery law as an implementation-local provider
+surface. This changes no NIP source pin, event-kind allocation, relay
+behavior, relay database, or NIP-11 advertisement. It adds no dependency or
+product: the optional listener is embedded in the funded
+`immortal-provider` binary and uses the same provider Postgres history.
+
+The channel is absent by default and binds only a private or loopback numeric
+socket. Its bounded length-prefixed JSON carries NIP-59 gift wraps, not bare
+private records. Admission requires one requester, one session, the exact
+durable requester RFQ, and both durable Swap Contracts. Therefore it cannot
+create an RFQ, Quote, session, or pre-contract negotiation. Accepted signed
+records enter the existing validation and persistence path before any
+response. Responses wrap provider-authored history read from Postgres, which
+also preserves terminal Close replay after the in-memory actor is removed.
+
+Provider durable state is rebuilt before the first relay connection. When
+relay retries exhaust, the recovery listener and bounded provider/watchtower
+progress may continue, but the direct channel does not admit negotiation.
+`provider/direct-recovery-v1.json` pins the framing, bounds, admission laws,
+and refusal cases. The #18 capability and public replacement flags remain
+false until the local adversarial conformance gate produces process evidence;
+#19 retains deployment and public-claim authority.

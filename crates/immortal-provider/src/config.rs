@@ -84,6 +84,7 @@ pub struct FundedProviderConfig {
     pub wallet: ProviderWallet,
     pub network: BitcoinNetwork,
     pub health_bind: SocketAddr,
+    pub direct_recovery_bind: Option<SocketAddr>,
     pub alert_endpoint: Option<AlertEndpoint>,
     pub chain_poll_interval: Duration,
     pub chain_stale_after: Duration,
@@ -105,6 +106,7 @@ impl fmt::Debug for FundedProviderConfig {
             .field("wallet", &self.wallet)
             .field("network", &self.network)
             .field("health_bind", &self.health_bind)
+            .field("direct_recovery_bind", &self.direct_recovery_bind)
             .field("alert_endpoint", &self.alert_endpoint)
             .field("chain_poll_interval", &self.chain_poll_interval)
             .field("chain_stale_after", &self.chain_stale_after)
@@ -159,6 +161,7 @@ impl FundedProviderConfig {
         if !private_or_loopback(health_bind.ip()) {
             return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_HEALTH_BIND"));
         }
+        let direct_recovery_bind = direct_recovery_bind_from_lookup(optional)?;
         let alert_endpoint = optional("IMMORTAL_PROVIDER_ALERT_URL")
             .map(AlertEndpoint::parse)
             .transpose()
@@ -210,6 +213,7 @@ impl FundedProviderConfig {
             wallet,
             network,
             health_bind,
+            direct_recovery_bind,
             alert_endpoint,
             chain_poll_interval: Duration::from_secs(poll_seconds),
             chain_stale_after: Duration::from_secs(stale_seconds),
@@ -224,6 +228,23 @@ impl FundedProviderConfig {
     pub fn database_url(&self) -> &str {
         &self.database_url.0
     }
+}
+
+fn direct_recovery_bind_from_lookup(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<Option<SocketAddr>, ConfigError> {
+    let Some(value) = lookup("IMMORTAL_PROVIDER_DIRECT_RECOVERY_BIND") else {
+        return Ok(None);
+    };
+    let address = value
+        .parse::<SocketAddr>()
+        .map_err(|_| ConfigError::Invalid("IMMORTAL_PROVIDER_DIRECT_RECOVERY_BIND"))?;
+    if !private_or_loopback(address.ip()) {
+        return Err(ConfigError::Invalid(
+            "IMMORTAL_PROVIDER_DIRECT_RECOVERY_BIND",
+        ));
+    }
+    Ok(Some(address))
 }
 
 fn lightning_from_environment(
@@ -474,6 +495,24 @@ mod tests {
             }
             .validate()
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn direct_recovery_is_optional_and_private_only() {
+        assert_eq!(direct_recovery_bind_from_lookup(|_| None), Ok(None));
+        assert_eq!(
+            direct_recovery_bind_from_lookup(|name| {
+                (name == "IMMORTAL_PROVIDER_DIRECT_RECOVERY_BIND")
+                    .then(|| "127.0.0.1:9191".to_owned())
+            }),
+            Ok(Some("127.0.0.1:9191".parse().expect("socket address")))
+        );
+        assert_eq!(
+            direct_recovery_bind_from_lookup(|_| Some("192.0.2.1:9191".to_owned())),
+            Err(ConfigError::Invalid(
+                "IMMORTAL_PROVIDER_DIRECT_RECOVERY_BIND"
+            ))
         );
     }
 }

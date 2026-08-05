@@ -33,6 +33,9 @@ const CLN_ADVERSARIAL_HOLD_FIXTURE_PATH: &str =
     "tests/fixtures/provider/cln-adversarial-hold-v1.json";
 const CLN_ADVERSARIAL_HOLD_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/cln-adversarial-hold-v1.json");
+const DIRECT_RECOVERY_FIXTURE_PATH: &str = "tests/fixtures/provider/direct-recovery-v1.json";
+const DIRECT_RECOVERY_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/direct-recovery-v1.json");
 pub(crate) const BOLTZ_CONFIGURATION_SCHEMA: &str = concat!(
     "openagents.mkt-swp.boltz-provider-api.config.v1\n",
     "activation=exact_fixture_digest_private_bind_and_exact_browser_origin\n",
@@ -284,6 +287,20 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 "network_scope":"private_or_loopback",
                 "public_bind_allowed":false
             },
+            "direct_recovery":{
+                "enabled_by_default":false,
+                "required_mode":"funded",
+                "activation":"IMMORTAL_PROVIDER_DIRECT_RECOVERY_BIND",
+                "transport":"bounded_length_prefixed_json_over_private_tcp",
+                "payload":"nip59_gift_wraps_only",
+                "durable_sessions_only":true,
+                "requires_bilateral_swap_contracts":true,
+                "opens_new_sessions":false,
+                "admits_pre_contract_negotiation":false,
+                "persists_before_response":true,
+                "terminal_history_replay":true,
+                "nip11_advertised":false
+            },
             "boltz_compatibility":{
                 "enabled_by_default":false,
                 "required_mode":"funded",
@@ -357,7 +374,8 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 fixture_entry(LND_FIXTURE_PATH, LND_FIXTURE),
                 fixture_entry(BOLTZ_API_FIXTURE_PATH, BOLTZ_API_FIXTURE),
                 fixture_entry(ADVERSARIAL_LAB_FIXTURE_PATH, ADVERSARIAL_LAB_FIXTURE),
-                fixture_entry(CLN_ADVERSARIAL_HOLD_FIXTURE_PATH, CLN_ADVERSARIAL_HOLD_FIXTURE)
+                fixture_entry(CLN_ADVERSARIAL_HOLD_FIXTURE_PATH, CLN_ADVERSARIAL_HOLD_FIXTURE),
+                fixture_entry(DIRECT_RECOVERY_FIXTURE_PATH, DIRECT_RECOVERY_FIXTURE)
             ]
         },
         "relay_contract_affected":false,
@@ -428,6 +446,14 @@ fn limits_contract() -> Value {
             "connections":crate::health::MAX_HEALTH_CONNECTIONS,
             "request_bytes":crate::health::MAX_HTTP_REQUEST_BYTES,
             "alert_response_bytes":crate::health::MAX_ALERT_RESPONSE_BYTES
+        },
+        "direct_recovery":{
+            "request_bytes":crate::direct_recovery::MAX_REQUEST_BYTES,
+            "response_bytes":crate::direct_recovery::MAX_RESPONSE_BYTES,
+            "request_wraps":crate::direct_recovery::MAX_REQUEST_WRAPS,
+            "response_wraps":crate::direct_recovery::MAX_RESPONSE_WRAPS,
+            "connections_per_poll":crate::direct_recovery::MAX_CONNECTIONS_PER_POLL,
+            "connection_deadline_seconds":crate::direct_recovery::CONNECTION_TIMEOUT.as_secs()
         },
         "boltz_compatibility":{
             "connections":crate::boltz::MAX_CONNECTIONS,
@@ -503,6 +529,7 @@ fn limits_contract() -> Value {
             "lease_seconds":30
         },
         "health":{"connections":16,"request_bytes":4096,"alert_response_bytes":65536},
+        "direct_recovery":{"request_bytes":2097152,"response_bytes":8388608,"request_wraps":32,"response_wraps":512,"connections_per_poll":4,"connection_deadline_seconds":5},
         "boltz_compatibility":{
             "connections":64,
             "requests_per_minute_per_ip":120,
@@ -679,6 +706,7 @@ fn validate_limits(value: &Value) -> Result<(), ProviderContractError> {
         "store",
         "watchtower",
         "health",
+        "direct_recovery",
         "boltz_compatibility",
         "quote",
     ]);
@@ -1020,6 +1048,15 @@ fn environment_contract() -> Value {
             false,
             Some("private_or_loopback_socket_address"),
             true
+        ),
+        optional_env_string(
+            "IMMORTAL_PROVIDER_DIRECT_RECOVERY_BIND",
+            &["funded"],
+            1,
+            128,
+            false,
+            Some("private_or_loopback_socket_address"),
+            false
         ),
         optional_env_string(
             "IMMORTAL_PROVIDER_ALERT_URL",

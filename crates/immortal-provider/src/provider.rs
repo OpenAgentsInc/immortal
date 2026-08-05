@@ -23,6 +23,11 @@ pub mod config;
 pub mod contract;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub mod cooperative;
+#[cfg(all(
+    any(feature = "funded", feature = "no-spend"),
+    not(target_arch = "wasm32")
+))]
+pub(crate) mod direct_recovery;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub mod funded;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]

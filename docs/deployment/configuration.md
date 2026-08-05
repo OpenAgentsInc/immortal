@@ -213,6 +213,7 @@ the contract artifact.
 | `IMMORTAL_PROVIDER_LIGHTNING_RAIL` | `cln` | Selected internal Lightning rail: `cln` or, when built with `--features lnd`, `lnd`. Selecting unavailable or incomplete rail configuration fails startup. |
 | `IMMORTAL_PROVIDER_LAB_PROFILE` | unset | Lab-only timeout selector. The sole value is `regtest_adversarial`, which is rejected unless the Bitcoin network is `regtest`; it fixes Quote expiry at 3 seconds and hold-invoice expiry at 30 seconds. It does not change production defaults. |
 | `IMMORTAL_PROVIDER_HEALTH_BIND` | `127.0.0.1:9091` | Private or loopback health/metrics listener. Public addresses fail startup. |
+| `IMMORTAL_PROVIDER_DIRECT_RECOVERY_BIND` | disabled | Private or loopback recovery-only listener. It accepts bounded NIP-59 gift wraps for one already-durable session. The exact durable requester RFQ and both Swap Contracts must already exist; the listener cannot discover, quote, or open a session. |
 | `IMMORTAL_PROVIDER_ALERT_URL` | disabled | Bounded plaintext HTTP URL on a private numeric or loopback address. HTTPS is outside the v1 dependency profile. |
 | `IMMORTAL_PROVIDER_CHAIN_POLL_SECONDS` | `5` | Chain polling interval, 1–300 seconds. |
 | `IMMORTAL_PROVIDER_CHAIN_STALE_SECONDS` | `30` | Maximum time without a successful chain observation, 5–3,600 seconds and greater than the poll interval. |
@@ -238,6 +239,15 @@ unallocated reservation-ledger capacity determine the remaining terms.
 no pending effects, unresolved effects, or unresolved watch jobs. `GET
 /metrics` exposes only public execution counters. A non-ready provider must be
 treated as unavailable for new swaps.
+
+The direct-recovery listener is absent unless explicitly configured. Each TCP
+connection carries one length-prefixed JSON request. Requests and responses
+are bounded to 2 MiB/32 wraps and 8 MiB/512 wraps respectively, reject
+duplicate or unknown JSON members, and carry only NIP-59 gift wraps. The
+provider authenticates the requester against signed Postgres history,
+persists every accepted record before responding, and replays provider
+history from Postgres after a terminal Close removes the in-memory actor.
+Relay retry exhaustion does not turn the listener into a negotiation surface.
 
 ### Provider signed execution policy
 

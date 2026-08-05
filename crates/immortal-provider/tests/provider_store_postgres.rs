@@ -677,6 +677,13 @@ async fn active_session_recovery_excludes_only_durable_dispositions() {
             .iter()
             .all(|record| record != &closed_rfq && record != &close)
     );
+    let terminal_history = store
+        .session_records(&closed_session, 512)
+        .await
+        .expect("terminal session history must remain queryable");
+    assert_eq!(terminal_history.len(), 2);
+    assert!(terminal_history.iter().any(|record| record == &closed_rfq));
+    assert!(terminal_history.iter().any(|record| record == &close));
 }
 
 #[tokio::test]

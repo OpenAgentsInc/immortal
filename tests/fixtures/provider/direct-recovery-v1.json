@@ -1,0 +1,61 @@
+{
+  "schema": "openagents.immortal.provider-direct-recovery-fixture.v1",
+  "activation": {
+    "environment": "IMMORTAL_PROVIDER_DIRECT_RECOVERY_BIND",
+    "enabled_by_default": false,
+    "mode": "funded",
+    "network_scope": "private_or_loopback"
+  },
+  "transport": {
+    "framing": "u32_big_endian_length_prefixed_json",
+    "one_request_per_connection": true,
+    "request_schema": "openagents.immortal.provider-direct-recovery-request.v1",
+    "response_schema": "openagents.immortal.provider-direct-recovery-response.v1",
+    "payload": "nip59_gift_wraps_only",
+    "connection_deadline_seconds": 5
+  },
+  "limits": {
+    "request_bytes": 2097152,
+    "response_bytes": 8388608,
+    "request_wraps": 32,
+    "response_wraps": 512,
+    "connections_per_poll": 4
+  },
+  "admission": {
+    "durable_sessions_only": true,
+    "requires_exact_durable_requester_rfq_replay": true,
+    "requires_durable_bilateral_swap_contracts": true,
+    "single_session": true,
+    "single_requester": true,
+    "requester_authored_inbound_only": true,
+    "new_rfq_allowed": false,
+    "new_session_allowed": false,
+    "pre_contract_negotiation_allowed": false,
+    "persist_before_response": true,
+    "terminal_history_source": "provider_postgres_session_records"
+  },
+  "cases": [
+    {"id": "durable-bilateral-request-replays-provider-history", "expected": "provider_history_wrapped_to_requester"},
+    {"id": "identical-request-replay", "expected": "idempotent_provider_history"},
+    {"id": "terminal-provider-close-after-actor-removal", "expected": "terminal_history_replayed"},
+    {"id": "unknown-session-rfq", "expected": "rejected"},
+    {"id": "request-rfq-differs-from-durable-rfq", "expected": "rejected"},
+    {"id": "pre-contract-durable-session", "expected": "rejected"},
+    {"id": "wrong-requester", "expected": "rejected"},
+    {"id": "mixed-session", "expected": "rejected"},
+    {"id": "provider-authored-inbound", "expected": "rejected"},
+    {"id": "invalid-gift-wrap", "expected": "rejected"},
+    {"id": "bare-private-record", "expected": "rejected"},
+    {"id": "empty-wraps", "expected": "rejected"},
+    {"id": "too-many-wraps", "expected": "rejected"},
+    {"id": "oversized-frame", "expected": "rejected"},
+    {"id": "duplicate-json-member", "expected": "rejected"},
+    {"id": "unknown-json-member", "expected": "rejected"},
+    {"id": "response-byte-bound", "expected": "fail_closed"}
+  ],
+  "advertisement": {
+    "nip11": false,
+    "relay_contract_affected": false,
+    "public_replacement_claim": false
+  }
+}

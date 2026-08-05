@@ -6,7 +6,7 @@ use std::{
     io::{ErrorKind, Read},
     net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use immortal_client::mkt_swp_client::{MktSigningRequest, SwapClientConfig};
@@ -24,7 +24,13 @@ use tokio_tungstenite::tungstenite::{
     protocol::WebSocketConfig,
 };
 
-use crate::{ProviderDiscoveryFactory, ProviderSession};
+use crate::{
+    ProviderDiscoveryFactory, ProviderSession,
+    direct_recovery::{
+        DirectRecoveryListener, MAX_CONNECTIONS_PER_POLL, MAX_RESPONSE_BYTES, MAX_RESPONSE_WRAPS,
+        RESPONSE_SCHEMA, read_request, wrap_response_record, write_response,
+    },
+};
 
 const SUBSCRIPTION_ID: &str = "immortal-provider-inbox";
 const MAX_RELAY_URL_BYTES: usize = 2_048;
@@ -67,6 +73,14 @@ pub(crate) trait ProviderMode {
             records: Vec::new(),
             has_prior_records: false,
         })
+    }
+
+    fn durable_session_records(
+        &mut self,
+        _session_id: &str,
+        _limit: usize,
+    ) -> Result<Vec<Event>, String> {
+        Ok(Vec::new())
     }
 
     fn prepare_recovered_record(
@@ -153,27 +167,45 @@ enum SessionAdvance {
     Removed,
 }
 
+enum DeliveryTarget<'a> {
+    Relay(&'a mut RelayClient),
+    DurableRecovery,
+}
+
 struct RelayActor<M> {
     relay_url: String,
     signer: MarketSigner,
     offering_address: String,
     sessions: BTreeMap<String, SessionActor>,
     mode: M,
+    direct_recovery: Option<DirectRecoveryListener>,
 }
 
 pub(crate) fn run_with_mode<M: ProviderMode>(
     relay_url: String,
     signer: MarketSigner,
     mode: M,
+    direct_recovery_bind: Option<SocketAddr>,
 ) -> Result<(), String> {
     let offering_address = format!("39601:{}:{}", signer.pubkey(), mode.offering_id());
+    let direct_recovery = direct_recovery_bind
+        .map(DirectRecoveryListener::bind)
+        .transpose()?;
     let mut actor = RelayActor {
         relay_url,
         signer,
         offering_address,
         sessions: BTreeMap::new(),
         mode,
+        direct_recovery,
     };
+    actor.bootstrap_durable()?;
+    if let Some(listener) = actor.direct_recovery.as_ref() {
+        println!(
+            "immortal-provider: direct recovery ready bind={}",
+            listener.local_addr()?
+        );
+    }
     actor.run_persistent()
 }
 
@@ -182,6 +214,14 @@ pub(crate) fn validate_relay_url(relay_url: &str, mode_name: &str) -> Result<(),
 }
 
 impl<M: ProviderMode> RelayActor<M> {
+    fn bootstrap_durable(&mut self) -> Result<(), String> {
+        self.rebuild(RelayHistory {
+            wraps: Vec::new(),
+            truncated: false,
+        })
+        .map_err(|error| format!("provider durable bootstrap failed: {error}"))
+    }
+
     fn run_persistent(&mut self) -> Result<(), String> {
         let mut failures = 0_usize;
         loop {
@@ -189,7 +229,7 @@ impl<M: ProviderMode> RelayActor<M> {
                 Ok(()) => return Ok(()),
                 Err(error) => {
                     failures = failures.saturating_add(1);
-                    if failures > MAX_RECONNECT_ATTEMPTS {
+                    if failures > MAX_RECONNECT_ATTEMPTS && self.direct_recovery.is_none() {
                         return Err(format!(
                             "{} provider exhausted {MAX_RECONNECT_ATTEMPTS} relay reconnects: {error}",
                             self.mode.mode_name()
@@ -198,14 +238,36 @@ impl<M: ProviderMode> RelayActor<M> {
                     let exponent = u32::try_from(failures.saturating_sub(1).min(5))
                         .map_err(|_| "relay reconnect counter overflowed".to_owned())?;
                     let delay = Duration::from_secs(1_u64 << exponent);
-                    eprintln!(
-                        "immortal-provider: relay connection failed ({error}); retrying in {}s ({failures}/{MAX_RECONNECT_ATTEMPTS})",
-                        delay.as_secs()
-                    );
-                    thread::sleep(delay);
+                    if failures > MAX_RECONNECT_ATTEMPTS {
+                        eprintln!(
+                            "immortal-provider: relay reconnects exhausted ({error}); direct recovery remains active and relay retry continues in {}s",
+                            delay.as_secs()
+                        );
+                    } else {
+                        eprintln!(
+                            "immortal-provider: relay connection failed ({error}); retrying in {}s ({failures}/{MAX_RECONNECT_ATTEMPTS})",
+                            delay.as_secs()
+                        );
+                    }
+                    self.wait_for_reconnect(delay)?;
                 }
             }
         }
+    }
+
+    fn wait_for_reconnect(&mut self, delay: Duration) -> Result<(), String> {
+        let deadline = Instant::now() + delay;
+        let mut next_tick = Instant::now();
+        while Instant::now() < deadline {
+            self.poll_direct_recovery()?;
+            if Instant::now() >= next_tick {
+                self.mode.tick()?;
+                next_tick = Instant::now() + Duration::from_secs(1);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            thread::sleep(remaining.min(Duration::from_millis(100)));
+        }
+        Ok(())
     }
 
     fn run_connection(&mut self) -> Result<(), String> {
@@ -230,6 +292,7 @@ impl<M: ProviderMode> RelayActor<M> {
         );
 
         loop {
+            self.poll_direct_recovery()?;
             match read_json(&mut reader.websocket) {
                 Ok(message) => {
                     if let Some(wrap) = subscription_event(&message)? {
@@ -526,7 +589,185 @@ impl<M: ProviderMode> RelayActor<M> {
             self.sessions.remove(&session_id);
             return Ok(());
         }
-        self.advance_session(&session_id, publisher)
+        self.advance_session(&session_id, &mut DeliveryTarget::Relay(publisher))
+    }
+
+    fn poll_direct_recovery(&mut self) -> Result<(), String> {
+        for _ in 0..MAX_CONNECTIONS_PER_POLL {
+            let stream = match self.direct_recovery.as_ref() {
+                Some(listener) => listener.accept(),
+                None => return Ok(()),
+            };
+            let Some(mut stream) = (match stream {
+                Ok(stream) => stream,
+                Err(error) => {
+                    eprintln!("immortal-provider: direct recovery connection refused: {error}");
+                    continue;
+                }
+            }) else {
+                return Ok(());
+            };
+            if let Err(error) = self.handle_direct_recovery(&mut stream) {
+                eprintln!("immortal-provider: direct recovery request refused: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_direct_recovery(&mut self, stream: &mut TcpStream) -> Result<(), String> {
+        let request = read_request(stream)?;
+        let response = self.direct_recovery_response(request.into_wraps()?)?;
+        write_response(stream, &response)
+    }
+
+    fn direct_recovery_response(&mut self, wraps: Vec<Event>) -> Result<Vec<Event>, String> {
+        let mut records = BTreeMap::<String, Event>::new();
+        let mut requested_session = None::<String>;
+        let mut requester_pubkey = None::<String>;
+        for wrap in wraps {
+            let delivered = unwrap_mkt_record(&wrap, &self.signer, &swp_profiles())
+                .map_err(|error| format!("direct recovery wrap {} is invalid: {error}", wrap.id))?;
+            let record = delivered.record().event().clone();
+            if record.pubkey == self.signer.pubkey() {
+                return Err(
+                    "direct recovery accepts only requester-authored inbound records".to_owned(),
+                );
+            }
+            let record_session = session_id(&record)?.to_owned();
+            match requested_session.as_deref() {
+                Some(session) if session != record_session => {
+                    return Err("direct recovery request mixes sessions".to_owned());
+                }
+                None => requested_session = Some(record_session),
+                Some(_) => {}
+            }
+            match requester_pubkey.as_deref() {
+                Some(requester) if requester != record.pubkey => {
+                    return Err("direct recovery request mixes requester identities".to_owned());
+                }
+                None => requester_pubkey = Some(record.pubkey.clone()),
+                Some(_) => {}
+            }
+            insert_recovery_record(&mut records, record)?;
+        }
+        let requested_session = requested_session
+            .ok_or_else(|| "direct recovery request contains no session".to_owned())?;
+        let requester_pubkey = requester_pubkey
+            .ok_or_else(|| "direct recovery request contains no requester".to_owned())?;
+        let mut requested_records = records.into_values().collect::<Vec<_>>();
+        requested_records.sort_by(|left, right| {
+            recovery_rank(left, self.signer.pubkey())
+                .cmp(&recovery_rank(right, self.signer.pubkey()))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let durable = self
+            .mode
+            .durable_session_records(&requested_session, MAX_RESPONSE_WRAPS)?;
+        self.authorize_direct_recovery(
+            &requested_session,
+            &requester_pubkey,
+            &requested_records,
+            &durable,
+        )?;
+
+        if let Some(actor) = self.sessions.get(&requested_session) {
+            if actor.requester_pubkey != requester_pubkey {
+                return Err("direct recovery requester does not own the active session".to_owned());
+            }
+            for record in requested_records {
+                self.ingest_record(record.clone())?;
+                self.observe_record(&requested_session, &record, RecordOrigin::Live)?;
+            }
+            self.advance_session(&requested_session, &mut DeliveryTarget::DurableRecovery)?;
+        } else if requested_records
+            .iter()
+            .any(|record| !durable.iter().any(|stored| stored == record))
+        {
+            return Err(
+                "inactive direct recovery sessions accept only exact durable record replay"
+                    .to_owned(),
+            );
+        }
+
+        let mut durable = self
+            .mode
+            .durable_session_records(&requested_session, MAX_RESPONSE_WRAPS)?;
+        durable.sort_by(|left, right| {
+            recovery_rank(left, self.signer.pubkey())
+                .cmp(&recovery_rank(right, self.signer.pubkey()))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let provider_records = durable
+            .iter()
+            .filter(|record| record.pubkey == self.signer.pubkey())
+            .collect::<Vec<_>>();
+        if provider_records.len() > MAX_RESPONSE_WRAPS {
+            return Err(format!(
+                "direct recovery provider history exceeds {MAX_RESPONSE_WRAPS} records"
+            ));
+        }
+        let mut response = Vec::with_capacity(provider_records.len());
+        let mut response_bytes = RESPONSE_SCHEMA.len().saturating_add(32);
+        for record in provider_records {
+            let wrap = wrap_response_record(
+                &self.signer,
+                &requester_pubkey,
+                record,
+                random_wrap_material()?,
+            )?;
+            let wrap_bytes = serde_json::to_vec(&wrap)
+                .map_err(|error| format!("could not size direct recovery wrap: {error}"))?
+                .len()
+                .saturating_add(1);
+            response_bytes = response_bytes.saturating_add(wrap_bytes);
+            if response_bytes > MAX_RESPONSE_BYTES {
+                return Err(format!(
+                    "direct recovery response exceeds its {MAX_RESPONSE_BYTES}-byte bound"
+                ));
+            }
+            response.push(wrap);
+        }
+        Ok(response)
+    }
+
+    fn authorize_direct_recovery(
+        &self,
+        requested_session: &str,
+        requester_pubkey: &str,
+        requested_records: &[Event],
+        durable: &[Event],
+    ) -> Result<(), String> {
+        if durable
+            .iter()
+            .any(|record| session_id(record) != Ok(requested_session))
+        {
+            return Err("durable direct recovery history contains another session".to_owned());
+        }
+        let durable_rfqs = durable
+            .iter()
+            .filter(|record| record.kind == MKT_RFQ_KIND && record.pubkey == requester_pubkey)
+            .collect::<Vec<_>>();
+        let [durable_rfq] = durable_rfqs.as_slice() else {
+            return Err("direct recovery requires exactly one durable requester RFQ".to_owned());
+        };
+        if offering_reference(durable_rfq)? != self.offering_address {
+            return Err("direct recovery RFQ references another provider Offering".to_owned());
+        }
+        if !requested_records
+            .iter()
+            .any(|record| record == *durable_rfq)
+        {
+            return Err("direct recovery request does not replay its exact durable RFQ".to_owned());
+        }
+        if !has_kind_by_author(durable, MKT_SWP_SWAP_CONTRACT_KIND, requester_pubkey)
+            || !has_kind_by_author(durable, MKT_SWP_SWAP_CONTRACT_KIND, self.signer.pubkey())
+        {
+            return Err(
+                "direct recovery is unavailable before durable bilateral Swap Contracts".to_owned(),
+            );
+        }
+        Ok(())
     }
 
     fn ingest_record(&mut self, record: Event) -> Result<String, String> {
@@ -633,7 +874,7 @@ impl<M: ProviderMode> RelayActor<M> {
         self.prune_stalled_sessions(unix_now()?)?;
         let sessions = self.sessions.keys().cloned().collect::<Vec<_>>();
         for session_id in sessions {
-            self.advance_session(&session_id, publisher)?;
+            self.advance_session(&session_id, &mut DeliveryTarget::Relay(publisher))?;
         }
         Ok(())
     }
@@ -641,7 +882,7 @@ impl<M: ProviderMode> RelayActor<M> {
     fn advance_session(
         &mut self,
         session_id: &str,
-        publisher: &mut RelayClient,
+        delivery: &mut DeliveryTarget<'_>,
     ) -> Result<(), String> {
         for _ in 0..MAX_ACTIONS_PER_ADVANCE {
             let observed_at = unix_now()?;
@@ -667,7 +908,14 @@ impl<M: ProviderMode> RelayActor<M> {
                 .ingest_signed(event.clone())
                 .map_err(|error| format!("provider response failed local validation: {error}"))?;
             self.observe_record(session_id, &event, RecordOrigin::Authored)?;
-            self.publish_record(&event, &requester, publisher)?;
+            match delivery {
+                DeliveryTarget::Relay(publisher) => {
+                    self.publish_record(&event, &requester, publisher)?;
+                }
+                DeliveryTarget::DurableRecovery => {
+                    // The caller rereads Postgres so a terminal actor removal cannot hide Close.
+                }
+            }
             if terminal {
                 self.sessions.remove(session_id);
                 return Ok(());
@@ -1272,6 +1520,7 @@ mod tests {
 
     struct RecoveryMode {
         records: Vec<Event>,
+        session_records: Vec<Event>,
         has_prior_records: bool,
         reservation_confirmation: Option<ReservationConfirmation>,
         prune_stalled: bool,
@@ -1303,6 +1552,17 @@ mod tests {
                 records: std::mem::take(&mut self.records),
                 has_prior_records: self.has_prior_records,
             })
+        }
+
+        fn durable_session_records(
+            &mut self,
+            _session_id: &str,
+            limit: usize,
+        ) -> Result<Vec<Event>, String> {
+            if self.session_records.len() > limit {
+                return Err("test session history exceeded its bound".to_owned());
+            }
+            Ok(self.session_records.clone())
         }
 
         fn prepare_recovered_record(
@@ -1408,10 +1668,12 @@ mod tests {
             sessions: BTreeMap::new(),
             mode: RecoveryMode {
                 records: Vec::new(),
+                session_records: Vec::new(),
                 has_prior_records: false,
                 reservation_confirmation: None,
                 prune_stalled: false,
             },
+            direct_recovery: None,
         };
         let error = without_history
             .rebuild(RelayHistory {
@@ -1428,10 +1690,12 @@ mod tests {
             sessions: BTreeMap::new(),
             mode: RecoveryMode {
                 records: Vec::new(),
+                session_records: Vec::new(),
                 has_prior_records: true,
                 reservation_confirmation: None,
                 prune_stalled: false,
             },
+            direct_recovery: None,
         };
         with_history
             .rebuild(RelayHistory {
@@ -1439,6 +1703,252 @@ mod tests {
                 truncated: true,
             })
             .expect("durable history proof permits a bounded relay delta");
+    }
+
+    #[test]
+    fn durable_sessions_rebuild_before_any_relay_connection() {
+        let provider = MarketSigner::from_secret_bytes([59; 32]).expect("provider signer");
+        let requester = MarketSigner::from_secret_bytes([60; 32]).expect("requester signer");
+        let offering_address = format!("39601:{}:recovery-test", provider.pubkey());
+        let config = SwapClientConfig {
+            session_id: "c1".repeat(32),
+            requester_pubkey: requester.pubkey().to_owned(),
+            provider_pubkey: provider.pubkey().to_owned(),
+            offering_address: offering_address.clone(),
+        };
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json"
+        ))
+        .expect("full-session fixture");
+        let fixture_record = &fixture["flows"]["submarine"]["snapshot"]["signed_records"][0];
+        let content: Value = serde_json::from_str(
+            fixture_record["content"]
+                .as_str()
+                .expect("fixture RFQ content"),
+        )
+        .expect("fixture RFQ JSON");
+        let request = SwapRecordFactory::new(config)
+            .expect("record factory")
+            .rfq(100, &"c2".repeat(32), 1_000, content["mkt_swp"].clone())
+            .expect("RFQ request");
+        let rfq = request
+            .verify_signed(requester.sign(
+                request.created_at,
+                request.kind,
+                request.tags.clone(),
+                request.content.clone(),
+            ))
+            .expect("signed RFQ");
+        let mut actor = RelayActor {
+            relay_url: "ws://127.0.0.1:1".to_owned(),
+            signer: provider,
+            offering_address,
+            sessions: BTreeMap::new(),
+            mode: RecoveryMode {
+                records: vec![rfq],
+                session_records: Vec::new(),
+                has_prior_records: true,
+                reservation_confirmation: None,
+                prune_stalled: false,
+            },
+            direct_recovery: None,
+        };
+
+        actor
+            .bootstrap_durable()
+            .expect("durable bootstrap must not require relay I/O");
+        assert_eq!(actor.sessions.len(), 1);
+    }
+
+    #[test]
+    fn direct_recovery_requires_exact_rfq_and_durable_bilateral_contracts() {
+        let provider = MarketSigner::from_secret_bytes([61; 32]).expect("provider signer");
+        let requester = MarketSigner::from_secret_bytes([62; 32]).expect("requester signer");
+        let offering_address = format!("39601:{}:recovery-test", provider.pubkey());
+        let session = "c3".repeat(32);
+        let config = SwapClientConfig {
+            session_id: session.clone(),
+            requester_pubkey: requester.pubkey().to_owned(),
+            provider_pubkey: provider.pubkey().to_owned(),
+            offering_address: offering_address.clone(),
+        };
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json"
+        ))
+        .expect("full-session fixture");
+        let fixture_record = &fixture["flows"]["submarine"]["snapshot"]["signed_records"][0];
+        let content: Value = serde_json::from_str(
+            fixture_record["content"]
+                .as_str()
+                .expect("fixture RFQ content"),
+        )
+        .expect("fixture RFQ JSON");
+        let request = SwapRecordFactory::new(config)
+            .expect("record factory")
+            .rfq(100, &"c4".repeat(32), 1_000, content["mkt_swp"].clone())
+            .expect("RFQ request");
+        let rfq = request
+            .verify_signed(requester.sign(
+                request.created_at,
+                request.kind,
+                request.tags.clone(),
+                request.content.clone(),
+            ))
+            .expect("signed RFQ");
+        let contract_tags = vec![immortal_core::domain::Tag::new(vec![
+            "session".to_owned(),
+            session.clone(),
+        ])];
+        let requester_contract = requester.sign(
+            101,
+            MKT_SWP_SWAP_CONTRACT_KIND,
+            contract_tags.clone(),
+            "{}".to_owned(),
+        );
+        let provider_contract = provider.sign(
+            102,
+            MKT_SWP_SWAP_CONTRACT_KIND,
+            contract_tags,
+            "{}".to_owned(),
+        );
+        let actor = RelayActor {
+            relay_url: "ws://127.0.0.1:1".to_owned(),
+            signer: provider,
+            offering_address,
+            sessions: BTreeMap::new(),
+            mode: RecoveryMode {
+                records: Vec::new(),
+                session_records: Vec::new(),
+                has_prior_records: false,
+                reservation_confirmation: None,
+                prune_stalled: false,
+            },
+            direct_recovery: None,
+        };
+
+        let pre_contract = actor
+            .authorize_direct_recovery(
+                &session,
+                requester.pubkey(),
+                std::slice::from_ref(&rfq),
+                std::slice::from_ref(&rfq),
+            )
+            .expect_err("RFQ-only history must not admit direct negotiation");
+        assert!(pre_contract.contains("before durable bilateral Swap Contracts"));
+
+        let durable = vec![rfq.clone(), requester_contract, provider_contract];
+        actor
+            .authorize_direct_recovery(
+                &session,
+                requester.pubkey(),
+                std::slice::from_ref(&rfq),
+                &durable,
+            )
+            .expect("durable bilateral session must be recovery eligible");
+
+        let missing_rfq = actor
+            .authorize_direct_recovery(&session, requester.pubkey(), &[], &durable)
+            .expect_err("request must prove the exact durable RFQ");
+        assert!(missing_rfq.contains("exact durable RFQ"));
+    }
+
+    #[test]
+    fn direct_recovery_replays_terminal_provider_history_after_actor_removal() {
+        let provider = MarketSigner::from_secret_bytes([65; 32]).expect("provider signer");
+        let requester = MarketSigner::from_secret_bytes([66; 32]).expect("requester signer");
+        let offering_address = format!("39601:{}:recovery-test", provider.pubkey());
+        let session = "c5".repeat(32);
+        let config = SwapClientConfig {
+            session_id: session.clone(),
+            requester_pubkey: requester.pubkey().to_owned(),
+            provider_pubkey: provider.pubkey().to_owned(),
+            offering_address: offering_address.clone(),
+        };
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json"
+        ))
+        .expect("full-session fixture");
+        let fixture_record = &fixture["flows"]["submarine"]["snapshot"]["signed_records"][0];
+        let content: Value = serde_json::from_str(
+            fixture_record["content"]
+                .as_str()
+                .expect("fixture RFQ content"),
+        )
+        .expect("fixture RFQ JSON");
+        let request = SwapRecordFactory::new(config)
+            .expect("record factory")
+            .rfq(100, &"c6".repeat(32), 1_000, content["mkt_swp"].clone())
+            .expect("RFQ request");
+        let rfq = request
+            .verify_signed(requester.sign(
+                request.created_at,
+                request.kind,
+                request.tags.clone(),
+                request.content.clone(),
+            ))
+            .expect("signed RFQ");
+        let session_tag = vec![immortal_core::domain::Tag::new(vec![
+            "session".to_owned(),
+            session,
+        ])];
+        let requester_contract = requester.sign(
+            101,
+            MKT_SWP_SWAP_CONTRACT_KIND,
+            session_tag.clone(),
+            "{}".to_owned(),
+        );
+        let provider_contract = provider.sign(
+            102,
+            MKT_SWP_SWAP_CONTRACT_KIND,
+            session_tag.clone(),
+            "{}".to_owned(),
+        );
+        let provider_close = provider.sign(103, MKT_CLOSE_KIND, session_tag, "{}".to_owned());
+        let history = vec![
+            rfq.clone(),
+            requester_contract,
+            provider_contract,
+            provider_close,
+        ];
+        let raw_rfq = serde_json::to_vec(&rfq).expect("serialize RFQ");
+        let wrapped_rfq = wrap_mkt_record(
+            &raw_rfq,
+            &requester,
+            provider.pubkey(),
+            WrapMaterial {
+                seal_created_at: 100,
+                wrap_created_at: 100,
+                seal_nonce: [67; 32],
+                wrap_nonce: [68; 32],
+                wrap_secret: [69; 32],
+            },
+        )
+        .expect("wrap RFQ")
+        .event;
+        let mut actor = RelayActor {
+            relay_url: "ws://127.0.0.1:1".to_owned(),
+            signer: provider,
+            offering_address,
+            sessions: BTreeMap::new(),
+            mode: RecoveryMode {
+                records: Vec::new(),
+                session_records: history,
+                has_prior_records: true,
+                reservation_confirmation: None,
+                prune_stalled: false,
+            },
+            direct_recovery: None,
+        };
+
+        let response = actor
+            .direct_recovery_response(vec![wrapped_rfq])
+            .expect("terminal provider history must replay without an actor");
+        assert_eq!(response.len(), 2);
+        assert!(
+            response.iter().all(|wrap| {
+                wrap.kind == 1_059 && wrap.tag_values("p").eq([requester.pubkey()])
+            })
+        );
     }
 
     #[test]
@@ -1556,10 +2066,12 @@ mod tests {
             sessions: BTreeMap::new(),
             mode: RecoveryMode {
                 records: records.clone(),
+                session_records: Vec::new(),
                 has_prior_records: true,
                 reservation_confirmation: None,
                 prune_stalled: false,
             },
+            direct_recovery: None,
         };
         let error = actor
             .rebuild(RelayHistory {
@@ -1576,10 +2088,12 @@ mod tests {
             sessions: BTreeMap::new(),
             mode: RecoveryMode {
                 records: records.clone(),
+                session_records: Vec::new(),
                 has_prior_records: true,
                 reservation_confirmation: None,
                 prune_stalled: true,
             },
+            direct_recovery: None,
         };
         pruned
             .rebuild(RelayHistory {
@@ -1596,10 +2110,12 @@ mod tests {
             sessions: BTreeMap::new(),
             mode: RecoveryMode {
                 records: Vec::new(),
+                session_records: Vec::new(),
                 has_prior_records: false,
                 reservation_confirmation: None,
                 prune_stalled: false,
             },
+            direct_recovery: None,
         };
         for record in records {
             let session_id = session_id(&record).expect("RFQ session").to_owned();
@@ -1635,10 +2151,12 @@ mod tests {
             sessions: BTreeMap::new(),
             mode: RecoveryMode {
                 records: Vec::new(),
+                session_records: Vec::new(),
                 has_prior_records: false,
                 reservation_confirmation: None,
                 prune_stalled: false,
             },
+            direct_recovery: None,
         };
 
         for index in 0..=MAX_SESSIONS_PER_REQUESTER {
@@ -1768,10 +2286,12 @@ mod tests {
             sessions: BTreeMap::new(),
             mode: RecoveryMode {
                 records: vec![rfq.clone(), quote.clone()],
+                session_records: Vec::new(),
                 has_prior_records: true,
                 reservation_confirmation,
                 prune_stalled: false,
             },
+            direct_recovery: None,
         };
         let mut missing = actor(None);
         let error = missing

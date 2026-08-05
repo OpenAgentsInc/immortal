@@ -27,6 +27,8 @@ const ADVERSARIAL_LAB_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/lab/adversarial-v1.json");
 const CLN_ADVERSARIAL_HOLD_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/cln-adversarial-hold-v1.json");
+const DIRECT_RECOVERY_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/direct-recovery-v1.json");
 
 #[test]
 fn provider_contract_is_canonical_byte_stable_and_matches_export() {
@@ -80,6 +82,10 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
             "tests/fixtures/provider/cln-adversarial-hold-v1.json",
             CLN_ADVERSARIAL_HOLD_FIXTURE,
         ),
+        (
+            "tests/fixtures/provider/direct-recovery-v1.json",
+            DIRECT_RECOVERY_FIXTURE,
+        ),
     ] {
         let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();
         assert_eq!(entry["bytes"], bytes.len());
@@ -99,6 +105,7 @@ fn provider_contract_exports_closed_nonzero_runtime_limits() {
         limits.keys().map(String::as_str).collect::<Vec<_>>(),
         [
             "boltz_compatibility",
+            "direct_recovery",
             "health",
             "quote",
             "rail_rpc",
@@ -109,6 +116,8 @@ fn provider_contract_exports_closed_nonzero_runtime_limits() {
         ]
     );
     assert_eq!(limits["relay_actor"]["active_sessions_per_requester"], 4);
+    assert_eq!(limits["direct_recovery"]["request_wraps"], 32);
+    assert_eq!(limits["direct_recovery"]["response_wraps"], 512);
     assert!(all_limit_leaves_are_positive(&contract["limits"]));
     assert_eq!(
         contract["vocabulary"]["funded_terminal_outcomes"],
@@ -183,6 +192,29 @@ fn provider_contract_distinguishes_required_and_optional_environment() {
         .unwrap();
     assert_eq!(health["optional_in_modes"], json!(["funded"]));
     assert_eq!(health["defaulted"], json!(true));
+
+    let direct_recovery = variables
+        .iter()
+        .find(|variable| variable["name"] == "IMMORTAL_PROVIDER_DIRECT_RECOVERY_BIND")
+        .expect("direct recovery environment contract");
+    assert_eq!(direct_recovery["optional_in_modes"], json!(["funded"]));
+    assert_eq!(direct_recovery["defaulted"], json!(false));
+    assert_eq!(
+        direct_recovery["format"],
+        "private_or_loopback_socket_address"
+    );
+    assert_eq!(
+        contract["operations"]["direct_recovery"]["opens_new_sessions"],
+        false
+    );
+    assert_eq!(
+        contract["operations"]["direct_recovery"]["admits_pre_contract_negotiation"],
+        false
+    );
+    assert_eq!(
+        contract["operations"]["direct_recovery"]["nip11_advertised"],
+        false
+    );
 
     assert!(variables.iter().any(|variable| {
         variable["name"] == "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB"
@@ -289,6 +321,53 @@ fn provider_contract_keeps_the_adversarial_cln_policy_out_of_production() {
     assert_eq!(
         policy["regtest_adversarial"]["minimum_final_cltv_delta"],
         80
+    );
+}
+
+#[test]
+fn direct_recovery_fixture_closes_the_recovery_only_surface() {
+    let fixture: Value =
+        serde_json::from_slice(DIRECT_RECOVERY_FIXTURE).expect("direct recovery fixture");
+    assert_eq!(
+        fixture["schema"],
+        "openagents.immortal.provider-direct-recovery-fixture.v1"
+    );
+    assert_eq!(fixture["activation"]["enabled_by_default"], false);
+    assert_eq!(fixture["admission"]["new_rfq_allowed"], false);
+    assert_eq!(fixture["admission"]["new_session_allowed"], false);
+    assert_eq!(
+        fixture["admission"]["pre_contract_negotiation_allowed"],
+        false
+    );
+    assert_eq!(fixture["advertisement"]["nip11"], false);
+    assert_eq!(fixture["advertisement"]["public_replacement_claim"], false);
+    let case_ids = fixture["cases"]
+        .as_array()
+        .expect("direct recovery cases")
+        .iter()
+        .map(|case| case["id"].as_str().expect("direct recovery case ID"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        case_ids,
+        [
+            "durable-bilateral-request-replays-provider-history",
+            "identical-request-replay",
+            "terminal-provider-close-after-actor-removal",
+            "unknown-session-rfq",
+            "request-rfq-differs-from-durable-rfq",
+            "pre-contract-durable-session",
+            "wrong-requester",
+            "mixed-session",
+            "provider-authored-inbound",
+            "invalid-gift-wrap",
+            "bare-private-record",
+            "empty-wraps",
+            "too-many-wraps",
+            "oversized-frame",
+            "duplicate-json-member",
+            "unknown-json-member",
+            "response-byte-bound",
+        ]
     );
 }
 

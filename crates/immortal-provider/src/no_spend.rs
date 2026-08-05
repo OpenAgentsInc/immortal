@@ -31,7 +31,7 @@ pub fn run() -> Result<(), String> {
     validate_relay_url(&relay_url, "no-spend")?;
     let identity_secret = required_environment("IMMORTAL_PROVIDER_IDENTITY_SECRET")?;
     let signer = signer_from_lower_hex(&identity_secret)?;
-    run_with_mode(relay_url, signer, NoSpendMode)
+    run_with_mode(relay_url, signer, NoSpendMode, None)
 }
 
 impl ProviderMode for NoSpendMode {

@@ -132,6 +132,7 @@ async fn run_async() -> Result<(), FundedError> {
     let boltz_lightning = config.lightning.clone();
     let network = config.network;
     let health_bind = config.health_bind;
+    let direct_recovery_bind = config.direct_recovery_bind;
     let alert_endpoint = config.alert_endpoint.clone();
     let chain_poll_interval = config.chain_poll_interval;
     let chain_stale_after = config.chain_stale_after;
@@ -199,7 +200,7 @@ async fn run_async() -> Result<(), FundedError> {
     let _relay_thread = thread::Builder::new()
         .name("immortal-provider-relay".to_owned())
         .spawn(move || {
-            let result = run_with_mode(relay_url, signer, mode);
+            let result = run_with_mode(relay_url, signer, mode, direct_recovery_bind);
             if relay_sender.send(result).is_err() {
                 eprintln!("immortal-provider: relay result receiver closed during shutdown");
             }

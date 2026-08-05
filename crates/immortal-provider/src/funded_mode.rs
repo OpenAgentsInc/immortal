@@ -2856,6 +2856,18 @@ impl ProviderMode for FundedMode {
         })
     }
 
+    fn durable_session_records(
+        &mut self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Event>, String> {
+        self.handle
+            .block_on(self.store.session_records(session_id, limit))
+            .map_err(|error| {
+                format!("could not recover durable provider session {session_id}: {error}")
+            })
+    }
+
     fn prepare_recovered_record(
         &mut self,
         session: &mut ProviderSession,
