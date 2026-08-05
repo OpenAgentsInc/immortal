@@ -53,10 +53,13 @@ package. #12's pre-signed doomsday cases remain separate coverage.
 
 For the disposable shared Bitcoin/provider network namespace, the script reads
 the runtime private IPv4 address after startup and configures the listener on
-that numeric private address. Docker publishes port 19093 only through a
-random host-loopback port. This preserves the provider's private-or-loopback
-bind law while making the process endpoint reachable through container port
-translation.
+that numeric private address. Docker publishes port 19093 through a random
+host port bound to loopback by default. It first probes that listener from the
+shared container namespace, then resolves the published endpoint for the
+caller-side Go and Node process gates. This preserves the provider's
+private-or-loopback bind law while making the process endpoint reachable
+through container port translation. The remote-Docker exception is bounded
+below.
 
 The funded journey process succeeding is insufficient. The shell harness reads
 `tests/fixtures/provider/funded-smoke-v1.json` and independently checks the
@@ -255,6 +258,15 @@ using the caller's normal `TMPDIR`, avoiding shared-filesystem temporary-file
 semantics. Before any credentials are generated, the harness bind-mounts the
 empty child read-only into the pinned Postgres 17 image. A remote daemon that
 cannot see the exact path fails at that preflight.
+
+The Boltz listener publishes on `127.0.0.1` by default. If the Docker daemon
+is remote and the caller must run the checked-in Go and Node process gates,
+set `IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST` to the daemon's reachable
+host-only private IPv4 address, for example `192.168.65.1`. The harness
+accepts only loopback or RFC1918 IPv4 addresses, rejects wildcard and global
+addresses before creating credentials, and requires `compose port` to report
+that exact host before it runs either adapter. This is an explicit test-only
+publish decision; it never changes the provider listener's private bind.
 
 The two CLN data volumes are mounted only by their owning CLN processes. Each
 CLN writes `lightning-rpc` into a separate socket-only volume: the provider

@@ -6,7 +6,7 @@ services:
     command: ["-conf=/run/immortal-private/bitcoin.conf", "-datadir=/var/lib/bitcoin"]
     restart: "no"
     ports:
-      - "127.0.0.1::19093"
+      - "${IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST:?Boltz publish host is required}::19093"
     volumes:
       - bitcoin-data:/var/lib/bitcoin
       - type: bind

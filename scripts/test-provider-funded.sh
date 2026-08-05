@@ -22,6 +22,7 @@ driver_outcome=complete
 expected_driver_error=""
 injection_timeout_seconds="${IMMORTAL_PROVIDER_FUNDED_INJECTION_TIMEOUT_SECONDS:-300}"
 lightning_rail="${IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL:-cln}"
+boltz_publish_host="${IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST:-127.0.0.1}"
 provider_service=provider
 if test "${lightning_rail}" = lnd; then
   provider_service=provider-lnd
@@ -63,6 +64,32 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 umask 077
+if ! python3 - "${boltz_publish_host}" <<'PY'
+import ipaddress
+import sys
+
+try:
+    address = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+private_networks = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
+if (
+    address.version != 4
+    or address.is_unspecified
+    or address.is_multicast
+    or address.is_reserved
+    or not (address.is_loopback or any(address in network for network in private_networks))
+):
+    raise SystemExit(1)
+PY
+then
+  echo "test-provider-funded: Boltz publish host must be a non-wildcard loopback or RFC1918 IPv4 address" >&2
+  exit 1
+fi
 repository_physical_path="$(CDPATH= cd -- . && pwd -P)"
 dedicated_private_root_parent="${IMMORTAL_PROVIDER_FUNDED_PRIVATE_ROOT_PARENT:-}"
 if test -n "${dedicated_private_root_parent}"; then
@@ -466,6 +493,7 @@ EOF
 
 cat >"${private_root}/compose.env" <<EOF
 IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR=${private_root}
+IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST=${boltz_publish_host}
 EOF
 chmod 0600 "${private_root}"/*.conf "${private_root}"/*.env
 
@@ -1044,8 +1072,31 @@ if not snapshot.is_file():
 fi
 
 current_phase=boltz-provider-process-gate
-boltz_provider_url="http://$(compose port bitcoin 19093)"
-wait_for "Boltz provider compatibility listener" \
+boltz_provider_container_url="http://${boltz_bind_address}:19093"
+wait_for "Boltz provider compatibility listener inside the smoke network" \
+  compose exec -T "${provider_service}" /usr/bin/curl \
+    --fail --silent --show-error "${boltz_provider_container_url}/v2/version"
+if ! boltz_published_endpoint="$(compose port bitcoin 19093)"; then
+  echo "test-provider-funded: could not resolve the Boltz published endpoint" >&2
+  exit 1
+fi
+case "${boltz_published_endpoint}" in
+  "${boltz_publish_host}":*)
+    boltz_published_port="${boltz_published_endpoint#*:}"
+    ;;
+  *)
+    echo "test-provider-funded: Boltz published endpoint has another host" >&2
+    exit 1
+    ;;
+esac
+if [[ ! "${boltz_published_port}" =~ ^[0-9]{1,5}$ ]] \
+  || test "${boltz_published_port}" -lt 1 \
+  || test "${boltz_published_port}" -gt 65535; then
+  echo "test-provider-funded: Boltz published endpoint has an invalid port" >&2
+  exit 1
+fi
+boltz_provider_url="http://${boltz_published_endpoint}"
+wait_for "Boltz provider compatibility published endpoint" \
   curl --fail --silent --show-error "${boltz_provider_url}/v2/version"
 
 current_phase=boltz-go-client-engine-callback

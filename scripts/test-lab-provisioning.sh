@@ -129,6 +129,24 @@ grep -Fqx 'postgres_preflight_image="postgres:17-alpine@sha256:742f40ea20b9ff2ff
 grep -Fqx '  "${private_root_parent_physical}"/*) ;;' scripts/test-provider-funded.sh
 grep -Fqx '      echo "test-provider-funded: global TMPDIR must not be inside the dedicated private root parent" >&2' \
   scripts/test-provider-funded.sh
+grep -Fqx 'boltz_publish_host="${IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST:-127.0.0.1}"' \
+  scripts/test-provider-funded.sh
+grep -Fqx '    or address.is_unspecified' scripts/test-provider-funded.sh
+grep -Fqx '    or address.is_multicast' scripts/test-provider-funded.sh
+grep -Fqx '    or address.is_reserved' scripts/test-provider-funded.sh
+grep -Fqx '    or not (address.is_loopback or any(address in network for network in private_networks))' \
+  scripts/test-provider-funded.sh
+grep -Fqx 'IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST=${boltz_publish_host}' \
+  scripts/test-provider-funded.sh
+grep -Fqx 'boltz_provider_container_url="http://${boltz_bind_address}:19093"' \
+  scripts/test-provider-funded.sh
+grep -Fqx 'wait_for "Boltz provider compatibility listener inside the smoke network" \' \
+  scripts/test-provider-funded.sh
+grep -Fqx 'if ! boltz_published_endpoint="$(compose port bitcoin 19093)"; then' \
+  scripts/test-provider-funded.sh
+grep -Fqx '  "${boltz_publish_host}":*)' scripts/test-provider-funded.sh
+grep -Fqx '      - "${IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST:?Boltz publish host is required}::19093"' \
+  scripts/support/provider-funded/compose.yaml
 if grep -Eq '^docker\(\)' scripts/test-provider-funded.sh; then
   echo "test-lab-provisioning: funded provider harness must not wrap docker" >&2
   exit 1
@@ -235,6 +253,38 @@ printf '%s\n' \
   '*) exit 1 ;;' \
   'esac' >"${provider_mock_runtime}/docker"
 chmod 0700 "${provider_mock_runtime}/docker"
+
+provider_rejected_publish_parent="${test_dir}/provider-rejected-publish-parent"
+mkdir -m 0700 "${provider_rejected_publish_parent}"
+for provider_publish_host in 0.0.0.0 8.8.8.8 192.0.2.1 255.255.255.255; do
+  set +e
+  IMMORTAL_PROVIDER_FUNDED_PRIVATE_ROOT_PARENT="${provider_rejected_publish_parent}" \
+    IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST="${provider_publish_host}" \
+    scripts/test-provider-funded.sh >"${test_dir}/provider-publish-host-${provider_publish_host}-output" 2>&1
+  provider_publish_host_status=$?
+  set -e
+  test "${provider_publish_host_status}" -ne 0
+  grep -Fq 'Boltz publish host must be a non-wildcard loopback or RFC1918 IPv4 address' \
+    "${test_dir}/provider-publish-host-${provider_publish_host}-output"
+done
+if find "${provider_rejected_publish_parent}" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+  echo "test-lab-provisioning: rejected Boltz publish host created private state" >&2
+  exit 1
+fi
+
+provider_valid_publish_log="${test_dir}/provider-private-publish-host-commands"
+: >"${provider_valid_publish_log}"
+set +e
+PATH="${provider_mock_runtime}:/usr/bin:/bin" \
+  IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST=192.168.65.1 \
+  IMMORTAL_PROVIDER_FUNDED_MOCK_COMMAND_LOG="${provider_valid_publish_log}" \
+  scripts/test-provider-funded.sh >"${test_dir}/provider-private-publish-host-output" 2>&1
+provider_valid_publish_status=$?
+set -e
+test "${provider_valid_publish_status}" -ne 0
+grep -Fq 'container runtime cannot read the private root at its exact path' \
+  "${test_dir}/provider-private-publish-host-output"
+grep -Fq 'run --rm --mount type=bind,src=' "${provider_valid_publish_log}"
 
 provider_private_parent="${test_dir}/provider-private-parent"
 provider_command_log="${test_dir}/provider-private-parent-commands"

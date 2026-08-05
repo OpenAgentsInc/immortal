@@ -36,8 +36,10 @@ if test ! -d "${receipt_directory}" || test ! -w "${receipt_directory}"; then
     echo "test-debian-provider-funded: receipt directory is unavailable" >&2
     exit 1
 fi
-if ! grep -Fqx '  node --experimental-websocket --test adapters/boltz-web-app/provider-process.test.mjs; then' scripts/test-provider-funded.sh; then
-    echo "test-debian-provider-funded: funded web adapter must enable Node WebSocket support" >&2
+if ! grep -Fqx 'wait_for "Boltz provider compatibility listener inside the smoke network" \' scripts/test-provider-funded.sh \
+    || ! grep -Fqx 'wait_for "Boltz provider compatibility published endpoint" \' scripts/test-provider-funded.sh \
+    || ! grep -Fqx '  node --experimental-websocket --test adapters/boltz-web-app/provider-process.test.mjs; then' scripts/test-provider-funded.sh; then
+    echo "test-debian-provider-funded: funded process gate must retain both readiness probes and Node WebSocket support" >&2
     exit 1
 fi
 if grep -F -- '--env TMPDIR=' scripts/run-debian-provider-funded.sh >/dev/null; then
