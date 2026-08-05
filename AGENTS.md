@@ -29,6 +29,11 @@ Read `README.md` and `docs/MONOREPO.md` first.
      deployment path, behind a feature flag. The Debian single-box, Google
      Cloud Unix-socket, bitcoind-localhost, and CLN Unix-socket paths do not
      use it.
+
+   MuSig2 decision (2026-08-05): retain `secp256k1` 0.31.1 and add no
+   dependency. BIP-327 orchestration, nonce lifecycle, scalar arithmetic,
+   partial verification, and aggregation are implemented in-repo over the
+   allowlisted crate's point/tweak operations and pinned official vectors.
 3. **Write protocol primitives in this repository.** Nostr event, tag,
    filter, canonical ID, replacement, and deletion logic belongs in
    `crates/immortal-core/src/domain/`. Bitcoin and Lightning verification

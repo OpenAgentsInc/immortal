@@ -684,3 +684,43 @@ rail authorities remain external. MKT-INTENT and `39660-39669` remain
 unadopted and unallocated. Advancing the source pin for the two MKT-SWP
 corrections changes none of those three adoption decisions and adds no new
 kind allocation or NIP-11 advertisement.
+
+## M12 MuSig2 cooperative-signing decision (2026-08-05)
+
+Issue #26 changes no NIP source pin, event-kind allocation, relay admission
+rule, Postgres schema, or NIP-11 advertisement. It adopts BIP-327 1.0.3 at
+Bitcoin BIPs commit `e7263a4cfe500c89e4269889244606953691ca33` as a primary
+rail input. Selected `nonce_gen`, `sign_verify`, and `sig_agg` vectors anchor
+this foundation packet; complete executable replay of the pinned corpus
+remains a capability and issue-closure gate. BIP-327 is not a fourth NIP
+source lane.
+
+The dependency decision retains pinned `secp256k1` 0.31.1 and the per-crate
+allowlists. Immortal implements BIP-327 nonce generation, one-use nonce
+handling, scalar arithmetic, tweak accumulation, partial signing and
+verification, and final aggregation in-repo over the crate's exposed
+point/tweak operations. No dependency exception is created. Pinned official
+vectors cover nonce generation, partial signing, untweaked aggregation, and
+mixed plain/x-only tweak cases; secret-nonce buffers are redacted and
+explicitly overwritten on consumption/drop, and a second signing attempt
+fails closed.
+
+MKT-SWP Status carries the exact cooperative transcript inside its existing
+recipient-gated NIP-59 transport. The context binds the Order, bilateral
+contract digest, deterministic `cooperative_sign` effect ID, leg, complete
+unsigned transaction and prevouts, BIP-341 `SIGHASH_DEFAULT`, ordered
+requester/provider keys, tweaks, aggregate key, unilateral exit-package
+digest, and latest safe height. Commitment, nonce reveal, partial signature,
+final signature, and abort shapes are closed and fixture-pinned. An abort
+selects only the already-verified script path; cooperation never removes or
+delays the unilateral exit beyond its signed safe height.
+
+The provider foundation exposes an ephemeral cooperative signer that derives the exact
+quoted wallet key, verifies the transaction, fee, destination, prevout,
+aggregate key, counterparty nonce commitment, every partial, and the final
+signature before returning broadcast bytes. Its database and public effect
+records receive no secret nonce or spend key. The current funded actor and
+provider contract continue to declare both `musig2_key_path=false` and
+`musig2_key_path_signer=false` until the complete vector corpus, interactive
+actor path, and #18 process lab pass. This packet establishes an auditable
+foundation without converting it into a deployment claim.

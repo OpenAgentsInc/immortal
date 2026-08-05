@@ -15,6 +15,13 @@ const MAX_WITNESS_ITEMS: usize = 1_024;
 const MAX_WITNESS_ITEM_BYTES: usize = 80_000;
 const MAX_INVOICE_CHARS: usize = 7_089;
 const MAX_MUSIG_KEYS: usize = 64;
+const MAX_MUSIG_MESSAGE_BYTES: usize = 4_096;
+const MAX_MUSIG_EXTRA_INPUT_BYTES: usize = 1_024;
+const MAX_MUSIG_TWEAKS: usize = 8;
+const CURVE_ORDER: [u8; 32] = [
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
+    0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41,
+];
 const TAPROOT_LEAF_VERSION: u8 = 0xc0;
 const TAPROOT_SIGHASH_DEFAULT: u8 = 0;
 const TAPROOT_KEY_VERSION: u8 = 0;
@@ -43,6 +50,81 @@ impl core::fmt::Display for VerificationError {
 }
 
 impl std::error::Error for VerificationError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Musig2Tweak {
+    pub value: [u8; 32],
+    pub xonly: bool,
+}
+
+pub struct Musig2SecretNonce {
+    first: [u8; 32],
+    second: [u8; 32],
+    public_key: [u8; 33],
+    public_nonce: [u8; 66],
+    consumed: bool,
+}
+
+struct ConsumedMusig2Nonce {
+    first: [u8; 32],
+    second: [u8; 32],
+    public_key: [u8; 33],
+}
+
+impl Drop for ConsumedMusig2Nonce {
+    fn drop(&mut self) {
+        self.first.fill(0);
+        self.second.fill(0);
+        self.public_key.fill(0);
+    }
+}
+
+impl core::fmt::Debug for Musig2SecretNonce {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("Musig2SecretNonce")
+            .field("public_nonce", &self.public_nonce)
+            .field("consumed", &self.consumed)
+            .field("secret", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Musig2SecretNonce {
+    pub fn public_nonce(&self) -> [u8; 66] {
+        self.public_nonce
+    }
+
+    pub fn is_consumed(&self) -> bool {
+        self.consumed
+    }
+
+    fn consume(&mut self) -> Result<ConsumedMusig2Nonce, VerificationError> {
+        if self.consumed {
+            return Err(VerificationError::Invalid("MuSig2 secret nonce reuse"));
+        }
+        self.consumed = true;
+        let first = self.first;
+        let second = self.second;
+        let public_key = self.public_key;
+        self.first.fill(0);
+        self.second.fill(0);
+        self.public_key.fill(0);
+        Ok(ConsumedMusig2Nonce {
+            first,
+            second,
+            public_key,
+        })
+    }
+}
+
+impl Drop for Musig2SecretNonce {
+    fn drop(&mut self) {
+        self.first.fill(0);
+        self.second.fill(0);
+        self.public_key.fill(0);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
@@ -848,6 +930,165 @@ pub fn musig2_aggregate_key(keys: &[PublicKey]) -> Result<XOnlyPublicKey, Verifi
     Ok(aggregate.x_only_public_key().0)
 }
 
+pub fn musig2_taproot_tweak(
+    keys: &[PublicKey],
+    merkle_root: [u8; 32],
+) -> Result<Musig2Tweak, VerificationError> {
+    let internal_key = musig2_aggregate_key(keys)?;
+    let mut message = Vec::with_capacity(64);
+    message.extend_from_slice(&internal_key.serialize());
+    message.extend_from_slice(&merkle_root);
+    let value = tagged_hash("TapTweak", &message);
+    Scalar::from_be_bytes(value)
+        .map_err(|_| VerificationError::Crypto("taproot tweak exceeds curve order"))?;
+    Ok(Musig2Tweak { value, xonly: true })
+}
+
+pub fn musig2_tweaked_aggregate_key(
+    keys: &[PublicKey],
+    tweaks: &[Musig2Tweak],
+) -> Result<XOnlyPublicKey, VerificationError> {
+    Ok(musig2_key_context(keys, tweaks)?.key.x_only_public_key().0)
+}
+
+pub fn musig2_nonce_gen(
+    secret_key: &SecretKey,
+    aggregate_key: &[u8; 32],
+    message: &[u8],
+    extra_input: &[u8],
+    randomness: [u8; 32],
+) -> Result<Musig2SecretNonce, VerificationError> {
+    if message.len() > MAX_MUSIG_MESSAGE_BYTES {
+        return Err(VerificationError::Bounds("MuSig2 message byte length"));
+    }
+    if extra_input.len() > MAX_MUSIG_EXTRA_INPUT_BYTES {
+        return Err(VerificationError::Bounds("MuSig2 extra input byte length"));
+    }
+    let public_key = PublicKey::from_secret_key(&Secp256k1::signing_only(), secret_key).serialize();
+    let auxiliary = tagged_hash("MuSig/aux", &randomness);
+    let mut randomized_secret = secret_key.secret_bytes();
+    for (secret, mask) in randomized_secret.iter_mut().zip(auxiliary) {
+        *secret ^= mask;
+    }
+    let mut input = Vec::with_capacity(
+        32 + 1 + public_key.len() + 1 + 32 + 1 + 8 + message.len() + 4 + extra_input.len() + 1,
+    );
+    input.extend_from_slice(&randomized_secret);
+    input.push(public_key.len() as u8);
+    input.extend_from_slice(&public_key);
+    input.push(32);
+    input.extend_from_slice(aggregate_key);
+    input.push(1);
+    input.extend_from_slice(
+        &u64::try_from(message.len())
+            .map_err(|_| VerificationError::Bounds("MuSig2 message byte length"))?
+            .to_be_bytes(),
+    );
+    input.extend_from_slice(message);
+    input.extend_from_slice(
+        &u32::try_from(extra_input.len())
+            .map_err(|_| VerificationError::Bounds("MuSig2 extra input byte length"))?
+            .to_be_bytes(),
+    );
+    input.extend_from_slice(extra_input);
+
+    let first = musig2_nonce_scalar(&input, 0)?;
+    let second = musig2_nonce_scalar(&input, 1)?;
+    randomized_secret.fill(0);
+    input.fill(0);
+    let secp = Secp256k1::signing_only();
+    let first_public = PublicKey::from_secret_key(&secp, &first).serialize();
+    let second_public = PublicKey::from_secret_key(&secp, &second).serialize();
+    let mut public_nonce = [0_u8; 66];
+    public_nonce[..33].copy_from_slice(&first_public);
+    public_nonce[33..].copy_from_slice(&second_public);
+    Ok(Musig2SecretNonce {
+        first: first.secret_bytes(),
+        second: second.secret_bytes(),
+        public_key,
+        public_nonce,
+        consumed: false,
+    })
+}
+
+pub fn musig2_partial_sign(
+    secret_nonce: &mut Musig2SecretNonce,
+    secret_key: &SecretKey,
+    keys: &[PublicKey],
+    public_nonces: &[[u8; 66]],
+    tweaks: &[Musig2Tweak],
+    message: &[u8],
+) -> Result<[u8; 32], VerificationError> {
+    validate_musig2_session_bounds(keys, public_nonces, tweaks, message)?;
+    let mut consumed_nonce = secret_nonce.consume()?;
+    let public_key = PublicKey::from_secret_key(&Secp256k1::signing_only(), secret_key);
+    if public_key.serialize() != consumed_nonce.public_key {
+        return Err(VerificationError::Invalid(
+            "MuSig2 nonce key changed before signing",
+        ));
+    }
+    let signer_index =
+        keys.iter()
+            .position(|key| key == &public_key)
+            .ok_or(VerificationError::Invalid(
+                "MuSig2 signer is not a participant",
+            ))?;
+    if public_nonces.get(signer_index) != Some(&secret_nonce.public_nonce) {
+        return Err(VerificationError::Invalid(
+            "MuSig2 signer public nonce mismatch",
+        ));
+    }
+    let session = musig2_session_values(keys, public_nonces, tweaks, message)?;
+    let mut first = SecretKey::from_byte_array(consumed_nonce.first)
+        .map_err(|_| VerificationError::Crypto("MuSig2 first secret nonce"))?;
+    consumed_nonce.first.fill(0);
+    let mut second = SecretKey::from_byte_array(consumed_nonce.second)
+        .map_err(|_| VerificationError::Crypto("MuSig2 second secret nonce"))?;
+    consumed_nonce.second.fill(0);
+    if session.nonce_odd {
+        first = first.negate();
+        second = second.negate();
+    }
+    let mut first_term = Some(first);
+    let mut second_term = multiply_secret_term(&second, &session.nonce_coefficient)?;
+    let mut nonce_term = add_secret_terms(&first_term, &second_term)?;
+    first.non_secure_erase();
+    second.non_secure_erase();
+    erase_secret_term(&mut first_term);
+    erase_secret_term(&mut second_term);
+
+    let (serialized, list_hash, second_key) = musig2_key_material(keys);
+    let coefficient = musig2_key_coefficient(serialized[signer_index], list_hash, second_key)?;
+    let mut signing_key = *secret_key;
+    if session.key_odd ^ session.key_context.gacc_negative {
+        signing_key = signing_key.negate();
+    }
+    let mut coefficient_term = multiply_secret_term(&signing_key, &coefficient)?;
+    let mut key_term = match coefficient_term.as_ref() {
+        Some(term) => multiply_secret_term(term, &session.challenge)?,
+        None => None,
+    };
+    signing_key.non_secure_erase();
+    erase_secret_term(&mut coefficient_term);
+    let mut partial_term = add_secret_terms(&nonce_term, &key_term)?;
+    let partial = partial_term
+        .as_ref()
+        .map(|value| value.secret_bytes())
+        .unwrap_or([0; 32]);
+    erase_secret_term(&mut nonce_term);
+    erase_secret_term(&mut key_term);
+    erase_secret_term(&mut partial_term);
+    verify_musig2_partial_signature_with_tweaks(
+        keys,
+        public_nonces,
+        tweaks,
+        signer_index,
+        message,
+        &partial,
+    )?;
+    Ok(partial)
+}
+
 pub fn verify_musig2_partial_signature(
     keys: &[PublicKey],
     public_nonces: &[[u8; 66]],
@@ -855,79 +1096,100 @@ pub fn verify_musig2_partial_signature(
     message: &[u8],
     partial_signature: &[u8; 32],
 ) -> Result<(), VerificationError> {
-    if keys.is_empty()
-        || keys.len() > MAX_MUSIG_KEYS
-        || keys.len() != public_nonces.len()
-        || signer_index >= keys.len()
-    {
-        return Err(VerificationError::Bounds("MuSig2 session participants"));
-    }
-    let secp = Secp256k1::verification_only();
-    let mut first_nonces = Vec::with_capacity(public_nonces.len());
-    let mut second_nonces = Vec::with_capacity(public_nonces.len());
-    for nonce in public_nonces {
-        first_nonces.push(
-            PublicKey::from_slice(&nonce[..33])
-                .map_err(|_| VerificationError::Crypto("MuSig2 first public nonce"))?,
-        );
-        second_nonces.push(
-            PublicKey::from_slice(&nonce[33..])
-                .map_err(|_| VerificationError::Crypto("MuSig2 second public nonce"))?,
-        );
-    }
-    let aggregate_first = combine_public_keys(&first_nonces, "MuSig2 aggregate first nonce")?;
-    let aggregate_second = combine_public_keys(&second_nonces, "MuSig2 aggregate second nonce")?;
-    let aggregate_key = musig2_aggregate_plain_key(keys)?;
-    let aggregate_xonly = aggregate_key.x_only_public_key();
-    let mut nonce_coefficient_input = Vec::with_capacity(98 + message.len());
-    nonce_coefficient_input.extend_from_slice(&aggregate_first.serialize());
-    nonce_coefficient_input.extend_from_slice(&aggregate_second.serialize());
-    nonce_coefficient_input.extend_from_slice(&aggregate_xonly.0.serialize());
-    nonce_coefficient_input.extend_from_slice(message);
-    let nonce_coefficient =
-        scalar_from_hash(tagged_hash("MuSig/noncecoef", &nonce_coefficient_input))?;
-    let weighted_second = aggregate_second
-        .mul_tweak(&secp, &nonce_coefficient)
-        .map_err(|_| VerificationError::Crypto("MuSig2 weighted aggregate nonce"))?;
-    let aggregate_nonce = PublicKey::combine_keys(&[&aggregate_first, &weighted_second])
-        .map_err(|_| VerificationError::Crypto("MuSig2 final aggregate nonce"))?;
-    let aggregate_nonce_xonly = aggregate_nonce.x_only_public_key();
-    let mut challenge_input = Vec::with_capacity(64 + message.len());
-    challenge_input.extend_from_slice(&aggregate_nonce_xonly.0.serialize());
-    challenge_input.extend_from_slice(&aggregate_xonly.0.serialize());
-    challenge_input.extend_from_slice(message);
-    let challenge = scalar_from_hash(tagged_hash("BIP0340/challenge", &challenge_input))?;
+    verify_musig2_partial_signature_with_tweaks(
+        keys,
+        public_nonces,
+        &[],
+        signer_index,
+        message,
+        partial_signature,
+    )
+}
 
-    let signer_first = first_nonces[signer_index];
-    let signer_second = second_nonces[signer_index]
-        .mul_tweak(&secp, &nonce_coefficient)
-        .map_err(|_| VerificationError::Crypto("MuSig2 weighted signer nonce"))?;
-    let mut signer_nonce = PublicKey::combine_keys(&[&signer_first, &signer_second])
-        .map_err(|_| VerificationError::Crypto("MuSig2 signer nonce"))?;
-    if aggregate_nonce_xonly.1 == Parity::Odd {
-        signer_nonce = signer_nonce.negate(&secp);
+pub fn verify_musig2_partial_signature_with_tweaks(
+    keys: &[PublicKey],
+    public_nonces: &[[u8; 66]],
+    tweaks: &[Musig2Tweak],
+    signer_index: usize,
+    message: &[u8],
+    partial_signature: &[u8; 32],
+) -> Result<(), VerificationError> {
+    validate_musig2_session_bounds(keys, public_nonces, tweaks, message)?;
+    if signer_index >= keys.len() {
+        return Err(VerificationError::Bounds("MuSig2 signer index"));
     }
-
+    if *partial_signature >= CURVE_ORDER {
+        return Err(VerificationError::Crypto("MuSig2 partial signature scalar"));
+    }
+    let session = musig2_session_values(keys, public_nonces, tweaks, message)?;
+    let signer_nonce = musig2_effective_signer_nonce(
+        &public_nonces[signer_index],
+        &session.nonce_coefficient,
+        session.nonce_odd,
+    )?;
     let (serialized, list_hash, second_key) = musig2_key_material(keys);
     let coefficient = musig2_key_coefficient(serialized[signer_index], list_hash, second_key)?;
-    let mut signer_key = keys[signer_index]
-        .mul_tweak(&secp, &coefficient)
-        .and_then(|key| key.mul_tweak(&secp, &challenge))
-        .map_err(|_| VerificationError::Crypto("MuSig2 signer challenge"))?;
-    if aggregate_xonly.1 == Parity::Odd {
-        signer_key = signer_key.negate(&secp);
+    let mut signer_key = point_multiply(keys[signer_index], &coefficient)?;
+    signer_key = point_multiply_aggregate(signer_key, &session.challenge)?;
+    if session.key_odd ^ session.key_context.gacc_negative {
+        signer_key = signer_key.negate();
     }
-    let expected = PublicKey::combine_keys(&[&signer_nonce, &signer_key])
-        .map_err(|_| VerificationError::Crypto("MuSig2 partial signature equation"))?;
-    let scalar = SecretKey::from_byte_array(*partial_signature)
-        .map_err(|_| VerificationError::Crypto("MuSig2 partial signature scalar"))?;
-    let supplied = PublicKey::from_secret_key(&Secp256k1::signing_only(), &scalar);
+    let expected = signer_nonce.add(signer_key)?;
+    let supplied = point_from_scalar(*partial_signature)?;
     if supplied != expected {
         return Err(VerificationError::Crypto(
             "MuSig2 partial signature verification",
         ));
     }
     Ok(())
+}
+
+pub fn musig2_aggregate_partial_signatures(
+    keys: &[PublicKey],
+    public_nonces: &[[u8; 66]],
+    tweaks: &[Musig2Tweak],
+    message: &[u8],
+    partial_signatures: &[[u8; 32]],
+) -> Result<[u8; 64], VerificationError> {
+    validate_musig2_session_bounds(keys, public_nonces, tweaks, message)?;
+    if partial_signatures.len() != keys.len() {
+        return Err(VerificationError::Bounds("MuSig2 partial signature count"));
+    }
+    for (index, partial) in partial_signatures.iter().enumerate() {
+        verify_musig2_partial_signature_with_tweaks(
+            keys,
+            public_nonces,
+            tweaks,
+            index,
+            message,
+            partial,
+        )?;
+    }
+    let session = musig2_session_values(keys, public_nonces, tweaks, message)?;
+    let mut scalar = [0_u8; 32];
+    for partial in partial_signatures {
+        if *partial >= CURVE_ORDER {
+            return Err(VerificationError::Crypto("MuSig2 partial signature scalar"));
+        }
+        scalar = scalar_add_mod(scalar, *partial);
+    }
+    let tweak_term =
+        scalar_multiply_public(session.challenge.to_be_bytes(), session.key_context.tacc)?;
+    let tweak_term = if session.key_odd {
+        scalar_negate_mod(tweak_term)
+    } else {
+        tweak_term
+    };
+    scalar = scalar_add_mod(scalar, tweak_term);
+    let mut signature = [0_u8; 64];
+    signature[..32].copy_from_slice(&session.final_nonce.x_only_public_key().0.serialize());
+    signature[32..].copy_from_slice(&scalar);
+    verify_musig2_signature(
+        &session.key_context.key.x_only_public_key().0,
+        message,
+        &signature,
+    )?;
+    Ok(signature)
 }
 
 pub fn verify_musig2_signature(
@@ -1284,27 +1546,343 @@ fn convert_bits(
     Ok(output)
 }
 
-fn scalar_from_hash(mut hash: [u8; 32]) -> Result<Scalar, VerificationError> {
-    const CURVE_ORDER: [u8; 32] = [
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36,
-        0x41, 0x41,
-    ];
-    if hash >= CURVE_ORDER {
-        let mut borrow = 0_u16;
-        for index in (0..32).rev() {
-            let left = u16::from(hash[index]);
-            let right = u16::from(CURVE_ORDER[index]) + borrow;
-            if left >= right {
-                hash[index] = (left - right) as u8;
-                borrow = 0;
-            } else {
-                hash[index] = (left + 256 - right) as u8;
-                borrow = 1;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AggregatePoint {
+    Infinity,
+    Point(PublicKey),
+}
+
+impl AggregatePoint {
+    fn add(self, other: Self) -> Result<Self, VerificationError> {
+        match (self, other) {
+            (Self::Infinity, point) | (point, Self::Infinity) => Ok(point),
+            (Self::Point(left), Self::Point(right)) => {
+                match PublicKey::combine_keys(&[&left, &right]) {
+                    Ok(point) => Ok(Self::Point(point)),
+                    Err(_) => Ok(Self::Infinity),
+                }
             }
         }
     }
-    Scalar::from_be_bytes(hash).map_err(|_| VerificationError::Crypto("scalar exceeds curve order"))
+
+    fn multiply(self, scalar: &Scalar) -> Result<Self, VerificationError> {
+        if scalar == &Scalar::ZERO {
+            return Ok(Self::Infinity);
+        }
+        match self {
+            Self::Infinity => Ok(Self::Infinity),
+            Self::Point(point) => point
+                .mul_tweak(&Secp256k1::verification_only(), scalar)
+                .map(Self::Point)
+                .map_err(|_| VerificationError::Crypto("MuSig2 point multiplication")),
+        }
+    }
+
+    fn negate(self) -> Self {
+        match self {
+            Self::Infinity => Self::Infinity,
+            Self::Point(point) => Self::Point(point.negate(&Secp256k1::verification_only())),
+        }
+    }
+
+    fn serialize_extended(self) -> [u8; 33] {
+        match self {
+            Self::Infinity => [0; 33],
+            Self::Point(point) => point.serialize(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Musig2KeyContext {
+    key: PublicKey,
+    gacc_negative: bool,
+    tacc: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Musig2SessionValues {
+    key_context: Musig2KeyContext,
+    nonce_coefficient: Scalar,
+    final_nonce: PublicKey,
+    challenge: Scalar,
+    nonce_odd: bool,
+    key_odd: bool,
+}
+
+fn validate_musig2_session_bounds(
+    keys: &[PublicKey],
+    public_nonces: &[[u8; 66]],
+    tweaks: &[Musig2Tweak],
+    message: &[u8],
+) -> Result<(), VerificationError> {
+    if keys.is_empty() || keys.len() > MAX_MUSIG_KEYS || keys.len() != public_nonces.len() {
+        return Err(VerificationError::Bounds("MuSig2 session participants"));
+    }
+    if tweaks.len() > MAX_MUSIG_TWEAKS {
+        return Err(VerificationError::Bounds("MuSig2 tweak count"));
+    }
+    if message.len() > MAX_MUSIG_MESSAGE_BYTES {
+        return Err(VerificationError::Bounds("MuSig2 message byte length"));
+    }
+    Ok(())
+}
+
+fn musig2_nonce_scalar(input: &[u8], index: u8) -> Result<SecretKey, VerificationError> {
+    let mut nonce_input = Vec::with_capacity(input.len() + 1);
+    nonce_input.extend_from_slice(input);
+    nonce_input.push(index);
+    let mut value = scalar_bytes_from_hash(tagged_hash("MuSig/nonce", &nonce_input));
+    nonce_input.fill(0);
+    let nonce = SecretKey::from_byte_array(value)
+        .map_err(|_| VerificationError::Crypto("MuSig2 nonce generation produced zero"));
+    value.fill(0);
+    nonce
+}
+
+fn musig2_key_context(
+    keys: &[PublicKey],
+    tweaks: &[Musig2Tweak],
+) -> Result<Musig2KeyContext, VerificationError> {
+    if keys.is_empty() || keys.len() > MAX_MUSIG_KEYS || tweaks.len() > MAX_MUSIG_TWEAKS {
+        return Err(VerificationError::Bounds("MuSig2 key context"));
+    }
+    let mut context = Musig2KeyContext {
+        key: musig2_aggregate_plain_key(keys)?,
+        gacc_negative: false,
+        tacc: [0; 32],
+    };
+    let secp = Secp256k1::verification_only();
+    for tweak in tweaks {
+        let scalar = Scalar::from_be_bytes(tweak.value)
+            .map_err(|_| VerificationError::Crypto("MuSig2 tweak exceeds curve order"))?;
+        if tweak.xonly && context.key.x_only_public_key().1 == Parity::Odd {
+            context.key = context.key.negate(&secp);
+            context.gacc_negative = !context.gacc_negative;
+            context.tacc = scalar_negate_mod(context.tacc);
+        }
+        context.key = context
+            .key
+            .add_exp_tweak(&secp, &scalar)
+            .map_err(|_| VerificationError::Crypto("MuSig2 aggregate tweak"))?;
+        context.tacc = scalar_add_mod(context.tacc, tweak.value);
+    }
+    Ok(context)
+}
+
+fn musig2_session_values(
+    keys: &[PublicKey],
+    public_nonces: &[[u8; 66]],
+    tweaks: &[Musig2Tweak],
+    message: &[u8],
+) -> Result<Musig2SessionValues, VerificationError> {
+    validate_musig2_session_bounds(keys, public_nonces, tweaks, message)?;
+    let key_context = musig2_key_context(keys, tweaks)?;
+    let (aggregate_first, aggregate_second) = musig2_aggregate_nonces(public_nonces)?;
+    let mut aggregate_nonce = [0_u8; 66];
+    aggregate_nonce[..33].copy_from_slice(&aggregate_first.serialize_extended());
+    aggregate_nonce[33..].copy_from_slice(&aggregate_second.serialize_extended());
+    let mut coefficient_input = Vec::with_capacity(98 + message.len());
+    coefficient_input.extend_from_slice(&aggregate_nonce);
+    coefficient_input.extend_from_slice(&key_context.key.x_only_public_key().0.serialize());
+    coefficient_input.extend_from_slice(message);
+    let nonce_coefficient = scalar_from_hash(tagged_hash("MuSig/noncecoef", &coefficient_input))?;
+    let combined_nonce = aggregate_first.add(aggregate_second.multiply(&nonce_coefficient)?)?;
+    let final_nonce = match combined_nonce {
+        AggregatePoint::Infinity => generator_point()?,
+        AggregatePoint::Point(point) => point,
+    };
+    let mut challenge_input = Vec::with_capacity(64 + message.len());
+    challenge_input.extend_from_slice(&final_nonce.x_only_public_key().0.serialize());
+    challenge_input.extend_from_slice(&key_context.key.x_only_public_key().0.serialize());
+    challenge_input.extend_from_slice(message);
+    let challenge = scalar_from_hash(tagged_hash("BIP0340/challenge", &challenge_input))?;
+    Ok(Musig2SessionValues {
+        key_context,
+        nonce_coefficient,
+        final_nonce,
+        challenge,
+        nonce_odd: final_nonce.x_only_public_key().1 == Parity::Odd,
+        key_odd: key_context.key.x_only_public_key().1 == Parity::Odd,
+    })
+}
+
+fn musig2_aggregate_nonces(
+    public_nonces: &[[u8; 66]],
+) -> Result<(AggregatePoint, AggregatePoint), VerificationError> {
+    let mut first = AggregatePoint::Infinity;
+    let mut second = AggregatePoint::Infinity;
+    for nonce in public_nonces {
+        let first_point = PublicKey::from_slice(&nonce[..33])
+            .map_err(|_| VerificationError::Crypto("MuSig2 first public nonce"))?;
+        let second_point = PublicKey::from_slice(&nonce[33..])
+            .map_err(|_| VerificationError::Crypto("MuSig2 second public nonce"))?;
+        first = first.add(AggregatePoint::Point(first_point))?;
+        second = second.add(AggregatePoint::Point(second_point))?;
+    }
+    Ok((first, second))
+}
+
+fn musig2_effective_signer_nonce(
+    public_nonce: &[u8; 66],
+    nonce_coefficient: &Scalar,
+    aggregate_nonce_odd: bool,
+) -> Result<AggregatePoint, VerificationError> {
+    let first = AggregatePoint::Point(
+        PublicKey::from_slice(&public_nonce[..33])
+            .map_err(|_| VerificationError::Crypto("MuSig2 first public nonce"))?,
+    );
+    let second = AggregatePoint::Point(
+        PublicKey::from_slice(&public_nonce[33..])
+            .map_err(|_| VerificationError::Crypto("MuSig2 second public nonce"))?,
+    );
+    let nonce = first.add(second.multiply(nonce_coefficient)?)?;
+    Ok(if aggregate_nonce_odd {
+        nonce.negate()
+    } else {
+        nonce
+    })
+}
+
+fn generator_point() -> Result<PublicKey, VerificationError> {
+    let mut one = [0_u8; 32];
+    one[31] = 1;
+    let secret = SecretKey::from_byte_array(one)
+        .map_err(|_| VerificationError::Crypto("generator scalar"))?;
+    Ok(PublicKey::from_secret_key(
+        &Secp256k1::signing_only(),
+        &secret,
+    ))
+}
+
+fn point_from_scalar(value: [u8; 32]) -> Result<AggregatePoint, VerificationError> {
+    if value == [0; 32] {
+        return Ok(AggregatePoint::Infinity);
+    }
+    let scalar = SecretKey::from_byte_array(value)
+        .map_err(|_| VerificationError::Crypto("MuSig2 scalar point"))?;
+    Ok(AggregatePoint::Point(PublicKey::from_secret_key(
+        &Secp256k1::signing_only(),
+        &scalar,
+    )))
+}
+
+fn point_multiply(point: PublicKey, scalar: &Scalar) -> Result<AggregatePoint, VerificationError> {
+    AggregatePoint::Point(point).multiply(scalar)
+}
+
+fn point_multiply_aggregate(
+    point: AggregatePoint,
+    scalar: &Scalar,
+) -> Result<AggregatePoint, VerificationError> {
+    point.multiply(scalar)
+}
+
+fn multiply_secret_term(
+    secret: &SecretKey,
+    scalar: &Scalar,
+) -> Result<Option<SecretKey>, VerificationError> {
+    if scalar == &Scalar::ZERO {
+        return Ok(None);
+    }
+    (*secret)
+        .mul_tweak(scalar)
+        .map(Some)
+        .map_err(|_| VerificationError::Crypto("MuSig2 secret scalar multiplication"))
+}
+
+fn add_secret_terms(
+    left: &Option<SecretKey>,
+    right: &Option<SecretKey>,
+) -> Result<Option<SecretKey>, VerificationError> {
+    match (left, right) {
+        (None, right) => Ok(*right),
+        (left, None) => Ok(*left),
+        (Some(left), Some(right)) => match (*left).add_tweak(&Scalar::from(*right)) {
+            Ok(sum) => Ok(Some(sum)),
+            Err(_) => Ok(None),
+        },
+    }
+}
+
+fn erase_secret_term(term: &mut Option<SecretKey>) {
+    if let Some(secret) = term.as_mut() {
+        secret.non_secure_erase();
+    }
+    *term = None;
+}
+
+fn scalar_multiply_public(left: [u8; 32], right: [u8; 32]) -> Result<[u8; 32], VerificationError> {
+    if left >= CURVE_ORDER || right >= CURVE_ORDER {
+        return Err(VerificationError::Crypto(
+            "MuSig2 scalar multiplication input",
+        ));
+    }
+    let mut result = [0_u8; 32];
+    for byte in left {
+        for bit in (0..8).rev() {
+            result = scalar_add_mod(result, result);
+            if (byte >> bit) & 1 == 1 {
+                result = scalar_add_mod(result, right);
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn scalar_add_mod(left: [u8; 32], right: [u8; 32]) -> [u8; 32] {
+    let mut sum = [0_u8; 33];
+    let mut carry = 0_u16;
+    for index in (0..32).rev() {
+        let value = u16::from(left[index]) + u16::from(right[index]) + carry;
+        sum[index + 1] = value as u8;
+        carry = value >> 8;
+    }
+    sum[0] = carry as u8;
+    let mut order = [0_u8; 33];
+    order[1..].copy_from_slice(&CURVE_ORDER);
+    if sum >= order {
+        subtract_be(&mut sum, &order);
+    }
+    let mut reduced = [0_u8; 32];
+    reduced.copy_from_slice(&sum[1..]);
+    reduced
+}
+
+fn scalar_negate_mod(value: [u8; 32]) -> [u8; 32] {
+    if value == [0; 32] {
+        return value;
+    }
+    let mut order = CURVE_ORDER;
+    subtract_be(&mut order, &value);
+    order
+}
+
+fn subtract_be<const N: usize>(left: &mut [u8; N], right: &[u8; N]) {
+    let mut borrow = 0_u16;
+    for index in (0..N).rev() {
+        let minuend = u16::from(left[index]);
+        let subtrahend = u16::from(right[index]) + borrow;
+        if minuend >= subtrahend {
+            left[index] = (minuend - subtrahend) as u8;
+            borrow = 0;
+        } else {
+            left[index] = (minuend + 256 - subtrahend) as u8;
+            borrow = 1;
+        }
+    }
+}
+
+fn scalar_bytes_from_hash(mut hash: [u8; 32]) -> [u8; 32] {
+    if hash >= CURVE_ORDER {
+        subtract_be(&mut hash, &CURVE_ORDER);
+    }
+    hash
+}
+
+fn scalar_from_hash(hash: [u8; 32]) -> Result<Scalar, VerificationError> {
+    Scalar::from_be_bytes(scalar_bytes_from_hash(hash))
+        .map_err(|_| VerificationError::Crypto("scalar exceeds curve order"))
 }
 
 fn musig2_key_material(keys: &[PublicKey]) -> (Vec<[u8; 33]>, [u8; 32], [u8; 33]) {
@@ -1720,5 +2298,92 @@ impl<'a> Reader<'a> {
             .ok_or(VerificationError::Encoding("truncated transaction bytes"))?;
         self.position = end;
         Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bip327_partial_signing_vector_matches_and_consumes_nonce() {
+        let secret_key = SecretKey::from_byte_array(hex(
+            "7fb9e0e687ada1eebf7ecfe2f21e73ebdb51a7d450948dfe8d76d7f2d1007671",
+        ))
+        .expect("official BIP-327 secret key");
+        let public_key = PublicKey::from_secret_key(&Secp256k1::signing_only(), &secret_key);
+        let public_nonce = hex(
+            "0337c87821afd50a8644d820a8f3e02e499c931865c2360fb43d0a0d20dafe07ea0287bf891d2a6deaebadc909352aa9405d1428c15f4b75f04dae642a95c2548480",
+        );
+        let mut secret_nonce = Musig2SecretNonce {
+            first: hex("508b81a611f100a6b2b6b29656590898af488bcf2e1f55cf22e5cfb84421fe61"),
+            second: hex("fa27fd49b1d50085b481285e1ca205d55c82cc1b31ff5cd54a489829355901f7"),
+            public_key: public_key.serialize(),
+            public_nonce,
+            consumed: false,
+        };
+        let keys = [
+            public_key,
+            PublicKey::from_slice(&hex::<33>(
+                "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+            ))
+            .expect("official BIP-327 public key"),
+            PublicKey::from_slice(&hex::<33>(
+                "02dff1d77f2a671c5f36183726db2341be58feae1da2deced843240f7b502ba661",
+            ))
+            .expect("official BIP-327 public key"),
+        ];
+        let public_nonces = [
+            public_nonce,
+            hex(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            ),
+            hex(
+                "032de2662628c90b03f5e720284eb52ff7d71f4284f627b68a853d78c78e1ffe9303e4c5524e83ffe1493b9077cf1ca6beb2090c93d930321071ad40b2f44e599046",
+            ),
+        ];
+        let message = hex::<32>("f95466d086770e689964664219266fe5ed215c92ae20bab5c9d79addddf3c0cf");
+        let partial = musig2_partial_sign(
+            &mut secret_nonce,
+            &secret_key,
+            &keys,
+            &public_nonces,
+            &[],
+            &message,
+        )
+        .expect("official BIP-327 partial signature");
+        assert_eq!(
+            partial,
+            hex("012abbcb52b3016ac03ad82395a1a415c48b93def78718e62a7a90052fe224fb")
+        );
+        assert!(secret_nonce.is_consumed());
+        assert!(
+            musig2_partial_sign(
+                &mut secret_nonce,
+                &secret_key,
+                &keys,
+                &public_nonces,
+                &[],
+                &message,
+            )
+            .is_err()
+        );
+    }
+
+    fn hex<const N: usize>(input: &str) -> [u8; N] {
+        assert_eq!(input.len(), N * 2);
+        let mut output = [0_u8; N];
+        for (index, pair) in input.as_bytes().chunks_exact(2).enumerate() {
+            output[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+        }
+        output
+    }
+
+    fn nibble(byte: u8) -> u8 {
+        match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            _ => panic!("test vector must be lowercase hexadecimal"),
+        }
     }
 }

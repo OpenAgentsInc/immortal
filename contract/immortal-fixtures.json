@@ -276,6 +276,12 @@
       "scope": "client"
     },
     {
+      "path": "tests/fixtures/nipmkt/swp-cooperative-signing-v1.json",
+      "sha256": "7d0ffd73c771887bb220c92e7273e9b214436db1c1b09e2b5dc8a49de074e4a8",
+      "bytes": 3275,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/nipmkt/swp-coordination-v1.json",
       "sha256": "d5d991d864b4d9ea1ae6eec4cbe94f04b53c91ce25ac3595a1696049fbf00cc8",
       "bytes": 5728,
@@ -307,8 +313,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/swp-verification.json",
-      "sha256": "c4b0e0892356deff6468e6e79ca2d407e42cc664a3f2651daea488c8e7b2649c",
-      "bytes": 13295,
+      "sha256": "cb8bda0b60674a94990391f26f19bc74f48dfc2a6d774529efb0f2994bbc961d",
+      "bytes": 16320,
       "scope": "relay_and_client"
     },
     {

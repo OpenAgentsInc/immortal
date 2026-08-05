@@ -1,5 +1,9 @@
 //! Provider-owned deterministic wallet and signing boundary.
 
+use immortal_core::mkt_swp_verify::{
+    Musig2SecretNonce, Musig2Tweak, musig2_nonce_gen, musig2_partial_sign,
+    musig2_tweaked_aggregate_key,
+};
 use secp256k1::{Keypair, Parity, PublicKey, Scalar, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256, Sha512};
 use std::{
@@ -30,6 +34,8 @@ pub enum WalletError {
     DerivationIndex,
     DerivationKey,
     AddressEncoding,
+    Randomness,
+    CooperativeSigning,
 }
 
 impl fmt::Display for WalletError {
@@ -46,6 +52,8 @@ impl fmt::Display for WalletError {
             Self::DerivationIndex => "wallet derivation index is outside the BIP-86 range",
             Self::DerivationKey => "wallet key derivation produced an invalid key",
             Self::AddressEncoding => "taproot address could not be encoded",
+            Self::Randomness => "operating-system randomness is unavailable",
+            Self::CooperativeSigning => "cooperative signing failed closed",
         };
         formatter.write_str(message)
     }
@@ -130,6 +138,33 @@ pub struct WalletSignature {
 pub struct ProviderWallet {
     seed: SecretSeed,
     network: BitcoinNetwork,
+}
+
+pub struct WalletMusig2Nonce {
+    path: WalletPath,
+    context_digest: [u8; 32],
+    keys: Vec<PublicKey>,
+    tweaks: Vec<Musig2Tweak>,
+    message: Vec<u8>,
+    secret_nonce: Musig2SecretNonce,
+}
+
+impl fmt::Debug for WalletMusig2Nonce {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WalletMusig2Nonce")
+            .field("path", &self.path)
+            .field("context_digest", &self.context_digest)
+            .field("public_nonce", &self.secret_nonce.public_nonce())
+            .field("secret", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl WalletMusig2Nonce {
+    pub fn public_nonce(&self) -> [u8; 66] {
+        self.secret_nonce.public_nonce()
+    }
 }
 
 impl fmt::Debug for ProviderWallet {
@@ -268,6 +303,58 @@ impl ProviderWallet {
         sign_digest(tweaked_key, sighash)
     }
 
+    pub fn begin_cooperative_signing(
+        &self,
+        path: WalletPath,
+        context_digest: [u8; 32],
+        keys: &[PublicKey],
+        tweaks: &[Musig2Tweak],
+        message: &[u8],
+    ) -> Result<WalletMusig2Nonce, WalletError> {
+        let secret_key = self.derive_even_key(path)?;
+        let aggregate_key = musig2_tweaked_aggregate_key(keys, tweaks)
+            .map_err(|_| WalletError::CooperativeSigning)?
+            .serialize();
+        let randomness = operating_system_randomness()?;
+        let secret_nonce = musig2_nonce_gen(
+            &secret_key,
+            &aggregate_key,
+            message,
+            &context_digest,
+            randomness,
+        )
+        .map_err(|_| WalletError::CooperativeSigning)?;
+        Ok(WalletMusig2Nonce {
+            path,
+            context_digest,
+            keys: keys.to_vec(),
+            tweaks: tweaks.to_vec(),
+            message: message.to_vec(),
+            secret_nonce,
+        })
+    }
+
+    pub fn sign_cooperative_partial(
+        &self,
+        nonce: &mut WalletMusig2Nonce,
+        context_digest: [u8; 32],
+        public_nonces: &[[u8; 66]],
+    ) -> Result<[u8; 32], WalletError> {
+        if nonce.context_digest != context_digest {
+            return Err(WalletError::CooperativeSigning);
+        }
+        let secret_key = self.derive_even_key(nonce.path)?;
+        musig2_partial_sign(
+            &mut nonce.secret_nonce,
+            &secret_key,
+            &nonce.keys,
+            public_nonces,
+            &nonce.tweaks,
+            &nonce.message,
+        )
+        .map_err(|_| WalletError::CooperativeSigning)
+    }
+
     fn derive_bip86_key(&self, path: WalletPath) -> Result<SecretKey, WalletError> {
         let indexes = [
             TAPROOT_PURPOSE | HARDENED_INDEX,
@@ -283,6 +370,16 @@ impl ProviderWallet {
         Ok(extended_key.secret_key)
     }
 
+    fn derive_even_key(&self, path: WalletPath) -> Result<SecretKey, WalletError> {
+        let secret_key = self.derive_bip86_key(path)?;
+        let keypair = Keypair::from_secret_key(&Secp256k1::signing_only(), &secret_key);
+        Ok(if keypair.x_only_public_key().1 == Parity::Odd {
+            secret_key.negate()
+        } else {
+            secret_key
+        })
+    }
+
     #[cfg(test)]
     fn from_seed_material(seed: Vec<u8>, network: BitcoinNetwork) -> Self {
         Self {
@@ -290,6 +387,14 @@ impl ProviderWallet {
             network,
         }
     }
+}
+
+fn operating_system_randomness() -> Result<[u8; 32], WalletError> {
+    let mut randomness = [0_u8; 32];
+    File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut randomness))
+        .map_err(|_| WalletError::Randomness)?;
+    Ok(randomness)
 }
 
 fn validate_seed_path(path: &str) -> Result<(), WalletError> {
@@ -715,6 +820,39 @@ mod tests {
         let address = wallet.derive_address(path)?;
         assert_eq!(key_signature.public_key, address.output_key);
         assert_ne!(script_signature.public_key, key_signature.public_key);
+        Ok(())
+    }
+
+    #[test]
+    fn cooperative_nonce_refuses_a_changed_context_before_consumption() -> Result<(), Box<dyn Error>>
+    {
+        let wallet = ProviderWallet::from_seed_material(vec![8_u8; 32], BitcoinNetwork::Regtest);
+        let first_path = WalletPath::new(0, false, 20)?;
+        let second_path = WalletPath::new(0, false, 21)?;
+        let first_key = wallet.derive_even_key(first_path)?;
+        let second_key = wallet.derive_even_key(second_path)?;
+        let secp = Secp256k1::signing_only();
+        let keys = [
+            PublicKey::from_secret_key(&secp, &first_key),
+            PublicKey::from_secret_key(&secp, &second_key),
+        ];
+        let context_digest = [12; 32];
+        let message = [13; 32];
+        let mut first_nonce =
+            wallet.begin_cooperative_signing(first_path, context_digest, &keys, &[], &message)?;
+        let second_nonce =
+            wallet.begin_cooperative_signing(second_path, context_digest, &keys, &[], &message)?;
+        let public_nonces = [first_nonce.public_nonce(), second_nonce.public_nonce()];
+
+        assert_eq!(
+            wallet
+                .sign_cooperative_partial(&mut first_nonce, [14; 32], &public_nonces)
+                .err(),
+            Some(WalletError::CooperativeSigning)
+        );
+        assert!(!first_nonce.secret_nonce.is_consumed());
+        wallet.sign_cooperative_partial(&mut first_nonce, context_digest, &public_nonces)?;
+        assert!(first_nonce.secret_nonce.is_consumed());
         Ok(())
     }
 

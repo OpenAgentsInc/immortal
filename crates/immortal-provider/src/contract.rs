@@ -126,6 +126,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
         "execution":{
             "taproot_script_path":true,
             "musig2_key_path":false,
+            "musig2_key_path_signer":false,
             "funding_before_bilateral_contract":false,
             "reverse_funding_transaction_precommitted_before_requester_payment":true,
             "chain_observation_requires_exact_committed_funding_bytes":true,
@@ -237,7 +238,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
         },
         "v1_exclusions":[
             "zmq",
-            "musig2_key_path_execution",
+            "musig2_automated_actor_path",
             "lnd",
             "outbound_https_price_feeds",
             "liquid",

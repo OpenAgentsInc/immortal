@@ -9,19 +9,22 @@ use immortal_client::{
     market::MarketSigner,
     mkt_swp_client::{
         AwaitingVerification, BitcoinObservationRequest, Cancellation, ChainRecoveryState,
-        CloseOutcome, ExitPackage, ExitSigningOutcome, ExternalEffectRequest, ExternalEffectResult,
-        FundingAction, FundingAuthorized, FundingVerificationInput, InvoiceVerificationInput,
-        KeylessEsploraExecutor, LightningDispositionState, LightningProgressRequest,
-        LightningProgressState, LightningReadinessRequest, LightningReadinessState,
-        LightningRecoveryState, LocalBitcoinObservation, LocalLightningDisposition,
-        LocalLightningProgress, LocalLightningReadiness, LocalRailEvidence,
-        LocalRecoveryObservation, MktSigningRequest, ParticipantRole, QuotePolicy, RecoveryAction,
-        StatusState, SwapClientConfig, SwapContractReferences, SwapRecordFactory, SwapSession,
-        SwapType, TimeoutLadder, VerifyBeforeFundInput, provider_support,
+        CloseOutcome, CooperativePrevout, CooperativeSigningContext, CooperativeSigningMessage,
+        CooperativeTweak, ExitPackage, ExitSigningOutcome, ExternalEffectRequest,
+        ExternalEffectResult, FundingAction, FundingAuthorized, FundingVerificationInput,
+        InvoiceVerificationInput, KeylessEsploraExecutor, LightningDispositionState,
+        LightningProgressRequest, LightningProgressState, LightningReadinessRequest,
+        LightningReadinessState, LightningRecoveryState, LocalBitcoinObservation,
+        LocalLightningDisposition, LocalLightningProgress, LocalLightningReadiness,
+        LocalRailEvidence, LocalRecoveryObservation, MktSigningRequest, ParticipantRole,
+        QuotePolicy, RecoveryAction, StatusState, SwapClientConfig, SwapContractReferences,
+        SwapRecordFactory, SwapSession, SwapType, TimeoutLadder, VerifyBeforeFundInput,
+        provider_support, validate_cooperative_signing_exchange,
     },
     mkt_swp_verify::{
-        Transaction, TransactionInput, TransactionOutput, musig2_aggregate_key, sha256,
-        tagged_hash, tapleaf_hash, taproot_output_key,
+        Transaction, TransactionInput, TransactionOutput, musig2_aggregate_key, musig2_nonce_gen,
+        musig2_partial_sign, musig2_taproot_tweak, musig2_tweaked_aggregate_key, sha256,
+        tagged_hash, tapleaf_hash, taproot_key_spend_sighash, taproot_output_key,
     },
 };
 use secp256k1::{Keypair, Parity, PublicKey, Secp256k1, SecretKey};
@@ -81,6 +84,246 @@ fn fixture_manifest_is_complete_and_unique() {
         .map(|case| case["member"].as_str().unwrap())
         .collect::<BTreeSet<_>>();
     assert_eq!(members.len(), tripwires.len());
+}
+
+#[test]
+fn cooperative_signing_exchange_verifies_and_aborts_to_script_path() {
+    let wire_fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nipmkt/swp-cooperative-signing-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(wire_fixture["actions"].as_array().unwrap().len(), 5);
+    assert_eq!(
+        wire_fixture["security"]["unilateral_exit_required_before_funding"],
+        true
+    );
+    let (requester_secret, requester_key) = even_key([1; 32]);
+    let (provider_secret, provider_key) = even_key([2; 32]);
+    let keys = vec![requester_key, provider_key];
+    let merkle_root = [3; 32];
+    let tweak = musig2_taproot_tweak(&keys, merkle_root).unwrap();
+    let aggregate_key = musig2_tweaked_aggregate_key(&keys, &[tweak]).unwrap();
+    let mut script_pubkey = vec![0x51, 0x20];
+    script_pubkey.extend_from_slice(&aggregate_key.serialize());
+    let transaction = Transaction::new(
+        2,
+        vec![TransactionInput {
+            previous_txid: [4; 32],
+            previous_output: 0,
+            script_sig: Vec::new(),
+            sequence: 0xffff_fffe,
+            witness: Vec::new(),
+        }],
+        vec![TransactionOutput {
+            value_sat: 99_000,
+            script_pubkey: vec![0x51],
+        }],
+        0,
+    );
+    let prevouts = vec![TransactionOutput {
+        value_sat: 100_000,
+        script_pubkey: script_pubkey.clone(),
+    }];
+    let raw = transaction.serialize(false).unwrap();
+    let signature_hash = taproot_key_spend_sighash(&transaction, &prevouts, 0).unwrap();
+    let order_id = "11".repeat(32);
+    let context = CooperativeSigningContext {
+        schema: "openagents.mkt-swp.cooperative-signing.v1".into(),
+        order_id: order_id.clone(),
+        swap_contract_sha256: "22".repeat(32),
+        effect_id: cooperative_effect_id(&order_id, "source"),
+        leg_id: "source".into(),
+        unsigned_transaction: lower_hex(&raw),
+        transaction_sha256: lower_hex(&sha256(&raw)),
+        input_index: 0,
+        prevouts: vec![CooperativePrevout {
+            amount: "100000".into(),
+            script_pubkey: lower_hex(&script_pubkey),
+        }],
+        signature_hash: lower_hex(&signature_hash),
+        sighash_type: "DEFAULT".into(),
+        participant_keys: keys.iter().map(|key| lower_hex(&key.serialize())).collect(),
+        tweaks: vec![CooperativeTweak {
+            value: lower_hex(&tweak.value),
+            xonly: tweak.xonly,
+        }],
+        aggregate_key: lower_hex(&aggregate_key.serialize()),
+        exit_package_sha256: "33".repeat(32),
+        latest_safe_height: "500".into(),
+    };
+    context.validate().unwrap();
+    let transcript_digest: [u8; 32] = decode_hex(&context.sha256().unwrap()).try_into().unwrap();
+    let aggregate = aggregate_key.serialize();
+    let mut requester_nonce = musig2_nonce_gen(
+        &requester_secret,
+        &aggregate,
+        &signature_hash,
+        &transcript_digest,
+        [5; 32],
+    )
+    .unwrap();
+    let mut provider_nonce = musig2_nonce_gen(
+        &provider_secret,
+        &aggregate,
+        &signature_hash,
+        &transcript_digest,
+        [6; 32],
+    )
+    .unwrap();
+    let public_nonces = [
+        requester_nonce.public_nonce(),
+        provider_nonce.public_nonce(),
+    ];
+    let commitments = [
+        CooperativeSigningMessage::nonce_commitment(
+            context.clone(),
+            ParticipantRole::Requester,
+            sha256(&public_nonces[0]),
+        )
+        .unwrap(),
+        CooperativeSigningMessage::nonce_commitment(
+            context.clone(),
+            ParticipantRole::Provider,
+            sha256(&public_nonces[1]),
+        )
+        .unwrap(),
+    ];
+    let reveals = [
+        CooperativeSigningMessage::public_nonce(
+            context.clone(),
+            ParticipantRole::Requester,
+            public_nonces[0],
+        )
+        .unwrap(),
+        CooperativeSigningMessage::public_nonce(
+            context.clone(),
+            ParticipantRole::Provider,
+            public_nonces[1],
+        )
+        .unwrap(),
+    ];
+    let partials = [
+        musig2_partial_sign(
+            &mut requester_nonce,
+            &requester_secret,
+            &keys,
+            &public_nonces,
+            &[tweak],
+            &signature_hash,
+        )
+        .unwrap(),
+        musig2_partial_sign(
+            &mut provider_nonce,
+            &provider_secret,
+            &keys,
+            &public_nonces,
+            &[tweak],
+            &signature_hash,
+        )
+        .unwrap(),
+    ];
+    let partial_messages = [
+        CooperativeSigningMessage::partial_signature(
+            context.clone(),
+            ParticipantRole::Requester,
+            public_nonces,
+            partials[0],
+        )
+        .unwrap(),
+        CooperativeSigningMessage::partial_signature(
+            context.clone(),
+            ParticipantRole::Provider,
+            public_nonces,
+            partials[1],
+        )
+        .unwrap(),
+    ];
+    let final_message = CooperativeSigningMessage::final_signature(
+        context.clone(),
+        ParticipantRole::Provider,
+        public_nonces,
+        partials,
+    )
+    .unwrap();
+    validate_cooperative_signing_exchange(&[
+        (ParticipantRole::Requester, commitments[0].clone()),
+        (ParticipantRole::Provider, commitments[1].clone()),
+        (ParticipantRole::Requester, reveals[0].clone()),
+        (ParticipantRole::Provider, reveals[1].clone()),
+        (ParticipantRole::Requester, partial_messages[0].clone()),
+        (ParticipantRole::Provider, partial_messages[1].clone()),
+        (ParticipantRole::Provider, final_message.clone()),
+    ])
+    .unwrap();
+
+    assert!(
+        validate_cooperative_signing_exchange(&[
+            (ParticipantRole::Requester, commitments[0].clone()),
+            (ParticipantRole::Requester, reveals[0].clone()),
+            (ParticipantRole::Provider, commitments[1].clone()),
+        ])
+        .is_err()
+    );
+
+    let abort = CooperativeSigningMessage::aborted(
+        context.clone(),
+        ParticipantRole::Provider,
+        "counterparty_unavailable",
+    )
+    .unwrap();
+    validate_cooperative_signing_exchange(&[
+        (ParticipantRole::Requester, commitments[0].clone()),
+        (ParticipantRole::Provider, commitments[1].clone()),
+        (ParticipantRole::Requester, reveals[0].clone()),
+        (ParticipantRole::Provider, reveals[1].clone()),
+        (ParticipantRole::Provider, abort.clone()),
+    ])
+    .unwrap();
+    assert!(
+        validate_cooperative_signing_exchange(&[
+            (ParticipantRole::Requester, commitments[0].clone()),
+            (ParticipantRole::Provider, commitments[1].clone()),
+            (ParticipantRole::Provider, abort),
+            (ParticipantRole::Requester, reveals[0].clone()),
+        ])
+        .is_err()
+    );
+
+    let mut forged_index = CooperativeSigningMessage::aborted(
+        context.clone(),
+        ParticipantRole::Provider,
+        "wallet_refused",
+    )
+    .unwrap();
+    forged_index.participant_index = 2;
+    assert!(
+        validate_cooperative_signing_exchange(&[(ParticipantRole::Provider, forged_index)])
+            .is_err()
+    );
+
+    let mut invalid = final_message;
+    invalid.final_signature = Some("00".repeat(64));
+    assert_eq!(
+        invalid
+            .validate(ParticipantRole::Provider)
+            .unwrap_err()
+            .code,
+        "swp_musig_transcript_invalid"
+    );
+    let mut changed_transaction = context;
+    changed_transaction.transaction_sha256 = "00".repeat(32);
+    assert_eq!(
+        changed_transaction.validate().unwrap_err().code,
+        "swp_musig_transcript_invalid"
+    );
+
+    let mut noncanonical_height = changed_transaction;
+    noncanonical_height.transaction_sha256 = lower_hex(&sha256(&raw));
+    noncanonical_height.latest_safe_height = "0500".into();
+    assert_eq!(
+        noncanonical_height.validate().unwrap_err().code,
+        "swp_musig_transcript_invalid"
+    );
 }
 
 #[test]
@@ -4687,4 +4930,25 @@ fn exit_effect_id(order_id: &str, path: &str, leg_id: &str) -> String {
     preimage.push(0);
     preimage.extend_from_slice(leg_id.as_bytes());
     lower_hex(&sha256(&preimage))
+}
+
+fn cooperative_effect_id(order_id: &str, leg_id: &str) -> String {
+    let mut preimage = b"openagents.mkt-swp.v1".to_vec();
+    preimage.push(0);
+    preimage.extend_from_slice(&decode_hex(order_id));
+    preimage.push(0);
+    preimage.extend_from_slice(b"cooperative_sign");
+    preimage.push(0);
+    preimage.extend_from_slice(leg_id.as_bytes());
+    lower_hex(&sha256(&preimage))
+}
+
+fn even_key(bytes: [u8; 32]) -> (SecretKey, PublicKey) {
+    let mut secret = SecretKey::from_byte_array(bytes).unwrap();
+    let keypair = Keypair::from_secret_key(&Secp256k1::signing_only(), &secret);
+    if keypair.x_only_public_key().1 == Parity::Odd {
+        secret = secret.negate();
+    }
+    let public = PublicKey::from_secret_key(&Secp256k1::signing_only(), &secret);
+    (secret, public)
 }

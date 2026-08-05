@@ -1,17 +1,18 @@
 #![cfg(all(feature = "funded", unix))]
 
 use immortal_core::mkt_swp_verify::{
-    Transaction, TransactionOutput, VerificationError, sha256, tapbranch_hash, tapleaf_hash,
-    taproot_output_key, taproot_script_spend_sighash, taproot_script_spend_signature_message,
+    Transaction, TransactionOutput, VerificationError, musig2_aggregate_key, musig2_taproot_tweak,
+    musig2_tweaked_aggregate_key, sha256, tapbranch_hash, tapleaf_hash, taproot_output_key,
+    taproot_script_spend_sighash, taproot_script_spend_signature_message,
 };
 use immortal_provider::{
     settlement::{
-        ClaimPreimage, SettlementBridge, SettlementError, SettlementTemplate,
-        SignedSettlementTransaction,
+        ClaimPreimage, CooperativeSettlementTemplate, SettlementBridge, SettlementError,
+        SettlementTemplate, SignedSettlementTransaction,
     },
     wallet::{BitcoinNetwork, ProviderWallet, WalletPath},
 };
-use secp256k1::{Parity, XOnlyPublicKey};
+use secp256k1::{Parity, PublicKey, XOnlyPublicKey};
 use serde_json::Value;
 use std::{
     error::Error,
@@ -181,6 +182,193 @@ fn fee_dust_and_weight_policies_fail_closed() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[test]
+fn cooperative_key_path_is_smaller_and_abort_keeps_script_exit_usable() -> Result<(), Box<dyn Error>>
+{
+    let fixture = settlement_fixture()?;
+    let bridge = SettlementBridge::new(&fixture.wallet);
+    let requester_path = fixture.claim.wallet_path;
+    let provider_path = WalletPath::new(1, false, 7)?;
+    let participant_keys = [
+        compressed_even(fixture.wallet.derive_address(requester_path)?.internal_key),
+        compressed_even(fixture.wallet.derive_address(provider_path)?.internal_key),
+    ];
+    let keys = participant_keys
+        .iter()
+        .map(|key| PublicKey::from_slice(key))
+        .collect::<Result<Vec<_>, _>>()?;
+    let requester_script = claim_script(
+        fixture.claim_preimage,
+        fixture.wallet.derive_address(requester_path)?.internal_key,
+    );
+    let provider_script = claim_script(
+        fixture.claim_preimage,
+        fixture.wallet.derive_address(provider_path)?.internal_key,
+    );
+    let requester_leaf = tapleaf_hash(0xc0, &requester_script)?;
+    let provider_leaf = tapleaf_hash(0xc0, &provider_script)?;
+    let merkle_root = tapbranch_hash(requester_leaf, provider_leaf);
+    let internal_key = musig2_aggregate_key(&keys)?;
+    let (output_key, output_parity) = taproot_output_key(internal_key, Some(merkle_root))?;
+    let tweak = musig2_taproot_tweak(&keys, merkle_root)?;
+    let aggregate_key = musig2_tweaked_aggregate_key(&keys, &[tweak])?;
+    assert_eq!(aggregate_key, output_key);
+    let requester_control_block = control_block(output_parity, internal_key, provider_leaf);
+    let provider_control_block = control_block(output_parity, internal_key, requester_leaf);
+    let mut settlement = fixture.claim.clone();
+    settlement.maximum_fee_rate_sat_per_vbyte = 20;
+    settlement.prevout_script_pubkey =
+        [&[0x51, 0x20][..], aggregate_key.serialize().as_slice()].concat();
+    settlement.taproot_script = requester_script;
+    settlement.taproot_control_block = requester_control_block;
+    let common = CooperativeSettlementTemplate {
+        settlement,
+        participant_keys,
+        provider_index: 0,
+        taproot_merkle_root: merkle_root,
+        transcript_digest: [42; 32],
+        latest_safe_height: 200,
+    };
+    let mut requester_round = bridge.begin_cooperative(&common, 150)?;
+    let mut provider_template = common.clone();
+    provider_template.settlement.wallet_path = provider_path;
+    provider_template.settlement.taproot_script = provider_script;
+    provider_template.settlement.taproot_control_block = provider_control_block;
+    provider_template.provider_index = 1;
+    let mut provider_round = bridge.begin_cooperative(&provider_template, 150)?;
+    let requester_commitment = requester_round.nonce_commitment();
+    let provider_commitment = provider_round.nonce_commitment();
+    requester_round.register_counterparty_nonce_commitment(provider_commitment, 150)?;
+    provider_round.register_counterparty_nonce_commitment(requester_commitment, 150)?;
+    let public_nonces = [
+        requester_round.reveal_public_nonce(150)?,
+        provider_round.reveal_public_nonce(150)?,
+    ];
+    let requester_partial =
+        bridge.sign_cooperative_partial(&mut requester_round, 150, &public_nonces)?;
+    let provider_partial =
+        bridge.sign_cooperative_partial(&mut provider_round, 150, &public_nonces)?;
+    let cooperative = bridge.finalize_cooperative(
+        requester_round,
+        150,
+        &public_nonces,
+        &[requester_partial, provider_partial],
+    )?;
+    let unilateral = bridge.claim(
+        &common.settlement,
+        ClaimPreimage::new(fixture.claim_preimage),
+    )?;
+    assert_eq!(cooperative.cost().virtual_size, 111);
+    assert_eq!(unilateral.cost().virtual_size, 155);
+    let cooperative_transaction = Transaction::parse(cooperative.broadcast_bytes())?;
+    let unilateral_transaction = Transaction::parse(unilateral.broadcast_bytes())?;
+    assert_eq!(
+        cooperative_transaction
+            .inputs
+            .first()
+            .ok_or("cooperative transaction has no input")?
+            .witness
+            .len(),
+        1
+    );
+    assert_eq!(
+        cooperative_transaction.inputs[0].previous_txid,
+        unilateral_transaction.inputs[0].previous_txid
+    );
+    assert_eq!(
+        cooperative_transaction.inputs[0].previous_output,
+        unilateral_transaction.inputs[0].previous_output
+    );
+
+    let mut aborted_round = bridge.begin_cooperative(&common, 150)?;
+    aborted_round.abort();
+    assert!(aborted_round.is_terminal());
+    assert!(matches!(
+        aborted_round.reveal_public_nonce(150),
+        Err(SettlementError::CooperativeState)
+    ));
+    let fallback = bridge.claim(
+        &common.settlement,
+        ClaimPreimage::new(fixture.claim_preimage),
+    )?;
+    assert_eq!(fallback.cost(), unilateral.cost());
+    Ok(())
+}
+
+#[test]
+fn cooperative_round_enforces_exit_commitment_and_height_gates() -> Result<(), Box<dyn Error>> {
+    let fixture = settlement_fixture()?;
+    let bridge = SettlementBridge::new(&fixture.wallet);
+    let requester_path = fixture.claim.wallet_path;
+    let provider_path = WalletPath::new(1, false, 7)?;
+    let participant_keys = [
+        compressed_even(fixture.wallet.derive_address(requester_path)?.internal_key),
+        compressed_even(fixture.wallet.derive_address(provider_path)?.internal_key),
+    ];
+    let keys = participant_keys
+        .iter()
+        .map(|key| PublicKey::from_slice(key))
+        .collect::<Result<Vec<_>, _>>()?;
+    let requester_script = claim_script(
+        fixture.claim_preimage,
+        fixture.wallet.derive_address(requester_path)?.internal_key,
+    );
+    let provider_script = claim_script(
+        fixture.claim_preimage,
+        fixture.wallet.derive_address(provider_path)?.internal_key,
+    );
+    let requester_leaf = tapleaf_hash(0xc0, &requester_script)?;
+    let provider_leaf = tapleaf_hash(0xc0, &provider_script)?;
+    let merkle_root = tapbranch_hash(requester_leaf, provider_leaf);
+    let internal_key = musig2_aggregate_key(&keys)?;
+    let (output_key, output_parity) = taproot_output_key(internal_key, Some(merkle_root))?;
+    let mut settlement = fixture.claim.clone();
+    settlement.maximum_fee_rate_sat_per_vbyte = 20;
+    settlement.prevout_script_pubkey =
+        [&[0x51, 0x20][..], output_key.serialize().as_slice()].concat();
+    settlement.taproot_script = requester_script;
+    settlement.taproot_control_block = control_block(output_parity, internal_key, provider_leaf);
+    let template = CooperativeSettlementTemplate {
+        settlement,
+        participant_keys,
+        provider_index: 0,
+        taproot_merkle_root: merkle_root,
+        transcript_digest: [43; 32],
+        latest_safe_height: 200,
+    };
+
+    let mut wrong_exit = template.clone();
+    wrong_exit.settlement.taproot_control_block[33] ^= 1;
+    assert!(matches!(
+        bridge.begin_cooperative(&wrong_exit, 150),
+        Err(SettlementError::Core(VerificationError::Invalid(
+            "taproot control block commitment"
+        )))
+    ));
+
+    let mut round = bridge.begin_cooperative(&template, 150)?;
+    assert!(matches!(
+        round.reveal_public_nonce(150),
+        Err(SettlementError::CooperativeState)
+    ));
+    let commitment = sha256(&[7; 66]);
+    round.register_counterparty_nonce_commitment(commitment, 150)?;
+    assert!(matches!(
+        round.register_counterparty_nonce_commitment([9; 32], 150),
+        Err(SettlementError::NonceCommitmentMismatch)
+    ));
+    assert!(matches!(
+        round.reveal_public_nonce(201),
+        Err(SettlementError::CooperativeExpired)
+    ));
+    assert!(round.is_terminal());
+    assert!(matches!(
+        bridge.begin_cooperative(&template, 201),
+        Err(SettlementError::CooperativeExpired)
+    ));
+    Ok(())
+}
+
 fn settlement_fixture() -> Result<SettlementFixture, Box<dyn Error>> {
     let document: Value = serde_json::from_slice(SETTLEMENT_CONSTRUCTION_FIXTURE)?;
     validate_fixture_provenance(&document)?;
@@ -329,6 +517,35 @@ fn load_wallet(encoded_key_material: &str) -> Result<ProviderWallet, Box<dyn Err
     let wallet = ProviderWallet::load(&path, BitcoinNetwork::Regtest)?;
     fs::remove_file(path)?;
     Ok(wallet)
+}
+
+fn compressed_even(key: [u8; 32]) -> [u8; 33] {
+    let mut compressed = [0_u8; 33];
+    compressed[0] = 0x02;
+    compressed[1..].copy_from_slice(&key);
+    compressed
+}
+
+fn claim_script(preimage: [u8; 32], signing_key: [u8; 32]) -> Vec<u8> {
+    let mut script = vec![0x82, 0x01, 0x20, 0x88, 0xa8, 0x20];
+    script.extend_from_slice(&sha256(&preimage));
+    script.extend_from_slice(&[0x88, 0x20]);
+    script.extend_from_slice(&signing_key);
+    script.push(0xac);
+    script
+}
+
+fn control_block(
+    output_parity: Parity,
+    internal_key: XOnlyPublicKey,
+    sibling: [u8; 32],
+) -> Vec<u8> {
+    let parity = if output_parity == Parity::Odd { 1 } else { 0 };
+    let mut control = Vec::with_capacity(65);
+    control.push(0xc0 | parity);
+    control.extend_from_slice(&internal_key.serialize());
+    control.extend_from_slice(&sibling);
+    control
 }
 
 fn validate_fixture_provenance(document: &Value) -> Result<(), Box<dyn Error>> {

@@ -1,0 +1,95 @@
+{
+  "schema": "openagents.mkt-swp.cooperative-signing-fixtures.v1",
+  "source": {
+    "specification": "BIP-327 1.0.3",
+    "commit": "e7263a4cfe500c89e4269889244606953691ca33",
+    "vectors": ["nonce_gen_vectors.json", "sign_verify_vectors.json", "sig_agg_vectors.json"]
+  },
+  "transport": {
+    "record": "MKT-SWP Status inside recipient-gated NIP-59",
+    "swp_state": "cooperative_signing_pending",
+    "relay_observable": false,
+    "participant_key_order": ["requester", "provider"],
+    "idempotency": "exact signed record bytes",
+    "effect_role": "cooperative_sign"
+  },
+  "context_fields": [
+    "schema",
+    "order_id",
+    "swap_contract_sha256",
+    "effect_id",
+    "leg_id",
+    "unsigned_transaction",
+    "transaction_sha256",
+    "input_index",
+    "prevouts",
+    "signature_hash",
+    "sighash_type",
+    "participant_keys",
+    "tweaks",
+    "aggregate_key",
+    "exit_package_sha256",
+    "latest_safe_height"
+  ],
+  "actions": [
+    {
+      "action": "nonce_commitment",
+      "required": ["nonce_commitment"],
+      "forbidden": ["public_nonce", "public_nonces", "partial_signature", "partial_signatures", "final_signature", "abort_reason", "fallback"]
+    },
+    {
+      "action": "public_nonce",
+      "required": ["nonce_commitment", "public_nonce"],
+      "forbidden": ["public_nonces", "partial_signature", "partial_signatures", "final_signature", "abort_reason", "fallback"]
+    },
+    {
+      "action": "partial_signature",
+      "required": ["public_nonces", "partial_signature"],
+      "forbidden": ["nonce_commitment", "public_nonce", "partial_signatures", "final_signature", "abort_reason", "fallback"]
+    },
+    {
+      "action": "final_signature",
+      "required": ["public_nonces", "partial_signatures", "final_signature"],
+      "forbidden": ["nonce_commitment", "public_nonce", "partial_signature", "abort_reason", "fallback"]
+    },
+    {
+      "action": "aborted",
+      "required": ["abort_reason", "fallback"],
+      "fallback": "script_path",
+      "abort_reasons": ["timeout", "counterparty_unavailable", "transcript_invalid", "wallet_refused"],
+      "forbidden": ["nonce_commitment", "public_nonce", "public_nonces", "partial_signature", "partial_signatures", "final_signature"]
+    }
+  ],
+  "negative_cases": [
+    "changed_context_same_digest",
+    "wrong_participant_index",
+    "nonce_without_prior_commitment",
+    "nonce_before_both_commitments",
+    "nonce_commitment_mismatch",
+    "partial_before_both_nonces",
+    "invalid_partial_signature",
+    "final_before_both_partials",
+    "invalid_final_signature",
+    "duplicate_action",
+    "finalized_and_aborted",
+    "non_default_sighash",
+    "aggregate_key_mismatch",
+    "prevout_key_mismatch",
+    "transaction_digest_mismatch",
+    "signature_hash_mismatch",
+    "noncanonical_latest_safe_height"
+  ],
+  "security": {
+    "secret_nonce_storage": "signing_wallet_only",
+    "provider_database_secret_material": false,
+    "relay_secret_material": false,
+    "unilateral_exit_required_before_funding": true,
+    "cooperative_failure_removes_exit": false
+  },
+  "footprint": {
+    "fixture": "one-input one-output native Taproot settlement",
+    "key_path_virtual_size": 111,
+    "hashlock_claim_virtual_size": 155,
+    "timelock_refund_virtual_size": 138
+  }
+}

@@ -1,17 +1,18 @@
 #![cfg(feature = "mkt-swp-verify")]
 
 use immortal_core::mkt_swp_verify::{
-    BitcoinNetwork, SwapLeafCondition, Timelock, Transaction, TransactionInput, TransactionOutput,
-    assemble_taproot_claim_witness, assemble_taproot_refund_witness, check_cltv, check_csv,
-    dust_threshold, is_dust, musig2_aggregate_key, parse_bolt11, parse_swap_leaf_script,
+    BitcoinNetwork, Musig2Tweak, SwapLeafCondition, Timelock, Transaction, TransactionInput,
+    TransactionOutput, assemble_taproot_claim_witness, assemble_taproot_refund_witness, check_cltv,
+    check_csv, dust_threshold, is_dust, musig2_aggregate_key, musig2_aggregate_partial_signatures,
+    musig2_nonce_gen, musig2_tweaked_aggregate_key, parse_bolt11, parse_swap_leaf_script,
     parse_swap_script, sha256, tapbranch_hash, tapleaf_hash, taproot_key_spend_sighash,
     taproot_key_spend_signature_message, taproot_output_key, taproot_script_spend_sighash,
     taproot_script_spend_signature_message, transaction_cost, validate_taproot_claim_witness,
     validate_taproot_refund_witness, validate_timelock_ladder, validate_transaction_cost,
-    verify_control_block, verify_musig2_partial_signature, verify_musig2_signature,
-    verify_preimage,
+    verify_control_block, verify_musig2_partial_signature,
+    verify_musig2_partial_signature_with_tweaks, verify_musig2_signature, verify_preimage,
 };
-use secp256k1::{Parity, PublicKey, XOnlyPublicKey};
+use secp256k1::{Parity, PublicKey, SecretKey, XOnlyPublicKey};
 use serde_json::Value;
 
 #[test]
@@ -178,6 +179,122 @@ fn bip327_key_aggregation_vector_matches() {
             0,
             &decode_hex(partial["message"].as_str().unwrap()),
             &invalid_partial_signature,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn bip327_nonce_and_signature_aggregation_vectors_match() {
+    let fixture = fixture();
+    let nonce_vector = &fixture["musig2_nonce_generation"];
+    let secret_key = SecretKey::from_byte_array(
+        decode_hex(nonce_vector["secret_key"].as_str().unwrap())
+            .try_into()
+            .unwrap(),
+    )
+    .unwrap();
+    let aggregate_key = decode_hex(nonce_vector["aggregate_key"].as_str().unwrap())
+        .try_into()
+        .unwrap();
+    let nonce = musig2_nonce_gen(
+        &secret_key,
+        &aggregate_key,
+        &decode_hex(nonce_vector["message"].as_str().unwrap()),
+        &decode_hex(nonce_vector["extra_input"].as_str().unwrap()),
+        decode_hex(nonce_vector["randomness"].as_str().unwrap())
+            .try_into()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        encode_hex(&nonce.public_nonce()),
+        nonce_vector["expected_public_nonce"]
+    );
+
+    let aggregation = &fixture["musig2_signature_aggregation"];
+    let keys = public_keys(aggregation, "public_keys");
+    let nonces = public_nonces(aggregation);
+    let partials = partial_signatures(aggregation);
+    let signature = musig2_aggregate_partial_signatures(
+        &keys,
+        &nonces,
+        &[],
+        &decode_hex(aggregation["message"].as_str().unwrap()),
+        &partials,
+    )
+    .unwrap();
+    assert_eq!(encode_hex(&signature), aggregation["expected_signature"]);
+
+    let mut invalid_partial = partials.clone();
+    invalid_partial[0][0] ^= 1;
+    assert!(
+        musig2_aggregate_partial_signatures(
+            &keys,
+            &nonces,
+            &[],
+            &decode_hex(aggregation["message"].as_str().unwrap()),
+            &invalid_partial,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn bip327_tweaked_signature_aggregation_vector_matches() {
+    let fixture = fixture();
+    let aggregation = &fixture["musig2_tweaked_signature_aggregation"];
+    let keys = public_keys(aggregation, "public_keys");
+    let nonces = public_nonces(aggregation);
+    let partials = partial_signatures(aggregation);
+    let tweaks = aggregation["tweaks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tweak| Musig2Tweak {
+            value: decode_hex(tweak["value"].as_str().unwrap())
+                .try_into()
+                .unwrap(),
+            xonly: tweak["xonly"].as_bool().unwrap(),
+        })
+        .collect::<Vec<_>>();
+    for (index, partial) in partials.iter().enumerate() {
+        verify_musig2_partial_signature_with_tweaks(
+            &keys,
+            &nonces,
+            &tweaks,
+            index,
+            &decode_hex(aggregation["message"].as_str().unwrap()),
+            partial,
+        )
+        .unwrap();
+    }
+    let signature = musig2_aggregate_partial_signatures(
+        &keys,
+        &nonces,
+        &tweaks,
+        &decode_hex(aggregation["message"].as_str().unwrap()),
+        &partials,
+    )
+    .unwrap();
+    assert_eq!(encode_hex(&signature), aggregation["expected_signature"]);
+    let aggregate_key = musig2_tweaked_aggregate_key(&keys, &tweaks).unwrap();
+    verify_musig2_signature(
+        &aggregate_key,
+        &decode_hex(aggregation["message"].as_str().unwrap()),
+        &signature,
+    )
+    .unwrap();
+
+    let mut wrong_tweaks = tweaks;
+    wrong_tweaks[0].xonly = false;
+    assert!(
+        musig2_aggregate_partial_signatures(
+            &keys,
+            &nonces,
+            &wrong_tweaks,
+            &decode_hex(aggregation["message"].as_str().unwrap()),
+            &partials,
         )
         .is_err()
     );
@@ -626,6 +743,33 @@ fn fixture() -> Value {
         "../../../tests/fixtures/nipmkt/swp-verification.json"
     ))
     .unwrap()
+}
+
+fn public_keys(vector: &Value, field: &str) -> Vec<PublicKey> {
+    vector[field]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|key| PublicKey::from_slice(&decode_hex(key.as_str().unwrap())).unwrap())
+        .collect()
+}
+
+fn public_nonces(vector: &Value) -> Vec<[u8; 66]> {
+    vector["public_nonces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|nonce| decode_hex(nonce.as_str().unwrap()).try_into().unwrap())
+        .collect()
+}
+
+fn partial_signatures(vector: &Value) -> Vec<[u8; 32]> {
+    vector["partial_signatures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|signature| decode_hex(signature.as_str().unwrap()).try_into().unwrap())
+        .collect()
 }
 
 fn decode_hex(input: &str) -> Vec<u8> {

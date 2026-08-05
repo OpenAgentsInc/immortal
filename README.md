@@ -25,7 +25,10 @@ The products:
   liquidity-provider daemon for the swap network. Its no-spend mode rehearses
   complete sessions without rail effects. Funded mode reserves operator-owned
   Bitcoin and Lightning capacity, drives bitcoind and Core Lightning, and
-  executes script-path claim/refund recovery. Reverse Quotes bind the exact
+  executes script-path claim/refund recovery. Its allowlist-only MuSig2
+  foundation supports the cooperative key-path protocol, while the signer
+  capability and runtime execution remain disabled until the complete vector,
+  actor, and funded-process lab gates pass. Reverse Quotes bind the exact
   reserve-selected funding transaction before either contract is signed;
   signed action deadlines, durable competing-path watches, and signer-local
   terminal Close records bound the resulting execution. That mode holds the

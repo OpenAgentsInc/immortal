@@ -22,9 +22,11 @@ use crate::{
         validate_mkt_swp_evidence_reference,
     },
     mkt_swp_verify::{
-        BitcoinNetwork, ScriptInstruction, Timelock, Transaction, check_cltv, check_csv,
-        musig2_aggregate_key, parse_bolt11, parse_swap_script, sha256, tagged_hash, tapleaf_hash,
-        validate_timelock_ladder, verify_control_block, verify_musig2_signature, verify_preimage,
+        BitcoinNetwork, Musig2Tweak, ScriptInstruction, Timelock, Transaction, TransactionOutput,
+        check_cltv, check_csv, musig2_aggregate_key, musig2_aggregate_partial_signatures,
+        musig2_tweaked_aggregate_key, parse_bolt11, parse_swap_script, sha256, tagged_hash,
+        tapleaf_hash, taproot_key_spend_sighash, validate_timelock_ladder, verify_control_block,
+        verify_musig2_partial_signature_with_tweaks, verify_musig2_signature, verify_preimage,
     },
 };
 
@@ -34,6 +36,14 @@ const MAX_SIGNED_RECORDS: usize = 512;
 const MAX_EXIT_PACKAGES: usize = 16;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EXTERNAL_EFFECTS: usize = 64;
+const COOPERATIVE_SIGNING_SCHEMA: &str = "openagents.mkt-swp.cooperative-signing.v1";
+const COOPERATIVE_COMMITMENT_FIELD: u8 = 1 << 0;
+const COOPERATIVE_PUBLIC_NONCE_FIELD: u8 = 1 << 1;
+const COOPERATIVE_PUBLIC_NONCES_FIELD: u8 = 1 << 2;
+const COOPERATIVE_PARTIAL_FIELD: u8 = 1 << 3;
+const COOPERATIVE_PARTIALS_FIELD: u8 = 1 << 4;
+const COOPERATIVE_FINAL_FIELD: u8 = 1 << 5;
+const COOPERATIVE_ABORT_FIELDS: u8 = 1 << 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwapClientError {
@@ -99,6 +109,495 @@ pub struct StatusState<'a> {
     pub previous: Option<&'a str>,
     pub base_state: &'a str,
     pub swp_state: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CooperativePrevout {
+    pub amount: String,
+    pub script_pubkey: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CooperativeTweak {
+    pub value: String,
+    pub xonly: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CooperativeSigningContext {
+    pub schema: String,
+    pub order_id: String,
+    pub swap_contract_sha256: String,
+    pub effect_id: String,
+    pub leg_id: String,
+    pub unsigned_transaction: String,
+    pub transaction_sha256: String,
+    pub input_index: u32,
+    pub prevouts: Vec<CooperativePrevout>,
+    pub signature_hash: String,
+    pub sighash_type: String,
+    pub participant_keys: Vec<String>,
+    pub tweaks: Vec<CooperativeTweak>,
+    pub aggregate_key: String,
+    pub exit_package_sha256: String,
+    pub latest_safe_height: String,
+}
+
+impl CooperativeSigningContext {
+    pub fn validate(&self) -> Result<(), SwapClientError> {
+        if self.schema != COOPERATIVE_SIGNING_SCHEMA {
+            return Err(musig_error("cooperative signing schema is unsupported"));
+        }
+        require_lower_hex_32(&self.order_id, "cooperative signing Order ID")?;
+        require_lower_hex_32(
+            &self.swap_contract_sha256,
+            "cooperative signing Swap Contract digest",
+        )?;
+        require_lower_hex_32(&self.effect_id, "cooperative signing effect ID")?;
+        require_lower_hex_32(
+            &self.exit_package_sha256,
+            "cooperative signing exit package digest",
+        )?;
+        if !matches!(self.leg_id.as_str(), "source" | "destination") {
+            return Err(musig_error("cooperative signing leg is unsupported"));
+        }
+        if self.effect_id != effect_id(&self.order_id, "cooperative_sign", &self.leg_id)? {
+            return Err(musig_error(
+                "cooperative signing effect ID does not bind the Order and leg",
+            ));
+        }
+        if self.sighash_type != "DEFAULT" {
+            return Err(musig_error(
+                "cooperative signing requires Taproot SIGHASH_DEFAULT",
+            ));
+        }
+        let latest_safe_height = canonical_amount(&self.latest_safe_height)
+            .map_err(|_| musig_error("cooperative signing latest safe height is not canonical"))?;
+        if latest_safe_height == 0 || u32::try_from(latest_safe_height).is_err() {
+            return Err(musig_error(
+                "cooperative signing latest safe height is outside bounds",
+            ));
+        }
+        require_lower_hex_32(&self.transaction_sha256, "cooperative transaction digest")?;
+        require_lower_hex_32(&self.signature_hash, "cooperative signature hash")?;
+        require_lower_hex_32(&self.aggregate_key, "cooperative aggregate key")?;
+        let raw = decode_hex(
+            &self.unsigned_transaction,
+            "cooperative unsigned transaction",
+        )?;
+        if lower_hex(&sha256(&raw)) != self.transaction_sha256 {
+            return Err(musig_error("cooperative transaction digest mismatch"));
+        }
+        let transaction = Transaction::parse(&raw)
+            .map_err(|error| musig_error(format!("cooperative transaction is invalid: {error}")))?;
+        if transaction.serialize(false).map_err(core_musig_error)? != raw
+            || transaction
+                .inputs
+                .iter()
+                .any(|input| !input.witness.is_empty())
+        {
+            return Err(musig_error(
+                "cooperative signing transaction must be canonical and unsigned",
+            ));
+        }
+        if usize::try_from(self.input_index).ok().is_none_or(|index| {
+            index >= transaction.inputs.len() || self.prevouts.len() != transaction.inputs.len()
+        }) {
+            return Err(musig_error(
+                "cooperative signing prevouts do not cover the selected input",
+            ));
+        }
+        let prevouts = self
+            .prevouts
+            .iter()
+            .map(|prevout| {
+                Ok(TransactionOutput {
+                    value_sat: canonical_amount(&prevout.amount)?,
+                    script_pubkey: decode_hex(
+                        &prevout.script_pubkey,
+                        "cooperative prevout scriptPubKey",
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>, SwapClientError>>()?;
+        let keys = cooperative_public_keys(&self.participant_keys)?;
+        let tweaks = cooperative_tweaks(&self.tweaks)?;
+        let aggregate = musig2_tweaked_aggregate_key(&keys, &tweaks).map_err(core_musig_error)?;
+        if lower_hex(&aggregate.serialize()) != self.aggregate_key {
+            return Err(musig_error("cooperative aggregate key mismatch"));
+        }
+        let selected = prevouts
+            .get(usize::try_from(self.input_index).map_err(|_| {
+                musig_error("cooperative signing input index exceeds platform bounds")
+            })?)
+            .ok_or_else(|| musig_error("cooperative signing input is missing"))?;
+        let mut expected_script_pubkey = vec![0x51, 0x20];
+        expected_script_pubkey.extend_from_slice(&aggregate.serialize());
+        if selected.script_pubkey != expected_script_pubkey {
+            return Err(musig_error(
+                "cooperative prevout does not pay the tweaked aggregate key",
+            ));
+        }
+        let signature_hash = taproot_key_spend_sighash(
+            &transaction,
+            &prevouts,
+            usize::try_from(self.input_index)
+                .map_err(|_| musig_error("cooperative signing input index"))?,
+        )
+        .map_err(core_musig_error)?;
+        if lower_hex(&signature_hash) != self.signature_hash {
+            return Err(musig_error("cooperative signature hash mismatch"));
+        }
+        Ok(())
+    }
+
+    pub fn sha256(&self) -> Result<String, SwapClientError> {
+        self.validate()?;
+        let value = serde_json::to_value(self).map_err(|error| {
+            musig_error(format!("could not serialize cooperative context: {error}"))
+        })?;
+        Ok(lower_hex(&sha256(&canonical_json(&value)?)))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CooperativeSigningAction {
+    NonceCommitment,
+    PublicNonce,
+    PartialSignature,
+    FinalSignature,
+    Aborted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CooperativeSigningMessage {
+    pub context: CooperativeSigningContext,
+    pub context_sha256: String,
+    pub participant_index: u8,
+    pub action: CooperativeSigningAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce_commitment: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_nonce: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_nonces: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partial_signatures: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abort_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
+}
+
+impl CooperativeSigningMessage {
+    pub fn nonce_commitment(
+        context: CooperativeSigningContext,
+        role: ParticipantRole,
+        nonce_commitment: [u8; 32],
+    ) -> Result<Self, SwapClientError> {
+        Self::new(
+            context,
+            role,
+            CooperativeSigningAction::NonceCommitment,
+            Some(lower_hex(&nonce_commitment)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    pub fn public_nonce(
+        context: CooperativeSigningContext,
+        role: ParticipantRole,
+        public_nonce: [u8; 66],
+    ) -> Result<Self, SwapClientError> {
+        Self::new(
+            context,
+            role,
+            CooperativeSigningAction::PublicNonce,
+            Some(lower_hex(&sha256(&public_nonce))),
+            Some(lower_hex(&public_nonce)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    pub fn partial_signature(
+        context: CooperativeSigningContext,
+        role: ParticipantRole,
+        public_nonces: [[u8; 66]; 2],
+        partial_signature: [u8; 32],
+    ) -> Result<Self, SwapClientError> {
+        Self::new(
+            context,
+            role,
+            CooperativeSigningAction::PartialSignature,
+            None,
+            None,
+            Some(public_nonces.iter().map(|nonce| lower_hex(nonce)).collect()),
+            Some(lower_hex(&partial_signature)),
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    pub fn final_signature(
+        context: CooperativeSigningContext,
+        role: ParticipantRole,
+        public_nonces: [[u8; 66]; 2],
+        partial_signatures: [[u8; 32]; 2],
+    ) -> Result<Self, SwapClientError> {
+        let keys = cooperative_public_keys(&context.participant_keys)?;
+        let tweaks = cooperative_tweaks(&context.tweaks)?;
+        let signature_hash =
+            fixed_hex::<32>(&context.signature_hash, "cooperative signature hash")?;
+        let signature = musig2_aggregate_partial_signatures(
+            &keys,
+            &public_nonces,
+            &tweaks,
+            &signature_hash,
+            &partial_signatures,
+        )
+        .map_err(core_musig_error)?;
+        Self::new(
+            context,
+            role,
+            CooperativeSigningAction::FinalSignature,
+            None,
+            None,
+            Some(public_nonces.iter().map(|nonce| lower_hex(nonce)).collect()),
+            None,
+            Some(
+                partial_signatures
+                    .iter()
+                    .map(|partial| lower_hex(partial))
+                    .collect(),
+            ),
+            Some(lower_hex(&signature)),
+            None,
+            None,
+        )
+    }
+
+    pub fn aborted(
+        context: CooperativeSigningContext,
+        role: ParticipantRole,
+        reason: &str,
+    ) -> Result<Self, SwapClientError> {
+        Self::new(
+            context,
+            role,
+            CooperativeSigningAction::Aborted,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(reason.to_owned()),
+            Some("script_path".to_owned()),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        context: CooperativeSigningContext,
+        role: ParticipantRole,
+        action: CooperativeSigningAction,
+        nonce_commitment: Option<String>,
+        public_nonce: Option<String>,
+        public_nonces: Option<Vec<String>>,
+        partial_signature: Option<String>,
+        partial_signatures: Option<Vec<String>>,
+        final_signature: Option<String>,
+        abort_reason: Option<String>,
+        fallback: Option<String>,
+    ) -> Result<Self, SwapClientError> {
+        let context_sha256 = context.sha256()?;
+        let participant_index = match role {
+            ParticipantRole::Requester => 0,
+            ParticipantRole::Provider => 1,
+        };
+        let message = Self {
+            context,
+            context_sha256,
+            participant_index,
+            action,
+            nonce_commitment,
+            public_nonce,
+            public_nonces,
+            partial_signature,
+            partial_signatures,
+            final_signature,
+            abort_reason,
+            fallback,
+        };
+        message.validate(role)?;
+        Ok(message)
+    }
+
+    pub fn validate(&self, role: ParticipantRole) -> Result<(), SwapClientError> {
+        self.context.validate()?;
+        if self.context.sha256()? != self.context_sha256 {
+            return Err(musig_error("cooperative signing context digest mismatch"));
+        }
+        let expected_index = match role {
+            ParticipantRole::Requester => 0,
+            ParticipantRole::Provider => 1,
+        };
+        if self.participant_index != expected_index {
+            return Err(musig_error(
+                "cooperative contribution signer does not match participant key order",
+            ));
+        }
+        let keys = cooperative_public_keys(&self.context.participant_keys)?;
+        let tweaks = cooperative_tweaks(&self.context.tweaks)?;
+        let message = fixed_hex::<32>(&self.context.signature_hash, "cooperative signature hash")?;
+        match self.action {
+            CooperativeSigningAction::NonceCommitment => {
+                self.require_only(COOPERATIVE_COMMITMENT_FIELD)?;
+                require_lower_hex_32(
+                    self.nonce_commitment
+                        .as_deref()
+                        .ok_or_else(|| musig_error("cooperative nonce commitment is missing"))?,
+                    "cooperative nonce commitment",
+                )?;
+            }
+            CooperativeSigningAction::PublicNonce => {
+                self.require_only(COOPERATIVE_COMMITMENT_FIELD | COOPERATIVE_PUBLIC_NONCE_FIELD)?;
+                let commitment = fixed_hex::<32>(
+                    self.nonce_commitment
+                        .as_deref()
+                        .ok_or_else(|| musig_error("cooperative nonce commitment is missing"))?,
+                    "cooperative nonce commitment",
+                )?;
+                let public_nonce = fixed_hex::<66>(
+                    self.public_nonce
+                        .as_deref()
+                        .ok_or_else(|| musig_error("cooperative public nonce is missing"))?,
+                    "cooperative public nonce",
+                )?;
+                if sha256(&public_nonce) != commitment {
+                    return Err(musig_error(
+                        "cooperative public nonce does not open its commitment",
+                    ));
+                }
+                parse_public_nonce(&public_nonce)?;
+            }
+            CooperativeSigningAction::PartialSignature => {
+                self.require_only(COOPERATIVE_PUBLIC_NONCES_FIELD | COOPERATIVE_PARTIAL_FIELD)?;
+                let nonces = cooperative_public_nonces(
+                    self.public_nonces
+                        .as_deref()
+                        .ok_or_else(|| musig_error("cooperative public nonce set is missing"))?,
+                )?;
+                let partial = fixed_hex::<32>(
+                    self.partial_signature
+                        .as_deref()
+                        .ok_or_else(|| musig_error("cooperative partial signature is missing"))?,
+                    "cooperative partial signature",
+                )?;
+                verify_musig2_partial_signature_with_tweaks(
+                    &keys,
+                    &nonces,
+                    &tweaks,
+                    usize::from(self.participant_index),
+                    &message,
+                    &partial,
+                )
+                .map_err(core_musig_error)?;
+            }
+            CooperativeSigningAction::FinalSignature => {
+                self.require_only(
+                    COOPERATIVE_PUBLIC_NONCES_FIELD
+                        | COOPERATIVE_PARTIALS_FIELD
+                        | COOPERATIVE_FINAL_FIELD,
+                )?;
+                let nonces = cooperative_public_nonces(
+                    self.public_nonces
+                        .as_deref()
+                        .ok_or_else(|| musig_error("cooperative public nonce set is missing"))?,
+                )?;
+                let partials = cooperative_partial_signatures(
+                    self.partial_signatures.as_deref().ok_or_else(|| {
+                        musig_error("cooperative partial signature set is missing")
+                    })?,
+                )?;
+                let expected = musig2_aggregate_partial_signatures(
+                    &keys, &nonces, &tweaks, &message, &partials,
+                )
+                .map_err(core_musig_error)?;
+                let supplied = fixed_hex::<64>(
+                    self.final_signature
+                        .as_deref()
+                        .ok_or_else(|| musig_error("cooperative final signature is missing"))?,
+                    "cooperative final signature",
+                )?;
+                if supplied != expected {
+                    return Err(musig_error("cooperative final signature mismatch"));
+                }
+            }
+            CooperativeSigningAction::Aborted => {
+                self.require_only(COOPERATIVE_ABORT_FIELDS)?;
+                if !matches!(
+                    self.abort_reason.as_deref(),
+                    Some(
+                        "timeout"
+                            | "counterparty_unavailable"
+                            | "transcript_invalid"
+                            | "wallet_refused"
+                    )
+                ) || self.fallback.as_deref() != Some("script_path")
+                {
+                    return Err(musig_error(
+                        "cooperative abort must select a bounded reason and script-path fallback",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn require_only(&self, expected: u8) -> Result<(), SwapClientError> {
+        let mut actual = 0_u8;
+        actual |= u8::from(self.nonce_commitment.is_some()) * COOPERATIVE_COMMITMENT_FIELD;
+        actual |= u8::from(self.public_nonce.is_some()) * COOPERATIVE_PUBLIC_NONCE_FIELD;
+        actual |= u8::from(self.public_nonces.is_some()) * COOPERATIVE_PUBLIC_NONCES_FIELD;
+        actual |= u8::from(self.partial_signature.is_some()) * COOPERATIVE_PARTIAL_FIELD;
+        actual |= u8::from(self.partial_signatures.is_some()) * COOPERATIVE_PARTIALS_FIELD;
+        actual |= u8::from(self.final_signature.is_some()) * COOPERATIVE_FINAL_FIELD;
+        if self.abort_reason.is_some() != self.fallback.is_some() {
+            return Err(musig_error(
+                "cooperative abort reason and fallback must appear together",
+            ));
+        }
+        actual |= u8::from(self.abort_reason.is_some()) * COOPERATIVE_ABORT_FIELDS;
+        if actual != expected {
+            return Err(musig_error(
+                "cooperative signing action has an invalid field shape",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -479,6 +978,34 @@ impl SwapRecordFactory {
             MKT_STATUS_KIND,
             tags,
             Value::Object(mkt_swp),
+        )
+    }
+
+    pub fn cooperative_status(
+        &self,
+        role: ParticipantRole,
+        created_at: u64,
+        distinct: &str,
+        order_id: &str,
+        status: StatusState<'_>,
+        message: CooperativeSigningMessage,
+    ) -> Result<MktSigningRequest, SwapClientError> {
+        if status.swp_state != "cooperative_signing_pending" {
+            return Err(musig_error(
+                "cooperative signing requires the cooperative signing Status state",
+            ));
+        }
+        message.validate(role)?;
+        let value = serde_json::to_value(message).map_err(|error| {
+            musig_error(format!("could not serialize cooperative message: {error}"))
+        })?;
+        self.status(
+            role,
+            created_at,
+            distinct,
+            order_id,
+            status,
+            Map::from_iter([("cooperative_signing".to_owned(), value)]),
         )
     }
 
@@ -2998,6 +3525,7 @@ impl StatusProjection {
     ) -> Result<Self, SwapClientError> {
         let mut streams: BTreeMap<String, BTreeMap<u64, Vec<String>>> = BTreeMap::new();
         let mut status_events: BTreeMap<String, BTreeMap<u64, Vec<&Event>>> = BTreeMap::new();
+        let mut cooperative_messages = Vec::new();
         let mut close_records = Vec::new();
         let mut invalid_claims = BTreeMap::new();
         let swap_type = quote_swap_type(records)?;
@@ -3037,6 +3565,14 @@ impl StatusProjection {
                     "swp_status_signer_invalid: state is unavailable to this signer or flow"
                         .to_owned(),
                 );
+            }
+            if let Some(message) = cooperative_signing_message(event, role)? {
+                if swp_state != "cooperative_signing_pending" {
+                    return Err(musig_error(
+                        "cooperative signing messages require the cooperative signing Status state",
+                    ));
+                }
+                cooperative_messages.push((role, message));
             }
             streams
                 .entry(event.pubkey.clone())
@@ -3109,9 +3645,17 @@ impl StatusProjection {
                 }
                 let previous_state = status_state(previous_event)?;
                 let current_state = status_state(event)?;
-                if transition_rank(swap_type, &previous_state)
-                    .zip(transition_rank(swap_type, &current_state))
-                    .is_none_or(|(previous_rank, current_rank)| current_rank <= previous_rank)
+                let cooperative_transition = cooperative_status_transition(
+                    previous_event,
+                    event,
+                    config,
+                    &previous_state,
+                    &current_state,
+                )?;
+                if !cooperative_transition
+                    && transition_rank(swap_type, &previous_state)
+                        .zip(transition_rank(swap_type, &current_state))
+                        .is_none_or(|(previous_rank, current_rank)| current_rank <= previous_rank)
                 {
                     invalid_claims.insert(
                         event.id.clone(),
@@ -3121,6 +3665,7 @@ impl StatusProjection {
                 }
             }
         }
+        validate_cooperative_signing_exchange(&cooperative_messages)?;
         let mut last_valid_status = BTreeMap::new();
         for (author, stream) in &status_events {
             let mut expected_sequence = 0_u64;
@@ -5641,6 +6186,176 @@ fn validate_session_material(
         ExitPackage::parse(package.document.clone())?;
     }
     StatusProjection::from_records(config, records)?;
+    validate_cooperative_context_bindings(config, records, exit_packages)?;
+    Ok(())
+}
+
+fn validate_cooperative_context_bindings(
+    config: &SwapClientConfig,
+    records: &[Event],
+    exit_packages: &[ExitPackage],
+) -> Result<(), SwapClientError> {
+    let mut contexts = BTreeMap::new();
+    for event in records.iter().filter(|event| event.kind == MKT_STATUS_KIND) {
+        let role = role_for_author(config, &event.pubkey)?;
+        if let Some(message) = cooperative_signing_message(event, role)? {
+            contexts
+                .entry(message.context_sha256.clone())
+                .or_insert(message.context);
+        }
+    }
+    if contexts.is_empty() {
+        return Ok(());
+    }
+    let bound = BoundSession::from_records(config, records)?;
+    let contract = object(&bound.contract, "Swap Contract")?;
+    if contract.get("musig2_execution").and_then(Value::as_bool) != Some(true) {
+        return Err(musig_error(
+            "bilateral Swap Contract does not enable cooperative execution",
+        ));
+    }
+    let effect_bindings = contract
+        .get("effect_bindings")
+        .and_then(Value::as_array)
+        .ok_or_else(|| musig_error("Swap Contract has no cooperative effect bindings"))?;
+    for context in contexts.values() {
+        if context.order_id != bound.order.id
+            || context.swap_contract_sha256 != bound.contract_sha256
+            || !effect_bindings.iter().any(|binding| {
+                binding.get("role").and_then(Value::as_str) == Some("cooperative_sign")
+                    && binding.get("leg_id").and_then(Value::as_str)
+                        == Some(context.leg_id.as_str())
+            })
+        {
+            return Err(musig_error(
+                "cooperative context is not bound by the bilateral Swap Contract",
+            ));
+        }
+        let verifier = verifier_for_leg(contract, &context.leg_id)?;
+        let declared_keys = verifier
+            .get("cooperative_pubkeys")
+            .and_then(Value::as_array)
+            .ok_or_else(|| musig_error("contract verifier has no cooperative keys"))?;
+        let expected_keys = ["requester", "provider"]
+            .iter()
+            .map(|role| {
+                declared_keys
+                    .iter()
+                    .find(|entry| {
+                        entry.get("participant_role").and_then(Value::as_str) == Some(*role)
+                    })
+                    .and_then(|entry| entry.get("public_key"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| musig_error("contract cooperative key order is incomplete"))
+            })
+            .collect::<Result<Vec<_>, SwapClientError>>()?;
+        if context.participant_keys != expected_keys
+            || verifier.get("taproot_output_key").and_then(Value::as_str)
+                != Some(context.aggregate_key.as_str())
+        {
+            return Err(musig_error(
+                "cooperative context keys differ from the contract verifier",
+            ));
+        }
+        let keys = cooperative_public_keys(&context.participant_keys)?;
+        let merkle_root = fixed_hex::<32>(
+            verifier
+                .get("taproot_merkle_root")
+                .and_then(Value::as_str)
+                .ok_or_else(|| musig_error("contract verifier has no Taproot merkle root"))?,
+            "contract Taproot merkle root",
+        )?;
+        let expected_tweak = crate::mkt_swp_verify::musig2_taproot_tweak(&keys, merkle_root)
+            .map_err(core_musig_error)?;
+        if context.tweaks
+            != vec![CooperativeTweak {
+                value: lower_hex(&expected_tweak.value),
+                xonly: expected_tweak.xonly,
+            }]
+        {
+            return Err(musig_error(
+                "cooperative context tweak differs from the committed Taproot tree",
+            ));
+        }
+        let mut matching_package = None;
+        for package in exit_packages {
+            if package.commitment_sha256()? == context.exit_package_sha256 {
+                matching_package = Some(package);
+                break;
+            }
+        }
+        let package = matching_package.ok_or_else(|| {
+            musig_error("cooperative context has no exact local unilateral exit package")
+        })?;
+        validate_cooperative_package_binding(context, package)?;
+    }
+    Ok(())
+}
+
+fn validate_cooperative_package_binding(
+    context: &CooperativeSigningContext,
+    package: &ExitPackage,
+) -> Result<(), SwapClientError> {
+    let document = object(package.document(), "cooperative exit package")?;
+    if document.get("leg_id").and_then(Value::as_str) != Some(context.leg_id.as_str()) {
+        return Err(musig_error(
+            "cooperative context and unilateral exit name different legs",
+        ));
+    }
+    let funding = object(
+        document.get("funding").unwrap_or(&Value::Null),
+        "cooperative exit funding",
+    )?;
+    let exit = object(
+        document.get("exit").unwrap_or(&Value::Null),
+        "cooperative exit transaction",
+    )?;
+    if exit
+        .get("transaction_template_sha256")
+        .and_then(Value::as_str)
+        != Some(context.transaction_sha256.as_str())
+        || exit
+            .get("latest_safe_broadcast_height")
+            .and_then(Value::as_str)
+            != Some(context.latest_safe_height.as_str())
+    {
+        return Err(musig_error(
+            "cooperative transaction or deadline differs from the unilateral exit package",
+        ));
+    }
+    let raw = decode_hex(
+        &context.unsigned_transaction,
+        "cooperative unsigned transaction",
+    )?;
+    let transaction = Transaction::parse(&raw).map_err(core_musig_error)?;
+    let input =
+        transaction
+            .inputs
+            .get(usize::try_from(context.input_index).map_err(|_| {
+                musig_error("cooperative signing input index exceeds platform bounds")
+            })?)
+            .ok_or_else(|| musig_error("cooperative signing input is absent"))?;
+    let mut transaction_id = input.previous_txid;
+    transaction_id.reverse();
+    let prevout = context
+        .prevouts
+        .get(usize::try_from(context.input_index).map_err(|_| {
+            musig_error("cooperative signing prevout index exceeds platform bounds")
+        })?)
+        .ok_or_else(|| musig_error("cooperative signing prevout is absent"))?;
+    if funding.get("transaction_id").and_then(Value::as_str)
+        != Some(lower_hex(&transaction_id).as_str())
+        || funding.get("output_index").and_then(Value::as_u64)
+            != Some(u64::from(input.previous_output))
+        || funding.get("amount").and_then(Value::as_str) != Some(prevout.amount.as_str())
+        || funding.get("script_pubkey").and_then(Value::as_str)
+            != Some(prevout.script_pubkey.as_str())
+    {
+        return Err(musig_error(
+            "cooperative signing input differs from the committed funding outpoint",
+        ));
+    }
     Ok(())
 }
 
@@ -9170,7 +9885,300 @@ fn status_state(event: &Event) -> Result<String, SwapClientError> {
     .map(str::to_owned)
 }
 
+fn cooperative_signing_message(
+    event: &Event,
+    role: ParticipantRole,
+) -> Result<Option<CooperativeSigningMessage>, SwapClientError> {
+    let content = parse_content(event)?;
+    let profile = object(
+        content.get("mkt_swp").unwrap_or(&Value::Null),
+        "MKT-SWP Status",
+    )?;
+    let Some(value) = profile.get("cooperative_signing") else {
+        return Ok(None);
+    };
+    let message: CooperativeSigningMessage =
+        serde_json::from_value(value.clone()).map_err(|error| {
+            musig_error(format!(
+                "cooperative signing message has an invalid shape: {error}"
+            ))
+        })?;
+    message.validate(role)?;
+    Ok(Some(message))
+}
+
+fn cooperative_status_transition(
+    previous: &Event,
+    current: &Event,
+    config: &SwapClientConfig,
+    previous_state: &str,
+    current_state: &str,
+) -> Result<bool, SwapClientError> {
+    let previous_role = role_for_author(config, &previous.pubkey)?;
+    let current_role = role_for_author(config, &current.pubkey)?;
+    let previous = cooperative_signing_message(previous, previous_role)?;
+    let current = cooperative_signing_message(current, current_role)?;
+    match (previous, current) {
+        (Some(previous), Some(current)) => Ok(previous_state == "cooperative_signing_pending"
+            && current_state == previous_state
+            && previous.context_sha256 == current.context_sha256
+            && previous.participant_index == current.participant_index
+            && cooperative_action_rank(current.action) > cooperative_action_rank(previous.action)),
+        (None, Some(current)) => Ok(current_state == "cooperative_signing_pending"
+            && matches!(
+                previous_state,
+                "funding_final"
+                    | "source_funding_final"
+                    | "destination_funding_final"
+                    | "lightning_paid"
+            )
+            && matches!(
+                current.action,
+                CooperativeSigningAction::NonceCommitment | CooperativeSigningAction::Aborted
+            )),
+        (Some(_), None) => Ok(previous_state == "cooperative_signing_pending"
+            && matches!(
+                base_state_for(current_state),
+                Some("executing" | "completed" | "refund_pending" | "refunded" | "failed")
+            )),
+        (None, None) => Ok(false),
+    }
+}
+
+fn cooperative_action_rank(action: CooperativeSigningAction) -> u8 {
+    match action {
+        CooperativeSigningAction::NonceCommitment => 0,
+        CooperativeSigningAction::PublicNonce => 1,
+        CooperativeSigningAction::PartialSignature => 2,
+        CooperativeSigningAction::FinalSignature => 3,
+        CooperativeSigningAction::Aborted => 4,
+    }
+}
+
+pub fn validate_cooperative_signing_exchange(
+    messages: &[(ParticipantRole, CooperativeSigningMessage)],
+) -> Result<(), SwapClientError> {
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (index, (_, message)) in messages.iter().enumerate() {
+        groups
+            .entry(message.context_sha256.clone())
+            .or_default()
+            .push(index);
+    }
+    for indexes in groups.values() {
+        let first = indexes
+            .first()
+            .and_then(|index| messages.get(*index))
+            .ok_or_else(|| musig_error("cooperative signing group is empty"))?;
+        let context = &first.1.context;
+        let mut seen = BTreeSet::new();
+        let mut commitments: [Option<[u8; 32]>; 2] = [None, None];
+        let mut public_nonces: [Option<[u8; 66]>; 2] = [None, None];
+        let mut partial_signatures: [Option<[u8; 32]>; 2] = [None, None];
+        let mut final_signature = false;
+        let mut aborted = false;
+        for index in indexes {
+            let (role, message) = messages
+                .get(*index)
+                .ok_or_else(|| musig_error("cooperative signing index is invalid"))?;
+            if aborted {
+                return Err(musig_error(
+                    "cooperative transcript continues after an abort",
+                ));
+            }
+            message.validate(*role)?;
+            if &message.context != context {
+                return Err(musig_error(
+                    "one cooperative context digest maps to different context bytes",
+                ));
+            }
+            let contribution = (
+                message.participant_index,
+                cooperative_action_rank(message.action),
+            );
+            if !seen.insert(contribution) {
+                return Err(musig_error(
+                    "one participant supplied the same cooperative action twice",
+                ));
+            }
+            let participant = usize::from(message.participant_index);
+            if participant >= commitments.len() {
+                return Err(musig_error(
+                    "cooperative participant index is outside the committed key order",
+                ));
+            }
+            match message.action {
+                CooperativeSigningAction::NonceCommitment => {
+                    commitments[participant] = Some(fixed_hex::<32>(
+                        message.nonce_commitment.as_deref().ok_or_else(|| {
+                            musig_error("cooperative nonce commitment is missing")
+                        })?,
+                        "cooperative nonce commitment",
+                    )?);
+                }
+                CooperativeSigningAction::PublicNonce => {
+                    let commitment = fixed_hex::<32>(
+                        message.nonce_commitment.as_deref().ok_or_else(|| {
+                            musig_error("cooperative nonce commitment is missing")
+                        })?,
+                        "cooperative nonce commitment",
+                    )?;
+                    if commitments.iter().any(Option::is_none)
+                        || commitments[participant] != Some(commitment)
+                    {
+                        return Err(musig_error(
+                            "cooperative public nonce lacks both prior exact commitments",
+                        ));
+                    }
+                    public_nonces[participant] = Some(fixed_hex::<66>(
+                        message
+                            .public_nonce
+                            .as_deref()
+                            .ok_or_else(|| musig_error("cooperative public nonce is missing"))?,
+                        "cooperative public nonce",
+                    )?);
+                }
+                CooperativeSigningAction::PartialSignature => {
+                    let supplied =
+                        cooperative_public_nonces(message.public_nonces.as_deref().ok_or_else(
+                            || musig_error("cooperative public nonce set is missing"),
+                        )?)?;
+                    if public_nonces.iter().any(Option::is_none)
+                        || public_nonces[0] != Some(supplied[0])
+                        || public_nonces[1] != Some(supplied[1])
+                    {
+                        return Err(musig_error(
+                            "cooperative partial signature does not bind both revealed nonces",
+                        ));
+                    }
+                    partial_signatures[participant] = Some(fixed_hex::<32>(
+                        message.partial_signature.as_deref().ok_or_else(|| {
+                            musig_error("cooperative partial signature is missing")
+                        })?,
+                        "cooperative partial signature",
+                    )?);
+                }
+                CooperativeSigningAction::FinalSignature => {
+                    let supplied_nonces =
+                        cooperative_public_nonces(message.public_nonces.as_deref().ok_or_else(
+                            || musig_error("cooperative public nonce set is missing"),
+                        )?)?;
+                    let supplied_partials = cooperative_partial_signatures(
+                        message.partial_signatures.as_deref().ok_or_else(|| {
+                            musig_error("cooperative partial signature set is missing")
+                        })?,
+                    )?;
+                    if public_nonces[0] != Some(supplied_nonces[0])
+                        || public_nonces[1] != Some(supplied_nonces[1])
+                        || partial_signatures[0] != Some(supplied_partials[0])
+                        || partial_signatures[1] != Some(supplied_partials[1])
+                    {
+                        return Err(musig_error(
+                            "cooperative final signature lacks both verified contributions",
+                        ));
+                    }
+                    final_signature = true;
+                }
+                CooperativeSigningAction::Aborted => aborted = true,
+            }
+        }
+        if aborted && final_signature {
+            return Err(musig_error(
+                "cooperative transcript cannot be both finalized and aborted",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn cooperative_public_keys(values: &[String]) -> Result<Vec<PublicKey>, SwapClientError> {
+    if values.len() != 2 || values[0] == values[1] {
+        return Err(musig_error(
+            "cooperative signing requires distinct requester/provider keys",
+        ));
+    }
+    values
+        .iter()
+        .map(|value| {
+            let encoded = fixed_hex::<33>(value, "cooperative participant key")?;
+            PublicKey::from_slice(&encoded)
+                .map_err(|_| musig_error("cooperative participant key is invalid"))
+        })
+        .collect()
+}
+
+fn cooperative_tweaks(values: &[CooperativeTweak]) -> Result<Vec<Musig2Tweak>, SwapClientError> {
+    if values.is_empty() || values.len() > 8 {
+        return Err(musig_error("cooperative tweak count is outside bounds"));
+    }
+    values
+        .iter()
+        .map(|tweak| {
+            Ok(Musig2Tweak {
+                value: fixed_hex::<32>(&tweak.value, "cooperative tweak")?,
+                xonly: tweak.xonly,
+            })
+        })
+        .collect()
+}
+
+fn cooperative_public_nonces(values: &[String]) -> Result<Vec<[u8; 66]>, SwapClientError> {
+    if values.len() != 2 {
+        return Err(musig_error(
+            "cooperative signing requires two public nonces",
+        ));
+    }
+    values
+        .iter()
+        .map(|value| {
+            let nonce = fixed_hex::<66>(value, "cooperative public nonce")?;
+            parse_public_nonce(&nonce)?;
+            Ok(nonce)
+        })
+        .collect()
+}
+
+fn parse_public_nonce(nonce: &[u8; 66]) -> Result<(), SwapClientError> {
+    PublicKey::from_slice(&nonce[..33])
+        .and_then(|_| PublicKey::from_slice(&nonce[33..]))
+        .map(|_| ())
+        .map_err(|_| musig_error("cooperative public nonce contains an invalid point"))
+}
+
+fn cooperative_partial_signatures(values: &[String]) -> Result<Vec<[u8; 32]>, SwapClientError> {
+    if values.len() != 2 {
+        return Err(musig_error(
+            "cooperative signing requires two partial signatures",
+        ));
+    }
+    values
+        .iter()
+        .map(|value| fixed_hex::<32>(value, "cooperative partial signature"))
+        .collect()
+}
+
+fn fixed_hex<const N: usize>(value: &str, label: &str) -> Result<[u8; N], SwapClientError> {
+    let decoded = decode_hex(value, label)?;
+    decoded
+        .try_into()
+        .map_err(|_| musig_error(format!("{label} must be exactly {N} bytes")))
+}
+
+fn musig_error(detail: impl Into<String>) -> SwapClientError {
+    SwapClientError::new("swp_musig_transcript_invalid", detail)
+}
+
+fn core_musig_error(error: impl std::fmt::Display) -> SwapClientError {
+    musig_error(error.to_string())
+}
+
 fn state_allowed_for_swap(role: ParticipantRole, state: &str, swap_type: SwapType) -> bool {
+    if state == "cooperative_signing_pending" {
+        return matches!(
+            swap_type,
+            SwapType::Submarine | SwapType::Reverse | SwapType::Chain
+        );
+    }
     let common = matches!(
         state,
         "completed" | "refunded" | "cancelled" | "expired" | "disputed" | "failed" | "unresolved"
@@ -9273,6 +10281,7 @@ fn transition_rank(swap_type: SwapType, state: &str) -> Option<u16> {
             "funding_final",
             "lightning_payment_pending",
             "lightning_paid",
+            "cooperative_signing_pending",
             "provider_claim_pending",
             "provider_claimed",
             "refund_prepared",
@@ -9296,6 +10305,7 @@ fn transition_rank(swap_type: SwapType, state: &str) -> Option<u16> {
             "provider_funding_broadcast",
             "funding_observed",
             "funding_final",
+            "cooperative_signing_pending",
             "requester_claim_pending",
             "requester_claimed",
             "lightning_settlement_pending",
@@ -9361,6 +10371,7 @@ fn state_allowed_for_role(role: ParticipantRole, state: &str) -> bool {
             | "source_funding_final"
             | "destination_funding_observed"
             | "destination_funding_final"
+            | "cooperative_signing_pending"
             | "cancelled"
             | "expired"
             | "completed"
@@ -9445,6 +10456,7 @@ fn base_state_for(state: &str) -> Option<&'static str> {
         || state.ends_with("htlcs_held")
         || state.ends_with("claim_pending")
         || state.ends_with("claimed")
+        || state == "cooperative_signing_pending"
     {
         Some("executing")
     } else if matches!(state, "completed" | "lightning_paid") {

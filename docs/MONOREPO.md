@@ -133,16 +133,17 @@ any co-located relay.
 tweaking used by the existing taproot primitives; `sha2` provides the
 tagged hashes already implemented. Entropy comes from the OS directly
 (`/dev/urandom`) rather than a `rand` crate. *Trade-off 2:* the pinned
-`secp256k1` exposes no MuSig2 module. Therefore **v1 settles via
-script-path Taproot spends only** — the always-available unilateral
-claim and refund paths that the client engine already verifies. The
-cooperative MuSig2 key-path spend (Boltz's happy-path optimization,
-smaller and cheaper on-chain) is deferred to a later packet, gated on
-either MuSig2 bindings arriving in the pinned crate's line or an
-owner-approved dependency addition. This costs fee efficiency and
-on-chain privacy on the happy path; it costs nothing in safety, because
-the script path is the path whose existence the protocol already
-requires proving before funding.
+`secp256k1` exposes no MuSig2 module. The original v1 decision therefore
+shipped script-path Taproot settlement first. Issue #26 supersedes the
+implementation deferral without changing the dependency decision: BIP-327
+nonce, scalar, partial-signature, and aggregation logic is implemented
+in-repo over the allowlisted point/tweak operations and official vectors.
+The client transcript and provider signer foundation support the cooperative
+key path, while the unilateral claim and refund paths remain mandatory. The
+funded daemon continues to advertise script-path execution and withhold its
+signer capability until the complete vector corpus, cooperative actor path,
+and #18 process lab pass; protocol primitives alone are not a deployment
+claim.
 
 **Price feeds.** MKT-SWP §3.4 pinning requires fetching an exact HTTPS
 URL. Outbound HTTPS needs TLS: either the `rustls` chain (already
@@ -151,8 +152,9 @@ providers quote without a feed term (legal per the spec — a
 Bitcoin/Lightning-only provider does not need an exchange rate).
 
 Conclusion: `immortal-provider` v1 = the same seven crates, one new
-binary, hand-written HTTP and Unix-socket clients, script-path
-settlement, CLN + bitcoind rails. Every dependency the Boltz stack
+binary, hand-written HTTP and Unix-socket clients, mandatory script-path
+exits plus the in-repo cooperative-signing foundation, and CLN + bitcoind
+rails. Every dependency the Boltz stack
 carries and we refuse (ZMQ, gRPC, ORM, Redis, a web framework) is
 refused by a named decision above, not by omission.
 
@@ -230,9 +232,9 @@ Mapping the eight-item infrastructure list from
    apt Postgres, bitcoind, CLN + hold plugin, the binary, systemd
    hardening, backup timer, funding procedure, drain/exit procedure.
 
-Explicitly out of v1: Liquid (`elementsd`), Ark (`arkd`), EVM and Cashu
-rails (extension issues #20-#23), MuSig2 cooperative path (§4),
-LND (feature-flagged later), autoswap/inventory strategy beyond the
+Explicitly out of the first funded release: Liquid (`elementsd`), Ark
+(`arkd`), EVM and Cashu rails (extension issues #20-#23), automated MuSig2
+actor execution before the #18 lab gate (§4), LND (feature-flagged later), autoswap/inventory strategy beyond the
 reservation ledger (operator policy, not daemon authority).
 
 ## 7. What changes where

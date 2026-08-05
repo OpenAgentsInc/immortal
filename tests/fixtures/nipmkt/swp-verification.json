@@ -2,7 +2,7 @@
   "schema": "openagents.mkt-swp.verification-fixtures.v1",
   "sources": {
     "taproot": "BIP-341 wallet-test-vectors.json, bitcoin/bips master",
-    "musig2": "BIP-327 key_agg_vectors.json, bitcoin/bips master",
+    "musig2": "BIP-327 1.0.3 key_agg, nonce_gen, sign_verify, and sig_agg vectors at bitcoin/bips e7263a4cfe500c89e4269889244606953691ca33",
     "bolt11": "BOLT 11 payment-encoding.md valid donation example, lightning/bolts master",
     "transaction": "Immortal synthetic bounded transaction fixture",
     "taproot_key_spend": "BIP-341 wallet-test-vectors.json at bitcoin/bips e35a46ecf3031c21dc7f7fdb694986789a3a8144, DEFAULT key-path input 4",
@@ -159,6 +159,52 @@
     "message": "f95466d086770e689964664219266fe5ed215c92ae20bab5c9d79addddf3c0cf",
     "partial_signature": "012abbcb52b3016ac03ad82395a1a415c48b93def78718e62a7a90052fe224fb",
     "invalid_partial_signature": "fed54434ad4cfe953fc527dc6a5e5be8f6234907b7c187559557ce87a0541c46"
+  },
+  "musig2_nonce_generation": {
+    "randomness": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+    "secret_key": "0202020202020202020202020202020202020202020202020202020202020202",
+    "public_key": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+    "aggregate_key": "0707070707070707070707070707070707070707070707070707070707070707",
+    "message": "0101010101010101010101010101010101010101010101010101010101010101",
+    "extra_input": "0808080808080808080808080808080808080808080808080808080808080808",
+    "expected_public_nonce": "02f7be7089e8376eb355272368766b17e88e7db72047d05e56aa881ea52b3b35df02c29c8046fdd0ded4c7e55869137200fbdbfe2eb654267b6d7013602caed3115a"
+  },
+  "musig2_signature_aggregation": {
+    "public_keys": [
+      "03935f972da013f80ae011890fa89b67a27b7be6ccb24d3274d18b2d4067f261a9",
+      "02d2dc6f5df7c56acf38c7fa0ae7a759ae30e19b37359dfde015872324c7ef6e05"
+    ],
+    "public_nonces": [
+      "036e5ee6e28824029fea3e8a9ddd2c8483f5af98f7177c3af3cb6f47caf8d94ae902dba67e4a1f3680826172da15afb1a8ca85c7c5cc88900905c8dc8c328511b53e",
+      "03e4f798da48a76eec1c9cc5ab7a880ffba201a5f064e627ec9cb0031d1d58fc5103e06180315c5a522b7ec7c08b69dcd721c313c940819296d0a7ab8e8795ac1f00"
+    ],
+    "message": "599c67ea410d005b9da90817cf03ed3b1c868e4da4edf00a5880b0082c237869",
+    "partial_signatures": [
+      "b15d2cd3c3d22b04dae438ce653f6b4ecf042f42cfded7c41b64aaf9b4af53fb",
+      "6193d6ac61b354e9105bbdc8937a3454a6d705b6d57322a5a472a02ce99fcb64"
+    ],
+    "expected_signature": "041da22223ce65c92c9a0d6c2cac828aaf1eee56304fec371ddf91ebb2b9ef0912f1038025857fedeb3ff696f8b99fa4bb2c5812f6095a2e0004ec99ce18de1e"
+  },
+  "musig2_tweaked_signature_aggregation": {
+    "public_keys": [
+      "03935f972da013f80ae011890fa89b67a27b7be6ccb24d3274d18b2d4067f261a9",
+      "02352433b21e7e05d3b452b81cae566e06d2e003ece16d1074aaba4289e0e3d581"
+    ],
+    "public_nonces": [
+      "036e5ee6e28824029fea3e8a9ddd2c8483f5af98f7177c3af3cb6f47caf8d94ae902dba67e4a1f3680826172da15afb1a8ca85c7c5cc88900905c8dc8c328511b53e",
+      "023f7042046e0397822c4144a17f8b63d78748696a46c3b9f0a901d296ec3406c302022b0b464292cf9751d699f10980ac764e6f671efca15069bbe62b0d1c62522a"
+    ],
+    "message": "599c67ea410d005b9da90817cf03ed3b1c868e4da4edf00a5880b0082c237869",
+    "tweaks": [
+      {"value":"b511da492182a91b0ffb9a98020d55f260ae86d7ecbd0399c7383d59a5f2af7c","xonly":true},
+      {"value":"a815fe049ee3c5aab66310477fbc8bcccac2f3395f59f921c364acd78a2f48dc","xonly":false},
+      {"value":"75448a87274b056468b977be06eb1e9f657577b7320b0a3376ea51fd420d18a8","xonly":true}
+    ],
+    "partial_signatures": [
+      "97b890a26c981da8102d3bc294159d171d72810fdf7c6a691def02f0f7af3fdc",
+      "53fa9e08ba5243cbcb0d797c5ee83bc6728e539eb76c2d0bf0f971ee4e909971"
+    ],
+    "expected_signature": "839b08820b681dba8daf4cc7b104e8f2638f9388f8d7a555dc17b6e6971d7426ce07bf6ab01f1db50e4e33719295f4094572b79868e440fb3defd3fac1db589e"
   },
   "schnorr_final": {
     "public_key": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",

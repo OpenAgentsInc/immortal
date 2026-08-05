@@ -13,9 +13,10 @@
       "requires": ["relay"]
     },
     {
-      "name": "provider-v1-script-path-only",
+      "name": "provider-v1-script-path-default-with-cooperative-signer-gated",
       "taproot_script_path": true,
-      "musig2_key_path": false
+      "musig2_key_path": false,
+      "musig2_key_path_signer": false
     },
     {
       "name": "provider-v1-wallet-discovery",
