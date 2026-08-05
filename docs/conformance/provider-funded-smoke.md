@@ -211,3 +211,39 @@ recorded container, network, and state on macOS 26.4 arm64. The full topology
 does not yet have a recorded clean-machine funded execution. Issue #32 remains
 open until the funded smoke and checkpoint matrix are recorded on clean macOS
 and Debian machines; this document makes no such claim for this packet.
+
+## Recovery and failure-control contract
+
+The fixture `tests/fixtures/lab/funded-checkpoints-v1.json` is the executable
+manifest for replacement-process drills. It pins every accepted restart label
+for submarine, reverse claim, and reverse refund journeys. The wallet driver
+persists the custody-free client snapshot before each label and restores the
+requester Status cursor from signed records, so replaying a step cannot create
+a second sequence-zero stream. Each journey has its own checkpoint record;
+`funded-checkpoint.json` is only the latest-control pointer, so completing a
+later journey cannot hide an earlier journey's terminal or recovery state.
+
+Bitcoin execution uses a durable `funding_execution_ready` or
+`claim_broadcast_ready` intent bound to the transaction ID. Recovery calls
+`getrawtransaction` first. Exact observed bytes continue without another
+`sendrawtransaction`; JSON-RPC `-5` is the only result that permits the first
+broadcast; transport and other RPC errors remain ambiguous and fail closed.
+An effect-recorded or broadcast-recorded checkpoint requires the transaction
+to be observable and never enters the broadcast path. Lightning recovery
+queries `listpays` by the exact invoice and payment hash. Zero matching entries
+permit one `pay`; one is observed to terminal state without another `pay`; two
+or more fail closed. The restored client snapshot independently revalidates
+the exact typed effect request/result binding.
+
+The same fixture pins the deterministic injection vocabulary. Stale Quote,
+duplicate delivery, conflicting bytes, and custody-member leakage are
+harness-owned pre-fund cases. Relay loss and provider crash use a bounded
+request/acknowledgement handshake at a safe checkpoint, allowing a script to
+control the external process without giving the harness daemon credentials or
+process-discovery authority. Checkpoints, requests, and acknowledgements reject
+custody material recursively.
+
+This packet is a harness/unit conformance record until the expanded checkpoint
+and failure matrix is run through the disposable funded topology. The existing
+2026-08-04 process record proves only the
+`submarine:funding_authorized` replacement drill.

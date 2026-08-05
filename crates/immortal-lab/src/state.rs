@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use immortal_client::{domain::Event, market::MarketSigner};
+use immortal_client::{domain::Event, market::MarketSigner, mkt_swp_client::provider_support};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -69,8 +69,16 @@ impl LabPaths {
         self.root.join("funded-checkpoint.json")
     }
 
+    pub fn funded_journey_checkpoint(&self, journey: &str) -> PathBuf {
+        self.root.join(format!("funded-{journey}-checkpoint.json"))
+    }
+
     pub fn funded_continue(&self) -> PathBuf {
         self.root.join("funded-continue")
+    }
+
+    pub fn funded_injection(&self) -> PathBuf {
+        self.root.join("funded-injection.json")
     }
 
     pub fn funded_snapshot(&self, journey: &str) -> PathBuf {
@@ -96,6 +104,17 @@ pub struct FundedCheckpoint {
     pub safe_to_stop: bool,
     pub updated_at: u64,
     pub details: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FundedInjectionRequest {
+    pub schema: String,
+    pub run_id: String,
+    pub journey: String,
+    pub checkpoint: String,
+    pub injection: String,
+    pub requested_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,7 +290,64 @@ pub fn store_funded_checkpoint(
     paths: &LabPaths,
     checkpoint: &FundedCheckpoint,
 ) -> Result<(), String> {
+    validate_funded_checkpoint(checkpoint)?;
     write_json(&paths.funded_checkpoint(), checkpoint)
+}
+
+fn validate_funded_checkpoint(checkpoint: &FundedCheckpoint) -> Result<(), String> {
+    if checkpoint.schema != "openagents.immortal.lab-checkpoint.v1"
+        || validate_run_id(&checkpoint.run_id).is_err()
+        || checkpoint.journey.is_empty()
+        || checkpoint.journey.len() > 32
+        || !checkpoint
+            .journey
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        || checkpoint.label.is_empty()
+        || checkpoint.label.len() > 64
+        || !checkpoint
+            .label
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+    {
+        return Err("funded checkpoint identity is invalid or unbounded".to_owned());
+    }
+    provider_support::reject_custody_material(&checkpoint.details)
+        .map_err(|error| format!("funded checkpoint rejected custody material: {error}"))?;
+    Ok(())
+}
+
+pub fn store_funded_journey_checkpoint(
+    paths: &LabPaths,
+    checkpoint: &FundedCheckpoint,
+) -> Result<(), String> {
+    validate_funded_checkpoint(checkpoint)?;
+    write_json(
+        &paths.funded_journey_checkpoint(&checkpoint.journey),
+        checkpoint,
+    )
+}
+
+pub fn store_funded_injection(
+    paths: &LabPaths,
+    request: &FundedInjectionRequest,
+) -> Result<(), String> {
+    if request.schema != "openagents.immortal.lab-injection.v1"
+        || validate_run_id(&request.run_id).is_err()
+        || request.journey.is_empty()
+        || request.journey.len() > 32
+        || !request
+            .journey
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        || request.checkpoint.is_empty()
+        || request.checkpoint.len() > 128
+        || request.injection.is_empty()
+        || request.injection.len() > 32
+    {
+        return Err("funded injection request is invalid or unbounded".to_owned());
+    }
+    write_json(&paths.funded_injection(), request)
 }
 
 pub fn store_funded_snapshot(
@@ -338,9 +414,44 @@ pub fn store_funded_signed_exit(
     write_bytes(&paths.funded_signed_exit(journey), transaction.as_bytes())
 }
 
+pub fn load_funded_signed_exit(paths: &LabPaths, journey: &str) -> Result<String, String> {
+    let path = paths.funded_signed_exit(journey);
+    let transaction = fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "could not read private signed exit {}: {error}",
+            path.display()
+        )
+    })?;
+    let transaction = transaction.trim().to_owned();
+    if transaction.is_empty()
+        || transaction.len() > 800_000
+        || transaction.len() % 2 != 0
+        || !transaction.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("persisted signed exit transaction is not bounded hexadecimal".to_owned());
+    }
+    Ok(transaction)
+}
+
 pub fn load_funded_checkpoint(paths: &LabPaths) -> Result<Option<FundedCheckpoint>, String> {
     if paths.funded_checkpoint().exists() {
-        read_json(&paths.funded_checkpoint()).map(Some)
+        let checkpoint = read_json(&paths.funded_checkpoint())?;
+        validate_funded_checkpoint(&checkpoint)?;
+        Ok(Some(checkpoint))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn load_funded_journey_checkpoint(
+    paths: &LabPaths,
+    journey: &str,
+) -> Result<Option<FundedCheckpoint>, String> {
+    let path = paths.funded_journey_checkpoint(journey);
+    if path.exists() {
+        let checkpoint = read_json(&path)?;
+        validate_funded_checkpoint(&checkpoint)?;
+        Ok(Some(checkpoint))
     } else {
         Ok(None)
     }
@@ -518,8 +629,15 @@ mod tests {
             details: serde_json::json!({"order_id": "ab".repeat(32)}),
         };
         store_funded_checkpoint(&paths, &checkpoint).expect("checkpoint should persist");
+        store_funded_journey_checkpoint(&paths, &checkpoint)
+            .expect("journey checkpoint should persist");
         assert_eq!(
             load_funded_checkpoint(&paths).expect("checkpoint should load"),
+            Some(checkpoint.clone())
+        );
+        assert_eq!(
+            load_funded_journey_checkpoint(&paths, "submarine")
+                .expect("journey checkpoint should load"),
             Some(checkpoint)
         );
         #[cfg(unix)]
@@ -541,8 +659,8 @@ mod tests {
         ))
         .expect("funded checkpoint fixture should parse");
         assert_eq!(
-            fixture.get("checkpoint_schema").and_then(Value::as_str),
-            Some("openagents.immortal.lab-checkpoint.v1")
+            fixture.get("schema").and_then(Value::as_str),
+            Some("openagents.immortal.lab-checkpoint-manifest.v2")
         );
         let forbidden = fixture
             .get("forbidden_checkpoint_members")
@@ -562,6 +680,49 @@ mod tests {
             let member = member.as_str().expect("forbidden member should be text");
             assert!(checkpoint.get(member).is_none());
         }
+    }
+
+    #[test]
+    fn funded_checkpoint_rejects_custody_material_recursively() {
+        let paths = scratch("funded-checkpoint-custody");
+        let checkpoint = FundedCheckpoint {
+            schema: "openagents.immortal.lab-checkpoint.v1".to_owned(),
+            run_id: "run-1".to_owned(),
+            journey: "reverse".to_owned(),
+            label: "funding_execution_ready".to_owned(),
+            safe_to_stop: true,
+            updated_at: 10,
+            details: serde_json::json!({"nested": {"preimage": "00".repeat(32)}}),
+        };
+        let error = store_funded_checkpoint(&paths, &checkpoint)
+            .expect_err("custody-bearing checkpoint must fail closed");
+        assert!(error.contains("swp_secret_material_forbidden"));
+        assert!(!paths.funded_checkpoint().exists());
+        if paths.root().exists() {
+            fs::remove_dir_all(paths.root()).expect("scratch state should be removable");
+        }
+    }
+
+    #[test]
+    fn signed_exit_round_trips_as_a_private_bounded_artifact() {
+        let paths = scratch("funded-signed-exit");
+        let transaction = "00".repeat(64);
+        store_funded_signed_exit(&paths, "reverse", &transaction)
+            .expect("signed exit should persist");
+        assert_eq!(
+            load_funded_signed_exit(&paths, "reverse").expect("signed exit should load"),
+            transaction
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(paths.funded_signed_exit("reverse"))
+                .expect("signed exit metadata should exist")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        fs::remove_dir_all(paths.root()).expect("scratch state should be removable");
     }
 
     #[test]

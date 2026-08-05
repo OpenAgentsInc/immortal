@@ -1,29 +1,104 @@
 {
-  "schema": "openagents.immortal.lab-checkpoint-manifest.v1",
+  "schema": "openagents.immortal.lab-checkpoint-manifest.v2",
   "checkpoint_schema": "openagents.immortal.lab-checkpoint.v1",
+  "injection_schema": "openagents.immortal.lab-injection.v1",
+  "injection_ack_schema": "openagents.immortal.lab-injection-ack.v1",
   "persisted_snapshot_schema": "openagents.mkt-swp.client-snapshot.v2",
   "state_file_mode": "0600",
-  "smoke_restart_checkpoint": "submarine:funding_authorized",
+  "smoke_restart_checkpoint": "submarine:funding_execution_ready",
   "controls": {
     "stop_after": "IMMORTAL_LAB_STOP_AFTER",
+    "injection": "IMMORTAL_LAB_INJECTION",
     "inject_at": "IMMORTAL_LAB_INJECT_AT",
+    "journey_checkpoint_file": "funded-<journey>-checkpoint.json",
+    "latest_checkpoint_file": "funded-checkpoint.json",
+    "request_file": "funded-injection.json",
     "continue_file": "funded-continue",
     "maximum_injection_wait_seconds": 3600
   },
   "journeys": {
     "submarine": {
-      "restartable": ["funding_authorized", "completed"],
+      "restartable": [
+        "funding_authorized",
+        "funding_execution_ready",
+        "funding_effect_recorded",
+        "completed"
+      ],
       "terminal": "completed"
     },
     "reverse": {
-      "restartable": ["funding_authorized", "completed"],
+      "restartable": [
+        "funding_authorized",
+        "funding_execution_ready",
+        "funding_effect_recorded",
+        "claim_broadcast_ready",
+        "claim_broadcast_recorded",
+        "completed"
+      ],
       "terminal": "completed"
     },
     "reverse_refund": {
-      "restartable": ["funding_authorized", "refunded"],
+      "restartable": [
+        "funding_authorized",
+        "funding_execution_ready",
+        "funding_effect_recorded",
+        "refunded"
+      ],
       "terminal": "refunded"
     }
   },
+  "execution_recovery": {
+    "bitcoin": {
+      "ready": "probe_getrawtransaction_then_broadcast_only_if_rpc_minus_5",
+      "recorded": "require_exact_transaction_observable_without_broadcast",
+      "identity": "transaction_id_and_exact_bytes"
+    },
+    "lightning": {
+      "ready_or_recorded": "probe_listpays_by_exact_bolt11_and_payment_hash",
+      "zero_matches": "start_one_pay_call",
+      "one_match": "observe_terminal_state_without_pay",
+      "multiple_matches": "fail_closed"
+    },
+    "effect_ledger": "restored_client_snapshot_must_bind_the_exact_typed_request_and_result"
+  },
+  "injections": [
+    {
+      "name": "stale_quote",
+      "owner": "harness",
+      "phase": "verify_before_fund",
+      "expected": "reject_before_external_effect"
+    },
+    {
+      "name": "duplicate_message",
+      "owner": "harness",
+      "phase": "signed_session_replay",
+      "expected": "idempotent_no_new_logical_record"
+    },
+    {
+      "name": "conflicting_message",
+      "owner": "harness",
+      "phase": "signed_session_replay",
+      "expected": "swp_idempotency_conflict"
+    },
+    {
+      "name": "secret_leak",
+      "owner": "harness",
+      "phase": "pre_persistence",
+      "expected": "swp_secret_material_forbidden"
+    },
+    {
+      "name": "relay_loss",
+      "owner": "external_script",
+      "phase": "any_safe_checkpoint",
+      "expected": "acknowledged_restart_then_continue"
+    },
+    {
+      "name": "provider_crash",
+      "owner": "external_script",
+      "phase": "any_safe_checkpoint",
+      "expected": "acknowledged_restart_then_continue"
+    }
+  ],
   "forbidden_checkpoint_members": [
     "claim_key",
     "macaroon",

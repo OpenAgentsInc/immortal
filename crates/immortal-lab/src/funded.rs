@@ -27,7 +27,9 @@ use immortal_core::{
     mkt_swp_verify::{Transaction, TransactionInput, TransactionOutput, sha256},
 };
 use immortal_provider::{
-    bitcoind::{BitcoindAuth, BitcoindClient, BitcoindEndpoint, BitcoindLimits, RpcRequestId},
+    bitcoind::{
+        BitcoindAuth, BitcoindClient, BitcoindEndpoint, BitcoindError, BitcoindLimits, RpcRequestId,
+    },
     cln::{ClnClient, ClnEndpoint, ClnLimits, ClnRequestId, Millisatoshi, PaymentResult},
     funding::{FundingInput, FundingRequest, SignedFundingTransaction, build_funding_transaction},
     settlement::{ClaimPreimage, SettlementBridge, SettlementTemplate},
@@ -38,9 +40,11 @@ use tokio::{runtime::Runtime, task::JoinHandle};
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message, WebSocket, client};
 
 use crate::state::{
-    FundedCheckpoint, LabPaths, load_funded_checkpoint, load_funded_secret,
-    load_or_create_funded_run_id, load_or_create_identity, remove_funded_secret,
-    store_funded_checkpoint, store_funded_secret, store_funded_signed_exit, store_funded_snapshot,
+    FundedCheckpoint, FundedInjectionRequest, LabPaths, load_funded_journey_checkpoint,
+    load_funded_secret, load_funded_signed_exit, load_or_create_funded_run_id,
+    load_or_create_identity, remove_funded_secret, store_funded_checkpoint, store_funded_injection,
+    store_funded_journey_checkpoint, store_funded_secret, store_funded_signed_exit,
+    store_funded_snapshot,
 };
 
 const OFFERING_ID: &str = "immortal-funded-btc-lightning";
@@ -104,12 +108,57 @@ struct SessionContext {
     control: StepControl,
 }
 
+struct RestoredSession {
+    session: SessionContext,
+    checkpoint: FundedCheckpoint,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HarnessInjection {
+    StaleQuote,
+    DuplicateMessage,
+    ConflictingMessage,
+    SecretLeak,
+    RelayLoss,
+    ProviderCrash,
+}
+
+impl HarnessInjection {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "stale_quote" => Ok(Self::StaleQuote),
+            "duplicate_message" => Ok(Self::DuplicateMessage),
+            "conflicting_message" => Ok(Self::ConflictingMessage),
+            "secret_leak" => Ok(Self::SecretLeak),
+            "relay_loss" => Ok(Self::RelayLoss),
+            "provider_crash" => Ok(Self::ProviderCrash),
+            _ => Err("IMMORTAL_LAB_INJECTION is unsupported".to_owned()),
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::StaleQuote => "stale_quote",
+            Self::DuplicateMessage => "duplicate_message",
+            Self::ConflictingMessage => "conflicting_message",
+            Self::SecretLeak => "secret_leak",
+            Self::RelayLoss => "relay_loss",
+            Self::ProviderCrash => "provider_crash",
+        }
+    }
+
+    const fn requires_external_control(self) -> bool {
+        matches!(self, Self::RelayLoss | Self::ProviderCrash)
+    }
+}
+
 #[derive(Clone)]
 struct StepControl {
     paths: LabPaths,
     run_id: String,
     stop_after: Option<String>,
     inject_at: Option<String>,
+    injection: Option<HarnessInjection>,
     injection_timeout: Duration,
 }
 
@@ -129,11 +178,21 @@ impl StepControl {
         if !(1..=3_600).contains(&injection_timeout) {
             return Err("IMMORTAL_LAB_INJECTION_TIMEOUT_SECONDS is outside 1..=3600".to_owned());
         }
+        let inject_at = std::env::var("IMMORTAL_LAB_INJECT_AT").ok();
+        let injection = std::env::var("IMMORTAL_LAB_INJECTION")
+            .ok()
+            .map(|value| HarnessInjection::parse(&value))
+            .transpose()?;
+        if injection.is_some_and(HarnessInjection::requires_external_control) && inject_at.is_none()
+        {
+            return Err("relay_loss and provider_crash require IMMORTAL_LAB_INJECT_AT".to_owned());
+        }
         Ok(Self {
             paths,
             run_id,
             stop_after: std::env::var("IMMORTAL_LAB_STOP_AFTER").ok(),
-            inject_at: std::env::var("IMMORTAL_LAB_INJECT_AT").ok(),
+            inject_at,
+            injection,
             injection_timeout: Duration::from_secs(injection_timeout),
         })
     }
@@ -146,18 +205,17 @@ impl StepControl {
         details: Value,
     ) -> Result<(), String> {
         let qualified = format!("{journey}:{label}");
-        store_funded_checkpoint(
-            &self.paths,
-            &FundedCheckpoint {
-                schema: "openagents.immortal.lab-checkpoint.v1".to_owned(),
-                run_id: self.run_id.clone(),
-                journey: journey.to_owned(),
-                label: label.to_owned(),
-                safe_to_stop,
-                updated_at: unix_now()?,
-                details,
-            },
-        )?;
+        let checkpoint = FundedCheckpoint {
+            schema: "openagents.immortal.lab-checkpoint.v1".to_owned(),
+            run_id: self.run_id.clone(),
+            journey: journey.to_owned(),
+            label: label.to_owned(),
+            safe_to_stop,
+            updated_at: unix_now()?,
+            details,
+        };
+        store_funded_journey_checkpoint(&self.paths, &checkpoint)?;
+        store_funded_checkpoint(&self.paths, &checkpoint)?;
         if self.stop_after.as_deref() == Some(&qualified) {
             if !safe_to_stop {
                 return Err(format!(
@@ -169,6 +227,15 @@ impl StepControl {
             ));
         }
         if self.inject_at.as_deref() == Some(&qualified) {
+            let injection = self.injection.ok_or_else(|| {
+                "IMMORTAL_LAB_INJECT_AT requires IMMORTAL_LAB_INJECTION".to_owned()
+            })?;
+            if !injection.requires_external_control() {
+                return Err(format!(
+                    "{} is a harness-owned pre-fund injection and cannot pause an external process",
+                    injection.name()
+                ));
+            }
             let continue_path = self.paths.funded_continue();
             if continue_path.exists() {
                 return Err(format!(
@@ -176,9 +243,32 @@ impl StepControl {
                     continue_path.display()
                 ));
             }
+            store_funded_injection(
+                &self.paths,
+                &FundedInjectionRequest {
+                    schema: "openagents.immortal.lab-injection.v1".to_owned(),
+                    run_id: self.run_id.clone(),
+                    journey: journey.to_owned(),
+                    checkpoint: qualified.clone(),
+                    injection: injection.name().to_owned(),
+                    requested_at: unix_now()?,
+                },
+            )?;
             let deadline = Instant::now() + self.injection_timeout;
             while Instant::now() < deadline {
                 if continue_path.exists() {
+                    let acknowledgement = std::fs::read(&continue_path).map_err(|error| {
+                        format!(
+                            "could not read injection continuation {}: {error}",
+                            continue_path.display()
+                        )
+                    })?;
+                    validate_injection_acknowledgement(
+                        &acknowledgement,
+                        &self.run_id,
+                        &qualified,
+                        injection,
+                    )?;
                     std::fs::remove_file(&continue_path).map_err(|error| {
                         format!(
                             "could not consume injection continuation {}: {error}",
@@ -196,6 +286,31 @@ impl StepControl {
         }
         Ok(())
     }
+}
+
+fn validate_injection_acknowledgement(
+    bytes: &[u8],
+    run_id: &str,
+    checkpoint: &str,
+    injection: HarnessInjection,
+) -> Result<(), String> {
+    if bytes.is_empty() || bytes.len() > 4_096 {
+        return Err("injection continuation is empty or unbounded".to_owned());
+    }
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|error| format!("injection continuation is invalid JSON: {error}"))?;
+    provider_support::reject_custody_material(&value)
+        .map_err(|error| format!("injection continuation contains custody material: {error}"))?;
+    if value.get("schema").and_then(Value::as_str)
+        != Some("openagents.immortal.lab-injection-ack.v1")
+        || value.get("run_id").and_then(Value::as_str) != Some(run_id)
+        || value.get("checkpoint").and_then(Value::as_str) != Some(checkpoint)
+        || value.get("injection").and_then(Value::as_str) != Some(injection.name())
+        || value.get("restored").and_then(Value::as_bool) != Some(true)
+    {
+        return Err("injection continuation does not bind the requested recovery".to_owned());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -275,8 +390,8 @@ pub fn run_funded_journey(journey: FundedJourney) -> Result<Value, String> {
         &environment.requester,
         JOURNEY_TIMEOUT,
     )?;
-    if let Some(session) = restore_authorized_session(&environment, journey)? {
-        let result = resume_authorized_journey(&runtime, &environment, journey, session)?;
+    if let Some(restored) = restore_authorized_session(&environment, journey)? {
+        let result = resume_authorized_journey(&runtime, &environment, journey, restored)?;
         verify_health(&environment.health_url)?;
         return Ok(json!({
             "step": journey.name(),
@@ -316,19 +431,19 @@ pub fn run_funded_journey(journey: FundedJourney) -> Result<Value, String> {
 fn restore_authorized_session(
     environment: &SmokeEnvironment,
     journey: FundedJourney,
-) -> Result<Option<SessionContext>, String> {
+) -> Result<Option<RestoredSession>, String> {
     let snapshot_path = environment.control.paths.funded_snapshot(journey.name());
     if !snapshot_path.exists() {
         return Ok(None);
     }
-    let checkpoint = load_funded_checkpoint(&environment.control.paths)?
+    let checkpoint = load_funded_journey_checkpoint(&environment.control.paths, journey.name())?
         .ok_or_else(|| "funded snapshot exists without a checkpoint".to_owned())?;
     if checkpoint.run_id != environment.control.run_id || checkpoint.journey != journey.name() {
         return Err("funded snapshot checkpoint belongs to another run or journey".to_owned());
     }
-    if checkpoint.label != "funding_authorized" {
+    if !restartable_checkpoint(journey, &checkpoint.label) {
         return Err(format!(
-            "funded journey {} already passed the restartable authorization boundary ({})",
+            "funded journey {} has unsupported persisted checkpoint {}",
             journey.name(),
             checkpoint.label
         ));
@@ -362,7 +477,6 @@ fn restore_authorized_session(
         now,
     )?;
     subscribe(&mut reader, environment.requester.pubkey())?;
-    drain_history(&mut reader, JOURNEY_TIMEOUT)?;
     let mut publisher = connect(&environment.relay_url)?;
     authenticate(
         &mut publisher,
@@ -370,21 +484,26 @@ fn restore_authorized_session(
         &environment.relay_url,
         now,
     )?;
-    Ok(Some(SessionContext {
-        reader,
-        publisher,
-        requester: environment.requester.clone(),
-        provider_pubkey: config.provider_pubkey.clone(),
-        factory: SwapRecordFactory::new(config)
-            .map_err(|error| format!("could not restore funded record factory: {error}"))?,
-        verifier,
-        order,
-        contract,
-        authorized_verifier: Some(authorized),
-        requester_funding: None,
-        requester_status: None,
-        journey_name: journey.name().to_owned(),
-        control: environment.control.clone(),
+    let requester_status =
+        latest_requester_status(verifier.signed_records(), environment.requester.pubkey())?;
+    Ok(Some(RestoredSession {
+        session: SessionContext {
+            reader,
+            publisher,
+            requester: environment.requester.clone(),
+            provider_pubkey: config.provider_pubkey.clone(),
+            factory: SwapRecordFactory::new(config)
+                .map_err(|error| format!("could not restore funded record factory: {error}"))?,
+            verifier,
+            order,
+            contract,
+            authorized_verifier: Some(authorized),
+            requester_funding: None,
+            requester_status,
+            journey_name: journey.name().to_owned(),
+            control: environment.control.clone(),
+        },
+        checkpoint,
     }))
 }
 
@@ -392,8 +511,17 @@ fn resume_authorized_journey(
     runtime: &Runtime,
     environment: &SmokeEnvironment,
     journey: FundedJourney,
-    session: SessionContext,
+    restored: RestoredSession,
 ) -> Result<Value, String> {
+    if matches!(restored.checkpoint.label.as_str(), "completed" | "refunded") {
+        return restored
+            .checkpoint
+            .details
+            .get("result")
+            .cloned()
+            .ok_or_else(|| "terminal funded checkpoint has no result evidence".to_owned());
+    }
+    let session = restored.session;
     let action = session
         .authorized_verifier
         .as_ref()
@@ -415,12 +543,12 @@ fn resume_authorized_journey(
                 .and_then(Value::as_str)
                 .ok_or_else(|| "restored submarine contract has no payment hash".to_owned())?
                 .to_owned();
-            continue_submarine(
+            resume_submarine(
                 runtime,
                 environment,
                 session,
+                &restored.checkpoint,
                 &raw_transaction,
-                None,
                 &payment_hash,
             )
         }
@@ -443,10 +571,11 @@ fn resume_authorized_journey(
                     format!("restored reverse destination path is invalid: {error}")
                 })?)
                 .map_err(|error| format!("could not restore reverse destination: {error}"))?;
-            continue_reverse(
+            resume_reverse(
                 runtime,
                 environment,
                 session,
+                &restored.checkpoint,
                 journey.name(),
                 journey == FundedJourney::ReverseRefund,
                 preimage,
@@ -457,6 +586,34 @@ fn resume_authorized_journey(
             )
         }
         _ => Err("persisted funding action does not match the requested journey".to_owned()),
+    }
+}
+
+fn restartable_checkpoint(journey: FundedJourney, label: &str) -> bool {
+    match journey {
+        FundedJourney::Submarine => matches!(
+            label,
+            "funding_authorized"
+                | "funding_execution_ready"
+                | "funding_effect_recorded"
+                | "completed"
+        ),
+        FundedJourney::ReverseClaim => matches!(
+            label,
+            "funding_authorized"
+                | "funding_execution_ready"
+                | "funding_effect_recorded"
+                | "claim_broadcast_ready"
+                | "claim_broadcast_recorded"
+                | "completed"
+        ),
+        FundedJourney::ReverseRefund => matches!(
+            label,
+            "funding_authorized"
+                | "funding_execution_ready"
+                | "funding_effect_recorded"
+                | "refunded"
+        ),
     }
 }
 
@@ -594,17 +751,80 @@ fn continue_submarine(
     payment_hash: &str,
 ) -> Result<Value, String> {
     session.publish_requester_status("requester_verification_passed", Map::new())?;
-    let lockup_txid = runtime
-        .block_on(
-            environment
-                .bitcoind
-                .broadcast(&rpc_id("submarine-funding")?, raw_funding, None),
-        )
-        .map_err(|error| format!("could not broadcast submarine funding: {error}"))?;
-    if expected_txid.is_some_and(|expected| lockup_txid != expected) {
-        return Err("bitcoind returned another submarine funding transaction ID".to_owned());
-    }
+    let intended_txid = match expected_txid {
+        Some(expected_txid) => expected_txid.to_owned(),
+        None => transaction_id(raw_funding)?,
+    };
+    session.persist_authorized_details(
+        "funding_execution_ready",
+        true,
+        json!({"external_identifier": intended_txid.clone()}),
+    )?;
+    let lockup_txid = broadcast_bitcoin_once(
+        runtime,
+        &environment.bitcoind,
+        "submarine-funding",
+        raw_funding,
+        &intended_txid,
+    )?;
     session.record_funding_effect(lockup_txid.clone(), sha256(raw_funding.as_bytes()))?;
+    finish_submarine(runtime, environment, session, lockup_txid, payment_hash)
+}
+
+fn resume_submarine(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    mut session: SessionContext,
+    checkpoint: &FundedCheckpoint,
+    raw_funding: &str,
+    payment_hash: &str,
+) -> Result<Value, String> {
+    match checkpoint.label.as_str() {
+        "funding_authorized" => continue_submarine(
+            runtime,
+            environment,
+            session,
+            raw_funding,
+            None,
+            payment_hash,
+        ),
+        "funding_execution_ready" => {
+            let intended_txid = checkpoint_external_identifier(checkpoint)?;
+            if transaction_id(raw_funding)? != intended_txid {
+                return Err("persisted funding checkpoint binds another transaction".to_owned());
+            }
+            let lockup_txid = broadcast_bitcoin_once(
+                runtime,
+                &environment.bitcoind,
+                "submarine-funding-resume",
+                raw_funding,
+                &intended_txid,
+            )?;
+            session.record_funding_effect(lockup_txid.clone(), sha256(raw_funding.as_bytes()))?;
+            finish_submarine(runtime, environment, session, lockup_txid, payment_hash)
+        }
+        "funding_effect_recorded" => {
+            let lockup_txid = checkpoint_external_identifier(checkpoint)?;
+            require_known_bitcoin_transaction(
+                runtime,
+                &environment.bitcoind,
+                "submarine-funding-recorded",
+                &lockup_txid,
+                Some(raw_funding),
+            )?;
+            finish_submarine(runtime, environment, session, lockup_txid, payment_hash)
+        }
+        _ => Err("submarine checkpoint cannot resume execution".to_owned()),
+    }
+}
+
+fn finish_submarine(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    mut session: SessionContext,
+    lockup_txid: String,
+    payment_hash: &str,
+) -> Result<Value, String> {
     let mut funding_extra = Map::new();
     funding_extra.insert(
         "transaction_id".to_owned(),
@@ -636,15 +856,16 @@ fn continue_submarine(
             lightning: LightningTerminalCheck::IncomingInvoice { payment_hash },
         },
     )?;
-    session.persist_authorized("completed", true)?;
-    Ok(json!({
+    let result = json!({
         "order_id":session.order.id,
         "lockup_txid":lockup_txid,
         "lockup_vout":0,
         "claim_txid":claim_txid,
         "payment_hash":payment_hash,
         "result":"claimed"
-    }))
+    });
+    session.persist_terminal("completed", result.clone())?;
+    Ok(result)
 }
 
 fn drive_reverse(
@@ -715,20 +936,134 @@ fn continue_reverse(
     mut session: SessionContext,
     journey_name: &str,
     refund: bool,
-    mut preimage: [u8; 32],
+    preimage: [u8; 32],
     payment_hash: String,
     invoice: String,
     claim_path: WalletPath,
     destination_script_pubkey: Vec<u8>,
 ) -> Result<Value, String> {
     session.publish_requester_status("requester_invoice_verified", Map::new())?;
-    let payment_task = spawn_reverse_payment(
+    session.persist_authorized_details(
+        "funding_execution_ready",
+        true,
+        json!({"external_identifier": payment_hash.clone()}),
+    )?;
+    let payment_task = spawn_reverse_payment_once(
         runtime,
         &environment.peer_cln,
         journey_name,
         invoice.clone(),
+        payment_hash.clone(),
     )?;
     session.record_funding_effect(payment_hash.clone(), sha256(payment_hash.as_bytes()))?;
+    continue_reverse_after_funding_effect(
+        runtime,
+        environment,
+        session,
+        journey_name,
+        refund,
+        preimage,
+        payment_hash,
+        invoice,
+        claim_path,
+        destination_script_pubkey,
+        payment_task,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resume_reverse(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    mut session: SessionContext,
+    checkpoint: &FundedCheckpoint,
+    journey_name: &str,
+    refund: bool,
+    mut preimage: [u8; 32],
+    payment_hash: String,
+    invoice: String,
+    claim_path: WalletPath,
+    destination_script_pubkey: Vec<u8>,
+) -> Result<Value, String> {
+    if matches!(
+        checkpoint.label.as_str(),
+        "funding_execution_ready" | "funding_effect_recorded"
+    ) && checkpoint_external_identifier(checkpoint)? != payment_hash
+    {
+        return Err("persisted reverse checkpoint binds another payment".to_owned());
+    }
+    match checkpoint.label.as_str() {
+        "funding_authorized" => continue_reverse(
+            runtime,
+            environment,
+            session,
+            journey_name,
+            refund,
+            preimage,
+            payment_hash,
+            invoice,
+            claim_path,
+            destination_script_pubkey,
+        ),
+        "funding_execution_ready" | "funding_effect_recorded" => {
+            session.publish_requester_status("requester_invoice_verified", Map::new())?;
+            let payment_task = spawn_reverse_payment_once(
+                runtime,
+                &environment.peer_cln,
+                journey_name,
+                invoice.clone(),
+                payment_hash.clone(),
+            )?;
+            if checkpoint.label == "funding_execution_ready" {
+                session
+                    .record_funding_effect(payment_hash.clone(), sha256(payment_hash.as_bytes()))?;
+            }
+            continue_reverse_after_funding_effect(
+                runtime,
+                environment,
+                session,
+                journey_name,
+                refund,
+                preimage,
+                payment_hash,
+                invoice,
+                claim_path,
+                destination_script_pubkey,
+                payment_task,
+            )
+        }
+        "claim_broadcast_ready" | "claim_broadcast_recorded" if !refund => {
+            preimage.fill(0);
+            resume_reverse_claim(
+                runtime,
+                environment,
+                session,
+                checkpoint,
+                journey_name,
+                payment_hash,
+                invoice,
+            )
+        }
+        _ => Err("reverse checkpoint cannot resume execution".to_owned()),
+    }
+}
+
+type PaymentTask = JoinHandle<Result<PaymentResult, String>>;
+
+#[allow(clippy::too_many_arguments)]
+fn continue_reverse_after_funding_effect(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    mut session: SessionContext,
+    journey_name: &str,
+    refund: bool,
+    mut preimage: [u8; 32],
+    payment_hash: String,
+    invoice: String,
+    claim_path: WalletPath,
+    destination_script_pubkey: Vec<u8>,
+    payment_task: PaymentTask,
+) -> Result<Value, String> {
     session.publish_requester_status("lightning_payment_pending", Map::new())?;
     session.wait_provider_state("lightning_htlcs_held")?;
     session.wait_provider_state("provider_lock_terms_ready")?;
@@ -836,9 +1171,8 @@ fn continue_reverse(
                 },
             },
         )?;
-        session.persist_authorized("refunded", true)?;
         remove_funded_secret(&environment.control.paths, journey_name)?;
-        return Ok(json!({
+        let result = json!({
             "order_id":session.order.id,
             "lockup_txid":lockup_txid,
             "lockup_vout":output_index,
@@ -846,7 +1180,9 @@ fn continue_reverse(
             "payment_hash":payment_hash,
             "result":"refunded",
             "preimage_released":false
-        }));
+        });
+        session.persist_terminal("refunded", result.clone())?;
+        return Ok(result);
     }
 
     let bitcoin = bitcoin_terms(&session.contract, "destination")?;
@@ -923,16 +1259,118 @@ fn continue_reverse(
         .record_external_effect(&request, effect)
         .map_err(|error| format!("could not persist reverse signing effect: {error}"))?;
     session.persist_snapshot()?;
-    let broadcast_txid = runtime
-        .block_on(
-            environment
-                .bitcoind
-                .broadcast(&rpc_id("reverse-claim")?, &raw_claim, None),
-        )
-        .map_err(|error| format!("could not broadcast reverse claim: {error}"))?;
-    if broadcast_txid != claim_txid {
-        return Err("bitcoind returned another reverse claim transaction ID".to_owned());
+    session.persist_authorized_details(
+        "claim_broadcast_ready",
+        true,
+        json!({"external_identifier": claim_txid.clone()}),
+    )?;
+    broadcast_bitcoin_once(
+        runtime,
+        &environment.bitcoind,
+        "reverse-claim",
+        &raw_claim,
+        &claim_txid,
+    )?;
+    session.persist_authorized_details(
+        "claim_broadcast_recorded",
+        true,
+        json!({"external_identifier": claim_txid.clone()}),
+    )?;
+    finish_reverse_claim(
+        runtime,
+        environment,
+        session,
+        journey_name,
+        payment_hash,
+        invoice,
+        claim_txid,
+        payment_task,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resume_reverse_claim(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    session: SessionContext,
+    checkpoint: &FundedCheckpoint,
+    journey_name: &str,
+    payment_hash: String,
+    invoice: String,
+) -> Result<Value, String> {
+    let claim_txid = checkpoint_external_identifier(checkpoint)?;
+    let raw_claim = load_funded_signed_exit(&environment.control.paths, journey_name)?;
+    if transaction_id(&raw_claim)? != claim_txid {
+        return Err("persisted reverse claim checkpoint binds another transaction".to_owned());
     }
+    let payment_task = spawn_reverse_payment_once(
+        runtime,
+        &environment.peer_cln,
+        journey_name,
+        invoice.clone(),
+        payment_hash.clone(),
+    )?;
+    if checkpoint.label == "claim_broadcast_ready" {
+        broadcast_bitcoin_once(
+            runtime,
+            &environment.bitcoind,
+            "reverse-claim-resume",
+            &raw_claim,
+            &claim_txid,
+        )?;
+        session.persist_authorized_details(
+            "claim_broadcast_recorded",
+            true,
+            json!({"external_identifier": claim_txid.clone()}),
+        )?;
+    } else {
+        require_known_bitcoin_transaction(
+            runtime,
+            &environment.bitcoind,
+            "reverse-claim-recorded",
+            &claim_txid,
+            Some(&raw_claim),
+        )?;
+    }
+    finish_reverse_claim(
+        runtime,
+        environment,
+        session,
+        journey_name,
+        payment_hash,
+        invoice,
+        claim_txid,
+        payment_task,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_reverse_claim(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    mut session: SessionContext,
+    journey_name: &str,
+    payment_hash: String,
+    invoice: String,
+    claim_txid: String,
+    payment_task: PaymentTask,
+) -> Result<Value, String> {
+    let funding_status = session
+        .verifier
+        .signed_records()
+        .iter()
+        .find(|event| {
+            event.kind == MKT_STATUS_KIND
+                && event.pubkey == session.provider_pubkey
+                && record_profile(event)
+                    .ok()
+                    .and_then(|profile| profile.get("swp_state").cloned())
+                    .and_then(|state| state.as_str().map(str::to_owned))
+                    .as_deref()
+                    == Some("provider_funding_broadcast")
+        })
+        .ok_or_else(|| "persisted reverse claim has no provider funding Status".to_owned())?;
+    let (lockup_txid, output_index) = status_outpoint(funding_status)?;
     let mut claim_extra = Map::new();
     claim_extra.insert(
         "transaction_id".to_owned(),
@@ -968,29 +1406,139 @@ fn continue_reverse(
             },
         },
     )?;
-    session.persist_authorized("completed", true)?;
     remove_funded_secret(&environment.control.paths, journey_name)?;
-    Ok(json!({
+    let result = json!({
         "order_id":session.order.id,
         "lockup_txid":lockup_txid,
         "lockup_vout":output_index,
         "claim_txid":claim_txid,
         "payment_hash":payment_hash,
         "result":"claimed"
-    }))
+    });
+    session.persist_terminal("completed", result.clone())?;
+    Ok(result)
 }
 
-fn spawn_reverse_payment(
+fn spawn_reverse_payment_once(
     runtime: &Runtime,
     cln: &ClnClient,
     journey_name: &str,
     invoice: String,
-) -> Result<JoinHandle<Result<PaymentResult, immortal_provider::cln::ClnError>>, String> {
+    payment_hash: String,
+) -> Result<PaymentTask, String> {
     let client = cln.clone();
     let request_id = cln_id(&format!("{journey_name}-pay"))?;
     let maximum_fee = Millisatoshi::from_satoshis(100)
         .map_err(|error| format!("reverse routing fee is invalid: {error}"))?;
-    Ok(runtime.spawn(async move { client.pay(&request_id, &invoice, Some(maximum_fee)).await }))
+    let lookup_id = cln_id(&format!("{journey_name}-pay-preflight"))?;
+    let existing = runtime
+        .block_on(client.list_pays(&lookup_id, Some(&invoice)))
+        .map_err(|error| format!("could not inspect prior reverse payment: {error}"))?;
+    let (total, matching) = payment_entries(&existing, &payment_hash)?;
+    if total != matching {
+        return Err("peer CLN returned another payment for the bound invoice".to_owned());
+    }
+    if matching > 1 {
+        return Err("peer CLN reports multiple attempts for one bound payment".to_owned());
+    }
+    if matching == 0 {
+        return Ok(runtime.spawn(async move {
+            client
+                .pay(&request_id, &invoice, Some(maximum_fee))
+                .await
+                .map_err(|error| format!("reverse payment failed: {error}"))
+        }));
+    }
+    let journey_name = journey_name.to_owned();
+    Ok(runtime.spawn(async move {
+        observe_reverse_payment(&client, &invoice, &payment_hash, &journey_name).await
+    }))
+}
+
+async fn observe_reverse_payment(
+    client: &ClnClient,
+    invoice: &str,
+    payment_hash: &str,
+    journey_name: &str,
+) -> Result<PaymentResult, String> {
+    let deadline = Instant::now() + JOURNEY_TIMEOUT;
+    let request_id = cln_id(&format!("{journey_name}-pay-observe"))?;
+    while Instant::now() < deadline {
+        let response = client
+            .list_pays(&request_id, Some(invoice))
+            .await
+            .map_err(|error| format!("could not observe prior reverse payment: {error}"))?;
+        let entries = response
+            .get("pays")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "CLN listpays response has no pays array".to_owned())?;
+        let matching = entries
+            .iter()
+            .filter(|entry| entry.get("payment_hash").and_then(Value::as_str) == Some(payment_hash))
+            .collect::<Vec<_>>();
+        if entries.len() != matching.len() {
+            return Err("peer CLN returned another payment for the bound invoice".to_owned());
+        }
+        if matching.len() > 1 {
+            return Err("peer CLN reports multiple attempts for one bound payment".to_owned());
+        }
+        if let Some(entry) = matching.first() {
+            match entry.get("status").and_then(Value::as_str) {
+                Some("complete") => return parse_payment_result(entry),
+                Some("failed") => return Err("reverse payment reached failed state".to_owned()),
+                Some("pending") => {}
+                _ => return Err("peer CLN returned an invalid payment status".to_owned()),
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    Err("timed out observing the existing reverse payment".to_owned())
+}
+
+fn payment_entries(response: &Value, payment_hash: &str) -> Result<(usize, usize), String> {
+    let entries = response
+        .get("pays")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "CLN listpays response has no pays array".to_owned())?;
+    let matching = entries
+        .iter()
+        .filter(|entry| entry.get("payment_hash").and_then(Value::as_str) == Some(payment_hash))
+        .count();
+    Ok((entries.len(), matching))
+}
+
+fn parse_payment_result(value: &Value) -> Result<PaymentResult, String> {
+    let payment_hash = value
+        .get("payment_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "CLN payment has no payment hash".to_owned())?;
+    require_lower_hex_32(payment_hash, "CLN payment hash")?;
+    let status = value
+        .get("status")
+        .and_then(Value::as_str)
+        .filter(|status| matches!(*status, "complete" | "pending" | "failed"))
+        .ok_or_else(|| "CLN payment has an invalid status".to_owned())?;
+    let amount = Millisatoshi::parse(
+        value
+            .get("amount_msat")
+            .ok_or_else(|| "CLN payment has no amount".to_owned())?,
+    )
+    .map_err(|error| format!("CLN payment amount is invalid: {error}"))?;
+    let amount_sent = Millisatoshi::parse(
+        value
+            .get("amount_sent_msat")
+            .ok_or_else(|| "CLN payment has no sent amount".to_owned())?,
+    )
+    .map_err(|error| format!("CLN payment sent amount is invalid: {error}"))?;
+    if amount_sent < amount {
+        return Err("CLN payment sent amount is below its delivered amount".to_owned());
+    }
+    Ok(PaymentResult {
+        payment_hash: payment_hash.to_owned(),
+        status: status.to_owned(),
+        amount,
+        amount_sent,
+    })
 }
 
 fn negotiate(
@@ -1139,7 +1687,7 @@ fn negotiate(
     records.push(provider_contract);
     let verifier = SwapSession::from_signed_records(config, records, vec![exit_package])
         .map_err(|error| format!("funded verifier rejected negotiated session: {error}"))?;
-    Ok(SessionContext {
+    let mut session = SessionContext {
         reader,
         publisher,
         requester: environment.requester.clone(),
@@ -1153,10 +1701,69 @@ fn negotiate(
         requester_status: None,
         journey_name: input.journey_name.to_owned(),
         control: environment.control.clone(),
-    })
+    };
+    session.apply_pre_fund_injection()?;
+    Ok(session)
 }
 
 impl SessionContext {
+    fn apply_pre_fund_injection(&mut self) -> Result<(), String> {
+        match self.control.injection {
+            Some(HarnessInjection::DuplicateMessage) => {
+                let duplicate = self
+                    .verifier
+                    .signed_records()
+                    .last()
+                    .cloned()
+                    .ok_or_else(|| "cannot inject a duplicate into an empty session".to_owned())?;
+                if self
+                    .verifier
+                    .ingest_signed_record(duplicate)
+                    .map_err(|error| format!("duplicate injection was rejected: {error}"))?
+                {
+                    return Err("duplicate injection created another logical record".to_owned());
+                }
+                Ok(())
+            }
+            Some(HarnessInjection::ConflictingMessage) => {
+                let mut conflicting = self
+                    .verifier
+                    .signed_records()
+                    .last()
+                    .cloned()
+                    .ok_or_else(|| "cannot inject a conflict into an empty session".to_owned())?;
+                conflicting.content.push(' ');
+                let error = match self.verifier.ingest_signed_record(conflicting) {
+                    Ok(_) => return Err("conflicting signed bytes were accepted".to_owned()),
+                    Err(error) => error,
+                };
+                if error.code != "swp_idempotency_conflict" {
+                    return Err(format!(
+                        "conflict injection returned another refusal: {error}"
+                    ));
+                }
+                Err("injected conflicting message rejected before funding".to_owned())
+            }
+            Some(HarnessInjection::SecretLeak) => {
+                let error = match provider_support::reject_custody_material(&json!({
+                    "preimage": "00".repeat(32)
+                })) {
+                    Ok(()) => return Err("custody injection was accepted".to_owned()),
+                    Err(error) => error,
+                };
+                if error.code != "swp_secret_material_forbidden" {
+                    return Err(format!(
+                        "secret injection returned another refusal: {error}"
+                    ));
+                }
+                Err("injected custody material rejected before persistence or funding".to_owned())
+            }
+            Some(HarnessInjection::StaleQuote)
+            | Some(HarnessInjection::RelayLoss | HarnessInjection::ProviderCrash)
+            | None => Ok(()),
+        }
+    }
+
     fn set_authorized_verifier(
         &mut self,
         authorized: SwapSession<FundingAuthorized>,
@@ -1171,6 +1778,15 @@ impl SessionContext {
     }
 
     fn persist_authorized(&self, label: &str, safe_to_stop: bool) -> Result<(), String> {
+        self.persist_authorized_details(label, safe_to_stop, json!({}))
+    }
+
+    fn persist_authorized_details(
+        &self,
+        label: &str,
+        safe_to_stop: bool,
+        details: Value,
+    ) -> Result<(), String> {
         let authorized = self
             .authorized_verifier
             .as_ref()
@@ -1179,17 +1795,35 @@ impl SessionContext {
             .persist()
             .map_err(|error| format!("could not persist funded client session: {error}"))?;
         store_funded_snapshot(&self.control.paths, &self.journey_name, &snapshot)?;
+        let mut checkpoint_details = details
+            .as_object()
+            .cloned()
+            .ok_or_else(|| "funded checkpoint details must be an object".to_owned())?;
+        checkpoint_details.insert(
+            "session_id".to_owned(),
+            Value::String(authorized.config().session_id.clone()),
+        );
+        checkpoint_details.insert("order_id".to_owned(), Value::String(self.order.id.clone()));
+        checkpoint_details.insert(
+            "snapshot".to_owned(),
+            Value::String(
+                self.control
+                    .paths
+                    .funded_snapshot(&self.journey_name)
+                    .display()
+                    .to_string(),
+            ),
+        );
         self.control.checkpoint(
             &self.journey_name,
             label,
             safe_to_stop,
-            json!({
-                "session_id": authorized.config().session_id,
-                "order_id": self.order.id,
-                "snapshot": self.control.paths.funded_snapshot(&self.journey_name)
-                    .display().to_string(),
-            }),
+            Value::Object(checkpoint_details),
         )
+    }
+
+    fn persist_terminal(&self, label: &str, result: Value) -> Result<(), String> {
+        self.persist_authorized_details(label, true, json!({"result": result}))
     }
 
     fn persist_snapshot(&self) -> Result<(), String> {
@@ -1207,6 +1841,7 @@ impl SessionContext {
         external_identifier: String,
         result_digest: [u8; 32],
     ) -> Result<(), String> {
+        let checkpoint_identifier = external_identifier.clone();
         let authorized = self
             .authorized_verifier
             .as_mut()
@@ -1229,10 +1864,26 @@ impl SessionContext {
         authorized
             .record_external_effect(&request, result)
             .map_err(|error| format!("could not persist funded execution effect: {error}"))?;
-        self.persist_authorized("funding_effect_recorded", false)
+        self.persist_authorized_details(
+            "funding_effect_recorded",
+            true,
+            json!({"external_identifier": checkpoint_identifier}),
+        )
     }
 
     fn wait_provider_state(&mut self, expected: &str) -> Result<Event, String> {
+        if let Some(existing) = self.verifier.signed_records().iter().find(|event| {
+            event.kind == MKT_STATUS_KIND
+                && event.pubkey == self.provider_pubkey
+                && record_profile(event)
+                    .ok()
+                    .and_then(|profile| profile.get("swp_state").cloned())
+                    .and_then(|state| state.as_str().map(str::to_owned))
+                    .as_deref()
+                    == Some(expected)
+        }) {
+            return Ok(existing.clone());
+        }
         let session_id = self.verifier.config().session_id.clone();
         let event = receive_matching_private(
             &mut self.reader,
@@ -1260,19 +1911,28 @@ impl SessionContext {
         check: TerminalRailCheck<'_>,
     ) -> Result<Event, String> {
         let session_id = self.verifier.config().session_id.clone();
-        let event = receive_matching_private(
-            &mut self.reader,
-            &self.requester,
-            &session_id,
-            JOURNEY_TIMEOUT,
-            |event| {
-                event.kind == MKT_CLOSE_KIND
-                    && event.pubkey == self.provider_pubkey
-                    && event
-                        .tag_values("outcome")
-                        .eq(std::iter::once(expected_outcome))
-            },
-        )?;
+        let event = match self.verifier.signed_records().iter().find(|event| {
+            event.kind == MKT_CLOSE_KIND
+                && event.pubkey == self.provider_pubkey
+                && event
+                    .tag_values("outcome")
+                    .eq(std::iter::once(expected_outcome))
+        }) {
+            Some(existing) => existing.clone(),
+            None => receive_matching_private(
+                &mut self.reader,
+                &self.requester,
+                &session_id,
+                JOURNEY_TIMEOUT,
+                |event| {
+                    event.kind == MKT_CLOSE_KIND
+                        && event.pubkey == self.provider_pubkey
+                        && event
+                            .tag_values("outcome")
+                            .eq(std::iter::once(expected_outcome))
+                },
+            )?,
+        };
         let leg_ids = contract_leg_ids(&self.contract)?;
         let mut authorized = self
             .authorized_verifier
@@ -1311,6 +1971,20 @@ impl SessionContext {
         state: &'static str,
         extra: Map<String, Value>,
     ) -> Result<Event, String> {
+        if let Some(existing) = self.verifier.signed_records().iter().find(|event| {
+            if event.kind != MKT_STATUS_KIND || event.pubkey != self.requester.pubkey() {
+                return false;
+            }
+            let Ok(profile) = record_profile(event) else {
+                return false;
+            };
+            profile.get("swp_state").and_then(Value::as_str) == Some(state)
+                && extra
+                    .iter()
+                    .all(|(name, value)| profile.get(name) == Some(value))
+        }) {
+            return Ok(existing.clone());
+        }
         let (sequence, previous) = match &self.requester_status {
             Some((sequence, previous)) => (
                 sequence
@@ -2133,7 +2807,30 @@ fn verify_before_fund_input(
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .ok_or_else(|| "funded verifier has no bounded output index".to_owned())?;
-    let observed_at = unix_now()?;
+    let observed_at = if session.control.injection == Some(HarnessInjection::StaleQuote) {
+        let quote_expiration = session
+            .verifier
+            .signed_records()
+            .iter()
+            .find(|event| event.kind == MKT_QUOTE_KIND)
+            .and_then(|quote| quote.tag_values("expiration").next())
+            .ok_or_else(|| "stale-quote injection found no Quote expiration".to_owned())?
+            .parse::<u64>()
+            .map_err(|_| "stale-quote injection found an invalid expiration".to_owned())?;
+        let clock_skew = canonical_u64(
+            session
+                .contract
+                .get("clock_skew_seconds")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "stale-quote injection found no clock-skew bound".to_owned())?,
+        )?;
+        quote_expiration
+            .checked_add(clock_skew)
+            .and_then(|deadline| deadline.checked_add(1))
+            .ok_or_else(|| "stale-quote injection deadline overflowed".to_owned())?
+    } else {
+        unix_now()?
+    };
     let minimum_confirmations = u32::try_from(canonical_u64(required_string(
         verifier,
         "minimum_confirmations",
@@ -2798,6 +3495,117 @@ fn base_state(state: &str) -> Result<&'static str, String> {
     }
 }
 
+fn latest_requester_status(
+    records: &[Event],
+    requester_pubkey: &str,
+) -> Result<Option<(u64, String)>, String> {
+    let mut latest: Option<(u64, String)> = None;
+    for event in records
+        .iter()
+        .filter(|event| event.kind == MKT_STATUS_KIND && event.pubkey == requester_pubkey)
+    {
+        let sequence = event
+            .tag_values("seq")
+            .next()
+            .ok_or_else(|| "persisted requester Status has no sequence".to_owned())?
+            .parse::<u64>()
+            .map_err(|_| "persisted requester Status sequence is invalid".to_owned())?;
+        match &latest {
+            Some((current, current_id)) if *current == sequence && current_id != &event.id => {
+                return Err("persisted requester Status stream contains a fork".to_owned());
+            }
+            Some((current, _)) if *current > sequence => {}
+            _ => latest = Some((sequence, event.id.clone())),
+        }
+    }
+    Ok(latest)
+}
+
+fn checkpoint_external_identifier(checkpoint: &FundedCheckpoint) -> Result<String, String> {
+    let identifier = checkpoint
+        .details
+        .get("external_identifier")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "funded checkpoint has no external identifier".to_owned())?;
+    require_lower_hex_32(identifier, "funded checkpoint external identifier")?;
+    Ok(identifier.to_owned())
+}
+
+fn transaction_id(raw_transaction: &str) -> Result<String, String> {
+    let bytes = decode_hex(raw_transaction)?;
+    let transaction = Transaction::parse(&bytes)
+        .map_err(|error| format!("persisted Bitcoin transaction is invalid: {error}"))?;
+    transaction
+        .txid()
+        .map(|txid| lower_hex(&txid))
+        .map_err(|error| format!("could not derive Bitcoin transaction ID: {error}"))
+}
+
+fn broadcast_bitcoin_once(
+    runtime: &Runtime,
+    bitcoind: &BitcoindClient,
+    label: &str,
+    raw_transaction: &str,
+    expected_txid: &str,
+) -> Result<String, String> {
+    require_lower_hex_32(expected_txid, "expected Bitcoin transaction ID")?;
+    if transaction_id(raw_transaction)? != expected_txid {
+        return Err("Bitcoin execution checkpoint binds another transaction".to_owned());
+    }
+    match runtime.block_on(bitcoind.raw_transaction(
+        &rpc_id(&format!("{label}-preflight"))?,
+        expected_txid,
+        true,
+    )) {
+        Ok(value) => {
+            verify_known_bitcoin_transaction(&value, expected_txid, Some(raw_transaction))?;
+            return Ok(expected_txid.to_owned());
+        }
+        Err(BitcoindError::Rpc { code: -5 }) => {}
+        Err(error) => {
+            return Err(format!(
+                "could not prove whether Bitcoin transaction already exists: {error}"
+            ));
+        }
+    }
+    let transaction_id = runtime
+        .block_on(bitcoind.broadcast(&rpc_id(label)?, raw_transaction, None))
+        .map_err(|error| format!("could not broadcast Bitcoin transaction: {error}"))?;
+    if transaction_id != expected_txid {
+        return Err("bitcoind returned another Bitcoin transaction ID".to_owned());
+    }
+    Ok(transaction_id)
+}
+
+fn require_known_bitcoin_transaction(
+    runtime: &Runtime,
+    bitcoind: &BitcoindClient,
+    label: &str,
+    transaction_id: &str,
+    raw_transaction: Option<&str>,
+) -> Result<(), String> {
+    let value = runtime
+        .block_on(bitcoind.raw_transaction(&rpc_id(label)?, transaction_id, true))
+        .map_err(|error| format!("recorded Bitcoin transaction is not observable: {error}"))?;
+    verify_known_bitcoin_transaction(&value, transaction_id, raw_transaction)
+}
+
+fn verify_known_bitcoin_transaction(
+    value: &Value,
+    transaction_id: &str,
+    raw_transaction: Option<&str>,
+) -> Result<(), String> {
+    if value.get("txid").and_then(Value::as_str) != Some(transaction_id) {
+        return Err("bitcoind returned another recorded transaction".to_owned());
+    }
+    if raw_transaction
+        .is_some_and(|expected| value.get("hex").and_then(Value::as_str) != Some(expected))
+    {
+        return Err("bitcoind transaction bytes differ from the persisted execution".to_owned());
+    }
+    Ok(())
+}
+
 fn status_outpoint(status: &Event) -> Result<(String, u32), String> {
     let profile = record_profile(status)?;
     let transaction_id = profile
@@ -3008,4 +3816,145 @@ fn unix_now() -> Result<u64, String> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .map_err(|error| format!("system clock is before Unix epoch: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CHECKPOINT_FIXTURE: &str =
+        include_str!("../../../tests/fixtures/lab/funded-checkpoints-v1.json");
+
+    #[test]
+    fn checkpoint_fixture_names_exactly_the_implemented_restart_surface() {
+        let fixture: Value =
+            serde_json::from_str(CHECKPOINT_FIXTURE).expect("checkpoint fixture should parse");
+        let journeys = fixture
+            .get("journeys")
+            .and_then(Value::as_object)
+            .expect("checkpoint fixture should name journeys");
+        for (name, journey) in [
+            ("submarine", FundedJourney::Submarine),
+            ("reverse", FundedJourney::ReverseClaim),
+            ("reverse_refund", FundedJourney::ReverseRefund),
+        ] {
+            let labels = journeys
+                .get(name)
+                .and_then(|value| value.get("restartable"))
+                .and_then(Value::as_array)
+                .expect("journey should name restartable checkpoints");
+            assert!(!labels.is_empty());
+            for label in labels {
+                assert!(restartable_checkpoint(
+                    journey,
+                    label.as_str().expect("checkpoint label should be text")
+                ));
+            }
+        }
+        assert!(!restartable_checkpoint(
+            FundedJourney::Submarine,
+            "claim_broadcast_ready"
+        ));
+        assert!(!restartable_checkpoint(
+            FundedJourney::ReverseRefund,
+            "claim_broadcast_recorded"
+        ));
+    }
+
+    #[test]
+    fn injection_fixture_names_all_bounded_controls() {
+        let fixture: Value =
+            serde_json::from_str(CHECKPOINT_FIXTURE).expect("checkpoint fixture should parse");
+        let injections = fixture
+            .get("injections")
+            .and_then(Value::as_array)
+            .expect("checkpoint fixture should name injections");
+        let names = injections
+            .iter()
+            .map(|injection| {
+                injection
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .expect("injection name should be text")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "stale_quote",
+                "duplicate_message",
+                "conflicting_message",
+                "secret_leak",
+                "relay_loss",
+                "provider_crash"
+            ]
+        );
+        for name in names {
+            assert_eq!(
+                HarnessInjection::parse(name)
+                    .expect("fixture injection should be implemented")
+                    .name(),
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn external_injection_acknowledgement_is_exact_and_custody_free() {
+        let valid = json!({
+            "schema":"openagents.immortal.lab-injection-ack.v1",
+            "run_id":"run-1",
+            "checkpoint":"reverse:funding_effect_recorded",
+            "injection":"provider_crash",
+            "restored":true
+        });
+        validate_injection_acknowledgement(
+            valid.to_string().as_bytes(),
+            "run-1",
+            "reverse:funding_effect_recorded",
+            HarnessInjection::ProviderCrash,
+        )
+        .expect("exact acknowledgement should pass");
+        assert!(
+            validate_injection_acknowledgement(
+                json!({
+                    "schema":"openagents.immortal.lab-injection-ack.v1",
+                    "run_id":"run-1",
+                    "checkpoint":"reverse:funding_effect_recorded",
+                    "injection":"provider_crash",
+                    "restored":true,
+                    "preimage":"00"
+                })
+                .to_string()
+                .as_bytes(),
+                "run-1",
+                "reverse:funding_effect_recorded",
+                HarnessInjection::ProviderCrash,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn prior_lightning_attempts_are_counted_by_exact_payment_hash() {
+        let wanted = "11".repeat(32);
+        let other = "22".repeat(32);
+        let response = json!({"pays":[
+            {"payment_hash":wanted,"status":"pending"},
+            {"payment_hash":other,"status":"failed"}
+        ]});
+        assert_eq!(payment_entries(&response, &"11".repeat(32)), Ok((2, 1)));
+        assert_eq!(payment_entries(&response, &"33".repeat(32)), Ok((2, 0)));
+    }
+
+    #[test]
+    fn recorded_payment_result_rejects_amount_inversion() {
+        let response = json!({
+            "payment_hash":"11".repeat(32),
+            "status":"complete",
+            "amount_msat":"1000msat",
+            "amount_sent_msat":"999msat"
+        });
+        assert!(parse_payment_result(&response).is_err());
+    }
 }

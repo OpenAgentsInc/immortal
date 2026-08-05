@@ -79,8 +79,8 @@
     },
     {
       "path": "tests/fixtures/lab/funded-checkpoints-v1.json",
-      "sha256": "1ec75223c39e38815b367a1e30c7ca25cdbea79dcb723c927a0768ea32566351",
-      "bytes": 1038,
+      "sha256": "e53d574f0aee54da31f89cf02063c26e804bbe631f9603571c6731cc4d19f291",
+      "bytes": 3331,
       "scope": "client"
     },
     {

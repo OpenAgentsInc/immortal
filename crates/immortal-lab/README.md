@@ -44,17 +44,37 @@ All state lives under one directory (`IMMORTAL_LAB_STATE_DIR`, default
 - `funded-<journey>-secret` — 0600 wallet-only reverse preimage record. It is
   never placed in the engine snapshot, checkpoint, evidence, relay, provider,
   or provider database and is removed at terminal Close.
-- `funded-checkpoint.json` — the current labeled restart boundary. Checkpoint
-  details contain record IDs and snapshot paths, never custody material.
+- `funded-<journey>-checkpoint.json` — the labeled restart boundary for each
+  journey; `funded-checkpoint.json` mirrors the most recently written one for
+  external control scripts. Checkpoint details contain record IDs and snapshot
+  paths, never custody material.
 
 Every file and directory is mode 0600/0700 on Unix and every write is
-sync-plus-temp-file rename. `IMMORTAL_LAB_STOP_AFTER=<journey>:funding_authorized`
-exits after the authorized engine snapshot exists and before a rail call.
-Re-running the same command restores the snapshot with
-`resume_funding_authorized` and continues the same signed session. For a
-scripted provider/relay injection without stopping the harness, set
-`IMMORTAL_LAB_INJECT_AT` to that label; the harness waits a bounded interval
-for the state directory's `funded-continue` file.
+sync-plus-temp-file rename. `IMMORTAL_LAB_STOP_AFTER=<journey>:<checkpoint>`
+stops at any checkpoint pinned by
+`tests/fixtures/lab/funded-checkpoints-v1.json`. This includes the
+authorization boundary, the execution-ready and effect-recorded boundaries,
+the reverse-claim broadcast boundaries, and terminal state. A replacement
+process restores the exact typed effect ledger and signed Status cursor.
+Before repeating a Bitcoin call it asks bitcoind for the exact transaction;
+before repeating a Lightning call it asks CLN for the exact invoice and
+payment hash. An observed operation is watched and is not submitted again;
+an ambiguous rail response fails closed.
+
+`IMMORTAL_LAB_INJECTION` selects one deterministic failure control:
+`stale_quote`, `duplicate_message`, `conflicting_message`, `secret_leak`,
+`relay_loss`, or `provider_crash`. The first four are owned by the harness and
+run before funding. Relay loss and provider crash are external-process
+controls: set `IMMORTAL_LAB_INJECT_AT=<journey>:<checkpoint>`, consume the
+mode-0600 `funded-injection.json` request, restart the named process, and
+write a bound acknowledgement to `funded-continue`:
+
+```json
+{"schema":"openagents.immortal.lab-injection-ack.v1","run_id":"<run-id>","checkpoint":"reverse:funding_effect_recorded","injection":"provider_crash","restored":true}
+```
+
+The harness rejects stale, mismatched, oversized, malformed, or
+custody-bearing acknowledgements.
 
 ## Safety rails
 
