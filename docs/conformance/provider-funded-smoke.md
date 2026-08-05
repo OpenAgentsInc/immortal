@@ -348,8 +348,21 @@ The provider restores an exact durable terminal reservation release before it
 ingests the matching provider-authored Close; a missing or conflicting release
 halts recovery.
 
-This runner has static fixture and shell coverage in this packet. Its live
-cases are not recorded here until they are executed. A local `--all` success
-would remain local process evidence: it does not establish a clean macOS or
-Debian run, full funded execution through the reusable three-node/two-provider
+### 2026-08-05 local process record
+
+The complete matrix passed on macOS 26.4 arm64 with Docker Engine 29.4.3 and
+Docker Compose 5.1.4. The exact-count runner executed all 20 fixture rows: 14
+restart checkpoints and six bounded injections. Every restart and the
+duplicate-message, relay-loss, and provider-crash cases completed submarine,
+reverse claim, and noncooperative reverse refund with the independent
+chain/Lightning/Postgres evidence checks. Stale Quote, conflicting message,
+and secret leakage were rejected before swap-rail effects. The provider-crash
+case killed and restarted the provider at
+`reverse:funding_effect_recorded`; durable terminal reservation release was
+restored before signed Close replay. Each case used a fresh disposable
+topology, and the run-specific Compose projects and mode-0700 temporary roots
+were absent after completion.
+
+This is local process evidence. It does not establish a clean macOS or Debian
+run, full funded execution through the reusable three-node/two-provider
 topology, multi-provider Quote comparison, or chain-to-chain support.
