@@ -153,6 +153,7 @@ if grep -Eq '^docker\(\)' scripts/test-provider-funded.sh; then
 fi
 
 test_dir="$(mktemp -d "${TMPDIR:-/tmp}/immortal-lab-provisioning-test.XXXXXX")"
+test_dir="$(CDPATH= cd -- "${test_dir}" && pwd -P)"
 cleanup() {
   rm -rf "${test_dir}"
 }
