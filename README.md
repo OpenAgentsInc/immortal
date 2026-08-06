@@ -145,11 +145,13 @@ runtime fixture, deterministic provider contract, client verify-before-fund/
 `ExitPackage`/terminal-Close harness, and `scripts/test-provider-funded.sh`
 therefore establish local regtest conformance for submarine settlement,
 reverse settlement, and noncooperative refund. This is not Debian or live
-deployment evidence; issue #19 owns that release proof.
+deployment evidence. Issue #19 subsequently passed the fresh-Debian,
+read-only shadow, cutover, and rollback gates and recorded local replacement
+capability without claiming a live deployment or public replacement.
 
 The feature-gated LND provider repeated the same three-journey process gate on
 2026-08-05 on macOS 26.4 arm64. This is local eligibility for the #18 lab; it
-is not clean-host or live deployment evidence.
+is not live deployment evidence. The #19 closing record retains that boundary.
 
 The relay contains the off-by-default Boltz released-client handoff described
 in `docs/protocol/boltz-facade.md`. It redirects bounded compatibility requests
@@ -158,7 +160,8 @@ serves the digest-gated HTTP/WebSocket profile and the required submarine
 pre-broadcast finalize seam. The dependency-free Go/web adapters pass their
 19-call union against that separate process in the disposable funded smoke.
 This is 17/53 backend endpoint coverage and 19/19 released dependent-call
-coverage; it is local conformance, not the #19 deployment replacement claim.
+coverage. The #19 closing records retain it as local replacement capability,
+not live deployment or public replacement evidence.
 
 The current feature list is a deployment snapshot, not Immortal's scope
 ceiling. The immediate protocol-totality program targets **every specification

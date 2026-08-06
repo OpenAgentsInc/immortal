@@ -480,7 +480,7 @@ guarantor/underwriter and claims authority before a draft is honest.
 - [x] Fuzzing on the wire parser and filter matcher
 - [ ] Long-run soak: memory, connection churn, Postgres bloat,
       `NOTIFY` storm behavior
-- [ ] Security pass against the AGENTS.md rules; publish the results
+- [x] Security pass against the AGENTS.md rules; publish the results
 
 ## Operation Diamond Hands
 

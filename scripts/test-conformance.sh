@@ -5,10 +5,7 @@ set -eu
 cd "$(dirname "$0")/.."
 
 cargo fmt --all -- --check
-if cargo tree --locked -p immortal-relay --edges normal --prefix none | grep -Eq '^immortal-(client|provider) '; then
-    echo "immortal-relay must not depend on immortal-client or immortal-provider" >&2
-    exit 1
-fi
+./scripts/test-security-boundaries.sh
 cargo check --locked --workspace --all-targets
 cargo test --locked -p immortal-core --test admission_state_model
 cargo test --locked -p immortal-core --test filter_fuzz
