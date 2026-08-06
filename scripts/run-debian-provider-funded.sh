@@ -112,11 +112,11 @@ cleanup() {
                 cleanup_failed=true
             fi
             if test -f "${controller_log}"; then
-                if ! head -c 65536 "${controller_log}" >"${controller_excerpt}"; then
+                if ! tail -c 65536 "${controller_log}" >"${controller_excerpt}"; then
                     cleanup_failed=true
                 fi
                 if test -f "${controller_excerpt}" \
-                    && ! sed -n '1,200p' "${controller_excerpt}" >"${failure_log}"; then
+                    && ! tail -n 200 "${controller_excerpt}" >"${failure_log}"; then
                     cleanup_failed=true
                 fi
             fi

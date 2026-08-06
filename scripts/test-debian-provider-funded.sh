@@ -48,8 +48,8 @@ if grep -F -- '--env TMPDIR=' scripts/run-debian-provider-funded.sh >/dev/null; 
 fi
 if ! grep -Fqx 'controller_log="${controller_directory}/container.log"' scripts/run-debian-provider-funded.sh \
     || ! grep -Fqx '    --cidfile "${controller_cidfile}" \' scripts/run-debian-provider-funded.sh \
-    || ! grep -Fqx '                if ! head -c 65536 "${controller_log}" >"${controller_excerpt}"; then' scripts/run-debian-provider-funded.sh \
-    || ! grep -Fqx "                    && ! sed -n '1,200p' \"\${controller_excerpt}\" >\"\${failure_log}\"; then" scripts/run-debian-provider-funded.sh \
+    || ! grep -Fqx '                if ! tail -c 65536 "${controller_log}" >"${controller_excerpt}"; then' scripts/run-debian-provider-funded.sh \
+    || ! grep -Fqx '                    && ! tail -n 200 "${controller_excerpt}" >"${failure_log}"; then' scripts/run-debian-provider-funded.sh \
     || ! grep -Fqx '    set +e' scripts/run-debian-provider-funded.sh \
     || ! grep -Fqx 'trap cleanup 0' scripts/run-debian-provider-funded.sh \
     || ! grep -Fqx 'trap handle_signal HUP INT TERM' scripts/run-debian-provider-funded.sh \
