@@ -46,6 +46,11 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   stand-up, cutover, drain, rollback, and claim-boundary runbook. Deployment,
   live operator independence, and public replacement remain false until their
   separate evidence gates pass.
+- At source commit `764d119`, the fresh Debian 13 arm64 install, systemd,
+  backup/restore, and funded gate passed; the live Boltz shadow returned seven
+  bounded successes with five retained shape divergences; and the #18-backed
+  cutover rehearsal passed. The resulting record asserts local replacement
+  capability while keeping all three live/public claims false.
 
 ### 2026-08-05 — Codex 5.6 Sol, M12 multi-provider negotiation / issue #32
 

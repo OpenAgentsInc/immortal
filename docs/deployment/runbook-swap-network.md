@@ -201,3 +201,24 @@ two operator-independent relays, two independently operated and funded
 providers, a released client surface, successful live sessions, backup/restore
 receipts, and observed failure recovery. The local #18 record, a read-only
 Boltz shadow, or an OpenAgents-operated pair cannot satisfy that gate alone.
+
+## 9. Recorded local execution
+
+The closing run passed at source commit
+`764d119736035134c3cb0e0e5fc4fe803d946bf6` with these immutable records:
+
+- [fresh Debian provider](../conformance/records/2026-08-05-debian-provider-764d119.json), SHA-256 `0eb67e7abf06f820e8f4cd9cfd77ab109972f69f40b2705563da9aa0998d373a`;
+- [live Boltz read-only shadow](../conformance/records/2026-08-05-boltz-readonly-shadow-764d119.json), SHA-256 `84766826654f3279721aa1998190fcadb71f3f242e62ab65e9eef6bf041ba42f`;
+- [cutover rehearsal](../conformance/records/2026-08-05-swap-network-cutover-764d119.json), SHA-256 `50b2803f6c16676ab351cd5baaa5b11f57598d947e8483b4f44b5fac04bc24a5`.
+
+All seven reference and candidate reads returned bounded JSON. Two shapes
+matched exactly. The five recorded divergences are the candidate's explicit
+profile/version fields, Boltz's additional Ark/Liquid pair inventory, its
+additional chain-fee assets, and different node-stat group names. No
+divergence changed the released Bitcoin/Lightning compatibility profile.
+
+The rehearsal consumed the retained 33/33 #18 lab record and proved fresh
+Debian provider operation, drain, immutable routes, atomic new-session cutover,
+and rollback. Its `replacement_capability_after_local_gates` claim is true;
+`live_deployment`, `operator_independence`, and `public_replacement` remain
+false.

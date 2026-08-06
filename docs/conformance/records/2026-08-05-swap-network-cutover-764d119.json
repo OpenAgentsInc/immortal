@@ -1,0 +1,28 @@
+{
+  "checks": {
+    "fresh_debian_provider": true,
+    "in_flight_session_origin_unchanged_on_cutover": true,
+    "in_flight_session_origin_unchanged_on_rollback": true,
+    "lab_cases": 33,
+    "live_shadow_gets": 7,
+    "new_session_origin_switched_atomically": true,
+    "provider_drain": true,
+    "provider_route_pin": true
+  },
+  "claims": {
+    "live_deployment": false,
+    "operator_independence": false,
+    "public_replacement": false,
+    "replacement_capability_after_local_gates": true
+  },
+  "executed_at": "2026-08-06T02:01:06Z",
+  "inputs": {
+    "docs/conformance/records/2026-08-05-adversarial-regtest-67efec7.json": "5231324450c9115d43f11cf0685ffb702dddcf0c93a6d77579ade60bf3539087",
+    "docs/conformance/records/2026-08-05-boltz-readonly-shadow-764d119.json": "84766826654f3279721aa1998190fcadb71f3f242e62ab65e9eef6bf041ba42f",
+    "docs/conformance/records/2026-08-05-debian-provider-764d119.json": "0eb67e7abf06f820e8f4cd9cfd77ab109972f69f40b2705563da9aa0998d373a",
+    "tests/fixtures/nipmkt/swap-network-migration-v1.json": "51f62cef4d59c31e752dbf3374e796fadc1c9a837a0c090008314a67e9bcea73"
+  },
+  "result": "passed",
+  "schema": "openagents.immortal.swap-network-cutover-rehearsal.v1",
+  "source_commit": "764d119736035134c3cb0e0e5fc4fe803d946bf6"
+}

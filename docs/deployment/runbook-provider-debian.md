@@ -416,8 +416,10 @@ rail, relay, provider database, and watchtower processes. Its public evidence ru
 documented in
 [`provider-funded-smoke.md`](../conformance/provider-funded-smoke.md).
 
-Current local result: **passed on macOS 26.4 arm64 on 2026-08-04**, with
-`test-provider-funded: submarine, reverse, and noncooperative refund passed`.
-That result validates the disposable regtest topology and does not validate a
-clean Debian installation or a live deployment. Issue #19 must execute and
-record those release proofs before a deployment claim.
+Current closing result: **passed on Debian 13 arm64 at source commit
+`764d119736035134c3cb0e0e5fc4fe803d946bf6`**. The acceptance installed the
+release and committed assets, verified systemd and file modes, checked the
+database-backup digest, restored all three provider migrations, and passed the
+submarine, reverse, and noncooperative-refund smoke. The bounded receipt is
+[`2026-08-05-debian-provider-764d119.json`](../conformance/records/2026-08-05-debian-provider-764d119.json).
+It does not establish a live provider or public replacement claim.

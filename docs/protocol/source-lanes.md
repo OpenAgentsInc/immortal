@@ -839,8 +839,9 @@ raw funding bytes, and derives its WebSocket origin from the HTTP API origin.
 No adapted upstream build is present in this repository. A future upstream
 integration must place the checked-in seams at those call sites and pass the
 same funding and route gates. The current 19-call process result covers the
-inspected route inventory through clean-room seams; #19 still owns deployment
-evidence.
+inspected route inventory through clean-room seams. The #19 fresh-Debian and
+live-shadow records now supply the local deployment evidence without claiming
+an adapted upstream build.
 
 The adapter packet records clean-room CC0 Go and browser/Node seams in
 `adapters/` rather than copying either pinned client. Its fixture pins the
@@ -863,7 +864,8 @@ This does not claim an upstream client build. The listener requires an exact
 corpus digest, private or loopback bind,
 and exact browser origin; it is absent by default and never enters NIP-11. This
 changes no source-lane precedence or kind allocation and is the #15 adoption
-decision; #19 retains the public replacement gate.
+decision. The #19 closing record keeps the public replacement claim false;
+live operator evidence remains a separate gate.
 
 The funded process gate also pins two Bitcoin evidence details. Reverse claim
 outpoints compare the serialized wire-order previous transaction ID with the
@@ -924,8 +926,9 @@ shapes, stream bounds, and macaroon scopes. On 2026-08-05, the LND funded-smoke
 variant passed the same submarine, reverse-claim, reverse-refund, restart,
 public-chain, invoice-state, durable-effect, and zero-watch assertions as the
 CLN variant against the pinned official LND image. That recorded local gate
-makes an LND provider a legal #18 lab participant; it is not clean-host or
-live-deployment evidence, and #19 still owns any public replacement claim.
+makes an LND provider a legal #18 lab participant. The #19 clean-host proof
+used CLN; a live LND deployment and any public replacement claim still need
+their own evidence.
 
 ## M12 provider direct-recovery decision (2026-08-05)
 
@@ -949,8 +952,9 @@ Provider durable state is rebuilt before the first relay connection. When
 relay retries exhaust, the recovery listener and bounded provider/watchtower
 progress may continue, but the direct channel does not admit negotiation.
 `provider/direct-recovery-v1.json` pins the framing, bounds, admission laws,
-and refusal cases. The #18 local adversarial gate has passed; #19 retains
-deployment and public-claim authority.
+and refusal cases. The #18 local adversarial gate has passed, and #19 supplies
+the local deployment proof below. Live/public authority remains outside the
+local corpus.
 
 ## M12 migration and cutover decision (2026-08-05)
 
@@ -979,3 +983,14 @@ duplicate JSON members, and records bounded response digests and shapes.
 `swap-network-migration-v1.json` pins these laws. Local completion establishes
 replacement capability only; live deployment, operator independence, and a
 public replacement claim remain separate evidence gates.
+
+The decision passed from pushed source commit
+`764d119736035134c3cb0e0e5fc4fe803d946bf6`. The fresh Debian provider receipt
+has SHA-256 `0eb67e7abf06f820e8f4cd9cfd77ab109972f69f40b2705563da9aa0998d373a`;
+the seven-route live-reference shadow has SHA-256
+`84766826654f3279721aa1998190fcadb71f3f242e62ab65e9eef6bf041ba42f`;
+and the #18-backed cutover rehearsal has SHA-256
+`50b2803f6c16676ab351cd5baaa5b11f57598d947e8483b4f44b5fac04bc24a5`.
+The shadow retains five response-shape divergences. The rehearsal claims local
+replacement capability and explicitly rejects live deployment, operator
+independence, and public replacement.

@@ -343,7 +343,7 @@ boundary stated in the immediate program above governs every item.
 | [#16](https://github.com/OpenAgentsInc/immortal/issues/16) | tbDEX schema/vector harvest into fixtures plus the fail-closed legacy message translator | #11 |
 | [#17](https://github.com/OpenAgentsInc/immortal/issues/17) | Adopt MKT-PFI: credentialed-ramp validation, risk-classification vocabulary, PII-refusal fixtures | 9311, #16 |
 | [#18](https://github.com/OpenAgentsInc/immortal/issues/18) | Adversarial regtest lab: two independently keyed funded `immortal-provider` instances on external regtest nodes, multiple relays, the full failure matrix, recovery from persistence | #9, #10-#15, #24, #25 |
-| [#19](https://github.com/OpenAgentsInc/immortal/issues/19) | Migration closing packet: swap-network runbook plus the provider Debian runbook, facade shadow mode against a live Boltz endpoint, cutover and rollback | #18 |
+| [#19](https://github.com/OpenAgentsInc/immortal/issues/19) | Migration closing packet — **complete**: swap-network and provider Debian runbooks, live-reference read-only shadow, cutover, rollback, and bounded evidence | #18 |
 
 Downstream consumers regenerate as the ledger advances:
 [openagents#9309](https://github.com/OpenAgentsInc/openagents/issues/9309)
@@ -360,13 +360,15 @@ path; #16/#17 are the tbDEX lane and can run beside it; #18 then #19
 close the program. Profiles and rails beyond the Boltz-class replacement
 are the M13 ledger below.
 
-Current M12 status: #9, #10, upstream #9311, #11, #12, #13, #14, #16, #17,
-#18, #24, #25, #26, #28, and #29 are complete. The pushed-main adversarial
+Current M12 replacement-capability status: #9, #10, upstream #9311, #11, #12,
+#13, #14, #16, #17, #18, #19, #24, #25, #26, #28, and #29 are complete. The pushed-main adversarial
 lab passed all 33 cases and published its bounded record under
-`docs/conformance/records/`. #19 now has its fixture-backed drain, immutable
-provider-route pin, committed Debian assets, bounded live-shadow recorder, and
-cutover/rollback runbook; it remains open until the fresh-Debian, live-shadow,
-and cutover records pass from pushed `main`. The pinned relay exposes the
+`docs/conformance/records/`. At source commit `764d119`, #19 passed the fresh
+Debian install/backup/restore/funded gate, seven public read-only GETs against
+the live Boltz API, and the cutover/rollback rehearsal. Five response-shape
+divergences are retained in the shadow record. The cutover record establishes
+local replacement capability while retaining false claims for live deployment,
+operator independence, and public replacement. The pinned relay exposes the
 MKT-SWP and MKT-PFI v1 observable contracts and the off-by-default
 exact-conformance coordination handler without claiming PFI external
 authority or an executable profile. Verification primitives and the
@@ -376,9 +378,10 @@ persistent no-spend process, funded rails, watchtower, reserve-gated reverse
 funding precommitment, live pricing integration, CLN and feature-gated LND
 rails, and provider contract/runtime
 fixtures. Its disposable three-journey funded gate passed locally on
-2026-08-04 with CLN and on 2026-08-05 with LND on macOS 26.4 arm64. Later
-packets follow the dependency table and subledger; #19 still owns Debian and
-deployment evidence.
+2026-08-04 with CLN and on 2026-08-05 with LND on macOS 26.4 arm64, and the
+Debian 13 arm64 closing gate passed on 2026-08-05. The Boltz-parity rows #30
+and #31 and the M13 rails remain separately tracked; live public claims still
+require their stated deployment evidence.
 
 The #15 compatibility packet now includes both halves: the relay's
 off-by-default exact-digest `307` handoff and the funded provider's independent,
@@ -389,8 +392,9 @@ broadcast, exposes released secrets only from public claim transactions, and
 never advertises the surface in NIP-11. The measured results are **17/53 backend
 routes emulated (32.08%)** and **19/19 released-profile dependent calls
 emulated (100%)**. The adapted Go/web processes pass that union in the funded
-smoke with script-path mode and direct provider WebSockets. #18 may consume this
-local capability; #19 still owns deployment replacement evidence.
+smoke with script-path mode and direct provider WebSockets. The #18 lab and
+#19 migration records now retain this local capability and its deployment
+boundaries.
 
 The fixture-first adapter packet supplies dependency-free Go and browser/Node
 gates for that exact pre-broadcast sequence. Its static/unit gate proves the
@@ -415,7 +419,7 @@ rerun is green.
 | [#15](https://github.com/OpenAgentsInc/immortal/issues/15) | Boltz-compatible facade, rebased onto the workspace; verification backed by the external `immortal-provider` process (re-scoped) | #11, #13, #14, #25 |
 | [#32](https://github.com/OpenAgentsInc/immortal/issues/32) | Lab prerequisites: wallet-side harness executable (scriptable step control, persisted-record restart) and regtest node provisioning scripts (bitcoind, CLN + hold plugin, topology manifest, extension hooks) | #25 |
 | [#18](https://github.com/OpenAgentsInc/immortal/issues/18) | Adversarial lab consuming both shipped binaries (re-scoped; first pass proves submarine and reverse shapes, chain swaps enter with #27) | #15, #25, #32 |
-| [#19](https://github.com/OpenAgentsInc/immortal/issues/19) | Closing packet + `runbook-provider-debian.md` (re-scoped) | #18 |
+| [#19](https://github.com/OpenAgentsInc/immortal/issues/19) | Closing packet + `runbook-provider-debian.md` (re-scoped) — **complete** | #18 |
 
 ### M12 Boltz-parity ledger (2026-08-04)
 

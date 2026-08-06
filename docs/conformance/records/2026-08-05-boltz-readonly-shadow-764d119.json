@@ -1,0 +1,426 @@
+{
+  "candidate_origin": "http://127.0.0.1:57363",
+  "claims": {
+    "candidate_funded_regtest_observed": true,
+    "live_candidate_deployment": false,
+    "live_reference_observed": true,
+    "public_replacement": false,
+    "read_only_shadow": true
+  },
+  "comparisons": [
+    {
+      "candidate": {
+        "bytes": 128,
+        "json_shape": [
+          "/mappingRevision:string",
+          "/profile:string",
+          "/version:string",
+          ":object"
+        ],
+        "sha256": "0272cdf5e8309c0409573aa9c97aabf450eac7fb596dea3ad090c19c72be93b1",
+        "status": 200
+      },
+      "endpoint": "/v2/version",
+      "method": "GET",
+      "reference": {
+        "bytes": 35,
+        "json_shape": [
+          "/version:string",
+          ":object"
+        ],
+        "sha256": "77aa3c7a5a70e01585ec061005d420ff1bc8722348ca30ab287ae631d76b8efb",
+        "status": 200
+      },
+      "shape": {
+        "candidate_only": [
+          "/mappingRevision:string",
+          "/profile:string"
+        ],
+        "exact_match": false,
+        "reference_only": []
+      }
+    },
+    {
+      "candidate": {
+        "bytes": 232,
+        "json_shape": [
+          "/BTC/BTC/fees/minerFees:number",
+          "/BTC/BTC/fees/percentage:number",
+          "/BTC/BTC/fees:object",
+          "/BTC/BTC/hash:string",
+          "/BTC/BTC/limits/maximal:number",
+          "/BTC/BTC/limits/maximalZeroConf:number",
+          "/BTC/BTC/limits/minimal:number",
+          "/BTC/BTC/limits/minimalBatched:number",
+          "/BTC/BTC/limits:object",
+          "/BTC/BTC/rate:number",
+          "/BTC/BTC:object",
+          "/BTC:object",
+          ":object"
+        ],
+        "sha256": "759b58837a837716885c64fec5727d64564efaecbc09c7d7b468818d94ab22f8",
+        "status": 200
+      },
+      "endpoint": "/v2/swap/submarine",
+      "method": "GET",
+      "reference": {
+        "bytes": 643,
+        "json_shape": [
+          "/ARK/BTC/fees/minerFees:number",
+          "/ARK/BTC/fees/percentage:number",
+          "/ARK/BTC/fees:object",
+          "/ARK/BTC/hash:string",
+          "/ARK/BTC/limits/maximal:number",
+          "/ARK/BTC/limits/maximalZeroConf:number",
+          "/ARK/BTC/limits/minimal:number",
+          "/ARK/BTC/limits:object",
+          "/ARK/BTC/rate:number",
+          "/ARK/BTC:object",
+          "/ARK:object",
+          "/BTC/BTC/fees/minerFees:number",
+          "/BTC/BTC/fees/percentage:number",
+          "/BTC/BTC/fees:object",
+          "/BTC/BTC/hash:string",
+          "/BTC/BTC/limits/maximal:number",
+          "/BTC/BTC/limits/maximalZeroConf:number",
+          "/BTC/BTC/limits/minimal:number",
+          "/BTC/BTC/limits:object",
+          "/BTC/BTC/rate:number",
+          "/BTC/BTC:object",
+          "/BTC:object",
+          "/L-BTC/BTC/fees/minerFees:number",
+          "/L-BTC/BTC/fees/percentage:number",
+          "/L-BTC/BTC/fees:object",
+          "/L-BTC/BTC/hash:string",
+          "/L-BTC/BTC/limits/maximal:number",
+          "/L-BTC/BTC/limits/maximalZeroConf:number",
+          "/L-BTC/BTC/limits/minimal:number",
+          "/L-BTC/BTC/limits/minimalBatched:number",
+          "/L-BTC/BTC/limits:object",
+          "/L-BTC/BTC/rate:number",
+          "/L-BTC/BTC:object",
+          "/L-BTC:object",
+          ":object"
+        ],
+        "sha256": "deae132d6bc06a853bf541adaa54c370d76766be778cd1115733f201a948fb86",
+        "status": 200
+      },
+      "shape": {
+        "candidate_only": [
+          "/BTC/BTC/limits/minimalBatched:number"
+        ],
+        "exact_match": false,
+        "reference_only": [
+          "/ARK/BTC/fees/minerFees:number",
+          "/ARK/BTC/fees/percentage:number",
+          "/ARK/BTC/fees:object",
+          "/ARK/BTC/hash:string",
+          "/ARK/BTC/limits/maximal:number",
+          "/ARK/BTC/limits/maximalZeroConf:number",
+          "/ARK/BTC/limits/minimal:number",
+          "/ARK/BTC/limits:object",
+          "/ARK/BTC/rate:number",
+          "/ARK/BTC:object",
+          "/ARK:object",
+          "/L-BTC/BTC/fees/minerFees:number",
+          "/L-BTC/BTC/fees/percentage:number",
+          "/L-BTC/BTC/fees:object",
+          "/L-BTC/BTC/hash:string",
+          "/L-BTC/BTC/limits/maximal:number",
+          "/L-BTC/BTC/limits/maximalZeroConf:number",
+          "/L-BTC/BTC/limits/minimal:number",
+          "/L-BTC/BTC/limits/minimalBatched:number",
+          "/L-BTC/BTC/limits:object",
+          "/L-BTC/BTC/rate:number",
+          "/L-BTC/BTC:object",
+          "/L-BTC:object"
+        ]
+      }
+    },
+    {
+      "candidate": {
+        "bytes": 212,
+        "json_shape": [
+          "/BTC/BTC/fees/minerFees/claim:number",
+          "/BTC/BTC/fees/minerFees/lockup:number",
+          "/BTC/BTC/fees/minerFees:object",
+          "/BTC/BTC/fees/percentage:number",
+          "/BTC/BTC/fees:object",
+          "/BTC/BTC/hash:string",
+          "/BTC/BTC/limits/maximal:number",
+          "/BTC/BTC/limits/minimal:number",
+          "/BTC/BTC/limits:object",
+          "/BTC/BTC/rate:number",
+          "/BTC/BTC:object",
+          "/BTC:object",
+          ":object"
+        ],
+        "sha256": "290131e1fc58028ae0a8a4021216c4c191609bfb263cc6b7b567f26f067b6d3c",
+        "status": 200
+      },
+      "endpoint": "/v2/swap/reverse",
+      "method": "GET",
+      "reference": {
+        "bytes": 608,
+        "json_shape": [
+          "/BTC/ARK/fees/minerFees/claim:number",
+          "/BTC/ARK/fees/minerFees/lockup:number",
+          "/BTC/ARK/fees/minerFees:object",
+          "/BTC/ARK/fees/percentage:number",
+          "/BTC/ARK/fees:object",
+          "/BTC/ARK/hash:string",
+          "/BTC/ARK/limits/maximal:number",
+          "/BTC/ARK/limits/minimal:number",
+          "/BTC/ARK/limits:object",
+          "/BTC/ARK/rate:number",
+          "/BTC/ARK:object",
+          "/BTC/BTC/fees/minerFees/claim:number",
+          "/BTC/BTC/fees/minerFees/lockup:number",
+          "/BTC/BTC/fees/minerFees:object",
+          "/BTC/BTC/fees/percentage:number",
+          "/BTC/BTC/fees:object",
+          "/BTC/BTC/hash:string",
+          "/BTC/BTC/limits/maximal:number",
+          "/BTC/BTC/limits/minimal:number",
+          "/BTC/BTC/limits:object",
+          "/BTC/BTC/rate:number",
+          "/BTC/BTC:object",
+          "/BTC/L-BTC/fees/minerFees/claim:number",
+          "/BTC/L-BTC/fees/minerFees/lockup:number",
+          "/BTC/L-BTC/fees/minerFees:object",
+          "/BTC/L-BTC/fees/percentage:number",
+          "/BTC/L-BTC/fees:object",
+          "/BTC/L-BTC/hash:string",
+          "/BTC/L-BTC/limits/maximal:number",
+          "/BTC/L-BTC/limits/minimal:number",
+          "/BTC/L-BTC/limits:object",
+          "/BTC/L-BTC/rate:number",
+          "/BTC/L-BTC:object",
+          "/BTC:object",
+          ":object"
+        ],
+        "sha256": "da7f3844f30006eebe8cca8f6a98ff29399f69296707682882ff40acd0cff0bb",
+        "status": 200
+      },
+      "shape": {
+        "candidate_only": [],
+        "exact_match": false,
+        "reference_only": [
+          "/BTC/ARK/fees/minerFees/claim:number",
+          "/BTC/ARK/fees/minerFees/lockup:number",
+          "/BTC/ARK/fees/minerFees:object",
+          "/BTC/ARK/fees/percentage:number",
+          "/BTC/ARK/fees:object",
+          "/BTC/ARK/hash:string",
+          "/BTC/ARK/limits/maximal:number",
+          "/BTC/ARK/limits/minimal:number",
+          "/BTC/ARK/limits:object",
+          "/BTC/ARK/rate:number",
+          "/BTC/ARK:object",
+          "/BTC/L-BTC/fees/minerFees/claim:number",
+          "/BTC/L-BTC/fees/minerFees/lockup:number",
+          "/BTC/L-BTC/fees/minerFees:object",
+          "/BTC/L-BTC/fees/percentage:number",
+          "/BTC/L-BTC/fees:object",
+          "/BTC/L-BTC/hash:string",
+          "/BTC/L-BTC/limits/maximal:number",
+          "/BTC/L-BTC/limits/minimal:number",
+          "/BTC/L-BTC/limits:object",
+          "/BTC/L-BTC/rate:number",
+          "/BTC/L-BTC:object"
+        ]
+      }
+    },
+    {
+      "candidate": {
+        "bytes": 9,
+        "json_shape": [
+          "/BTC:number",
+          ":object"
+        ],
+        "sha256": "61aee78ad9754f5bdf728f0fb7fcef01aee543eb6114bbca84753fe49e0f45e0",
+        "status": 200
+      },
+      "endpoint": "/v2/chain/fees",
+      "method": "GET",
+      "reference": {
+        "bytes": 57,
+        "json_shape": [
+          "/ARB:number",
+          "/ARK:number",
+          "/BTC:number",
+          "/L-BTC:number",
+          "/RBTC:number",
+          ":object"
+        ],
+        "sha256": "6726af52f8e84cfafbdec354d4455980bde4d7c9b91526a382f222bbd75849d8",
+        "status": 200
+      },
+      "shape": {
+        "candidate_only": [],
+        "exact_match": false,
+        "reference_only": [
+          "/ARB:number",
+          "/ARK:number",
+          "/L-BTC:number",
+          "/RBTC:number"
+        ]
+      }
+    },
+    {
+      "candidate": {
+        "bytes": 9,
+        "json_shape": [
+          "/fee:number",
+          ":object"
+        ],
+        "sha256": "098e2fa4191bb6d3e61d1447a982f99c155d51039e6db2972242b53e672c3d35",
+        "status": 200
+      },
+      "endpoint": "/v2/chain/BTC/fee",
+      "method": "GET",
+      "reference": {
+        "bytes": 9,
+        "json_shape": [
+          "/fee:number",
+          ":object"
+        ],
+        "sha256": "098e2fa4191bb6d3e61d1447a982f99c155d51039e6db2972242b53e672c3d35",
+        "status": 200
+      },
+      "shape": {
+        "candidate_only": [],
+        "exact_match": true,
+        "reference_only": []
+      }
+    },
+    {
+      "candidate": {
+        "bytes": 14,
+        "json_shape": [
+          "/height:number",
+          ":object"
+        ],
+        "sha256": "bf12a1750e95133c8b2b0a3722f6beacb0fac3a9a54d65efc61338c9e57dc2c9",
+        "status": 200
+      },
+      "endpoint": "/v2/chain/BTC/height",
+      "method": "GET",
+      "reference": {
+        "bytes": 17,
+        "json_shape": [
+          "/height:number",
+          ":object"
+        ],
+        "sha256": "38dc8f8483601f59d925bd27d47b7897096e0aaa388b16c1027bb0fb41257b87",
+        "status": 200
+      },
+      "shape": {
+        "candidate_only": [],
+        "exact_match": true,
+        "reference_only": []
+      }
+    },
+    {
+      "candidate": {
+        "bytes": 116,
+        "json_shape": [
+          "/BTC/Immortal/capacity:number",
+          "/BTC/Immortal/channels:number",
+          "/BTC/Immortal/peers:number",
+          "/BTC/Immortal:object",
+          "/BTC/total/capacity:number",
+          "/BTC/total/channels:number",
+          "/BTC/total/peers:number",
+          "/BTC/total:object",
+          "/BTC:object",
+          ":object"
+        ],
+        "sha256": "912ff02b10d8fb95e7653b293932be081d9d60c180f24f269d6b907cb518838c",
+        "status": 200
+      },
+      "endpoint": "/v2/nodes/stats",
+      "method": "GET",
+      "reference": {
+        "bytes": 260,
+        "json_shape": [
+          "/BTC/CLN/capacity:number",
+          "/BTC/CLN/channels:number",
+          "/BTC/CLN/oldestChannel:number",
+          "/BTC/CLN/peers:number",
+          "/BTC/CLN:object",
+          "/BTC/LND/capacity:number",
+          "/BTC/LND/channels:number",
+          "/BTC/LND/oldestChannel:number",
+          "/BTC/LND/peers:number",
+          "/BTC/LND:object",
+          "/BTC/total/capacity:number",
+          "/BTC/total/channels:number",
+          "/BTC/total/oldestChannel:number",
+          "/BTC/total/peers:number",
+          "/BTC/total:object",
+          "/BTC:object",
+          ":object"
+        ],
+        "sha256": "c17d67e6c2e668b610c21f25ac14e6d778e94c8419b8f7141c324cd1717e2fac",
+        "status": 200
+      },
+      "shape": {
+        "candidate_only": [
+          "/BTC/Immortal/capacity:number",
+          "/BTC/Immortal/channels:number",
+          "/BTC/Immortal/peers:number",
+          "/BTC/Immortal:object"
+        ],
+        "exact_match": false,
+        "reference_only": [
+          "/BTC/CLN/capacity:number",
+          "/BTC/CLN/channels:number",
+          "/BTC/CLN/oldestChannel:number",
+          "/BTC/CLN/peers:number",
+          "/BTC/CLN:object",
+          "/BTC/LND/capacity:number",
+          "/BTC/LND/channels:number",
+          "/BTC/LND/oldestChannel:number",
+          "/BTC/LND/peers:number",
+          "/BTC/LND:object",
+          "/BTC/total/oldestChannel:number"
+        ]
+      }
+    }
+  ],
+  "finished_at": "2026-08-06T02:00:01Z",
+  "reference_origin": "https://api.boltz.exchange",
+  "request_contract": {
+    "authentication": false,
+    "endpoints": [
+      "/v2/version",
+      "/v2/swap/submarine",
+      "/v2/swap/reverse",
+      "/v2/chain/fees",
+      "/v2/chain/BTC/fee",
+      "/v2/chain/BTC/height",
+      "/v2/nodes/stats"
+    ],
+    "maximum_response_bytes": 2097152,
+    "methods": [
+      "GET"
+    ],
+    "redirects": false,
+    "request_bodies": false,
+    "swap_identifiers": false,
+    "timeout_seconds": 10,
+    "websocket": false
+  },
+  "result": "passed",
+  "schema": "openagents.immortal.boltz-readonly-shadow.v1",
+  "source_commit": "764d119736035134c3cb0e0e5fc4fe803d946bf6",
+  "started_at": "2026-08-06T01:59:58Z",
+  "summary": {
+    "divergences": 5,
+    "endpoints": 7,
+    "exact_shape_matches": 2,
+    "successful_candidate_reads": 7,
+    "successful_reference_reads": 7
+  }
+}
