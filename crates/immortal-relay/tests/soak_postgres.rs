@@ -16,7 +16,7 @@ use secp256k1::{Keypair, Secp256k1, SecretKey};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio_postgres::{Client, NoTls};
-use tokio_tungstenite::tungstenite::{Message, WebSocket, client};
+use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message, WebSocket, client};
 
 const FIXTURE_SCHEMA: &str = "openagents.immortal.soak-plan.v1";
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -90,6 +90,9 @@ fn m8_long_run_soak() -> TestResult<()> {
     let sentinel = signed_event(90, now(), 1, "m8-soak-sentinel")?;
     let sentinel_id = sentinel.id.clone();
     let mut subscriber = connect_client(relay_two.address)?;
+    subscriber
+        .get_mut()
+        .set_read_timeout(Some(RECEIVE_TIMEOUT + Duration::from_secs(5)))?;
     send_json(
         &mut subscriber,
         &json!(["REQ", "m8-soak", {"kinds": [0, 1]}]),
@@ -104,8 +107,16 @@ fn m8_long_run_soak() -> TestResult<()> {
         }
     }
     let (observed_sender, observed_receiver) = mpsc::channel();
-    let reader =
-        thread::spawn(move || read_subscription(subscriber, &sentinel_id, observed_sender));
+    let reader_errors = observed_sender.clone();
+    let reader = thread::spawn(move || {
+        let result = read_subscription(subscriber, &sentinel_id, observed_sender);
+        if let Err(error) = &result
+            && let Err(send_error) = reader_errors.send(Err(error.clone()))
+        {
+            eprintln!("soak subscription error could not be reported: {send_error}");
+        }
+        result
+    });
 
     let storm_events = make_storm_events(&plan)?;
     let mut expected = storm_events
@@ -135,8 +146,10 @@ fn m8_long_run_soak() -> TestResult<()> {
         let cycle_started = Instant::now();
         relay_one.assert_running()?;
         relay_two.assert_running()?;
-        churn_connections(relay_one.address, plan.connections_per_relay_per_cycle)?;
-        churn_connections(relay_two.address, plan.connections_per_relay_per_cycle)?;
+        churn_connections(relay_one.address, plan.connections_per_relay_per_cycle)
+            .map_err(|error| format!("cycle {cycles} relay-one churn failed: {error}"))?;
+        churn_connections(relay_two.address, plan.connections_per_relay_per_cycle)
+            .map_err(|error| format!("cycle {cycles} relay-two churn failed: {error}"))?;
         connection_churn = connection_churn.saturating_add(u64::try_from(
             plan.connections_per_relay_per_cycle.saturating_mul(2),
         )?);
@@ -149,14 +162,17 @@ fn m8_long_run_soak() -> TestResult<()> {
         )?;
         for event in replacements {
             expected.insert(event.id.clone());
-            publish_one(relay_one.address, &event)?;
+            publish_one(relay_one.address, &event)
+                .map_err(|error| format!("cycle {cycles} replacement failed: {error}"))?;
             replacement_admissions = replacement_admissions.saturating_add(1);
         }
         let heartbeat = signed_event(80, now(), 1, &format!("m8-soak-heartbeat-{cycles}"))?;
         expected.insert(heartbeat.id.clone());
-        publish_one(relay_one.address, &heartbeat)?;
+        publish_one(relay_one.address, &heartbeat)
+            .map_err(|error| format!("cycle {cycles} heartbeat failed: {error}"))?;
         heartbeat_admissions = heartbeat_admissions.saturating_add(1);
-        await_expected(&observed_receiver, &mut expected, RECEIVE_TIMEOUT)?;
+        await_expected(&observed_receiver, &mut expected, RECEIVE_TIMEOUT)
+            .map_err(|error| format!("cycle {cycles} notification wait failed: {error}"))?;
 
         cycles = cycles.saturating_add(1);
         if cycles % u64::try_from(plan.sample_every_cycles)? == 0 {
@@ -424,7 +440,7 @@ fn publish_storm(address: SocketAddr, events: Vec<Event>, publishers: usize) -> 
                 for event in events {
                     publish(&mut websocket, &event).map_err(|error| error.to_string())?;
                 }
-                websocket.close(None).map_err(|error| error.to_string())?;
+                close_client(&mut websocket).map_err(|error| error.to_string())?;
                 Ok(())
             })
         })
@@ -456,7 +472,7 @@ fn make_replacements(timestamp: u64, cycle: u64, count: usize) -> TestResult<Vec
 fn churn_connections(address: SocketAddr, count: usize) -> TestResult<()> {
     for _ in 0..count {
         let mut websocket = connect_client(address)?;
-        websocket.close(None)?;
+        close_client(&mut websocket)?;
     }
     Ok(())
 }
@@ -464,8 +480,15 @@ fn churn_connections(address: SocketAddr, count: usize) -> TestResult<()> {
 fn publish_one(address: SocketAddr, event: &Event) -> TestResult<()> {
     let mut websocket = connect_client(address)?;
     publish(&mut websocket, event)?;
-    websocket.close(None)?;
+    close_client(&mut websocket)?;
     Ok(())
+}
+
+fn close_client(websocket: &mut WebSocket<TcpStream>) -> TestResult<()> {
+    match websocket.close(None) {
+        Ok(()) | Err(WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn publish(websocket: &mut WebSocket<TcpStream>, event: &Event) -> TestResult<()> {

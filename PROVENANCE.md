@@ -1112,6 +1112,19 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   evidence as future work. Added no protocol behavior, dependency, service,
   database, advertisement, workflow, or billed automation.
 
+### 2026-08-05 — Codex 5.6 Sol, M8 soak harness hardening
+
+- Preserved subscription-reader errors at the qualification boundary and
+  labeled churn, replacement, heartbeat, and notification-wait failures with
+  the exact cycle and phase.
+- Aligned the long-lived subscription socket timeout with the fixture's
+  60-second notification evidence bound. The previous 10-second transport
+  timeout could fail under concurrent local release builds before the outer
+  evidence bound expired.
+- Treated an already-completed WebSocket close handshake as successful client
+  churn. A clean 180-second development run passed 2,880 churn connections and
+  5,717 observed notifications; the one-hour qualification remains required.
+
 ### 2026-08-05 — Codex 5.6 Sol, M9 signed-event JSONL import
 
 - Added the bounded `immortal import-jsonl` operator command for strict signed
