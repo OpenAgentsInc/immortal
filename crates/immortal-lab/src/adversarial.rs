@@ -58,6 +58,10 @@ enum ProofPlan {
         member: &'static str,
     },
     RbfConflict,
+    ZeroConfDowngrade {
+        injection: &'static str,
+        expected_reason: &'static str,
+    },
     Cooperative {
         provider_index: usize,
         journey: CooperativeJourney,
@@ -293,6 +297,17 @@ fn execute_proof(selected: &SelectedCase) -> Result<Value, String> {
                 Some("rbf_conflict"),
             )?;
             rbf_conflict_proof(&result)
+        }
+        ProofPlan::ZeroConfDowngrade {
+            injection,
+            expected_reason,
+        } => {
+            let result = funded::run_adversarial_funded_journey(
+                0,
+                FundedJourney::Submarine,
+                Some(injection),
+            )?;
+            zero_conf_downgrade_proof(&result, injection, expected_reason)
         }
         ProofPlan::Cooperative {
             provider_index,
@@ -578,6 +593,83 @@ fn rbf_conflict_proof(result: &Value) -> Result<Value, String> {
             "conflict_broadcast_to_regtest":true,
             "committed_broadcast_rejected":true,
             "external_settlement_effects":0,
+        }
+    }))
+}
+
+fn zero_conf_downgrade_proof(
+    result: &Value,
+    injection: &str,
+    expected_reason: &str,
+) -> Result<Value, String> {
+    if result.get("step").and_then(Value::as_str) != Some("submarine") {
+        return Err("zero-conf downgrade did not run the submarine boundary".to_owned());
+    }
+    provider_support::reject_custody_material(result)
+        .map_err(|error| format!("zero-conf result contains custody material: {error}"))?;
+    let provider_pubkey = required_hash(result, "/provider_pubkey", "zero-conf provider pubkey")?;
+    let order_id = required_hash(result, "/journey/order_id", "zero-conf order ID")?;
+    let funding_txid = required_hash(
+        result,
+        "/journey/funding_txid",
+        "zero-conf funding transaction ID",
+    )?;
+    let accepted_status_id = required_hash(
+        result,
+        "/journey/zero_conf_accepted_status_id",
+        "zero-conf accepted Status ID",
+    )?;
+    let downgraded_status_id = required_hash(
+        result,
+        "/journey/confirmation_required_status_id",
+        "zero-conf downgraded Status ID",
+    )?;
+    let attack_reference = required_hash(
+        result,
+        "/journey/attack_reference",
+        "zero-conf attack reference",
+    )?;
+    if accepted_status_id == downgraded_status_id
+        || result.pointer("/journey/injection").and_then(Value::as_str) != Some(injection)
+        || result.pointer("/journey/reason").and_then(Value::as_str) != Some(expected_reason)
+        || result
+            .pointer("/journey/accepted_decision")
+            .and_then(Value::as_str)
+            != Some("accepted")
+        || result
+            .pointer("/journey/downgraded_decision")
+            .and_then(Value::as_str)
+            != Some("confirmation_required")
+        || result
+            .pointer("/journey/invoice_state")
+            .and_then(Value::as_str)
+            != Some("unpaid")
+        || result
+            .pointer("/journey/provider_settlement_effects")
+            .and_then(Value::as_u64)
+            != Some(0)
+        || result.pointer("/journey/outcome").and_then(Value::as_str)
+            != Some("confirmation_required_without_effect")
+    {
+        return Err("zero-conf downgrade did not prove fail-closed effect gating".to_owned());
+    }
+    Ok(json!({
+        "proof_class":"zero_conf_downgrade",
+        "provider_index":0,
+        "provider_pubkey":provider_pubkey,
+        "order_id":order_id,
+        "funding_txid":funding_txid,
+        "attack_reference":attack_reference,
+        "accepted_status_id":accepted_status_id,
+        "downgraded_status_id":downgraded_status_id,
+        "injection":injection,
+        "reason":expected_reason,
+        "outcome":"confirmation_required_without_effect",
+        "checks":{
+            "provider_local_mempool_view":true,
+            "explicit_acceptance_then_downgrade":true,
+            "invoice_unpaid":true,
+            "provider_settlement_effects":0
         }
     }))
 }
@@ -983,6 +1075,18 @@ fn proof_plan(case_id: &str) -> ProofPlan {
             outcome: JourneyOutcome::Claimed,
         },
         "rbf-conflict" => ProofPlan::RbfConflict,
+        "zero-conf-rbf-replacement" => ProofPlan::ZeroConfDowngrade {
+            injection: "zero_conf_rbf_replacement",
+            expected_reason: "replacement",
+        },
+        "zero-conf-double-spend-race" => ProofPlan::ZeroConfDowngrade {
+            injection: "zero_conf_double_spend",
+            expected_reason: "conflict",
+        },
+        "zero-conf-ancestor-eviction" => ProofPlan::ZeroConfDowngrade {
+            injection: "zero_conf_ancestor_eviction",
+            expected_reason: "ancestor_unconfirmed",
+        },
         "wrong-claim-key" => ProofPlan::ExpectedJourneyError {
             provider_index: 0,
             journey: FundedJourney::ReverseClaim,
@@ -1104,7 +1208,7 @@ mod tests {
     #[test]
     fn manifest_has_exact_bounded_case_ledger() {
         let cases = parse_manifest().expect("adversarial manifest should parse");
-        assert_eq!(cases.len(), 43);
+        assert_eq!(cases.len(), 46);
         assert_eq!(
             cases
                 .get("route-submarine-provider-a")
@@ -1175,7 +1279,7 @@ mod tests {
             .keys()
             .filter(|case_id| !matches!(proof_plan(case_id), ProofPlan::Unsupported { .. }))
             .count();
-        assert_eq!(supported, 43);
+        assert_eq!(supported, 46);
         let unsupported = cases
             .keys()
             .filter(|case_id| matches!(proof_plan(case_id), ProofPlan::Unsupported { .. }))

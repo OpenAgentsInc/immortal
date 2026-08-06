@@ -22,6 +22,7 @@ const MIN_STALE_SECONDS: u64 = 5;
 const MAX_STALE_SECONDS: u64 = 3_600;
 const MIN_CONFIRMATIONS: u32 = 1;
 const MAX_CONFIRMATIONS: u32 = 144;
+const MAX_BITCOIN_SUPPLY_SAT: u64 = 2_100_000_000_000_000;
 pub(crate) const PRODUCTION_HOLD_INVOICE_EXPIRY_SECONDS: u32 = 604_800;
 pub(crate) const REGTEST_ADVERSARIAL_QUOTE_EXPIRY_SECONDS: u64 = 3;
 pub(crate) const REGTEST_ADVERSARIAL_HOLD_INVOICE_EXPIRY_SECONDS: u32 = 30;
@@ -100,7 +101,16 @@ pub struct FundedProviderConfig {
     pub lab_forces_fallback_feerate: bool,
     pub hold_invoice_expiry_seconds: u32,
     pub cooperative_signing: bool,
+    pub zero_conf: Option<ZeroConfConfig>,
     pub boltz: Option<BoltzConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZeroConfConfig {
+    pub submarine: bool,
+    pub chain: bool,
+    pub max_swap_sat: u64,
+    pub max_in_flight_sat: u64,
 }
 
 impl fmt::Debug for FundedProviderConfig {
@@ -131,6 +141,7 @@ impl fmt::Debug for FundedProviderConfig {
                 &self.hold_invoice_expiry_seconds,
             )
             .field("cooperative_signing", &self.cooperative_signing)
+            .field("zero_conf", &self.zero_conf)
             .field("boltz", &self.boltz)
             .finish()
     }
@@ -147,6 +158,7 @@ impl FundedProviderConfig {
         let network = parse_network(&required("IMMORTAL_PROVIDER_BITCOIN_NETWORK")?)?;
         let lab_timeout_profile = lab_timeout_profile_from_lookup(network, optional)?;
         let cooperative_signing = cooperative_signing_from_lookup(lab_timeout_profile, optional)?;
+        let zero_conf = zero_conf_from_lookup(optional)?;
 
         let bitcoind_host = required("IMMORTAL_PROVIDER_BITCOIND_HOST")?;
         let bitcoind_port = parse_number::<u16>(
@@ -242,12 +254,72 @@ impl FundedProviderConfig {
             lab_forces_fallback_feerate,
             hold_invoice_expiry_seconds,
             cooperative_signing,
+            zero_conf,
             boltz,
         })
     }
 
     pub fn database_url(&self) -> &str {
         &self.database_url.0
+    }
+}
+
+fn zero_conf_from_lookup(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<Option<ZeroConfConfig>, ConfigError> {
+    let submarine = explicit_true(
+        "IMMORTAL_PROVIDER_ZERO_CONF_SUBMARINE",
+        lookup("IMMORTAL_PROVIDER_ZERO_CONF_SUBMARINE"),
+    )?;
+    let chain = explicit_true(
+        "IMMORTAL_PROVIDER_ZERO_CONF_CHAIN",
+        lookup("IMMORTAL_PROVIDER_ZERO_CONF_CHAIN"),
+    )?;
+    let max_swap = lookup("IMMORTAL_PROVIDER_ZERO_CONF_MAX_SWAP_SAT");
+    let max_in_flight = lookup("IMMORTAL_PROVIDER_ZERO_CONF_MAX_IN_FLIGHT_SAT");
+    if !submarine && !chain {
+        if max_swap.is_some() || max_in_flight.is_some() {
+            return Err(ConfigError::Invalid(
+                "IMMORTAL_PROVIDER_ZERO_CONF_MAX_SWAP_SAT",
+            ));
+        }
+        return Ok(None);
+    }
+    let max_swap_sat = parse_number::<u64>(
+        "IMMORTAL_PROVIDER_ZERO_CONF_MAX_SWAP_SAT",
+        max_swap.as_deref().ok_or(ConfigError::Missing(
+            "IMMORTAL_PROVIDER_ZERO_CONF_MAX_SWAP_SAT",
+        ))?,
+    )?;
+    let max_in_flight_sat = parse_number::<u64>(
+        "IMMORTAL_PROVIDER_ZERO_CONF_MAX_IN_FLIGHT_SAT",
+        max_in_flight.as_deref().ok_or(ConfigError::Missing(
+            "IMMORTAL_PROVIDER_ZERO_CONF_MAX_IN_FLIGHT_SAT",
+        ))?,
+    )?;
+    if max_swap_sat == 0
+        || max_in_flight_sat == 0
+        || max_swap_sat > MAX_BITCOIN_SUPPLY_SAT
+        || max_in_flight_sat > MAX_BITCOIN_SUPPLY_SAT
+        || max_swap_sat > max_in_flight_sat
+    {
+        return Err(ConfigError::Invalid(
+            "IMMORTAL_PROVIDER_ZERO_CONF_MAX_SWAP_SAT",
+        ));
+    }
+    Ok(Some(ZeroConfConfig {
+        submarine,
+        chain,
+        max_swap_sat,
+        max_in_flight_sat,
+    }))
+}
+
+fn explicit_true(name: &'static str, value: Option<String>) -> Result<bool, ConfigError> {
+    match value.as_deref() {
+        None => Ok(false),
+        Some("true") => Ok(true),
+        Some(_) => Err(ConfigError::Invalid(name)),
     }
 }
 
@@ -753,5 +825,53 @@ mod tests {
         })
         .expect("complete Liquid config");
         assert!(configured.is_some());
+    }
+
+    #[test]
+    fn zero_conf_is_off_by_default_and_requires_bounded_caps() {
+        assert_eq!(zero_conf_from_lookup(|_| None), Ok(None));
+        let configured = zero_conf_from_lookup(|name| {
+            let value = match name {
+                "IMMORTAL_PROVIDER_ZERO_CONF_SUBMARINE" => "true",
+                "IMMORTAL_PROVIDER_ZERO_CONF_MAX_SWAP_SAT" => "100000",
+                "IMMORTAL_PROVIDER_ZERO_CONF_MAX_IN_FLIGHT_SAT" => "250000",
+                _ => return None,
+            };
+            Some(value.to_owned())
+        })
+        .expect("bounded zero-conf configuration");
+        assert_eq!(
+            configured,
+            Some(ZeroConfConfig {
+                submarine: true,
+                chain: false,
+                max_swap_sat: 100_000,
+                max_in_flight_sat: 250_000,
+            })
+        );
+        assert!(
+            zero_conf_from_lookup(|name| {
+                (name == "IMMORTAL_PROVIDER_ZERO_CONF_SUBMARINE").then(|| "true".to_owned())
+            })
+            .is_err()
+        );
+        assert!(
+            zero_conf_from_lookup(|name| {
+                let value = match name {
+                    "IMMORTAL_PROVIDER_ZERO_CONF_CHAIN" => "true",
+                    "IMMORTAL_PROVIDER_ZERO_CONF_MAX_SWAP_SAT" => "251",
+                    "IMMORTAL_PROVIDER_ZERO_CONF_MAX_IN_FLIGHT_SAT" => "250",
+                    _ => return None,
+                };
+                Some(value.to_owned())
+            })
+            .is_err()
+        );
+        assert!(
+            zero_conf_from_lookup(|name| {
+                (name == "IMMORTAL_PROVIDER_ZERO_CONF_SUBMARINE").then(|| "false".to_owned())
+            })
+            .is_err()
+        );
     }
 }

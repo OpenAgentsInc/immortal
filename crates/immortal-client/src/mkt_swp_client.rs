@@ -2536,6 +2536,9 @@ pub mod provider_support {
         if previous == "cooperative_signing_pending" && current == previous {
             return true;
         }
+        if super::zero_conf_status_transition(swap_type, previous, current) {
+            return true;
+        }
         if matches!(
             current,
             "cancelled" | "expired" | "disputed" | "failed" | "unresolved"
@@ -2602,6 +2605,8 @@ pub mod provider_support {
                 "accepted",
                 "lock_terms_ready",
                 "funding_observed",
+                "funding_zero_conf_accepted",
+                "funding_confirmation_required",
                 "funding_final",
                 "lightning_payment_pending",
                 "lightning_paid",
@@ -6389,15 +6394,16 @@ impl StatusProjection {
             }
             let role = role_for_author(config, &event.pubkey)?;
             let content = parse_content(event)?;
-            let swp_state = object(
+            let status_profile = object(
                 content.get("mkt_swp").unwrap_or(&Value::Null),
                 "MKT-SWP Status",
-            )?
-            .get("swp_state")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                SwapClientError::new("swp_status_transition_invalid", "Status has no swp_state")
-            })?;
+            )?;
+            let swp_state = status_profile
+                .get("swp_state")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    SwapClientError::new("swp_status_transition_invalid", "Status has no swp_state")
+                })?;
             let declared_base_state = tag_value(event, "state")?;
             if base_state_for(swp_state) != Some(declared_base_state) {
                 invalid_claims.insert(
@@ -6410,6 +6416,13 @@ impl StatusProjection {
                 invalid_claims.insert(
                     event.id.clone(),
                     "swp_status_signer_invalid: state is unavailable to this signer or flow"
+                        .to_owned(),
+                );
+            }
+            if validate_zero_conf_status(status_profile, role, swp_state, swap_type).is_err() {
+                invalid_claims.insert(
+                    event.id.clone(),
+                    "swp_status_transition_invalid: zero-confirmation decision is invalid"
                         .to_owned(),
                 );
             }
@@ -6510,6 +6523,7 @@ impl StatusProjection {
                     &current_state,
                 )?;
                 if !cooperative_transition
+                    && !zero_conf_status_transition(swap_type, &previous_state, &current_state)
                     && transition_rank(swap_type, &previous_state)
                         .zip(transition_rank(swap_type, &current_state))
                         .is_none_or(|(previous_rank, current_rank)| current_rank <= previous_rank)
@@ -16396,6 +16410,22 @@ fn state_allowed_for_swap(role: ParticipantRole, state: &str, swap_type: SwapTyp
     if observation {
         return true;
     }
+    if role == ParticipantRole::Provider {
+        let zero_conf = match swap_type {
+            SwapType::Submarine => matches!(
+                state,
+                "funding_zero_conf_accepted" | "funding_confirmation_required"
+            ),
+            SwapType::Chain => matches!(
+                state,
+                "source_funding_zero_conf_accepted" | "source_funding_confirmation_required"
+            ),
+            SwapType::Reverse => false,
+        };
+        if zero_conf {
+            return true;
+        }
+    }
     match (swap_type, role) {
         (SwapType::Submarine, ParticipantRole::Requester) => matches!(
             state,
@@ -16473,6 +16503,8 @@ fn transition_rank(swap_type: SwapType, state: &str) -> Option<u16> {
             "funding_required",
             "requester_funding_broadcast",
             "funding_observed",
+            "funding_zero_conf_accepted",
+            "funding_confirmation_required",
             "funding_final",
             "lightning_payment_pending",
             "lightning_paid",
@@ -16527,6 +16559,8 @@ fn transition_rank(swap_type: SwapType, state: &str) -> Option<u16> {
             "source_funding_required",
             "requester_source_broadcast",
             "source_funding_observed",
+            "source_funding_zero_conf_accepted",
+            "source_funding_confirmation_required",
             "source_funding_final",
             "provider_destination_broadcast",
             "destination_funding_observed",
@@ -16554,6 +16588,199 @@ fn transition_rank(swap_type: SwapType, state: &str) -> Option<u16> {
         .iter()
         .position(|candidate| *candidate == state)
         .and_then(|position| u16::try_from(position).ok())
+}
+
+fn zero_conf_status_transition(swap_type: SwapType, previous: &str, current: &str) -> bool {
+    match swap_type {
+        SwapType::Submarine => matches!(
+            (previous, current),
+            ("funding_observed", "funding_zero_conf_accepted")
+                | ("funding_zero_conf_accepted", "lightning_payment_pending")
+                | (
+                    "funding_zero_conf_accepted",
+                    "funding_confirmation_required"
+                )
+                | ("lightning_payment_pending", "funding_confirmation_required")
+                | ("funding_confirmation_required", "funding_final")
+        ),
+        SwapType::Chain => matches!(
+            (previous, current),
+            (
+                "source_funding_observed",
+                "source_funding_zero_conf_accepted"
+            ) | (
+                "source_funding_zero_conf_accepted",
+                "provider_destination_broadcast"
+            ) | (
+                "source_funding_zero_conf_accepted",
+                "source_funding_confirmation_required"
+            ) | (
+                "source_funding_confirmation_required",
+                "source_funding_final"
+            )
+        ),
+        SwapType::Reverse => false,
+    }
+}
+
+fn validate_zero_conf_status(
+    profile: &Map<String, Value>,
+    role: ParticipantRole,
+    state: &str,
+    swap_type: SwapType,
+) -> Result<(), SwapClientError> {
+    let expected_decision = match (swap_type, role, state) {
+        (SwapType::Submarine, ParticipantRole::Provider, "funding_zero_conf_accepted")
+        | (SwapType::Chain, ParticipantRole::Provider, "source_funding_zero_conf_accepted") => {
+            Some("accepted")
+        }
+        (SwapType::Submarine, ParticipantRole::Provider, "funding_confirmation_required")
+        | (SwapType::Chain, ParticipantRole::Provider, "source_funding_confirmation_required") => {
+            Some("confirmation_required")
+        }
+        _ => None,
+    };
+    let acceptance = profile.get("zero_confirmation_acceptance");
+    let Some(expected_decision) = expected_decision else {
+        return if acceptance.is_none() {
+            Ok(())
+        } else {
+            Err(SwapClientError::new(
+                "swp_status_transition_invalid",
+                "zero-confirmation decision appears outside its provider state",
+            ))
+        };
+    };
+    let acceptance = object(
+        acceptance.unwrap_or(&Value::Null),
+        "zero-confirmation decision",
+    )?;
+    let allowed = [
+        "amount",
+        "decision",
+        "input_outpoints",
+        "output_index",
+        "policy_id",
+        "reason",
+        "replacement_transaction_id",
+        "transaction_id",
+        "view",
+    ];
+    if acceptance
+        .keys()
+        .any(|member| !allowed.contains(&member.as_str()))
+        || acceptance.get("decision").and_then(Value::as_str) != Some(expected_decision)
+        || acceptance.get("view").and_then(Value::as_str) != Some("provider_local_bitcoind")
+        || acceptance.get("policy_id").and_then(Value::as_str) != Some("btc-zero-conf-bounded-v1")
+    {
+        return Err(SwapClientError::new(
+            "swp_status_transition_invalid",
+            "zero-confirmation decision vocabulary is invalid",
+        ));
+    }
+    let transaction_id = acceptance
+        .get("transaction_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_status_transition_invalid",
+                "zero-confirmation decision has no transaction ID",
+            )
+        })?;
+    require_lower_hex_32(transaction_id, "zero-confirmation transaction ID")?;
+    if profile.get("transaction_id").and_then(Value::as_str) != Some(transaction_id)
+        || acceptance
+            .get("output_index")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .is_none()
+        || acceptance
+            .get("amount")
+            .and_then(Value::as_str)
+            .map(canonical_amount)
+            .transpose()?
+            .is_none_or(|amount| amount == 0)
+    {
+        return Err(SwapClientError::new(
+            "swp_status_transition_invalid",
+            "zero-confirmation funding binding is invalid",
+        ));
+    }
+    let inputs = acceptance
+        .get("input_outpoints")
+        .and_then(Value::as_array)
+        .filter(|inputs| !inputs.is_empty() && inputs.len() <= 256)
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_status_transition_invalid",
+                "zero-confirmation decision has no bounded input proof",
+            )
+        })?;
+    let mut unique = BTreeSet::new();
+    for input in inputs {
+        let input = object(input, "zero-confirmation input")?;
+        if input.len() != 2 {
+            return Err(SwapClientError::new(
+                "swp_status_transition_invalid",
+                "zero-confirmation input has unknown members",
+            ));
+        }
+        let txid = require_string(input, "txid", None, "swp_status_transition_invalid")?;
+        require_lower_hex_32(txid, "zero-confirmation input transaction ID")?;
+        let vout = input
+            .get("vout")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| {
+                SwapClientError::new(
+                    "swp_status_transition_invalid",
+                    "zero-confirmation input output index is invalid",
+                )
+            })?;
+        if !unique.insert((txid, vout)) {
+            return Err(SwapClientError::new(
+                "swp_status_transition_invalid",
+                "zero-confirmation input proof contains a duplicate",
+            ));
+        }
+    }
+    let reason = acceptance.get("reason").and_then(Value::as_str);
+    let replacement = acceptance
+        .get("replacement_transaction_id")
+        .and_then(Value::as_str);
+    if expected_decision == "accepted" {
+        if reason.is_some() || replacement.is_some() {
+            return Err(SwapClientError::new(
+                "swp_status_transition_invalid",
+                "accepted zero-confirmation decision carries downgrade fields",
+            ));
+        }
+    } else if !matches!(
+        reason,
+        Some(
+            "replacement"
+                | "conflict"
+                | "mempool_missing"
+                | "ancestor_unconfirmed"
+                | "aggregate_cap"
+                | "per_swap_cap"
+        )
+    ) {
+        return Err(SwapClientError::new(
+            "swp_status_transition_invalid",
+            "zero-confirmation downgrade reason is invalid",
+        ));
+    }
+    if let Some(replacement) = replacement {
+        require_lower_hex_32(replacement, "zero-confirmation replacement transaction ID")?;
+        if !matches!(reason, Some("replacement" | "conflict")) {
+            return Err(SwapClientError::new(
+                "swp_status_transition_invalid",
+                "zero-confirmation replacement ID has no replacement or conflict reason",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn cross_participant_status_prerequisite(
@@ -16704,6 +16931,10 @@ fn state_allowed_for_role(role: ParticipantRole, state: &str) -> bool {
         "provider_lock_terms_ready",
         "source_lock_terms_ready",
         "source_funding_required",
+        "funding_zero_conf_accepted",
+        "funding_confirmation_required",
+        "source_funding_zero_conf_accepted",
+        "source_funding_confirmation_required",
         "destination_lock_terms_ready",
         "lightning_htlcs_held",
         "lightning_settlement_pending",
@@ -16742,6 +16973,8 @@ fn base_state_for(state: &str) -> Option<&'static str> {
         Some("funding_required")
     } else if state.ends_with("funding_broadcast")
         || state.ends_with("funding_observed")
+        || state.ends_with("funding_zero_conf_accepted")
+        || state.ends_with("funding_confirmation_required")
         || matches!(
             state,
             "requester_source_broadcast" | "provider_destination_broadcast"
@@ -20347,4 +20580,99 @@ fn lower_hex(bytes: &[u8]) -> String {
         output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     output
+}
+
+#[cfg(test)]
+mod zero_conf_tests {
+    use super::*;
+
+    fn accepted_profile(state: &str) -> Map<String, Value> {
+        json!({
+            "confirmations":0,
+            "output_index":0,
+            "swp_state":state,
+            "transaction_id":"22".repeat(32),
+            "zero_confirmation_acceptance":{
+                "amount":"100000",
+                "decision":"accepted",
+                "input_outpoints":[{"txid":"11".repeat(32),"vout":1}],
+                "output_index":0,
+                "policy_id":"btc-zero-conf-bounded-v1",
+                "transaction_id":"22".repeat(32),
+                "view":"provider_local_bitcoind"
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("fixture profile object")
+    }
+
+    #[test]
+    fn zero_conf_status_is_provider_only_and_never_projects_finality() {
+        let profile = accepted_profile("funding_zero_conf_accepted");
+        assert!(
+            validate_zero_conf_status(
+                &profile,
+                ParticipantRole::Provider,
+                "funding_zero_conf_accepted",
+                SwapType::Submarine,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_zero_conf_status(
+                &profile,
+                ParticipantRole::Requester,
+                "funding_zero_conf_accepted",
+                SwapType::Submarine,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            base_state_for("funding_zero_conf_accepted"),
+            Some("funding_observed")
+        );
+        assert!(zero_conf_status_transition(
+            SwapType::Submarine,
+            "lightning_payment_pending",
+            "funding_confirmation_required"
+        ));
+    }
+
+    #[test]
+    fn zero_conf_downgrade_requires_a_closed_reason_and_bound_replacement() {
+        let mut profile = accepted_profile("funding_confirmation_required");
+        let acceptance = profile
+            .get_mut("zero_confirmation_acceptance")
+            .and_then(Value::as_object_mut)
+            .expect("acceptance object");
+        acceptance.insert(
+            "decision".to_owned(),
+            Value::String("confirmation_required".to_owned()),
+        );
+        acceptance.insert("reason".to_owned(), Value::String("replacement".to_owned()));
+        acceptance.insert(
+            "replacement_transaction_id".to_owned(),
+            Value::String("33".repeat(32)),
+        );
+        assert!(
+            validate_zero_conf_status(
+                &profile,
+                ParticipantRole::Provider,
+                "funding_confirmation_required",
+                SwapType::Submarine,
+            )
+            .is_ok()
+        );
+        profile["zero_confirmation_acceptance"]["reason"] = Value::String("unknown".to_owned());
+        assert!(
+            validate_zero_conf_status(
+                &profile,
+                ParticipantRole::Provider,
+                "funding_confirmation_required",
+                SwapType::Submarine,
+            )
+            .is_err()
+        );
+    }
 }

@@ -149,6 +149,9 @@ expected_ids = {
     "funding-reorg",
     "claim-reorg",
     "rbf-conflict",
+    "zero-conf-rbf-replacement",
+    "zero-conf-double-spend-race",
+    "zero-conf-ancestor-eviction",
     "wrong-claim-key",
     "preimage-leak-rejected",
     "seed-leak-rejected",
@@ -179,8 +182,8 @@ if set(case_ids) != expected_ids:
     raise SystemExit(f"adversarial scenario closure changed: missing={missing}, extra={extra}")
 if fixture.get("execution", {}).get("maximum_cases") != 48:
     raise SystemExit("adversarial scenario maximum is not 48")
-if len(case_ids) != 43:
-    raise SystemExit("adversarial scenario closure is not the exact 43-case matrix")
+if len(case_ids) != 46:
+    raise SystemExit("adversarial scenario closure is not the exact 46-case matrix")
 if [case["id"] for case in groups["routing"] if case["id"] in liquid_case_ids] != liquid_case_ids[:8]:
     raise SystemExit("Liquid routing cases are not the exact ordered extension")
 if [case["id"] for case in groups["doomsday"] if case["id"] in liquid_case_ids] != liquid_case_ids[8:]:

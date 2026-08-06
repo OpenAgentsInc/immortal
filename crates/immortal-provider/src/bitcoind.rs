@@ -399,6 +399,24 @@ impl BitcoindClient {
             .await
     }
 
+    pub async fn mempool_entry(
+        &self,
+        request_id: &RpcRequestId,
+        transaction_id: &str,
+    ) -> Result<Value, BitcoindError> {
+        validate_hash(transaction_id)?;
+        let result = self
+            .call(request_id, "getmempoolentry", json!([transaction_id]))
+            .await?;
+        if result.is_object() {
+            Ok(result)
+        } else {
+            Err(BitcoindError::Json(
+                "getmempoolentry result has invalid shape",
+            ))
+        }
+    }
+
     pub async fn transaction_output(
         &self,
         request_id: &RpcRequestId,

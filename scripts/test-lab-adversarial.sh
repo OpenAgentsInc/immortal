@@ -127,7 +127,7 @@ run_case() (
   local case_id="$1" group="$2" expected="$3" selected_provider="$4"
   local private_root project_name provider_image_ref current_phase compose_ready infrastructure_proven
   local maximum_seconds case_deadline failure_reason record_path
-  local external_injection external_checkpoint external_target cooperative_signing liquid_case
+  local external_injection external_checkpoint external_target cooperative_signing liquid_case zero_conf_case
   local wallet_driver_container_name
   local -a doomsday_stopped_targets=()
   private_root="$(mktemp -d "${TMPDIR:-/tmp}/immortal-adversarial-case.XXXXXX")"
@@ -143,6 +143,7 @@ run_case() (
   external_target=""
   cooperative_signing=false
   liquid_case=false
+  zero_conf_case=false
   case "${case_id}" in
     relay-a-partition)
       external_injection=relay_loss
@@ -227,6 +228,9 @@ run_case() (
       ;;
     doomsday-liquid-submarine-provider-gone|doomsday-liquid-reverse-coordinator-gone)
       liquid_case=true
+      ;;
+    zero-conf-rbf-replacement|zero-conf-double-spend-race|zero-conf-ancestor-eviction)
+      zero_conf_case=true
       ;;
   esac
   case "${case_id}" in
@@ -1240,6 +1244,9 @@ rpcport=18443
 rpcuser=${bitcoin_a_user}
 rpcpassword=${bitcoin_a_password}
 EOF
+  if test "${zero_conf_case}" = true; then
+    printf '%s\n' 'mempoolfullrbf=1' >>"${private_root}/bitcoin-a.conf"
+  fi
   cat >"${private_root}/bitcoin-b.conf" <<EOF
 regtest=1
 server=1
@@ -1374,6 +1381,13 @@ EOF
   write_provider_env "${private_root}/provider-b.env" b "${provider_b_password}" 18081 \
     "${provider_b_identity}" "${bitcoin_b_user}" "${bitcoin_b_password}" \
     /rail/cln-provider-b/lightning-rpc /run/immortal-private/provider-b-wallet-seed 9092
+  if test "${zero_conf_case}" = true; then
+    cat >>"${private_root}/provider-a.env" <<'EOF'
+IMMORTAL_PROVIDER_ZERO_CONF_SUBMARINE=true
+IMMORTAL_PROVIDER_ZERO_CONF_MAX_SWAP_SAT=200000
+IMMORTAL_PROVIDER_ZERO_CONF_MAX_IN_FLIGHT_SAT=400000
+EOF
+  fi
 
   cat >"${private_root}/esplora.env" <<EOF
 IMMORTAL_ESPLORA_BITCOIND_RPC_USER=${bitcoin_a_user}

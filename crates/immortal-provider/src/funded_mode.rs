@@ -43,6 +43,7 @@ use crate::{
     ReservationRequest,
     bitcoind::{BitcoindClient, BitcoindError, ChainTip, RpcRequestId},
     cln::Millisatoshi,
+    config::ZeroConfConfig,
     cooperative::ProviderCooperativeActor,
     elementsd::ElementsdWalletUtxo,
     funding::{FundingInput, FundingRequest, SignedFundingTransaction, build_funding_transaction},
@@ -105,6 +106,7 @@ pub(crate) struct FundedMode {
     lab_forces_fallback_feerate: bool,
     hold_invoice_expiry_seconds: u32,
     cooperative_signing: bool,
+    zero_conf: Option<ZeroConfConfig>,
     session_invoices: BTreeMap<String, String>,
     reserved_inputs: BTreeMap<String, Vec<FundingInput>>,
     reserved_liquid_inputs: BTreeMap<String, Vec<ElementsdWalletUtxo>>,
@@ -120,6 +122,7 @@ pub(crate) struct FundedModePolicy {
     pub pricing: PricingConfig,
     pub lab_forces_fallback_feerate: bool,
     pub hold_invoice_expiry_seconds: u32,
+    pub zero_conf: Option<ZeroConfConfig>,
 }
 
 fn derive_quote_with_capacity_disposition(
@@ -214,6 +217,8 @@ struct ChainTerms {
     committed_funding_transaction: Option<String>,
     committed_funding_sha256: String,
     output_index: u32,
+    zero_confirmation: bool,
+    desired_completion_time: u64,
 }
 
 struct ChainSwapTerms {
@@ -240,6 +245,15 @@ struct LiquidChainObservation {
 enum RailChainObservation {
     Bitcoin(ChainObservation),
     Liquid(LiquidChainObservation),
+}
+
+enum ZeroConfCheck {
+    Accepted(ChainObservation),
+    Final(ChainObservation),
+    Downgrade {
+        reason: &'static str,
+        replacement_txid: Option<String>,
+    },
 }
 
 impl RailChainObservation {
@@ -438,6 +452,7 @@ impl FundedMode {
             lab_forces_fallback_feerate: policy.lab_forces_fallback_feerate,
             hold_invoice_expiry_seconds: policy.hold_invoice_expiry_seconds,
             cooperative_signing: policy.cooperative_signing,
+            zero_conf: policy.zero_conf,
             session_invoices: BTreeMap::new(),
             reserved_inputs: BTreeMap::new(),
             reserved_liquid_inputs: BTreeMap::new(),
@@ -463,6 +478,10 @@ impl FundedMode {
             }
         };
         if swap_type == PricingSwapType::Chain {
+            let asset_pair = rfq_asset_pair(rfq)?;
+            let zero_confirmation = self.zero_conf.is_some_and(|policy| {
+                policy.chain && asset_pair[0] == format!("swp:1:{}:btc:chain", self.network_id)
+            });
             let bitcoin_tip = self
                 .handle
                 .block_on(
@@ -485,13 +504,15 @@ impl FundedMode {
                 height: view.height,
             };
             let pricing = self.derive_pricing(rfq, swap_type, created_at)?;
+            let zero_confirmation =
+                zero_confirmation && self.zero_conf_amount_allowed(&pricing.input_amount)?;
             let quote = build_funded_chain_quote(
                 rfq,
                 &self.wallet,
                 quote_allocation(session_id(rfq)?)?,
                 &bitcoin_tip,
                 &liquid_tip,
-                self.quote_policy(&pricing, 0)?,
+                self.quote_policy(&pricing, 0, zero_confirmation)?,
                 created_at,
             )
             .map_err(|error| error.to_string())?;
@@ -526,6 +547,7 @@ impl FundedMode {
             bitcoin_tip
         };
         let pricing = self.derive_pricing(rfq, swap_type, created_at)?;
+        let zero_conf_amount_allowed = self.zero_conf_amount_allowed(&pricing.input_amount)?;
         let invoice = if swap_type == PricingSwapType::Submarine {
             rfq_invoice(rfq)?
         } else {
@@ -538,7 +560,14 @@ impl FundedMode {
             &self.wallet,
             allocation,
             &chain_tip,
-            self.quote_policy(&pricing, lightning_current_height)?,
+            self.quote_policy(
+                &pricing,
+                lightning_current_height,
+                swap_type == PricingSwapType::Submarine
+                    && !liquid_pair
+                    && zero_conf_amount_allowed
+                    && self.zero_conf.is_some_and(|policy| policy.submarine),
+            )?,
             created_at,
         )
         .map_err(|error| error.to_string())?;
@@ -546,10 +575,18 @@ impl FundedMode {
         Ok(Some(quote))
     }
 
+    fn zero_conf_amount_allowed(&self, amount: &str) -> Result<bool, String> {
+        let amount = canonical_u64(amount)?;
+        Ok(self
+            .zero_conf
+            .is_some_and(|policy| amount <= policy.max_swap_sat))
+    }
+
     fn quote_policy<'a>(
         &'a self,
         pricing: &DerivedQuote,
         lightning_current_height: u32,
+        zero_confirmation: bool,
     ) -> Result<FundedQuotePolicy<'a>, String> {
         Ok(FundedQuotePolicy {
             network_id: &self.network_id,
@@ -568,9 +605,13 @@ impl FundedMode {
             lightning_routing_fee_budget_sat: canonical_u64(&pricing.lightning_routing_fee_budget)?,
             minimum_confirmations: self.minimum_confirmations,
             reorg_safety_blocks: self.reorg_safety_blocks,
-            zero_confirmation: false,
+            zero_confirmation,
             rbf: ReplacementPolicy::Reject,
-            replacement: ReplacementPolicy::Reject,
+            replacement: if zero_confirmation {
+                ReplacementPolicy::Track
+            } else {
+                ReplacementPolicy::Reject
+            },
             quote_validity_seconds: self.pricing.quote_expiry_seconds,
             funding_window_blocks: 12,
             broadcast_safety_blocks: 2,
@@ -1186,6 +1227,155 @@ impl FundedMode {
             ))
             .map_err(|error| format!("could not observe swap funding: {error}"))?;
         chain_observation_from_response(&response, transaction_id, output_index, terms)
+    }
+
+    fn zero_conf_check(
+        &self,
+        session_id: &str,
+        transaction_id: &str,
+        output_index: u32,
+        terms: &ChainTerms,
+        required_confirmations: u32,
+        inputs: &[OutPoint],
+    ) -> Result<ZeroConfCheck, String> {
+        let response = self.handle.block_on(self.bitcoind.raw_transaction(
+            &rpc_id("zero-conf-transaction", session_id)?,
+            transaction_id,
+            true,
+        ));
+        let observation = match response {
+            Ok(response) => {
+                chain_observation_from_response(&response, transaction_id, output_index, terms)?
+            }
+            Err(BitcoindError::Rpc { code: -5 }) => {
+                let (reason, replacement_txid) =
+                    self.zero_conf_absence_reason(session_id, transaction_id, inputs, terms)?;
+                return Ok(ZeroConfCheck::Downgrade {
+                    reason,
+                    replacement_txid,
+                });
+            }
+            Err(error) => return Err(format!("could not recheck zero-conf funding: {error}")),
+        };
+        if observation.confirmations >= required_confirmations {
+            return Ok(ZeroConfCheck::Final(observation));
+        }
+        let entry = match self.handle.block_on(
+            self.bitcoind
+                .mempool_entry(&rpc_id("zero-conf-mempool", session_id)?, transaction_id),
+        ) {
+            Ok(entry) => entry,
+            Err(BitcoindError::Rpc { code: -5 }) => {
+                let (reason, replacement_txid) =
+                    self.zero_conf_absence_reason(session_id, transaction_id, inputs, terms)?;
+                return Ok(ZeroConfCheck::Downgrade {
+                    reason,
+                    replacement_txid,
+                });
+            }
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect zero-conf mempool entry: {error}"
+                ));
+            }
+        };
+        if let Err(error) = validate_zero_conf_mempool_entry(&entry) {
+            let reason = match error.as_str() {
+                "zero-conf funding is BIP125 replaceable" => "replacement",
+                "zero-conf funding has an unconfirmed ancestor" => "ancestor_unconfirmed",
+                _ => return Err(error),
+            };
+            return Ok(ZeroConfCheck::Downgrade {
+                reason,
+                replacement_txid: None,
+            });
+        }
+        Ok(ZeroConfCheck::Accepted(observation))
+    }
+
+    fn zero_conf_absence_reason(
+        &self,
+        session_id: &str,
+        transaction_id: &str,
+        inputs: &[OutPoint],
+        terms: &ChainTerms,
+    ) -> Result<(&'static str, Option<String>), String> {
+        if inputs.is_empty() || inputs.len() > 256 {
+            return Err("zero-conf funding input proof is empty or unbounded".to_owned());
+        }
+        let request = inputs
+            .iter()
+            .map(|input| json!({"txid":input.txid,"vout":input.vout}))
+            .collect::<Vec<_>>();
+        let spenders = self
+            .handle
+            .block_on(self.bitcoind.call(
+                &rpc_id("zero-conf-spenders", session_id)?,
+                "gettxspendingprevout",
+                json!([request]),
+            ))
+            .map_err(|error| format!("could not inspect zero-conf conflicting spends: {error}"))?;
+        let spenders = spenders
+            .as_array()
+            .filter(|spenders| spenders.len() == inputs.len())
+            .ok_or_else(|| "zero-conf conflicting-spend response is invalid".to_owned())?;
+        for spender in spenders {
+            let Some(spending_txid) = spender.get("spendingtxid").and_then(Value::as_str) else {
+                continue;
+            };
+            required_hash(spending_txid, "zero-conf replacement transaction ID")?;
+            if spending_txid == transaction_id {
+                continue;
+            }
+            let response = self
+                .handle
+                .block_on(self.bitcoind.raw_transaction(
+                    &rpc_id("zero-conf-competitor", session_id)?,
+                    spending_txid,
+                    true,
+                ))
+                .map_err(|error| format!("could not inspect zero-conf competitor: {error}"))?;
+            let raw = response
+                .get("hex")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "zero-conf competitor has no raw transaction".to_owned())?;
+            let competitor = Transaction::parse(&decode_hex(raw)?)
+                .map_err(|error| format!("zero-conf competitor is invalid: {error}"))?;
+            let reason = if competitor
+                .inputs
+                .iter()
+                .any(|input| input.sequence < 0xffff_fffe)
+            {
+                "replacement"
+            } else {
+                "conflict"
+            };
+            return Ok((reason, Some(spending_txid.to_owned())));
+        }
+        for input in inputs {
+            match self.handle.block_on(self.bitcoind.raw_transaction(
+                &rpc_id("zero-conf-ancestor", session_id)?,
+                &input.txid,
+                true,
+            )) {
+                Ok(parent)
+                    if parent
+                        .get("confirmations")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                        > 0 => {}
+                Ok(_) | Err(BitcoindError::Rpc { code: -5 }) => {
+                    return Ok(("ancestor_unconfirmed", None));
+                }
+                Err(error) => {
+                    return Err(format!("could not inspect zero-conf ancestor: {error}"));
+                }
+            }
+        }
+        if terms.rail != ChainRailKind::Bitcoin {
+            return Err("zero-conf recheck reached a non-Bitcoin rail".to_owned());
+        }
+        Ok(("mempool_missing", None))
     }
 
     fn observe_liquid_funding(
@@ -2129,6 +2319,102 @@ impl FundedMode {
             .map_err(|error| format!("could not release terminal reservation: {error}"))
     }
 
+    fn reserve_zero_conf_risk(
+        &mut self,
+        session_id: &str,
+        amount_sat: u64,
+        expires_at: u64,
+        now: u64,
+    ) -> Result<bool, String> {
+        let policy = self
+            .zero_conf
+            .ok_or_else(|| "zero-conf risk reached a disabled provider policy".to_owned())?;
+        if amount_sat == 0 || amount_sat > policy.max_swap_sat {
+            return Ok(false);
+        }
+        let bucket_id = "zero-conf-risk-btc";
+        let asset_id = format!("swp:1:{}:btc:chain", self.network_id);
+        self.handle
+            .block_on(self.store.configure_capacity_bucket(
+                bucket_id,
+                &asset_id,
+                policy.max_in_flight_sat,
+                now,
+            ))
+            .map_err(|error| format!("could not configure zero-conf risk bucket: {error}"))?;
+        let reservation_id = deterministic_id("zero-conf-risk", session_id);
+        let effect_id = deterministic_id("zero-conf-reserve", session_id);
+        let reservation_session_id = zero_conf_risk_session_id(session_id);
+        let request_sha256 = value_digest(&json!({
+            "amount":amount_sat.to_string(),
+            "asset_id":asset_id,
+            "bucket_id":bucket_id,
+            "expires_at":expires_at,
+            "market_session_id":session_id,
+            "reservation_id":reservation_id,
+            "reservation_session_id":reservation_session_id,
+        }))?;
+        let mut expected_sequence = 1_u64;
+        loop {
+            let request = HardReservationRequest {
+                reservation_id: reservation_id.clone(),
+                effect_id: effect_id.clone(),
+                session_id: reservation_session_id.clone(),
+                bucket_id: bucket_id.to_owned(),
+                asset_id: asset_id.clone(),
+                amount: amount_sat,
+                request_sha256: request_sha256.clone(),
+                expected_allocation_sequence: expected_sequence,
+                expires_at,
+                utxos: Vec::new(),
+                created_at: now,
+            };
+            match self.handle.block_on(self.store.reserve(&request)) {
+                Ok(ReservationOutcome::Reserved(_) | ReservationOutcome::Replay(_)) => {
+                    return Ok(true);
+                }
+                Ok(ReservationOutcome::AllocationSequenceMismatch { current }) => {
+                    expected_sequence = current
+                        .checked_add(1)
+                        .ok_or_else(|| "zero-conf allocation sequence overflowed".to_owned())?;
+                }
+                Ok(ReservationOutcome::InsufficientCapacity) => return Ok(false),
+                Ok(ReservationOutcome::UtxoUnavailable(_)) => {
+                    return Err(
+                        "zero-conf risk reservation unexpectedly selected a UTXO".to_owned()
+                    );
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "could not reserve zero-conf risk capacity: {error}"
+                    ));
+                }
+            }
+        }
+    }
+
+    fn release_zero_conf_risk(&mut self, session_id: &str, now: u64) -> Result<(), String> {
+        let reservation_id = deterministic_id("zero-conf-risk", session_id);
+        let Some(reservation) = self
+            .handle
+            .block_on(self.store.reservation(&reservation_id))
+            .map_err(|error| format!("could not inspect zero-conf risk reservation: {error}"))?
+        else {
+            return Ok(());
+        };
+        if reservation.state == "released" {
+            return Ok(());
+        }
+        self.handle
+            .block_on(self.store.release_reservation(
+                &reservation_id,
+                "zero_conf_final_or_downgraded",
+                now,
+            ))
+            .map(|_| ())
+            .map_err(|error| format!("could not release zero-conf risk reservation: {error}"))
+    }
+
     fn release_reservation_effect(
         &mut self,
         request: &ProviderEffectRequest,
@@ -2178,6 +2464,7 @@ impl FundedMode {
         created_at: u64,
     ) -> Result<MktSigningRequest, String> {
         let profile = terminal_close_profile(session, swap_type, outcome)?;
+        self.release_zero_conf_risk(&session.config().session_id, created_at)?;
         let (request, receipt) = session
             .provider_close_with_release(
                 created_at,
@@ -4456,6 +4743,39 @@ impl FundedMode {
         .map(Some)
     }
 
+    fn execute_chain_destination_status(
+        &mut self,
+        session: &mut ProviderSession,
+        terms: &ChainSwapTerms,
+        created_at: u64,
+    ) -> Result<MktSigningRequest, String> {
+        let (transaction_id, output_index, result) = self.execute_chain_destination_funding(
+            session,
+            &terms.source,
+            &terms.destination,
+            created_at,
+        )?;
+        let evidence = chain_transaction_evidence(
+            session,
+            terms.destination.rail,
+            &transaction_id,
+            "measured",
+            &result,
+            created_at,
+            "provider destination funding accepted by the local node",
+        )?;
+        let mut extra = Map::new();
+        extra.insert("transaction_id".to_owned(), Value::String(transaction_id));
+        extra.insert("output_index".to_owned(), json!(output_index));
+        Self::next_status_with_evidence(
+            session,
+            created_at,
+            "provider_destination_broadcast",
+            evidence,
+            extra,
+        )
+    }
+
     fn next_chain_status(
         &mut self,
         session: &mut ProviderSession,
@@ -4571,8 +4891,196 @@ impl FundedMode {
                     &terms.source,
                 )?;
                 if observation.confirmations() < required_confirmations {
+                    if !terms.source.zero_confirmation
+                        || terms.source.rail != ChainRailKind::Bitcoin
+                    {
+                        return Ok(None);
+                    }
+                    let RailChainObservation::Bitcoin(observation) = observation else {
+                        return Err(
+                            "chain zero-conf admission reached a non-Bitcoin observation"
+                                .to_owned(),
+                        );
+                    };
+                    let inputs = zero_conf_inputs(&observation)?;
+                    match self.zero_conf_check(
+                        &session.config().session_id,
+                        &transaction_id,
+                        output_index,
+                        &terms.source,
+                        required_confirmations,
+                        &inputs,
+                    )? {
+                        ZeroConfCheck::Accepted(observation) => {
+                            if !self.reserve_zero_conf_risk(
+                                &session.config().session_id,
+                                terms.source.amount_sat,
+                                terms.source.desired_completion_time,
+                                created_at,
+                            )? {
+                                let extra = zero_conf_status_extra(
+                                    &observation,
+                                    "btc-zero-conf-bounded-v1",
+                                    "confirmation_required",
+                                    Some("aggregate_cap"),
+                                    None,
+                                )?;
+                                return Self::next_status(
+                                    session,
+                                    created_at,
+                                    "source_funding_confirmation_required",
+                                    extra,
+                                )
+                                .map(Some);
+                            }
+                            let extra = zero_conf_status_extra(
+                                &observation,
+                                "btc-zero-conf-bounded-v1",
+                                "accepted",
+                                None,
+                                None,
+                            )?;
+                            return Self::next_status(
+                                session,
+                                created_at,
+                                "source_funding_zero_conf_accepted",
+                                extra,
+                            )
+                            .map(Some);
+                        }
+                        ZeroConfCheck::Final(observation) => {
+                            let observation = RailChainObservation::Bitcoin(observation);
+                            let evidence = rail_output_evidence(
+                                session,
+                                &observation,
+                                "verified",
+                                created_at,
+                            )?;
+                            return Self::next_status_with_evidence(
+                                session,
+                                created_at,
+                                "source_funding_final",
+                                evidence,
+                                rail_transaction_extra(&observation),
+                            )
+                            .map(Some);
+                        }
+                        ZeroConfCheck::Downgrade {
+                            reason,
+                            replacement_txid,
+                        } => {
+                            let extra = zero_conf_status_extra(
+                                &observation,
+                                "btc-zero-conf-bounded-v1",
+                                "confirmation_required",
+                                Some(reason),
+                                replacement_txid.as_deref(),
+                            )?;
+                            return Self::next_status(
+                                session,
+                                created_at,
+                                "source_funding_confirmation_required",
+                                extra,
+                            )
+                            .map(Some);
+                        }
+                    }
+                }
+                let evidence = rail_output_evidence(session, &observation, "verified", created_at)?;
+                Self::next_status_with_evidence(
+                    session,
+                    created_at,
+                    "source_funding_final",
+                    evidence,
+                    rail_transaction_extra(&observation),
+                )
+                .map(Some)
+            }
+            Some("source_funding_zero_conf_accepted") => {
+                let accepted_status = status_by_state(
+                    records,
+                    &session.config().provider_pubkey,
+                    "source_funding_zero_conf_accepted",
+                )
+                .ok_or_else(|| "chain zero-conf acceptance Status is unavailable".to_owned())?;
+                if unix_now()? <= accepted_status.created_at {
                     return Ok(None);
                 }
+                let source_status =
+                    status_by_state(records, requester_pubkey, "requester_source_broadcast")
+                        .ok_or_else(|| {
+                            "chain zero-conf funding lost its requester source".to_owned()
+                        })?;
+                let (transaction_id, output_index) = status_transaction_reference(source_status)?;
+                let inputs = zero_conf_status_inputs(
+                    records,
+                    &session.config().provider_pubkey,
+                    "source_funding_zero_conf_accepted",
+                )?;
+                match self.zero_conf_check(
+                    &session.config().session_id,
+                    &transaction_id,
+                    output_index,
+                    &terms.source,
+                    required_confirmations,
+                    &inputs,
+                )? {
+                    ZeroConfCheck::Accepted(_) => self
+                        .execute_chain_destination_status(session, &terms, created_at)
+                        .map(Some),
+                    ZeroConfCheck::Final(observation) => {
+                        self.release_zero_conf_risk(&session.config().session_id, created_at)?;
+                        let observation = RailChainObservation::Bitcoin(observation);
+                        let evidence =
+                            rail_output_evidence(session, &observation, "verified", created_at)?;
+                        Self::next_status_with_evidence(
+                            session,
+                            created_at,
+                            "source_funding_final",
+                            evidence,
+                            rail_transaction_extra(&observation),
+                        )
+                        .map(Some)
+                    }
+                    ZeroConfCheck::Downgrade {
+                        reason,
+                        replacement_txid,
+                    } => {
+                        self.release_zero_conf_risk(&session.config().session_id, created_at)?;
+                        let extra = zero_conf_downgrade_extra(
+                            records,
+                            &session.config().provider_pubkey,
+                            "source_funding_zero_conf_accepted",
+                            reason,
+                            replacement_txid.as_deref(),
+                        )?;
+                        Self::next_status(
+                            session,
+                            created_at,
+                            "source_funding_confirmation_required",
+                            extra,
+                        )
+                        .map(Some)
+                    }
+                }
+            }
+            Some("source_funding_confirmation_required") => {
+                let source_status =
+                    status_by_state(records, requester_pubkey, "requester_source_broadcast")
+                        .ok_or_else(|| {
+                            "chain confirmation-required state lost its requester source".to_owned()
+                        })?;
+                let (transaction_id, output_index) = status_transaction_reference(source_status)?;
+                let observation = self.observe_contract_funding(
+                    &session.config().session_id,
+                    &transaction_id,
+                    output_index,
+                    &terms.source,
+                )?;
+                if observation.confirmations() < required_confirmations {
+                    return Ok(None);
+                }
+                self.release_zero_conf_risk(&session.config().session_id, created_at)?;
                 let evidence = rail_output_evidence(session, &observation, "verified", created_at)?;
                 Self::next_status_with_evidence(
                     session,
@@ -4611,33 +5119,8 @@ impl FundedMode {
                             .to_owned(),
                     );
                 }
-                let (transaction_id, output_index, result) = self
-                    .execute_chain_destination_funding(
-                        session,
-                        &terms.source,
-                        &terms.destination,
-                        created_at,
-                    )?;
-                let evidence = chain_transaction_evidence(
-                    session,
-                    terms.destination.rail,
-                    &transaction_id,
-                    "measured",
-                    &result,
-                    created_at,
-                    "provider destination funding accepted by the local node",
-                )?;
-                let mut extra = Map::new();
-                extra.insert("transaction_id".to_owned(), Value::String(transaction_id));
-                extra.insert("output_index".to_owned(), json!(output_index));
-                Self::next_status_with_evidence(
-                    session,
-                    created_at,
-                    "provider_destination_broadcast",
-                    evidence,
-                    extra,
-                )
-                .map(Some)
+                self.execute_chain_destination_status(session, &terms, created_at)
+                    .map(Some)
             }
             Some("provider_destination_broadcast") => {
                 let status = status_by_state(
@@ -5427,6 +5910,7 @@ impl ProviderMode for FundedMode {
             self.reorg_safety_blocks,
             &self.pricing,
             self.liquid.as_ref(),
+            self.zero_conf,
         )
     }
 
@@ -6010,8 +6494,197 @@ impl ProviderMode for FundedMode {
                     &terms,
                 )?;
                 if observation.confirmations() < self.minimum_confirmations {
+                    if !terms.zero_confirmation || terms.rail != ChainRailKind::Bitcoin {
+                        return Ok(None);
+                    }
+                    let RailChainObservation::Bitcoin(observation) = observation else {
+                        return Err(
+                            "zero-conf admission reached a non-Bitcoin observation".to_owned()
+                        );
+                    };
+                    let inputs = zero_conf_inputs(&observation)?;
+                    match self.zero_conf_check(
+                        &session.config().session_id,
+                        &transaction_id,
+                        output_index,
+                        &terms,
+                        self.minimum_confirmations,
+                        &inputs,
+                    )? {
+                        ZeroConfCheck::Accepted(observation) => {
+                            if !self.reserve_zero_conf_risk(
+                                &session.config().session_id,
+                                terms.amount_sat,
+                                terms.desired_completion_time,
+                                created_at,
+                            )? {
+                                let extra = zero_conf_status_extra(
+                                    &observation,
+                                    "btc-zero-conf-bounded-v1",
+                                    "confirmation_required",
+                                    Some("aggregate_cap"),
+                                    None,
+                                )?;
+                                return Self::next_status(
+                                    session,
+                                    created_at,
+                                    "funding_confirmation_required",
+                                    extra,
+                                )
+                                .map(Some);
+                            }
+                            let extra = zero_conf_status_extra(
+                                &observation,
+                                "btc-zero-conf-bounded-v1",
+                                "accepted",
+                                None,
+                                None,
+                            )?;
+                            return Self::next_status(
+                                session,
+                                created_at,
+                                "funding_zero_conf_accepted",
+                                extra,
+                            )
+                            .map(Some);
+                        }
+                        ZeroConfCheck::Final(observation) => {
+                            let observation = RailChainObservation::Bitcoin(observation);
+                            let evidence = rail_output_evidence(
+                                session,
+                                &observation,
+                                "verified",
+                                created_at,
+                            )?;
+                            return Self::next_status_with_evidence(
+                                session,
+                                created_at,
+                                "funding_final",
+                                evidence,
+                                rail_transaction_extra(&observation),
+                            )
+                            .map(Some);
+                        }
+                        ZeroConfCheck::Downgrade {
+                            reason,
+                            replacement_txid,
+                        } => {
+                            let extra = zero_conf_status_extra(
+                                &observation,
+                                "btc-zero-conf-bounded-v1",
+                                "confirmation_required",
+                                Some(reason),
+                                replacement_txid.as_deref(),
+                            )?;
+                            return Self::next_status(
+                                session,
+                                created_at,
+                                "funding_confirmation_required",
+                                extra,
+                            )
+                            .map(Some);
+                        }
+                    }
+                }
+                let evidence = rail_output_evidence(session, &observation, "verified", created_at)?;
+                Self::next_status_with_evidence(
+                    session,
+                    created_at,
+                    "funding_final",
+                    evidence,
+                    rail_transaction_extra(&observation),
+                )
+                .map(Some)
+            }
+            ("submarine", Some("funding_zero_conf_accepted")) => {
+                let accepted_status = status_by_state(
+                    records,
+                    &session.config().provider_pubkey,
+                    "funding_zero_conf_accepted",
+                )
+                .ok_or_else(|| "zero-conf acceptance Status is unavailable".to_owned())?;
+                if unix_now()? <= accepted_status.created_at {
                     return Ok(None);
                 }
+                let requester_status =
+                    status_by_state(records, requester_pubkey, "requester_funding_broadcast")
+                        .ok_or_else(|| "zero-conf funding lost its requester source".to_owned())?;
+                let (transaction_id, output_index) =
+                    status_transaction_reference(requester_status)?;
+                let inputs = zero_conf_status_inputs(
+                    records,
+                    &session.config().provider_pubkey,
+                    "funding_zero_conf_accepted",
+                )?;
+                match self.zero_conf_check(
+                    &session.config().session_id,
+                    &transaction_id,
+                    output_index,
+                    &terms,
+                    self.minimum_confirmations,
+                    &inputs,
+                )? {
+                    ZeroConfCheck::Accepted(_) => Self::next_status(
+                        session,
+                        created_at,
+                        "lightning_payment_pending",
+                        Map::new(),
+                    )
+                    .map(Some),
+                    ZeroConfCheck::Final(observation) => {
+                        self.release_zero_conf_risk(&session.config().session_id, created_at)?;
+                        let observation = RailChainObservation::Bitcoin(observation);
+                        let evidence =
+                            rail_output_evidence(session, &observation, "verified", created_at)?;
+                        Self::next_status_with_evidence(
+                            session,
+                            created_at,
+                            "funding_final",
+                            evidence,
+                            rail_transaction_extra(&observation),
+                        )
+                        .map(Some)
+                    }
+                    ZeroConfCheck::Downgrade {
+                        reason,
+                        replacement_txid,
+                    } => {
+                        self.release_zero_conf_risk(&session.config().session_id, created_at)?;
+                        let extra = zero_conf_downgrade_extra(
+                            records,
+                            &session.config().provider_pubkey,
+                            "funding_zero_conf_accepted",
+                            reason,
+                            replacement_txid.as_deref(),
+                        )?;
+                        Self::next_status(
+                            session,
+                            created_at,
+                            "funding_confirmation_required",
+                            extra,
+                        )
+                        .map(Some)
+                    }
+                }
+            }
+            ("submarine", Some("funding_confirmation_required")) => {
+                let requester_status =
+                    status_by_state(records, requester_pubkey, "requester_funding_broadcast")
+                        .ok_or_else(|| {
+                            "confirmation-required funding lost its requester source".to_owned()
+                        })?;
+                let (transaction_id, output_index) =
+                    status_transaction_reference(requester_status)?;
+                let observation = self.observe_contract_funding(
+                    &session.config().session_id,
+                    &transaction_id,
+                    output_index,
+                    &terms,
+                )?;
+                if observation.confirmations() < self.minimum_confirmations {
+                    return Ok(None);
+                }
+                self.release_zero_conf_risk(&session.config().session_id, created_at)?;
                 let evidence = rail_output_evidence(session, &observation, "verified", created_at)?;
                 Self::next_status_with_evidence(
                     session,
@@ -6057,10 +6730,57 @@ impl ProviderMode for FundedMode {
                     output_index,
                     &terms,
                 )?;
-                if observation.confirmations() < self.minimum_confirmations {
+                if observation.confirmations() < self.minimum_confirmations
+                    && status_by_state(
+                        records,
+                        &session.config().provider_pubkey,
+                        "funding_zero_conf_accepted",
+                    )
+                    .is_none()
+                {
                     return Err(
                         "submarine funding lost required confirmation before payment".to_owned(),
                     );
+                }
+                if observation.confirmations() < self.minimum_confirmations {
+                    let inputs = zero_conf_status_inputs(
+                        records,
+                        &session.config().provider_pubkey,
+                        "funding_zero_conf_accepted",
+                    )?;
+                    match self.zero_conf_check(
+                        &session.config().session_id,
+                        &transaction_id,
+                        output_index,
+                        &terms,
+                        self.minimum_confirmations,
+                        &inputs,
+                    )? {
+                        ZeroConfCheck::Accepted(_) => {}
+                        ZeroConfCheck::Final(_) => {
+                            self.release_zero_conf_risk(&session.config().session_id, created_at)?;
+                        }
+                        ZeroConfCheck::Downgrade {
+                            reason,
+                            replacement_txid,
+                        } => {
+                            self.release_zero_conf_risk(&session.config().session_id, created_at)?;
+                            let extra = zero_conf_downgrade_extra(
+                                records,
+                                &session.config().provider_pubkey,
+                                "funding_zero_conf_accepted",
+                                reason,
+                                replacement_txid.as_deref(),
+                            )?;
+                            return Self::next_status(
+                                session,
+                                created_at,
+                                "funding_confirmation_required",
+                                extra,
+                            )
+                            .map(Some);
+                        }
+                    }
                 }
                 if self.cooperative_signing && terms.rail == ChainRailKind::Bitcoin {
                     self.prepare_cooperative_session(session)?;
@@ -7032,6 +7752,152 @@ fn chain_observation_from_response(
     })
 }
 
+fn validate_zero_conf_mempool_entry(entry: &Value) -> Result<(), String> {
+    let entry = entry
+        .as_object()
+        .ok_or_else(|| "zero-conf mempool entry is not an object".to_owned())?;
+    if entry.get("ancestorcount").and_then(Value::as_u64) != Some(1) {
+        return Err("zero-conf funding has an unconfirmed ancestor".to_owned());
+    }
+    let dependencies = entry
+        .get("depends")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "zero-conf mempool entry has no bounded dependency set".to_owned())?;
+    if !dependencies.is_empty() {
+        return Err("zero-conf funding has an unconfirmed ancestor".to_owned());
+    }
+    if entry.get("bip125-replaceable").and_then(Value::as_bool) != Some(false) {
+        return Err("zero-conf funding is BIP125 replaceable".to_owned());
+    }
+    Ok(())
+}
+
+fn zero_conf_risk_session_id(market_session_id: &str) -> String {
+    deterministic_id("zero-conf-risk-session", market_session_id)
+}
+
+fn zero_conf_inputs(observation: &ChainObservation) -> Result<Vec<OutPoint>, String> {
+    if observation.transaction.inputs.is_empty() || observation.transaction.inputs.len() > 256 {
+        return Err("zero-conf funding input set is empty or unbounded".to_owned());
+    }
+    Ok(observation
+        .transaction
+        .inputs
+        .iter()
+        .map(|input| OutPoint {
+            txid: display_txid(&input.previous_txid),
+            vout: input.previous_output,
+        })
+        .collect())
+}
+
+fn zero_conf_status_extra(
+    observation: &ChainObservation,
+    policy_id: &str,
+    decision: &str,
+    reason: Option<&str>,
+    replacement_txid: Option<&str>,
+) -> Result<Map<String, Value>, String> {
+    let inputs = zero_conf_inputs(observation)?;
+    let mut acceptance = json!({
+        "amount":observation.transaction.outputs.get(usize::try_from(observation.output_index).map_err(|_| "zero-conf output index exceeds usize")?).ok_or_else(|| "zero-conf output is unavailable".to_owned())?.value_sat.to_string(),
+        "decision":decision,
+        "input_outpoints":inputs.iter().map(|input| json!({"txid":input.txid,"vout":input.vout})).collect::<Vec<_>>(),
+        "output_index":observation.output_index,
+        "policy_id":policy_id,
+        "transaction_id":observation.transaction_id,
+        "view":"provider_local_bitcoind",
+    });
+    let object = acceptance
+        .as_object_mut()
+        .ok_or_else(|| "zero-conf acceptance is not an object".to_owned())?;
+    if let Some(reason) = reason {
+        object.insert("reason".to_owned(), Value::String(reason.to_owned()));
+    }
+    if let Some(replacement_txid) = replacement_txid {
+        required_hash(replacement_txid, "zero-conf replacement transaction ID")?;
+        object.insert(
+            "replacement_transaction_id".to_owned(),
+            Value::String(replacement_txid.to_owned()),
+        );
+    }
+    let mut extra = transaction_extra(observation);
+    extra.insert("zero_confirmation_acceptance".to_owned(), acceptance);
+    Ok(extra)
+}
+
+fn zero_conf_status_inputs(
+    records: &[Event],
+    provider_pubkey: &str,
+    accepted_state: &str,
+) -> Result<Vec<OutPoint>, String> {
+    let status = status_by_state(records, provider_pubkey, accepted_state)
+        .ok_or_else(|| "zero-conf acceptance Status is unavailable".to_owned())?;
+    let profile = record_profile(status)?;
+    let inputs = profile
+        .get("zero_confirmation_acceptance")
+        .and_then(|acceptance| acceptance.get("input_outpoints"))
+        .and_then(Value::as_array)
+        .filter(|inputs| !inputs.is_empty() && inputs.len() <= 256)
+        .ok_or_else(|| "zero-conf acceptance has no bounded input proof".to_owned())?;
+    inputs
+        .iter()
+        .map(|input| {
+            let input = input
+                .as_object()
+                .ok_or_else(|| "zero-conf input proof is invalid".to_owned())?;
+            let txid = required_string(input, "txid")?.to_owned();
+            required_hash(&txid, "zero-conf input transaction ID")?;
+            let vout = input
+                .get("vout")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| "zero-conf input output index is invalid".to_owned())?;
+            Ok(OutPoint { txid, vout })
+        })
+        .collect()
+}
+
+fn zero_conf_downgrade_extra(
+    records: &[Event],
+    provider_pubkey: &str,
+    accepted_state: &str,
+    reason: &str,
+    replacement_txid: Option<&str>,
+) -> Result<Map<String, Value>, String> {
+    let status = status_by_state(records, provider_pubkey, accepted_state)
+        .ok_or_else(|| "zero-conf acceptance Status is unavailable".to_owned())?;
+    let profile = record_profile(status)?;
+    let mut acceptance = profile
+        .get("zero_confirmation_acceptance")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| "zero-conf acceptance proof is unavailable".to_owned())?;
+    acceptance.insert(
+        "decision".to_owned(),
+        Value::String("confirmation_required".to_owned()),
+    );
+    acceptance.insert("reason".to_owned(), Value::String(reason.to_owned()));
+    if let Some(replacement_txid) = replacement_txid {
+        required_hash(replacement_txid, "zero-conf replacement transaction ID")?;
+        acceptance.insert(
+            "replacement_transaction_id".to_owned(),
+            Value::String(replacement_txid.to_owned()),
+        );
+    }
+    let mut extra = Map::new();
+    for member in ["transaction_id", "output_index", "confirmations"] {
+        if let Some(value) = profile.get(member) {
+            extra.insert(member.to_owned(), value.clone());
+        }
+    }
+    extra.insert(
+        "zero_confirmation_acceptance".to_owned(),
+        Value::Object(acceptance),
+    );
+    Ok(extra)
+}
+
 fn validate_liquid_chain_observation(
     observation: LiquidFundingObservation,
     output_index: u32,
@@ -7610,6 +8476,14 @@ fn chain_terms(session: &ProviderSession, swap_type: &str) -> Result<ChainTerms,
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .ok_or_else(|| "funding output index is incomplete or invalid".to_owned())?;
+    let zero_confirmation = required_string(verifier, "zero_confirmation")? == "allowed";
+    if zero_confirmation
+        && (rail != ChainRailKind::Bitcoin
+            || required_string(verifier, "rbf_policy")? != "reject"
+            || required_string(verifier, "replacement_policy")? != "track")
+    {
+        return Err("zero-confirmation verifier policy is unsafe".to_owned());
+    }
     if committed_funding_sha256 != lower_hex(&sha256(&committed_funding_bytes)) {
         return Err("funding transaction commitment is incomplete or invalid".to_owned());
     }
@@ -7633,6 +8507,10 @@ fn chain_terms(session: &ProviderSession, swap_type: &str) -> Result<ChainTerms,
         _ => return Err("funded executor received an unsupported swap type".to_owned()),
     };
     let miner_fee_budget_sat = canonical_u64(required_string(contract, "miner_fee_budget")?)?;
+    let desired_completion_time = contract
+        .get("desired_completion_time")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "Swap Contract has no desired completion time".to_owned())?;
     let pricing_swap_type = contract_pricing_swap_type(contract)?;
     let fee_rate_sat_per_vbyte = funding_feerate_from_priced_vbytes(
         contract_priced_vbytes(contract, pricing_swap_type)?,
@@ -7716,6 +8594,8 @@ fn chain_terms(session: &ProviderSession, swap_type: &str) -> Result<ChainTerms,
         committed_funding_transaction: Some(committed_funding_transaction.to_owned()),
         committed_funding_sha256,
         output_index,
+        zero_confirmation,
+        desired_completion_time,
     })
 }
 
@@ -7831,6 +8711,15 @@ fn chain_contract_leg_terms(
     let asset_id = required_string(&leg, "asset_id")?.to_owned();
     let network_id = required_string(&leg, "network_id")?.to_owned();
     let funding_transaction = verifier.get("funding_transaction").and_then(Value::as_str);
+    let zero_confirmation = required_string(&verifier, "zero_confirmation")? == "allowed";
+    if zero_confirmation
+        && (leg_id != "source"
+            || rail != ChainRailKind::Bitcoin
+            || required_string(&verifier, "rbf_policy")? != "reject"
+            || required_string(&verifier, "replacement_policy")? != "track")
+    {
+        return Err(format!("chain {leg_id} zero-confirmation policy is unsafe"));
+    }
     let funding_sha256 = verifier
         .get("funding_transaction_sha256")
         .and_then(Value::as_str);
@@ -7862,6 +8751,10 @@ fn chain_contract_leg_terms(
             }
         };
     let miner_fee_budget_sat = canonical_u64(required_string(contract, "miner_fee_budget")?)?;
+    let desired_completion_time = contract
+        .get("desired_completion_time")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "chain Swap Contract has no desired completion time".to_owned())?;
     let fee_rate_sat_per_vbyte = funding_feerate_from_priced_vbytes(
         contract_priced_vbytes(contract, PricingSwapType::Chain)?,
         miner_fee_budget_sat,
@@ -7908,6 +8801,8 @@ fn chain_contract_leg_terms(
         committed_funding_transaction,
         committed_funding_sha256,
         output_index,
+        zero_confirmation,
+        desired_completion_time,
     })
 }
 
@@ -8890,6 +9785,7 @@ fn funded_offering(
     reorg: u32,
     pricing: &PricingConfig,
     liquid: Option<&LiquidProviderRail>,
+    zero_conf: Option<ZeroConfConfig>,
 ) -> Value {
     let chain = format!("swp:1:{network_id}:btc:chain");
     let lightning = format!("swp:1:{network_id}:btc:lightning");
@@ -8915,6 +9811,28 @@ fn funded_offering(
             "evm_extension":"unsupported"
         }
     });
+    if let Some(zero_conf) = zero_conf {
+        let mut swap_types = Vec::new();
+        if zero_conf.submarine {
+            swap_types.push("submarine");
+        }
+        if zero_conf.chain && liquid.is_some() {
+            swap_types.push("chain");
+        }
+        if let Some(policies) = offering["mkt_swp"]["confirmation_policies"].as_array_mut() {
+            policies.push(json!({
+                "aggregate_in_flight_cap":zero_conf.max_in_flight_sat.to_string(),
+                "eligible_swap_types":swap_types,
+                "maximum_swap_amount":zero_conf.max_swap_sat.to_string(),
+                "minimum_confirmations":minimum_confirmations.to_string(),
+                "policy_id":"btc-zero-conf-bounded-v1",
+                "reorg_safety_blocks":reorg.to_string(),
+                "zero_confirmation":"allowed",
+                "rbf":"reject",
+                "replacement":"track"
+            }));
+        }
+    }
     let Some(liquid) = liquid else {
         return offering;
     };
@@ -9185,7 +10103,11 @@ fn base_state(state: &str) -> Result<&'static str, String> {
         "source_funding_required" => Ok("funding_required"),
         "provider_funding_broadcast"
         | "funding_observed"
+        | "funding_zero_conf_accepted"
+        | "funding_confirmation_required"
         | "source_funding_observed"
+        | "source_funding_zero_conf_accepted"
+        | "source_funding_confirmation_required"
         | "provider_destination_broadcast"
         | "destination_funding_observed" => Ok("funding_observed"),
         "lightning_payment_pending"
@@ -9348,7 +10270,7 @@ mod tests {
         terminal_evidence_expectations, unfunded_destination_reservation_evidence_value,
         validate_cross_domain_held_htlcs, validate_executable_reverse_funding, validate_held_htlcs,
         validate_liquid_chain_observation, validate_liquid_funding_inputs,
-        worst_case_redeem_vbytes,
+        validate_zero_conf_mempool_entry, worst_case_redeem_vbytes, zero_conf_risk_session_id,
     };
 
     const RUNTIME_FIXTURE: &[u8] =
@@ -9359,6 +10281,44 @@ mod tests {
         include_bytes!("../../../tests/fixtures/provider/liquid-runtime-v1.json");
     const LIQUID_RAIL_FIXTURE: &[u8] =
         include_bytes!("../../../tests/fixtures/nipmkt/liquid-rail-v1.json");
+    const ZERO_CONF_FIXTURE: &[u8] =
+        include_bytes!("../../../tests/fixtures/provider/zero-conf-v1.json");
+
+    #[test]
+    fn zero_conf_fixture_pins_local_mempool_and_status_policy() {
+        let fixture: Value =
+            serde_json::from_slice(ZERO_CONF_FIXTURE).expect("zero-conf fixture parses");
+        assert_eq!(fixture["enabled_by_default"], false);
+        validate_zero_conf_mempool_entry(&fixture["local_admission"]["mempool_entry"])
+            .expect("fixture safe mempool entry");
+        assert_eq!(
+            base_state(
+                fixture["statuses"]["submarine"]["accepted"]
+                    .as_str()
+                    .expect("submarine accepted state")
+            ),
+            Ok("funding_observed")
+        );
+        assert_eq!(
+            base_state(
+                fixture["statuses"]["chain"]["downgraded"]
+                    .as_str()
+                    .expect("chain downgrade state")
+            ),
+            Ok("funding_observed")
+        );
+        let mut replaceable = fixture["local_admission"]["mempool_entry"].clone();
+        replaceable["bip125-replaceable"] = Value::Bool(true);
+        assert!(validate_zero_conf_mempool_entry(&replaceable).is_err());
+        let mut ancestor = fixture["local_admission"]["mempool_entry"].clone();
+        ancestor["ancestorcount"] = json!(2);
+        ancestor["depends"] = json!(["11".repeat(32)]);
+        assert!(validate_zero_conf_mempool_entry(&ancestor).is_err());
+        let market_session_id = "22".repeat(32);
+        let risk_session_id = zero_conf_risk_session_id(&market_session_id);
+        assert_ne!(risk_session_id, market_session_id);
+        assert_eq!(risk_session_id.len(), 64);
+    }
 
     #[test]
     fn liquid_fee_weight_fixture_covers_each_direction_and_one_input_bound() {
@@ -9703,7 +10663,7 @@ mod tests {
         let bitcoin_network = "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4";
         let bitcoin_chain = format!("swp:1:{bitcoin_network}:btc:chain");
         let lightning = format!("swp:1:{bitcoin_network}:btc:lightning");
-        let disabled = funded_offering(bitcoin_network, 1, 6, &pricing, None);
+        let disabled = funded_offering(bitcoin_network, 1, 6, &pricing, None, None);
         assert_eq!(
             disabled["mkt_swp"]["swap_types"],
             json!(["submarine", "reverse"])
@@ -9739,7 +10699,7 @@ mod tests {
         .expect("fixture elementsd");
         let liquid = LiquidProviderRail::new(elementsd);
         let liquid_asset = liquid.mkt_asset_id();
-        let enabled = funded_offering(bitcoin_network, 1, 6, &pricing, Some(&liquid));
+        let enabled = funded_offering(bitcoin_network, 1, 6, &pricing, Some(&liquid), None);
         assert_eq!(
             enabled["mkt_swp"]["swap_types"],
             json!(["submarine", "reverse", "chain"])
@@ -10577,6 +11537,8 @@ mod tests {
             committed_funding_transaction: None,
             committed_funding_sha256: "00".repeat(32),
             output_index: 0,
+            zero_confirmation: false,
+            desired_completion_time: 1_000,
         };
         let safe = json!({
             "state":"accepted",
@@ -10797,6 +11759,8 @@ mod tests {
             committed_funding_transaction: None,
             committed_funding_sha256: "00".repeat(32),
             output_index: 0,
+            zero_confirmation: false,
+            desired_completion_time: 1_000,
         }
     }
 
@@ -10866,6 +11830,8 @@ mod tests {
             committed_funding_transaction: Some(committed_funding_transaction),
             committed_funding_sha256,
             output_index: 0,
+            zero_confirmation: false,
+            desired_completion_time: 1_000,
         }
     }
 

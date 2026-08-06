@@ -681,6 +681,58 @@ fn fixture_builds_dynamic_submarine_and_reverse_hard_quotes() {
 }
 
 #[test]
+fn zero_conf_quote_policy_is_limited_to_requester_funded_bitcoin_sources() {
+    let fixture = fixture();
+    let invoice = fixture["invoice"].as_str().expect("invoice");
+    let now = fixture["now"].as_u64().expect("now");
+    let case = fixture["cases"]
+        .as_array()
+        .and_then(|cases| cases.first())
+        .expect("submarine case");
+    let setup = Setup::new(0x92);
+    let rfq = with_zero_conf_request(
+        signed_rfq(&setup, case, invoice, now, None, None, None, None),
+        &setup,
+    );
+    let mut quote_policy = policy(fixture, case);
+    quote_policy.zero_confirmation = true;
+    quote_policy.replacement = ReplacementPolicy::Track;
+    let wallet = TestWallet::new(BitcoinNetwork::Mainnet);
+    let quote = build_funded_quote(
+        &rfq,
+        invoice,
+        &wallet.wallet,
+        wallet_allocation(),
+        &chain_tip(fixture),
+        quote_policy,
+        now,
+    )
+    .expect("zero-conf submarine Quote");
+    assert_eq!(
+        quote.profile["terms"]["confirmation_policy"]["zero_confirmation"],
+        "allowed"
+    );
+    assert_eq!(
+        quote.profile["terms"]["verifier_inputs"][0]["replacement_policy"],
+        "track"
+    );
+}
+
+fn with_zero_conf_request(mut event: Event, setup: &Setup) -> Event {
+    let mut content: Value = serde_json::from_str(&event.content).expect("RFQ content");
+    let policy = &mut content["mkt_swp"]["constraints"]["confirmation_policy"];
+    policy["zero_confirmation"] = Value::String("allowed".to_owned());
+    policy["replacement"] = Value::String("track".to_owned());
+    event = setup.requester.sign(
+        event.created_at,
+        event.kind,
+        event.tags,
+        content.to_string(),
+    );
+    event
+}
+
+#[test]
 fn cooperative_quote_shape_exists_under_the_production_opt_in() {
     let runtime: Value = serde_json::from_str(include_str!(
         "../../../tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json"

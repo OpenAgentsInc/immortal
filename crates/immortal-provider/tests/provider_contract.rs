@@ -33,6 +33,8 @@ const DIRECT_RECOVERY_FIXTURE: &[u8] =
 const LIQUID_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/nipmkt/liquid-rail-v1.json");
 const LIQUID_RUNTIME_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/liquid-runtime-v1.json");
+const ZERO_CONF_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/zero-conf-v1.json");
 
 #[test]
 fn provider_contract_is_canonical_byte_stable_and_matches_export() {
@@ -95,6 +97,10 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
             "tests/fixtures/provider/liquid-runtime-v1.json",
             LIQUID_RUNTIME_FIXTURE,
         ),
+        (
+            "tests/fixtures/provider/zero-conf-v1.json",
+            ZERO_CONF_FIXTURE,
+        ),
     ] {
         let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();
         assert_eq!(entry["bytes"], bytes.len());
@@ -146,6 +152,7 @@ fn provider_contract_exports_closed_nonzero_runtime_limits() {
             "session",
             "store",
             "watchtower",
+            "zero_conf",
         ]
     );
     assert_eq!(limits["relay_actor"]["active_sessions_per_requester"], 4);
@@ -168,6 +175,14 @@ fn provider_contract_exports_closed_nonzero_runtime_limits() {
     assert_eq!(
         contract["vocabulary"]["funded_terminal_outcomes"],
         json!(["completed", "refunded"])
+    );
+    assert_eq!(
+        contract["operations"]["zero_confirmation"]["enabled_by_default"],
+        false
+    );
+    assert_eq!(
+        contract["execution"]["zero_confirmation_requester_finality_unchanged"],
+        true
     );
 
     let mut zero_limit = contract.clone();

@@ -79,6 +79,13 @@ operation: it reads the selected network and mode-0600 seed file but does not
 open the provider database or contact either rail. `immortal-provider
 contract` reads neither configuration nor custody material.
 
+`zero-conf-v1.json` records the off-by-default direction flags, mandatory
+per-swap and aggregate exposure caps, provider-local bitcoind admission,
+non-RBF/no-ancestor rule, deterministic risk-reservation scope, explicit
+acceptance/downgrade states, and client-safety boundary. The exported
+operations and vocabulary include the exact mempool methods and downgrade
+reasons. This capability changes no relay contract or NIP-11 advertisement.
+
 Configuration values are never exported. Secret-bearing environment names
 are marked as secret, and the generator rejects configured values and
 custody-material object keys.

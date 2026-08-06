@@ -1023,6 +1023,7 @@ pub fn build_funded_chain_quote(
         source_tip,
         payment_hash,
         policy,
+        policy.zero_confirmation && matches!(source_rail, ChainRail::Bitcoin),
     )?;
     let (destination_leg, destination_verifier) = build_chain_leg(
         "destination",
@@ -1038,11 +1039,12 @@ pub fn build_funded_chain_quote(
         destination_tip,
         payment_hash,
         policy,
+        false,
     )?;
     let confirmation_policy = json!({
         "minimum_confirmations":policy.minimum_confirmations.to_string(),
         "reorg_safety_blocks":policy.reorg_safety_blocks.to_string(),
-        "zero_confirmation":"forbidden",
+        "zero_confirmation":if policy.zero_confirmation && matches!(source_rail, ChainRail::Bitcoin) { "allowed" } else { "forbidden" },
         "rbf":policy.rbf.as_str(),
         "replacement":policy.replacement.as_str(),
     });
@@ -1164,6 +1166,7 @@ fn build_chain_leg(
     chain_tip: &ChainTip,
     payment_hash: [u8; 32],
     policy: FundedQuotePolicy<'_>,
+    zero_confirmation: bool,
 ) -> Result<(Value, Value), QuoteBuildError> {
     let (rail_name, network_id, verifier_policy) = match rail {
         ChainRail::Bitcoin => ("bitcoin", policy.network_id, BITCOIN_VERIFIER),
@@ -1250,7 +1253,7 @@ fn build_chain_leg(
         "taproot_script":lower_hex(provider_script),
         "taproot_tree":tree,
         "verifier_policy":verifier_policy,
-        "zero_confirmation":"forbidden"
+        "zero_confirmation":if zero_confirmation { "allowed" } else { "forbidden" }
     });
     if let ChainRail::Liquid(liquid) = rail {
         let mut wire_asset = liquid.pegged_asset.display_bytes();
@@ -1290,7 +1293,8 @@ fn build_chain_leg(
         "claim_script":lower_hex(&taproot.claim_script),
         "confirmation_policy":{
             "minimum_confirmations":policy.minimum_confirmations.to_string(),
-            "replacement_policy":policy.replacement.as_str()
+            "replacement_policy":policy.replacement.as_str(),
+            "zero_confirmation":if zero_confirmation { "allowed" } else { "forbidden" }
         },
         "funding_role":funding_role,
         "leg_id":leg_id,

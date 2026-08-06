@@ -1,0 +1,183 @@
+{
+  "schema": "openagents.immortal.provider-zero-conf.v1",
+  "enabled_by_default": false,
+  "configuration": {
+    "direction_flags": {
+      "submarine_requester_bitcoin": "IMMORTAL_PROVIDER_ZERO_CONF_SUBMARINE",
+      "chain_requester_bitcoin_source": "IMMORTAL_PROVIDER_ZERO_CONF_CHAIN"
+    },
+    "required_caps_when_enabled": {
+      "per_swap_sat": "IMMORTAL_PROVIDER_ZERO_CONF_MAX_SWAP_SAT",
+      "aggregate_in_flight_sat": "IMMORTAL_PROVIDER_ZERO_CONF_MAX_IN_FLIGHT_SAT"
+    },
+    "cap_bounds": {
+      "minimum_sat": 1,
+      "maximum_sat": 2100000000000000,
+      "per_swap_must_not_exceed_aggregate": true
+    },
+    "disabled_configuration_rejects_cap_only_values": true
+  },
+  "quote_policy": {
+    "zero_confirmation": "allowed",
+    "rbf": "reject",
+    "replacement": "track",
+    "ineligible_directions": [
+      "reverse_provider_bitcoin_destination",
+      "liquid_requester_source",
+      "liquid_requester_funding"
+    ]
+  },
+  "local_admission": {
+    "view": "provider_local_bitcoind",
+    "required_transaction_binding": [
+      "transaction_id",
+      "output_index",
+      "script_pubkey",
+      "amount"
+    ],
+    "minimum_input_sequence": 4294967294,
+    "minimum_stabilization_seconds_before_risk_effect": 1,
+    "mempool_entry": {
+      "bip125-replaceable": false,
+      "ancestorcount": 1,
+      "depends": []
+    },
+    "remote_view_allowed": false,
+    "aggregate_store": {
+      "bucket_id": "zero-conf-risk-btc",
+      "asset_id": "swp:1:bip122:000000000019d6689c085ae165831e93:btc:chain",
+      "atomic_reservation": true,
+      "reservation_session_scope": "deterministic_market_session_derivative",
+      "restart_safe": true,
+      "release_before_effect_on_downgrade": true,
+      "release_after_effect_only_on_finality_or_terminal_recovery": true
+    }
+  },
+  "statuses": {
+    "submarine": {
+      "accepted": "funding_zero_conf_accepted",
+      "downgraded": "funding_confirmation_required"
+    },
+    "chain": {
+      "accepted": "source_funding_zero_conf_accepted",
+      "downgraded": "source_funding_confirmation_required"
+    },
+    "base_state": "funding_observed",
+    "accepted_decision": "accepted",
+    "downgraded_decision": "confirmation_required",
+    "downgrade_reasons": [
+      "replacement",
+      "conflict",
+      "mempool_missing",
+      "ancestor_unconfirmed",
+      "aggregate_cap",
+      "per_swap_cap"
+    ],
+    "finality_promoted": false
+  },
+  "vectors": [
+    {
+      "name": "submarine-local-non-rbf-within-both-caps",
+      "direction": "submarine",
+      "input_sequences": [4294967294],
+      "bip125_replaceable": false,
+      "ancestor_count": 1,
+      "depends": [],
+      "amount_sat": 100000,
+      "per_swap_cap_sat": 200000,
+      "aggregate_cap_sat": 400000,
+      "aggregate_before_sat": 100000,
+      "expected": "accepted"
+    },
+    {
+      "name": "chain-source-local-non-rbf-within-both-caps",
+      "direction": "chain",
+      "input_sequences": [4294967295],
+      "bip125_replaceable": false,
+      "ancestor_count": 1,
+      "depends": [],
+      "amount_sat": 200000,
+      "per_swap_cap_sat": 200000,
+      "aggregate_cap_sat": 400000,
+      "aggregate_before_sat": 200000,
+      "expected": "accepted"
+    },
+    {
+      "name": "rbf-signaling-input",
+      "direction": "submarine",
+      "input_sequences": [4294967293],
+      "bip125_replaceable": true,
+      "ancestor_count": 1,
+      "depends": [],
+      "amount_sat": 100000,
+      "per_swap_cap_sat": 200000,
+      "aggregate_cap_sat": 400000,
+      "aggregate_before_sat": 0,
+      "expected": "swp_zero_conf_unsafe_mempool"
+    },
+    {
+      "name": "unconfirmed-ancestor",
+      "direction": "submarine",
+      "input_sequences": [4294967294],
+      "bip125_replaceable": false,
+      "ancestor_count": 2,
+      "depends": [
+        "1111111111111111111111111111111111111111111111111111111111111111"
+      ],
+      "amount_sat": 100000,
+      "per_swap_cap_sat": 200000,
+      "aggregate_cap_sat": 400000,
+      "aggregate_before_sat": 0,
+      "expected": "swp_zero_conf_unsafe_mempool"
+    },
+    {
+      "name": "per-swap-cap-exceeded",
+      "direction": "submarine",
+      "input_sequences": [4294967294],
+      "bip125_replaceable": false,
+      "ancestor_count": 1,
+      "depends": [],
+      "amount_sat": 200001,
+      "per_swap_cap_sat": 200000,
+      "aggregate_cap_sat": 400000,
+      "aggregate_before_sat": 0,
+      "expected": "swp_zero_conf_limit_exceeded"
+    },
+    {
+      "name": "aggregate-cap-exceeded",
+      "direction": "submarine",
+      "input_sequences": [4294967294],
+      "bip125_replaceable": false,
+      "ancestor_count": 1,
+      "depends": [],
+      "amount_sat": 100001,
+      "per_swap_cap_sat": 200000,
+      "aggregate_cap_sat": 400000,
+      "aggregate_before_sat": 300000,
+      "expected": "swp_zero_conf_limit_exceeded"
+    }
+  ],
+  "adversarial_lab_cases": [
+    {
+      "id": "zero-conf-rbf-replacement",
+      "reason": "replacement",
+      "expected_state": "funding_confirmation_required"
+    },
+    {
+      "id": "zero-conf-double-spend-race",
+      "reason": "conflict",
+      "expected_state": "funding_confirmation_required"
+    },
+    {
+      "id": "zero-conf-ancestor-eviction",
+      "reason": "ancestor_unconfirmed",
+      "expected_state": "funding_confirmation_required"
+    }
+  ],
+  "client_safety": {
+    "verify_before_fund_unchanged": true,
+    "refund_paths_unchanged": true,
+    "requester_finality_unchanged": true,
+    "zero_conf_status_is_not_funding_final": true
+  }
+}

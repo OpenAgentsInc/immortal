@@ -154,6 +154,7 @@ async fn run_async() -> Result<(), FundedError> {
     let lab_forces_fallback_feerate = config.lab_forces_fallback_feerate;
     let hold_invoice_expiry_seconds = config.hold_invoice_expiry_seconds;
     let cooperative_signing = config.cooperative_signing;
+    let zero_conf = config.zero_conf;
     let boltz_pricing = pricing.clone();
     let boltz_config = config.boltz;
     let wallet = config.wallet;
@@ -172,6 +173,7 @@ async fn run_async() -> Result<(), FundedError> {
             pricing,
             lab_forces_fallback_feerate,
             hold_invoice_expiry_seconds,
+            zero_conf,
         },
     );
     let health = Arc::new(ProviderHealth::default());

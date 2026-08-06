@@ -141,6 +141,35 @@ The separate deterministic machine surface is documented in
 This provider runtime does not change the relay binary, relay contract JSON,
 relay NIP-11 document, or relay executable-profile set.
 
+## Zero-confirmation provider policy
+
+Zero-confirmation execution is off by default and applies only to explicitly
+enabled requester-funded Bitcoin source directions: submarine and Bitcoin-
+source chain swaps. Reverse funding, provider-funded destination legs, and
+Liquid remain confirmation-gated. An enabled policy requires a per-swap cap
+and a durable aggregate in-flight cap.
+
+The Quote signs `zero_confirmation=allowed`, `rbf=reject`, and
+`replacement=track`. Admission re-parses the exact contract-bound funding
+transaction, checks every input sequence, and reads `getmempoolentry` from the
+provider's own loopback bitcoind. The transaction must be non-replaceable,
+have `ancestorcount=1`, and have an empty `depends` set. Before publishing
+`funding_zero_conf_accepted` or `source_funding_zero_conf_accepted`, the
+provider atomically reserves the amount in the `zero-conf-risk-btc` capacity
+bucket under a deterministic derivative of the market session ID. This keeps
+the exposure reservation distinct from the session's hard Quote reservation
+while preserving restart-safe aggregate accounting.
+
+Acceptance remains at the `funding_observed` base state and never projects
+finality. The Status binds the transaction, output, amount, exact input
+outpoints, policy ID, and `provider_local_bitcoind` view. The provider waits
+through the acceptance timestamp and rechecks before a Lightning payment or
+chain destination funding effect. Replacement, competing spend, mempool
+loss, or an unconfirmed ancestor produces `funding_confirmation_required` or
+`source_funding_confirmation_required` with a closed reason. Pre-effect
+exposure is released during that downgrade; requester verification, refund,
+and confirmation rules are unchanged.
+
 ## Conformance
 
 `tests/fixtures/nipmkt/swp-provider-engine-v1.json` is a closed 30-case
@@ -157,6 +186,13 @@ cases, exact and one-past exclusive height boundaries, cancelled hold state,
 and cooperative reverse refund-watch retirement through the production
 transition helpers. Its exact bytes and digest are bound by
 `provider-contract-v1.json`.
+
+`tests/fixtures/provider/zero-conf-v1.json` pins the disabled default,
+direction gates, cap bounds, local mempool admission, durable risk bucket,
+Status vocabulary, client-safety boundary, and the three adversarial process
+cases. The adversarial manifest runs replacement, non-RBF competing-spend,
+and ancestor-invalidation attacks and requires confirmation-required without
+a provider settlement effect.
 
 Run the native, no-default, and zero-import WASM proof with:
 

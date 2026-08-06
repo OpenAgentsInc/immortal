@@ -182,6 +182,24 @@ IMMORTAL_PROVIDER_RESERVATION_TIER=hard
 IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM=1000
 ```
 
+Zero-confirmation admission remains disabled with the configuration above.
+An operator who accepts the replacement and double-spend exposure may enable
+one or both requester-funded Bitcoin directions and must set both hard caps:
+
+```ini
+IMMORTAL_PROVIDER_ZERO_CONF_SUBMARINE=true
+# IMMORTAL_PROVIDER_ZERO_CONF_CHAIN=true
+IMMORTAL_PROVIDER_ZERO_CONF_MAX_SWAP_SAT=100000
+IMMORTAL_PROVIDER_ZERO_CONF_MAX_IN_FLIGHT_SAT=500000
+```
+
+Start with caps that the operator can lose in full. The provider requires its
+own local bitcoind mempool view, rejects RBF signaling and unconfirmed
+ancestors, durably accounts aggregate exposure, and rechecks immediately
+before its rail effect. A signed zero-conf-accepted Status is not finality.
+Removing both direction flags requires removing both cap values; partial or
+cap-only configuration fails startup.
+
 To enable Liquid, append every value below. Derive both identifiers from the
 exact local node; do not substitute a network label or ticker:
 

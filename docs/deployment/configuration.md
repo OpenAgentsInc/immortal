@@ -225,6 +225,10 @@ transaction commitments and locally verified evidence.
 | `IMMORTAL_PROVIDER_LIQUID_NETWORK_ID` | unset | Required when Liquid is enabled. Exact `bip122:<32-lower-hex>` identifier derived from the configured Elements genesis block. |
 | `IMMORTAL_PROVIDER_LIQUID_PEGGED_ASSET` | unset | Required when Liquid is enabled. Exact 64-lower-hex display-order `pegged_asset` returned by that node. V1 admits no other Elements asset. |
 | `IMMORTAL_PROVIDER_COOPERATIVE_SIGNING` | unset | Production opt-in for BIP-327 cooperative key-path settlement on submarine swaps. The sole value is `true`; absence keeps script-path settlement as the default. The unilateral script-path exit remains mandatory. Do not set this together with `IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING`. |
+| `IMMORTAL_PROVIDER_ZERO_CONF_SUBMARINE` | unset | The sole admitted value is `true`. It permits bounded zero-confirmation admission only when the requester funds the Bitcoin source leg of a submarine swap. |
+| `IMMORTAL_PROVIDER_ZERO_CONF_CHAIN` | unset | The sole admitted value is `true`. It permits bounded zero-confirmation admission only for a requester-funded Bitcoin source leg in a chain swap. Liquid source legs, reverse swaps, and provider-funded destinations remain confirmation-gated. |
+| `IMMORTAL_PROVIDER_ZERO_CONF_MAX_SWAP_SAT` | unset | Required when either zero-confirmation direction is enabled. Per-swap exposure cap, 1–2,100,000,000,000,000 satoshis, no greater than the aggregate cap. Setting it while both direction flags are absent fails startup. |
+| `IMMORTAL_PROVIDER_ZERO_CONF_MAX_IN_FLIGHT_SAT` | unset | Required when either zero-confirmation direction is enabled. Durable aggregate in-flight exposure cap, 1–2,100,000,000,000,000 satoshis. Setting it while both direction flags are absent fails startup. |
 | `IMMORTAL_PROVIDER_LAB_PROFILE` | unset | Lab-only timeout selector. The sole value is `regtest_adversarial`, which is rejected unless the Bitcoin network is `regtest`; it fixes Quote expiry at 3 seconds and hold-invoice expiry at 30 seconds. It does not change production defaults. |
 | `IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING` | unset | Lab-only cooperative-signing gate. The sole value is `true`; it is rejected unless the Bitcoin network is `regtest` and `IMMORTAL_PROVIDER_LAB_PROFILE=regtest_adversarial`. The adversarial runner supplies it only for its four MuSig2 process cases. Do not set it together with `IMMORTAL_PROVIDER_COOPERATIVE_SIGNING`. |
 | `IMMORTAL_PROVIDER_HEALTH_BIND` | `127.0.0.1:9091` | Private or loopback health/metrics listener. Public addresses fail startup. |
@@ -241,6 +245,17 @@ transaction commitments and locally verified evidence.
 | `IMMORTAL_PROVIDER_QUOTE_EXPIRY_SECONDS` | `300` | Quote acceptance window, 1–3,600 seconds, further bounded by RFQ and invoice expiry. |
 | `IMMORTAL_PROVIDER_RESERVATION_TIER` | `hard` | Pricing reservation policy. Funded mode accepts `hard`; `none` and `soft` fail startup because funded rail effects require a durable reserve. |
 | `IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM` | `0` | Submarine outbound-Lightning routing budget, 0–100,000 parts per million. |
+
+Zero-confirmation admission is disabled unless a direction flag and both caps
+are present. The provider accepts only an exact contract-bound transaction in
+its own bitcoind mempool with non-RBF input sequences, no unconfirmed
+ancestors, and no dependencies. It reserves the amount atomically in the
+durable `zero-conf-risk-btc` capacity bucket before publishing acceptance and
+rechecks the transaction before any provider rail effect. Replacement,
+conflict, mempool loss, or a newly unconfirmed ancestor produces a signed
+confirmation-required Status and releases pre-effect exposure. This policy
+changes when the provider acts at its own risk; it does not change requester
+verify-before-fund, refund, or finality rules.
 
 Each Quote uses a live conservative two-block `estimatesmartfee` result when
 available. The engine rounds the JSON decimal BTC/kvB value upward to an exact

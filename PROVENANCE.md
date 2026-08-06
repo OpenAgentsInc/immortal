@@ -28,6 +28,24 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-06 — Codex 5.6 Sol, M13 zero-confirmation policy / issue #30
+
+- Added an off-by-default, direction-bounded provider policy for requester-
+  funded Bitcoin submarine and chain source legs. Quotes bind the local-view,
+  non-RBF policy; admission requires no unconfirmed ancestors and both
+  per-swap and durable aggregate exposure caps.
+- Added explicit zero-conf acceptance and confirmation-required Status
+  validation without changing requester finality, verify-before-fund, or
+  refund authority. The funded provider rechecks before its risk effect and
+  uses a deterministic risk-reservation session scope distinct from the hard
+  Quote reservation.
+- Extended the closed adversarial ledger to 46 cases. The three new regtest
+  process cases pass full-RBF replacement, non-RBF competing spend, and
+  ancestor invalidation with an unpaid invoice and no provider settlement
+  effect. Added no dependency, event kind, relay behavior, relay database
+  schema, custody material, NIP-11 advertisement, workflow, or billed
+  automation.
+
 ### 2026-08-05 — Codex 5.6 Sol, M12 migration closing packet / issue #19
 
 - Added the provider drain state shared by the native actor, compatibility

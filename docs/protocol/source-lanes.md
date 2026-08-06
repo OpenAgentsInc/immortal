@@ -1183,3 +1183,28 @@ dependency, custody boundary, or NIP-11 advertisement. Immortal adopts the
 new states only after #30's provider policy, client/status validation, durable
 accounting, contract export, and adversarial fixtures pass under the active
 configuration.
+
+## M13 MKT-SWP zero-confirmation runtime adoption (2026-08-06)
+
+Issue #30 adopts the zero-confirmation vocabulary from the already pinned
+OpenAgents source at `dfc6bacdca4f69eacd4d487000f6207f9a3ac0e7`; no source-lane
+file advances in this packet. The executable authority is provider-local and
+off by default. It is limited to explicitly enabled requester-funded Bitcoin
+source directions, exact signed per-swap and aggregate caps, and the
+provider's own loopback bitcoind mempool view. The durable exposure
+reservation uses the existing Postgres capacity ledger under a deterministic
+derivative of the market session ID, separate from that session's hard Quote
+reservation.
+
+Immortal emits the provider-signed acceptance and confirmation-required
+states without changing their `funding_observed` base projection. It rechecks
+before the provider's rail effect and classifies direct RBF replacement,
+non-RBF competing spend, mempool loss, and newly unconfirmed ancestry. The
+requester engine validates the closed decision proof but does not treat
+acceptance as finality or relax verify-before-fund and refund rules.
+
+The fixture and single-case process gates pass replacement, double-spend, and
+ancestor-invalidation downgrades with the bound invoice still unpaid. The
+complete adversarial record is the remaining closure gate. This adoption
+allocates no event kind and changes no relay admission, relay Postgres schema,
+dependency, custody boundary, or NIP-11 advertisement.

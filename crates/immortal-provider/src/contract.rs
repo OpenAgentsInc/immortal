@@ -44,6 +44,9 @@ const LIQUID_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/nipmkt/liq
 const LIQUID_RUNTIME_FIXTURE_PATH: &str = "tests/fixtures/provider/liquid-runtime-v1.json";
 const LIQUID_RUNTIME_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/liquid-runtime-v1.json");
+const ZERO_CONF_FIXTURE_PATH: &str = "tests/fixtures/provider/zero-conf-v1.json";
+const ZERO_CONF_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/zero-conf-v1.json");
 pub(crate) const BOLTZ_CONFIGURATION_SCHEMA: &str = concat!(
     "openagents.mkt-swp.boltz-provider-api.config.v1\n",
     "activation=exact_fixture_digest_private_bind_and_exact_browser_origin\n",
@@ -140,7 +143,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 },
                 "runtime_methods":{
                     "quote_and_safety_height":["getblockchaininfo","estimatesmartfee"],
-                    "transaction_observation":["getrawtransaction","gettxspendingprevout"],
+                    "transaction_observation":["getrawtransaction","gettxspendingprevout","getmempoolentry"],
                     "wallet_discovery":["scantxoutset"],
                     "execution":["sendrawtransaction"]
                 }
@@ -249,6 +252,11 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
             "funding_before_bilateral_contract":false,
             "reverse_funding_transaction_precommitted_before_requester_payment":true,
             "chain_observation_requires_exact_committed_funding_bytes":true,
+            "zero_confirmation_enabled_by_default":false,
+            "zero_confirmation_eligible_directions":["submarine_requester_bitcoin","chain_requester_bitcoin_source"],
+            "zero_confirmation_local_view":"provider_local_bitcoind",
+            "zero_confirmation_requester_finality_unchanged":true,
+            "zero_confirmation_durable_aggregate_reservation":true,
             "unresolved_state_is_success":false
         },
         "limits":limits_contract(),
@@ -297,6 +305,21 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 "page"
             ],
             "refund_watch_completion_reasons":["claim_settled"]
+            ,"zero_conf_statuses":[
+                "funding_zero_conf_accepted",
+                "funding_confirmation_required",
+                "source_funding_zero_conf_accepted",
+                "source_funding_confirmation_required"
+            ],
+            "zero_conf_downgrade_reasons":[
+                "replacement",
+                "conflict",
+                "mempool_missing",
+                "ancestor_unconfirmed",
+                "aggregate_cap",
+                "per_swap_cap"
+            ],
+            "zero_conf_errors":["swp_zero_conf_unsafe_mempool","swp_zero_conf_limit_exceeded"]
         },
         "configuration":{
             "source":"environment",
@@ -351,6 +374,18 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 "admits_pre_contract_negotiation":false,
                 "persists_before_response":true,
                 "terminal_history_replay":true,
+                "nip11_advertised":false
+            },
+            "zero_confirmation":{
+                "enabled_by_default":false,
+                "policy_id":"btc-zero-conf-bounded-v1",
+                "local_node_only":true,
+                "minimum_input_sequence":4294967294_u64,
+                "minimum_stabilization_seconds_before_risk_effect":1,
+                "unconfirmed_ancestors_allowed":false,
+                "durable_capacity_bucket":"zero-conf-risk-btc",
+                "recheck_before_every_risk_effect":true,
+                "requester_safety_state_advance":false,
                 "nip11_advertised":false
             },
             "boltz_compatibility":{
@@ -429,6 +464,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 fixture_entry(MIGRATION_FIXTURE_PATH, MIGRATION_FIXTURE),
                 fixture_entry(LIQUID_FIXTURE_PATH, LIQUID_FIXTURE),
                 fixture_entry(LIQUID_RUNTIME_FIXTURE_PATH, LIQUID_RUNTIME_FIXTURE)
+                ,fixture_entry(ZERO_CONF_FIXTURE_PATH, ZERO_CONF_FIXTURE)
             ]
         },
         "relay_contract_affected":false,
@@ -543,6 +579,11 @@ fn limits_contract() -> Value {
             "swap_sat_maximum":crate::pricing::MAX_AMOUNT_SAT,
             "validity_seconds_maximum":crate::pricing::MAX_QUOTE_EXPIRY_SECONDS,
             "lightning_routing_fee_ppm_maximum":crate::pricing::MAX_LIGHTNING_ROUTING_FEE_PPM
+        },
+        "zero_conf":{
+            "input_outpoints":256,
+            "maximum_swap_sat":2100000000000000_u64,
+            "minimum_input_sequence":4294967294_u64
         }
     })
 }
@@ -624,6 +665,11 @@ fn limits_contract() -> Value {
             "swap_sat_maximum":2100000000000000_u64,
             "validity_seconds_maximum":3600,
             "lightning_routing_fee_ppm_maximum":100000
+        },
+        "zero_conf":{
+            "input_outpoints":256,
+            "maximum_swap_sat":2100000000000000_u64,
+            "minimum_input_sequence":4294967294_u64
         }
     })
 }
@@ -778,6 +824,7 @@ fn validate_limits(value: &Value) -> Result<(), ProviderContractError> {
         "direct_recovery",
         "boltz_compatibility",
         "quote",
+        "zero_conf",
     ]);
     if limits.keys().map(String::as_str).collect::<BTreeSet<_>>() != expected_sections
         || !limits.values().all(positive_limit_tree)
@@ -834,6 +881,9 @@ fn validate_vocabulary(value: &Value) -> Result<(), ProviderContractError> {
         "reservation_states",
         "watch_states",
         "refund_watch_completion_reasons",
+        "zero_conf_statuses",
+        "zero_conf_downgrade_reasons",
+        "zero_conf_errors",
     ]);
     if vocabulary
         .keys()
@@ -1233,6 +1283,32 @@ fn environment_contract() -> Value {
             144
         ),
         optional_env_integer("IMMORTAL_PROVIDER_REORG_SAFETY_BLOCKS", &["funded"], 1, 144),
+        optional_environment(
+            env_choice(
+                "IMMORTAL_PROVIDER_ZERO_CONF_SUBMARINE",
+                &["funded"],
+                &["true"]
+            ),
+            &["funded"],
+            false
+        ),
+        optional_environment(
+            env_choice("IMMORTAL_PROVIDER_ZERO_CONF_CHAIN", &["funded"], &["true"]),
+            &["funded"],
+            false
+        ),
+        optional_env_integer_without_default(
+            "IMMORTAL_PROVIDER_ZERO_CONF_MAX_SWAP_SAT",
+            &["funded"],
+            1,
+            2100000000000000_u64
+        ),
+        optional_env_integer_without_default(
+            "IMMORTAL_PROVIDER_ZERO_CONF_MAX_IN_FLIGHT_SAT",
+            &["funded"],
+            1,
+            2100000000000000_u64
+        ),
         optional_env_integer("IMMORTAL_PROVIDER_SPREAD_BPS", &["funded"], 0, 1000),
         optional_env_integer_without_default(
             "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB",

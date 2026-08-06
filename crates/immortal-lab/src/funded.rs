@@ -36,7 +36,9 @@ use immortal_core::{
     },
     liquid::{LiquidAssetId, LiquidNetworkId, LiquidTransaction, parse_liquid_transaction},
     market::{MarketSigner, WrapMaterial, unwrap_mkt_record_raw, wrap_mkt_record},
-    mkt_swp_verify::{Transaction, TransactionInput, TransactionOutput, sha256},
+    mkt_swp_verify::{
+        Transaction, TransactionInput, TransactionOutput, sha256, taproot_key_spend_sighash,
+    },
 };
 use immortal_provider::{
     bitcoind::{
@@ -356,6 +358,9 @@ enum HarnessInjection {
     FundingReorg,
     ClaimReorg,
     RbfConflict,
+    ZeroConfRbfReplacement,
+    ZeroConfDoubleSpend,
+    ZeroConfAncestorEviction,
     StatusGap,
     StatusFork,
     WrongClaimKey,
@@ -376,6 +381,9 @@ impl HarnessInjection {
             "funding_reorg" => Ok(Self::FundingReorg),
             "claim_reorg" => Ok(Self::ClaimReorg),
             "rbf_conflict" => Ok(Self::RbfConflict),
+            "zero_conf_rbf_replacement" => Ok(Self::ZeroConfRbfReplacement),
+            "zero_conf_double_spend" => Ok(Self::ZeroConfDoubleSpend),
+            "zero_conf_ancestor_eviction" => Ok(Self::ZeroConfAncestorEviction),
             "status_gap" => Ok(Self::StatusGap),
             "status_fork" => Ok(Self::StatusFork),
             "wrong_claim_key" => Ok(Self::WrongClaimKey),
@@ -397,6 +405,9 @@ impl HarnessInjection {
             Self::FundingReorg => "funding_reorg",
             Self::ClaimReorg => "claim_reorg",
             Self::RbfConflict => "rbf_conflict",
+            Self::ZeroConfRbfReplacement => "zero_conf_rbf_replacement",
+            Self::ZeroConfDoubleSpend => "zero_conf_double_spend",
+            Self::ZeroConfAncestorEviction => "zero_conf_ancestor_eviction",
             Self::StatusGap => "status_gap",
             Self::StatusFork => "status_fork",
             Self::WrongClaimKey => "wrong_claim_key",
@@ -5662,6 +5673,23 @@ fn drive_submarine(
             &invoice.payment_hash,
         );
     }
+    if environment.control.injection.is_some_and(|injection| {
+        matches!(
+            injection,
+            HarnessInjection::ZeroConfRbfReplacement
+                | HarnessInjection::ZeroConfDoubleSpend
+                | HarnessInjection::ZeroConfAncestorEviction
+        )
+    }) {
+        return prove_zero_conf_downgrade(
+            runtime,
+            environment,
+            session,
+            &client_input,
+            &funding,
+            &invoice.payment_hash,
+        );
+    }
     continue_submarine(
         runtime,
         environment,
@@ -6741,6 +6769,313 @@ fn prove_rbf_conflict_before_settlement(
         "committed_broadcast_rejected":true,
         "external_settlement_effects":0,
     }))
+}
+
+fn prove_zero_conf_downgrade(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    mut session: SessionContext,
+    funding_input: &FundingInput,
+    committed_funding: &SignedFundingTransaction,
+    payment_hash: &str,
+) -> Result<Value, String> {
+    let injection = environment
+        .control
+        .injection
+        .ok_or_else(|| "zero-conf proof has no selected injection".to_owned())?;
+    session.publish_requester_status("requester_verification_passed", Map::new())?;
+    session.persist_authorized_details(
+        "funding_execution_ready",
+        true,
+        json!({"external_identifier":committed_funding.txid}),
+    )?;
+    let funding_txid = broadcast_bitcoin_once(
+        runtime,
+        &environment.bitcoind,
+        "zero-conf-funding",
+        &committed_funding.raw_transaction,
+        &committed_funding.txid,
+    )?;
+    session.record_funding_effect(
+        funding_txid.clone(),
+        sha256(committed_funding.raw_transaction.as_bytes()),
+    )?;
+    let mut funding_extra = Map::new();
+    funding_extra.insert(
+        "transaction_id".to_owned(),
+        Value::String(funding_txid.clone()),
+    );
+    funding_extra.insert("output_index".to_owned(), json!(0));
+    session.publish_requester_status("requester_funding_broadcast", funding_extra)?;
+    let observed = session.wait_provider_state("funding_observed")?;
+    let accepted = session.wait_provider_state("funding_zero_conf_accepted")?;
+    let accepted_profile = record_profile(&accepted)?;
+    let accepted_decision = accepted_profile
+        .get("zero_confirmation_acceptance")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "zero-conf accepted Status has no decision proof".to_owned())?;
+    if accepted_decision.get("decision").and_then(Value::as_str) != Some("accepted")
+        || accepted_decision
+            .get("transaction_id")
+            .and_then(Value::as_str)
+            != Some(funding_txid.as_str())
+        || accepted_decision.get("view").and_then(Value::as_str) != Some("provider_local_bitcoind")
+    {
+        return Err("zero-conf accepted Status does not bind the local funding view".to_owned());
+    }
+
+    let (expected_reason, attack_reference) = match injection {
+        HarnessInjection::ZeroConfRbfReplacement => {
+            let replacement = zero_conf_competitor(environment, funding_input, true)?;
+            broadcast_zero_conf_competitor(runtime, environment, &replacement)?;
+            ("replacement", replacement.txid)
+        }
+        HarnessInjection::ZeroConfDoubleSpend => {
+            let conflict = zero_conf_competitor(environment, funding_input, false)?;
+            broadcast_zero_conf_competitor(runtime, environment, &conflict)?;
+            ("conflict", conflict.txid)
+        }
+        HarnessInjection::ZeroConfAncestorEviction => {
+            let parent = runtime
+                .block_on(environment.bitcoind.raw_transaction(
+                    &rpc_id("zero-conf-parent")?,
+                    &funding_input.txid,
+                    true,
+                ))
+                .map_err(|error| format!("could not inspect zero-conf parent: {error}"))?;
+            let block_hash = parent
+                .get("blockhash")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "zero-conf parent has no confirmation block".to_owned())?
+                .to_owned();
+            runtime
+                .block_on(environment.bitcoind.call(
+                    &rpc_id("zero-conf-invalidate-parent")?,
+                    "invalidateblock",
+                    json!([block_hash]),
+                ))
+                .map_err(|error| format!("could not invalidate zero-conf parent block: {error}"))?;
+            wait_for_zero_conf_ancestor(runtime, &environment.bitcoind, &funding_txid)?;
+            ("ancestor_unconfirmed", block_hash)
+        }
+        _ => return Err("selected injection is not a zero-conf downgrade".to_owned()),
+    };
+
+    let downgraded = session.wait_provider_state("funding_confirmation_required")?;
+    let downgraded_profile = record_profile(&downgraded)?;
+    let downgraded_decision = downgraded_profile
+        .get("zero_confirmation_acceptance")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "zero-conf downgraded Status has no decision proof".to_owned())?;
+    if downgraded_decision.get("decision").and_then(Value::as_str) != Some("confirmation_required")
+        || downgraded_decision.get("reason").and_then(Value::as_str) != Some(expected_reason)
+        || downgraded_decision
+            .get("transaction_id")
+            .and_then(Value::as_str)
+            != Some(funding_txid.as_str())
+    {
+        return Err(format!(
+            "zero-conf downgrade binding mismatch: decision={:?} reason={:?} transaction_matches={}",
+            downgraded_decision.get("decision").and_then(Value::as_str),
+            downgraded_decision.get("reason").and_then(Value::as_str),
+            downgraded_decision
+                .get("transaction_id")
+                .and_then(Value::as_str)
+                == Some(funding_txid.as_str())
+        ));
+    }
+    let expected_replacement = matches!(
+        injection,
+        HarnessInjection::ZeroConfRbfReplacement | HarnessInjection::ZeroConfDoubleSpend
+    );
+    if expected_replacement
+        && downgraded_decision
+            .get("replacement_transaction_id")
+            .and_then(Value::as_str)
+            != Some(attack_reference.as_str())
+        || !expected_replacement
+            && downgraded_decision
+                .get("replacement_transaction_id")
+                .is_some()
+    {
+        return Err("zero-conf downgrade carries the wrong replacement binding".to_owned());
+    }
+    if session.verifier.signed_records().iter().any(|event| {
+        event.kind == MKT_STATUS_KIND
+            && event.pubkey == session.provider_pubkey
+            && record_profile(event).ok().is_some_and(|profile| {
+                matches!(
+                    profile.get("swp_state").and_then(Value::as_str),
+                    Some("lightning_payment_pending" | "lightning_paid")
+                )
+            })
+    }) {
+        return Err("provider advanced to a Lightning effect after zero-conf risk".to_owned());
+    }
+    let invoices = runtime
+        .block_on(
+            environment
+                .peer_cln
+                .list_invoices(&cln_id("zero-conf-invoice-state")?, None),
+        )
+        .map_err(|error| format!("could not inspect zero-conf invoice state: {error}"))?;
+    let invoice_state = invoices
+        .get("invoices")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|invoice| invoice.get("payment_hash").and_then(Value::as_str) == Some(payment_hash))
+        .and_then(|invoice| invoice.get("status"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "zero-conf invoice is absent from local CLN".to_owned())?;
+    if invoice_state != "unpaid" {
+        return Err("zero-conf downgrade did not leave the invoice unpaid".to_owned());
+    }
+    session.persist_authorized_details(
+        "zero_conf_downgraded",
+        true,
+        json!({"external_identifier":funding_txid,"reason":expected_reason}),
+    )?;
+    Ok(json!({
+        "order_id":session.order.id,
+        "payment_hash":payment_hash,
+        "funding_txid":funding_txid,
+        "funding_observed_status_id":observed.id,
+        "zero_conf_accepted_status_id":accepted.id,
+        "confirmation_required_status_id":downgraded.id,
+        "injection":injection.name(),
+        "attack_reference":attack_reference,
+        "accepted_decision":"accepted",
+        "downgraded_decision":"confirmation_required",
+        "reason":expected_reason,
+        "invoice_state":invoice_state,
+        "provider_settlement_effects":0,
+        "outcome":"confirmation_required_without_effect",
+    }))
+}
+
+fn zero_conf_competitor(
+    environment: &SmokeEnvironment,
+    funding_input: &FundingInput,
+    signals_rbf: bool,
+) -> Result<SignedFundingTransaction, String> {
+    let destination_index = if signals_rbf { 13 } else { 14 };
+    let destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, destination_index)
+                .map_err(|error| format!("zero-conf competitor path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive zero-conf competitor destination: {error}"))?;
+    let mut competitor = build_funding_transaction(
+        &environment.wallet,
+        std::slice::from_ref(funding_input),
+        &FundingRequest {
+            destination_script_pubkey: destination.script_pubkey.to_vec(),
+            amount_sat: 50_000,
+            fee_rate_sat_per_vbyte: 20,
+            change_path: WalletPath::new(0, true, destination_index + 10)
+                .map_err(|error| format!("zero-conf competitor change path is invalid: {error}"))?,
+            lock_time: 0,
+        },
+    )
+    .map_err(|error| format!("could not construct zero-conf competitor: {error}"))?;
+    if !signals_rbf {
+        return Ok(competitor);
+    }
+    let input = competitor
+        .transaction
+        .inputs
+        .first_mut()
+        .ok_or_else(|| "zero-conf replacement has no input".to_owned())?;
+    input.sequence = 0xffff_fffd;
+    input.witness.clear();
+    let prevout = environment
+        .wallet
+        .derive_address(funding_input.path)
+        .map_err(|error| format!("could not derive zero-conf replacement prevout: {error}"))?;
+    let sighash = taproot_key_spend_sighash(
+        &competitor.transaction,
+        &[TransactionOutput {
+            value_sat: funding_input.value_sat,
+            script_pubkey: prevout.script_pubkey.to_vec(),
+        }],
+        0,
+    )
+    .map_err(|error| format!("could not hash zero-conf replacement: {error}"))?;
+    let signature = environment
+        .wallet
+        .sign_key_path(funding_input.path, &sighash)
+        .map_err(|error| format!("could not sign zero-conf replacement: {error}"))?;
+    competitor
+        .transaction
+        .set_input_witness(0, vec![signature.signature.to_vec()])
+        .map_err(|error| format!("could not attach zero-conf replacement witness: {error}"))?;
+    competitor.raw_transaction = lower_hex(
+        &competitor
+            .transaction
+            .serialize(true)
+            .map_err(|error| format!("could not serialize zero-conf replacement: {error}"))?,
+    );
+    competitor.txid = lower_hex(
+        &competitor
+            .transaction
+            .txid()
+            .map_err(|error| format!("could not identify zero-conf replacement: {error}"))?,
+    );
+    Ok(competitor)
+}
+
+fn broadcast_zero_conf_competitor(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    competitor: &SignedFundingTransaction,
+) -> Result<(), String> {
+    let transaction_id = runtime
+        .block_on(environment.bitcoind.broadcast(
+            &rpc_id("zero-conf-competitor")?,
+            &competitor.raw_transaction,
+            None,
+        ))
+        .map_err(|error| format!("could not broadcast zero-conf competitor: {error}"))?;
+    if transaction_id != competitor.txid {
+        return Err("bitcoind returned another zero-conf competitor ID".to_owned());
+    }
+    Ok(())
+}
+
+fn wait_for_zero_conf_ancestor(
+    runtime: &Runtime,
+    bitcoind: &BitcoindClient,
+    transaction_id: &str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match runtime
+            .block_on(bitcoind.mempool_entry(&rpc_id("zero-conf-ancestor-entry")?, transaction_id))
+        {
+            Ok(entry)
+                if entry.get("ancestorcount").and_then(Value::as_u64) == Some(2)
+                    && entry
+                        .get("depends")
+                        .and_then(Value::as_array)
+                        .is_some_and(|dependencies| !dependencies.is_empty()) =>
+            {
+                return Ok(());
+            }
+            Ok(_) | Err(BitcoindError::Rpc { code: -5 }) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(100));
+            }
+            Ok(_) | Err(BitcoindError::Rpc { code: -5 }) => {
+                return Err("zero-conf funding did not acquire an unconfirmed ancestor".to_owned());
+            }
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect zero-conf ancestor state: {error}"
+                ));
+            }
+        }
+    }
 }
 
 fn continue_submarine(
@@ -7839,13 +8174,28 @@ fn prepare_quote_with_terms(
         &environment.relay_url,
         now,
     )?;
+    let mut rfq_profile =
+        funded_rfq_profile_with_terms(input, now, input_amount_sat, maximum_total_fee_sat)?;
+    if environment.control.injection.is_some_and(|injection| {
+        matches!(
+            injection,
+            HarnessInjection::ZeroConfRbfReplacement
+                | HarnessInjection::ZeroConfDoubleSpend
+                | HarnessInjection::ZeroConfAncestorEviction
+        )
+    }) {
+        rfq_profile["constraints"]["confirmation_policy"]["zero_confirmation"] =
+            Value::String("allowed".to_owned());
+        rfq_profile["constraints"]["confirmation_policy"]["replacement"] =
+            Value::String("track".to_owned());
+    }
     let (rfq, rfq_raw) = sign_request(
         factory
             .rfq(
                 now,
                 &digest(&format!("rfq:{session_id}")),
                 now.saturating_add(600),
-                funded_rfq_profile_with_terms(input, now, input_amount_sat, maximum_total_fee_sat)?,
+                rfq_profile,
             )
             .map_err(|error| format!("could not construct funded RFQ: {error}"))?,
         &environment.requester,
@@ -9282,6 +9632,9 @@ impl SessionContext {
                 | HarnessInjection::FundingReorg
                 | HarnessInjection::ClaimReorg
                 | HarnessInjection::RbfConflict
+                | HarnessInjection::ZeroConfRbfReplacement
+                | HarnessInjection::ZeroConfDoubleSpend
+                | HarnessInjection::ZeroConfAncestorEviction
                 | HarnessInjection::CooperativeCrashCut,
             )
             | None => Ok(()),
