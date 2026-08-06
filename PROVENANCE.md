@@ -1165,6 +1165,14 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   Postgres. Added no dependency, event kind, service, database, secret,
   advertisement, workflow, or billed automation.
 
+### 2026-08-05 — Codex 5.6 Sol, M13 MKT-SWP Liquid source sync
+
+- Synced the exact OpenAgents MKT-SWP cooperative-signing reconciliation and
+  Liquid addendum at `4ca362b6050c1762f5f8a383c0c18f50acf02ba0`.
+- Recorded the existing-kind, no-advertisement adoption boundary before
+  starting issue #27 runtime work. Added no dependency, event kind, service,
+  database, secret, workflow, or billed automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

@@ -994,3 +994,23 @@ and the #18-backed cutover rehearsal has SHA-256
 The shadow retains five response-shape divergences. The rehearsal claims local
 replacement capability and explicitly rejects live deployment, operator
 independence, and public replacement.
+
+## M13 MKT-SWP Liquid source sync (2026-08-05)
+
+Issue #27 advances the OpenAgents source pin from
+`c579a75bcba6d799941efff4dfbf82bd090e88c1` to
+`4ca362b6050c1762f5f8a383c0c18f50acf02ba0`. Only `MKT-SWP.md`, `MKT.md`,
+and the lane README changed. The first upstream commit incorporates the
+cooperative-signing transcript already adopted and fixture-tested by Immortal
+for issue #26. The second adds the Liquid rail vocabulary and conformance
+contract: BIP-122 network identity, exact pegged-asset IDs, own-output
+unblinding, Elements-specific transaction handling, unilateral exits, and the
+boundary against arbitrary third-party confidential-proof claims.
+
+This sync allocates no event kind. Liquid legs use the existing private
+immutable `kind:39610` Swap Contract, so it does not trigger a new
+`39610-39699` collision allocation. It changes no relay behavior, relay
+database, custody boundary, dependency, or NIP-11 advertisement. The Liquid
+execution claim remains unavailable until the #27 core, client, provider,
+lab, fixture, contract-export, and runbook gates pass under an active
+`elementsd` configuration.
