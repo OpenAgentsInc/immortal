@@ -2,6 +2,8 @@ const STORE: &str = include_str!("../src/store.rs");
 const MIGRATION_V1: &str = include_str!("../../../migrations/provider/0001_provider_store.sql");
 const MIGRATION_V2: &str =
     include_str!("../../../migrations/provider/0002_boltz_invoice_binding.sql");
+const MIGRATION_V3: &str =
+    include_str!("../../../migrations/provider/0003_restore_safe_public_json.sql");
 const NO_SPEND: &str = include_str!("../src/no_spend.rs");
 
 #[test]
@@ -25,6 +27,18 @@ fn provider_store_schema_has_public_state_and_custody_tripwires() {
     assert!(MIGRATION_V2.contains("provider_boltz_invoice_binding_session"));
     assert!(MIGRATION_V2.contains("provider_boltz_invoice_candidate_session"));
     assert!(!MIGRATION_V2.contains("INSERT INTO provider_boltz_invoice_binding"));
+    assert!(
+        MIGRATION_V3.contains(
+            "CREATE OR REPLACE FUNCTION public.provider_public_json_safe(document jsonb)"
+        )
+    );
+    assert!(MIGRATION_V3.contains("public.provider_public_json_safe(member.value)"));
+    assert!(
+        MIGRATION_V3.contains(
+            "CREATE OR REPLACE FUNCTION public.provider_signed_event_safe(document jsonb)"
+        )
+    );
+    assert!(MIGRATION_V3.contains("RETURN public.provider_public_json_safe(content)"));
 
     assert!(MIGRATION_V1.contains("provider_signed_event_safe"));
     assert!(MIGRATION_V1.contains("provider_public_json_safe"));

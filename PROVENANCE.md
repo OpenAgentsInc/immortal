@@ -38,6 +38,10 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   environment/systemd/backup/TLS assets, and a clean-host acceptance gate that
   verifies the release build, file modes, systemd graph, database backup digest,
   and restore before running the funded smoke.
+- Added an append-only provider migration that schema-qualifies recursive
+  public-state safety checks, allowing `pg_dump` restores to replay table data
+  under PostgreSQL's empty restore search path without changing prior
+  migration bytes.
 - Added the seven-route GET-only Boltz shadow recorder and the swap-network
   stand-up, cutover, drain, rollback, and claim-boundary runbook. Deployment,
   live operator independence, and public replacement remain false until their

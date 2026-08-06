@@ -35,7 +35,7 @@ async fn provider_state_is_atomic_bounded_and_restart_safe() {
     let (mut first, migration) = ProviderStore::connect(&database_url)
         .await
         .expect("provider migrations must apply");
-    assert!(migration.applied_versions.len() <= 2);
+    assert!(migration.applied_versions.len() <= 3);
     let mut second = ProviderStore::connect_verified(&database_url)
         .await
         .expect("provider migrations must verify");

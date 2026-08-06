@@ -38,6 +38,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "boltz_invoice_binding",
         sql: include_str!("../../../../migrations/provider/0002_boltz_invoice_binding.sql"),
     },
+    Migration {
+        version: 3,
+        name: "restore_safe_public_json",
+        sql: include_str!("../../../../migrations/provider/0003_restore_safe_public_json.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

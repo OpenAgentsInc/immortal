@@ -954,10 +954,12 @@ deployment and public-claim authority.
 
 ## M12 migration and cutover decision (2026-08-05)
 
-Issue #19 changes no NIP source, event kind, relay behavior, database schema,
-dependency, or NIP-11 advertisement. It adopts an operational fixture and
-deployment boundary around the already pinned MKT-SWP and Boltz compatibility
-profiles.
+Issue #19 changes no NIP source, event kind, relay behavior, provider table
+shape, dependency, or NIP-11 advertisement. It adopts an operational fixture
+and deployment boundary around the already pinned MKT-SWP and Boltz
+compatibility profiles. Provider migration 3 replaces the two public-state
+safety functions with schema-qualified recursion so `pg_dump` restores their
+constraints under an empty search path; prior migration bytes remain frozen.
 
 The provider's SIGUSR1, SIGTERM, and SIGINT path publishes paused discovery,
 rejects new native RFQs and compatibility creates, keeps existing sessions and
