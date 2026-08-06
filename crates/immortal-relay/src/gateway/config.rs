@@ -105,6 +105,7 @@ pub struct GatewayConfig {
     pub media: Option<MediaConfig>,
     pub limits: GatewayLimits,
     pub identity: RelayIdentity,
+    pub advertised_nips: Option<Vec<u16>>,
     pub log_level: String,
 }
 
@@ -128,6 +129,7 @@ impl GatewayConfig {
             media: None,
             limits: GatewayLimits::default(),
             identity: RelayIdentity::default(),
+            advertised_nips: None,
             log_level: "info".to_owned(),
         }
     }
@@ -233,6 +235,9 @@ impl GatewayConfig {
             contact: optional_string("IMMORTAL_RELAY_CONTACT")?,
             pubkey: optional_string("IMMORTAL_RELAY_PUBKEY")?,
         };
+        config.advertised_nips = optional_string("IMMORTAL_SUPPORTED_NIPS")?
+            .map(|value| parse_supported_nips(&value))
+            .transpose()?;
         if let Some(signer) = &config.relay_signer {
             if config
                 .identity
@@ -402,6 +407,26 @@ impl GatewayConfig {
                 ));
             }
         }
+        if let Some(advertised_nips) = &self.advertised_nips {
+            if advertised_nips.is_empty() || advertised_nips.len() > 64 {
+                return Err(config(
+                    "IMMORTAL_SUPPORTED_NIPS must contain between 1 and 64 NIP numbers",
+                ));
+            }
+            let active_nips = self.active_supported_nips();
+            for (index, nip) in advertised_nips.iter().enumerate() {
+                if advertised_nips[..index].contains(nip) {
+                    return Err(config(format!(
+                        "IMMORTAL_SUPPORTED_NIPS contains duplicate NIP {nip}"
+                    )));
+                }
+                if !active_nips.contains(nip) {
+                    return Err(config(format!(
+                        "IMMORTAL_SUPPORTED_NIPS cannot advertise inactive or unsupported NIP {nip}"
+                    )));
+                }
+            }
+        }
         if let Some(pubkey) = &self.management_pubkey {
             if pubkey.len() != 64 || !is_lower_hex(pubkey) {
                 return Err(config(
@@ -475,6 +500,26 @@ impl GatewayConfig {
         Ok(())
     }
 
+    pub(crate) fn active_supported_nips(&self) -> Vec<u16> {
+        let mut supported_nips = vec![1, 9, 11, 40, 45, 50, 65, 94];
+        if self.relay_url.is_some() {
+            supported_nips.extend([17, 42, 70]);
+        }
+        if self.relay_signer.is_some() {
+            supported_nips.push(29);
+        }
+        if self.management_pubkey.is_some() {
+            supported_nips.push(86);
+        }
+        if self.management_pubkey.is_some() || self.media.is_some() {
+            supported_nips.push(98);
+        }
+        if self.mkt_swp_coordination.is_some() {
+            supported_nips.push(32);
+        }
+        supported_nips
+    }
+
     pub(crate) fn absolute_http_url(&self, path: &str) -> Result<String, GatewayError> {
         let relay_url = self
             .relay_url
@@ -546,6 +591,27 @@ fn optional_string(name: &str) -> Result<Option<String>, GatewayError> {
     }
 }
 
+fn parse_supported_nips(value: &str) -> Result<Vec<u16>, GatewayError> {
+    if value.len() > 512 {
+        return Err(config("IMMORTAL_SUPPORTED_NIPS exceeds 512 bytes"));
+    }
+    value
+        .split(',')
+        .map(|part| {
+            if part.is_empty() || part.trim() != part {
+                return Err(config(
+                    "IMMORTAL_SUPPORTED_NIPS must be comma-separated decimal numbers without whitespace",
+                ));
+            }
+            part.parse::<u16>().map_err(|_| {
+                config(format!(
+                    "IMMORTAL_SUPPORTED_NIPS contains invalid NIP number {part:?}"
+                ))
+            })
+        })
+        .collect()
+}
+
 fn parse_bool(name: &str, default: bool) -> Result<bool, GatewayError> {
     match env::var(name) {
         Ok(value) if value == "true" => Ok(true),
@@ -585,4 +651,18 @@ fn is_lower_hex(value: &str) -> bool {
 
 fn config(reason: impl Into<String>) -> GatewayError {
     GatewayError::Config(reason.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_supported_nips;
+
+    #[test]
+    fn supported_nip_environment_grammar_is_bounded() {
+        assert_eq!(parse_supported_nips("11,1,50").unwrap(), [11, 1, 50]);
+        for invalid in ["", "1, 11", "1,,11", "NIP-01"] {
+            assert!(parse_supported_nips(invalid).is_err(), "{invalid:?}");
+        }
+        assert!(parse_supported_nips(&"1".repeat(513)).is_err());
+    }
 }

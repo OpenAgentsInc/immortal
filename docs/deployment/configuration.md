@@ -277,6 +277,13 @@ not operator-tunable configuration.
 | `IMMORTAL_RELAY_DESCRIPTION` | no | empty | NIP-11 `description`. |
 | `IMMORTAL_RELAY_CONTACT` | no | empty | NIP-11 `contact`. |
 | `IMMORTAL_RELAY_PUBKEY` | no | empty | NIP-11 `pubkey` (operator's public key — never a private key). |
+| `IMMORTAL_SUPPORTED_NIPS` | no | active implemented list | Comma-separated decimal NIP numbers in the exact order advertised by NIP-11, for example `11,1,50`. Every value must be unique and supported under the active configuration. The override may narrow the list but cannot advertise an inactive or unimplemented capability. |
+
+The limits in NIP-11 come from the enforced `IMMORTAL_MAX_*` variables and
+the M2 policy limits; they are not a separate claim-only configuration. The
+supported-NIP override likewise changes discovery only. It cannot activate a
+handler, add a protocol, or bypass the configuration that an implemented
+conditional NIP requires.
 
 ## Example: minimal local start
 

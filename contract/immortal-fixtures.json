@@ -114,6 +114,12 @@
       "scope": "client"
     },
     {
+      "path": "tests/fixtures/migration/relay-shadow-v1.json",
+      "sha256": "93c8b4b256d2ab4c3f35590537860d12da2dd151269a48b4d4b9fe735b385661",
+      "bytes": 610,
+      "scope": "relay"
+    },
+    {
       "path": "tests/fixtures/migration/signed-event-import-v1.json",
       "sha256": "c95b576a08a32e6bf83832d595474135205bfd957204de163cbb17c93f37effc",
       "bytes": 2502,
@@ -171,6 +177,12 @@
       "path": "tests/fixtures/nip11/document.json",
       "sha256": "74528732c66bc4bf287aad622c25772066bda40b5afdea26d14b4b070bdce34b",
       "bytes": 728,
+      "scope": "relay"
+    },
+    {
+      "path": "tests/fixtures/nip11/parity-configuration.json",
+      "sha256": "08b32d8ab9827d1ddeb75441b100a3c7b993c8b16417325c94373c5927e4200b",
+      "bytes": 1025,
       "scope": "relay"
     },
     {

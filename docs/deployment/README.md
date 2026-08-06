@@ -32,6 +32,7 @@ cache, no sync engine. Postgres does all the storage work.
 | [`runbook-digitalocean.md`](runbook-digitalocean.md) | DigitalOcean: the supported Debian 13 Droplet path and the explicit managed-platform boundary. |
 | [`runbook-google-cloud.md`](runbook-google-cloud.md) | Google Cloud: Cloud Run + Cloud SQL + Secret Manager + Artifact Registry, and a GCE VM alternative. |
 | [`runbook-local-dev.md`](runbook-local-dev.md) | Disposable local Postgres and relay plus the two-actor wrapped NIP-MKT smoke. |
+| [`runbook-relay-migration.md`](runbook-relay-migration.md) | Incumbent policy mapping, signed-event import boundary, read-only WebSocket shadow, response diffs, and cutover gates. |
 | [`runbook-provider-debian.md`](runbook-provider-debian.md) | The funded `immortal-provider` v1 prerequisites, custody boundary, separate Postgres, CLN hold plugin, service, health, funding, backup, and upgrade procedure. |
 | [`runbook-swap-network.md`](runbook-swap-network.md) | Two-relay/two-provider stand-up, bounded live shadow, immutable client route pins, cutover, drain, rollback, and claim boundaries. |
 | [`swap-network-infrastructure.md`](swap-network-infrastructure.md) | Role-by-role infrastructure for the decentralized Boltz-replacement swap network: relay, liquidity provider, client, and the minimum honest network. |

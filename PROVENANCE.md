@@ -1127,6 +1127,31 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   kind, service, database, secret, advertisement, workflow, or billed
   automation.
 
+### 2026-08-05 — Codex 5.6 Sol, M9 NIP-11 parity configuration
+
+- Added a bounded supported-NIP override so an operator can reproduce an
+  incumbent discovery list and ordering while retaining the configured relay
+  identity and enforced policy/gateway limits.
+- Refused empty, duplicate, inactive, and unsupported NIP claims. The override
+  can only narrow capabilities implemented under the active configuration; it
+  cannot activate a handler or advertise an unproved capability.
+- Added fixture, unit, live-process, and disposable-Postgres coverage for the
+  exact configured NIP-11 response. Added no dependency, event kind, service,
+  database, secret, extension, workflow, or billed automation.
+
+### 2026-08-05 — Codex 5.6 Sol, M9 policy and read-shadow migration kit
+
+- Added the incumbent-policy reconciliation ledger for allow/block lists,
+  closed membership, enforced limits, authentication, private visibility, and
+  rules without an M2 equivalent. Looser or unmapped admission behavior remains
+  an explicit cutover blocker.
+- Added a bounded dependency-free public WebSocket shadow client. It sends only
+  `REQ` and `COUNT`, validates the upgrade and frames, compares canonical event
+  sets and counts, and emits a content-free digest-bound result.
+- Added a fixture workload and a two-relay live proof over seeded disposable
+  Postgres. Added no dependency, event kind, service, database, secret,
+  advertisement, workflow, or billed automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

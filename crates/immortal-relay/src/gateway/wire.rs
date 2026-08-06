@@ -328,22 +328,10 @@ pub fn nip11_json_with_icon(
     policy: &RelayPolicy,
     icon: Option<&str>,
 ) -> String {
-    let mut supported_nips = vec![1, 9, 11, 40, 45, 50, 65, 94];
-    if config.relay_url.is_some() {
-        supported_nips.extend([17, 42, 70]);
-    }
-    if config.relay_signer.is_some() {
-        supported_nips.push(29);
-    }
-    if config.management_pubkey.is_some() {
-        supported_nips.push(86);
-    }
-    if config.management_pubkey.is_some() || config.media.is_some() {
-        supported_nips.push(98);
-    }
-    if config.mkt_swp_coordination.is_some() {
-        supported_nips.push(32);
-    }
+    let supported_nips = config
+        .advertised_nips
+        .clone()
+        .unwrap_or_else(|| config.active_supported_nips());
     let mut supported_extensions = vec!["nip-mp", "nip-oa", "nip-rs"];
     if config.relay_url.is_some() {
         supported_extensions.extend([
@@ -662,6 +650,74 @@ mod tests {
             "created_at_lower_limit",
         ] {
             assert_eq!(actual["limitation"][field], expected[field], "{field}");
+        }
+    }
+
+    #[test]
+    fn nip11_operator_parity_is_bounded_to_active_capabilities() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/nip11/parity-configuration.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fixture["schema"],
+            "openagents.immortal.nip11-parity-configuration.v1"
+        );
+        let expected = &fixture["expected"];
+        let mut config = GatewayConfig::new(
+            "host=/tmp dbname=test".to_owned(),
+            "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+        );
+        config.identity = RelayIdentity {
+            name: expected["name"].as_str().unwrap().to_owned(),
+            description: Some(expected["description"].as_str().unwrap().to_owned()),
+            contact: Some(expected["contact"].as_str().unwrap().to_owned()),
+            pubkey: Some(expected["pubkey"].as_str().unwrap().to_owned()),
+        };
+        config.advertised_nips = Some(
+            fixture["configured_supported_nips"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| u16::try_from(value.as_u64().unwrap()).unwrap())
+                .collect(),
+        );
+        config.limits.max_frame_bytes = 65_536;
+        config.limits.max_subscriptions = 12;
+        config.limits.max_limit = 250;
+        let policy = RelayPolicy {
+            closed_membership: false,
+            max_content_bytes: 1_024,
+            max_tags: 48,
+            max_future_seconds: 120,
+            max_past_seconds: 7_200,
+        };
+        config.validate().unwrap();
+        let actual = serde_json::from_str::<Value>(&nip11_json(&config, &policy)).unwrap();
+        for field in [
+            "name",
+            "description",
+            "contact",
+            "pubkey",
+            "supported_nips",
+            "limitation",
+        ] {
+            assert_eq!(actual[field], expected[field], "{field}");
+        }
+
+        for invalid in fixture["invalid_supported_nips"].as_array().unwrap() {
+            config.advertised_nips = Some(
+                invalid["values"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| u16::try_from(value.as_u64().unwrap()).unwrap())
+                    .collect(),
+            );
+            let error = config
+                .validate()
+                .expect_err(invalid["name"].as_str().unwrap());
+            assert!(error.to_string().contains("IMMORTAL_SUPPORTED_NIPS"));
         }
     }
 }

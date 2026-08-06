@@ -8,8 +8,8 @@ import struct
 from pathlib import Path
 
 
-HOST = "127.0.0.1"
-PORT = 18080
+HOST = os.environ.get("IMMORTAL_ACCEPTANCE_HOST", "127.0.0.1")
+PORT = int(os.environ.get("IMMORTAL_ACCEPTANCE_PORT", "18080"))
 
 
 def send_text(connection: socket.socket, value: object) -> None:

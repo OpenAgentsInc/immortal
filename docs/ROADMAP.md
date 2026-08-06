@@ -528,11 +528,11 @@ M6 reaches the NIP-29 item; does not wait for M7 or M8.
       replacement, deletion, and policy checks; historical-only bypass for
       extension/group rules the source never enforced; durable per-event
       ledger; startup drain plus bounded tail sweeps during a traffic cutover
-- [ ] NIP-11 parity configuration: name, description, pubkey, limits,
+- [x] NIP-11 parity configuration: name, description, pubkey, limits,
       and supported-NIP list fully operator-configurable
-- [ ] Policy parity checklist: map an existing relay's allow/block and
+- [x] Policy parity checklist: map an existing relay's allow/block and
       membership rules onto the M2 policy pipeline
-- [ ] Shadow mode guide: run Immortal read-only beside the existing
+- [x] Shadow mode guide: run Immortal read-only beside the existing
       relay, replay traffic, diff responses
 - [x] Cutover and rollback runbook addition in `docs/deployment/`:
       hostname switch, import, verify, roll back
