@@ -1161,3 +1161,25 @@ proofs and keeps live deployment, operator independence, generic Liquid,
 zero-confirmation, and public-replacement claims false. This closure allocates
 no event kind and changes no relay admission, Postgres schema, dependency, or
 NIP-11 advertisement.
+
+## M13 MKT-SWP zero-confirmation source sync (2026-08-06)
+
+Issue #30 advances only the OpenAgents `MKT-SWP.md` source from
+`ac61a359043ec53c567873a344153c1069091d85` to
+`dfc6bacdca4f69eacd4d487000f6207f9a3ac0e7`; the other 45 OpenAgents lane
+files are byte-identical. The correction adds provider-signed
+zero-confirmation acceptance and confirmation-required states, keeps both at
+the `funding_observed` base projection, and limits the opt-in to
+requester-funded Bitcoin directions under a local `bitcoind` view, non-RBF
+funding without unconfirmed ancestors, and durable per-swap and aggregate
+in-flight caps. Replacement, conflict, mempool loss, or a newly unconfirmed
+ancestor removes the acceptance authority without promoting finality.
+
+This sync allocates no event kind, so it does not require a new
+`39610-39699` collision allocation. The newer Block Buzz source was reviewed
+but is not adopted by this packet; its lane remains at the prior pin. This
+source sync changes no runtime behavior, relay admission, Postgres schema,
+dependency, custody boundary, or NIP-11 advertisement. Immortal adopts the
+new states only after #30's provider policy, client/status validation, durable
+accounting, contract export, and adversarial fixtures pass under the active
+configuration.
