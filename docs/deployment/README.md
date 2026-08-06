@@ -32,6 +32,7 @@ cache, no sync engine. Postgres does all the storage work.
 | [`runbook-google-cloud.md`](runbook-google-cloud.md) | Google Cloud: Cloud Run + Cloud SQL + Secret Manager + Artifact Registry, and a GCE VM alternative. |
 | [`runbook-local-dev.md`](runbook-local-dev.md) | Disposable local Postgres and relay plus the two-actor wrapped NIP-MKT smoke. |
 | [`runbook-provider-debian.md`](runbook-provider-debian.md) | The funded `immortal-provider` v1 prerequisites, custody boundary, separate Postgres, CLN hold plugin, service, health, funding, backup, and upgrade procedure. |
+| [`runbook-swap-network.md`](runbook-swap-network.md) | Two-relay/two-provider stand-up, bounded live shadow, immutable client route pins, cutover, drain, rollback, and claim boundaries. |
 | [`swap-network-infrastructure.md`](swap-network-infrastructure.md) | Role-by-role infrastructure for the decentralized Boltz-replacement swap network: relay, liquidity provider, client, and the minimum honest network. |
 
 ## Reading order
@@ -61,8 +62,9 @@ cache, no sync engine. Postgres does all the storage work.
 
 ## Committed deployment assets
 
-The canonical templates live under `deploy/`: the environment file, hardened
-systemd unit, Caddy and nginx configurations, and the backup service/timer.
+The canonical relay and provider templates live under `deploy/`: environment
+files, hardened systemd units, Caddy and nginx configurations, and separate
+database backup services/timers.
 The root `Dockerfile` is the Cloud Run image definition. The Debian runbook
 installs these files directly so executable configuration and documentation
 cannot drift independently.

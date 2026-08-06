@@ -175,14 +175,14 @@ if ! docker create \
         apt-get update >/dev/null
         apt-get install -y --no-install-recommends \
             ca-certificates cargo build-essential curl python3-minimal docker-cli docker-compose docker.io \
-            golang-go nodejs >/dev/null
+            golang-go jq nodejs postgresql systemd >/dev/null
         for command_name in cargo curl docker go node; do
             command -v "${command_name}" >/dev/null
         done
         docker compose version >/dev/null
         mkdir /work
         cp /source/Cargo.toml /source/Cargo.lock /source/Dockerfile /source/.dockerignore /work/
-        cp -R /source/crates /source/migrations /source/scripts /source/tests /source/adapters /source/nips /work/
+        cp -R /source/crates /source/migrations /source/scripts /source/tests /source/adapters /source/nips /source/deploy /work/
         dockerd_log=/tmp/immortal-debian-provider-dockerd.log
         dockerd_pid=
         cleanup() {

@@ -126,6 +126,19 @@ fn provider_contract_exports_closed_nonzero_runtime_limits() {
     assert_eq!(limits["relay_actor"]["active_sessions_per_requester"], 4);
     assert_eq!(limits["direct_recovery"]["request_wraps"], 32);
     assert_eq!(limits["direct_recovery"]["response_wraps"], 512);
+    assert_eq!(
+        contract["operations"]["drain"]["signals"],
+        json!(["SIGUSR1", "SIGTERM", "SIGINT"])
+    );
+    assert_eq!(contract["operations"]["drain"]["required_mode"], "funded");
+    assert_eq!(
+        contract["operations"]["drain"]["accepts_new_native_sessions"],
+        false
+    );
+    assert_eq!(
+        contract["operations"]["drain"]["continues_existing_sessions"],
+        true
+    );
     assert!(all_limit_leaves_are_positive(&contract["limits"]));
     assert_eq!(
         contract["vocabulary"]["funded_terminal_outcomes"],

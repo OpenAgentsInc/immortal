@@ -363,7 +363,10 @@ are the M13 ledger below.
 Current M12 status: #9, #10, upstream #9311, #11, #12, #13, #14, #16, #17,
 #18, #24, #25, #26, #28, and #29 are complete. The pushed-main adversarial
 lab passed all 33 cases and published its bounded record under
-`docs/conformance/records/`; #19 is the closing packet. The pinned relay exposes the
+`docs/conformance/records/`. #19 now has its fixture-backed drain, immutable
+provider-route pin, committed Debian assets, bounded live-shadow recorder, and
+cutover/rollback runbook; it remains open until the fresh-Debian, live-shadow,
+and cutover records pass from pushed `main`. The pinned relay exposes the
 MKT-SWP and MKT-PFI v1 observable contracts and the off-by-default
 exact-conformance coordination handler without claiming PFI external
 authority or an executable profile. Verification primitives and the

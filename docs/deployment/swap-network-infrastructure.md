@@ -5,9 +5,9 @@ in the decentralized shape this repository targets: an Immortal relay
 coordinating, independent liquidity providers executing, and clients
 verifying. This document inventories the infrastructure each role needs,
 what each role holds, and what none of them may hold. It is the
-infrastructure companion to the future `runbook-swap-network.md`
-(issue [#19](https://github.com/OpenAgentsInc/immortal/issues/19)), which
-will own the step-by-step stand-up, shadow, and cutover procedure.
+infrastructure companion to [`runbook-swap-network.md`](runbook-swap-network.md),
+which owns the step-by-step stand-up, shadow, cutover, drain, and rollback
+procedure.
 
 Background: `docs/inspiration/boltz.md` (what we borrow and reject from
 Boltz), `nips/openagents/MKT.md` and `nips/openagents/MKT-SWP.md` (the

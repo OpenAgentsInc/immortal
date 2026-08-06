@@ -29,8 +29,9 @@ The products:
   executes script-path claim/refund recovery. Its allowlist-only MuSig2
   foundation and signed actor support the cooperative key-path protocol. The
   actor is fail-closed on exact stored Status bytes and the pre-committed
-  provider exit package, while signer capability and runtime execution remain
-  disabled until the funded-process activation gate passes.
+  provider exit package. Submarine signer/runtime capability is available
+  behind an explicit off-by-default production gate after the funded-process
+  activation corpus passed; script-path exits remain mandatory.
   Reverse Quotes bind the exact
   reserve-selected funding transaction before either contract is signed;
   signed action deadlines, durable competing-path watches, and signer-local

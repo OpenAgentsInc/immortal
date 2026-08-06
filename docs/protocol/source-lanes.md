@@ -949,6 +949,31 @@ Provider durable state is rebuilt before the first relay connection. When
 relay retries exhaust, the recovery listener and bounded provider/watchtower
 progress may continue, but the direct channel does not admit negotiation.
 `provider/direct-recovery-v1.json` pins the framing, bounds, admission laws,
-and refusal cases. The #18 capability and public replacement flags remain
-false until the local adversarial conformance gate produces process evidence;
-#19 retains deployment and public-claim authority.
+and refusal cases. The #18 local adversarial gate has passed; #19 retains
+deployment and public-claim authority.
+
+## M12 migration and cutover decision (2026-08-05)
+
+Issue #19 changes no NIP source, event kind, relay behavior, database schema,
+dependency, or NIP-11 advertisement. It adopts an operational fixture and
+deployment boundary around the already pinned MKT-SWP and Boltz compatibility
+profiles.
+
+The provider's SIGUSR1, SIGTERM, and SIGINT path publishes paused discovery,
+rejects new native RFQs and compatibility creates, keeps existing sessions and
+the watchtower running, and exits after the active-session count reaches zero.
+The provider systemd unit requires its database and rail nodes but never a
+relay unit. Database backup assets exclude custody files and are restore-tested
+separately from wallet and Lightning recovery material.
+
+The client persists the selected provider public key, Offering address, HTTP
+origin, WebSocket origin, and selection-policy digest in one session
+configuration. Cutover or rollback can change the default for a new session;
+it cannot move an existing session to another provider origin.
+
+The live-shadow surface is closed over seven public GET requests. It carries
+no body, authentication, swap identifier, or WebSocket, rejects redirects and
+duplicate JSON members, and records bounded response digests and shapes.
+`swap-network-migration-v1.json` pins these laws. Local completion establishes
+replacement capability only; live deployment, operator independence, and a
+public replacement claim remain separate evidence gates.

@@ -1,0 +1,89 @@
+{
+  "schema": "openagents.immortal.swap-network-migration-fixtures.v1",
+  "issue": 19,
+  "lab": {
+    "record": "docs/conformance/records/2026-08-05-adversarial-regtest-67efec7.json",
+    "sha256": "5231324450c9115d43f11cf0685ffb702dddcf0c93a6d77579ade60bf3539087",
+    "required_cases": 33,
+    "required_claims": {
+      "submarine_and_reverse_local_capability": true,
+      "live_deployment": false,
+      "independent_operator_deployment": false,
+      "public_replacement": false
+    }
+  },
+  "provider_drain": {
+    "provider_mode": "funded",
+    "signals": ["SIGUSR1", "SIGTERM", "SIGINT"],
+    "paused_discovery_before_exit": true,
+    "new_native_sessions": false,
+    "new_compatibility_sessions": false,
+    "existing_sessions_continue": true,
+    "watchtower_continues": true,
+    "zero_active_sessions_required_for_exit": true,
+    "relay_unit_dependency": false
+  },
+  "client_selection": {
+    "immutable_session_tuple": [
+      "provider_pubkey",
+      "offering_address",
+      "http_origin",
+      "websocket_origin",
+      "selection_policy_sha256"
+    ],
+    "mid_session_failover": false,
+    "restore_requires_exact_tuple": true
+  },
+  "shadow": {
+    "methods": ["GET"],
+    "endpoints": [
+      "/v2/version",
+      "/v2/swap/submarine",
+      "/v2/swap/reverse",
+      "/v2/chain/fees",
+      "/v2/chain/BTC/fee",
+      "/v2/chain/BTC/height",
+      "/v2/nodes/stats"
+    ],
+    "forbidden": [
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "authentication",
+      "swap_identifiers",
+      "websocket"
+    ],
+    "timeout_seconds": 10,
+    "maximum_response_bytes": 2097152,
+    "redirects": false,
+    "duplicate_json_members": "reject"
+  },
+  "cutover": {
+    "session_origin_pinned_before_first_request": true,
+    "new_sessions_switch_atomically": true,
+    "in_flight_sessions_remain_on_original_provider": true,
+    "verification": [
+      "session_completion",
+      "dense_status_stream",
+      "unilateral_refund_drill",
+      "zero_unresolved_provider_work"
+    ],
+    "rollback": {
+      "new_sessions_only": true,
+      "in_flight_sessions_remain_on_pinned_origin": true,
+      "database_restore_required_after_unknown_migration": true
+    }
+  },
+  "minimum_live_network": {
+    "operator_independent_relays": 2,
+    "independently_operated_and_keyed_providers": 2,
+    "client_surfaces": 1
+  },
+  "claims": {
+    "replacement_capability_after_local_gates": true,
+    "live_deployment": false,
+    "operator_independence": false,
+    "public_replacement": false
+  }
+}

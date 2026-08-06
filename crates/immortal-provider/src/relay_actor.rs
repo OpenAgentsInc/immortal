@@ -6,6 +6,7 @@ use std::{
     fs::File,
     io::{ErrorKind, Read},
     net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
+    sync::Arc,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -31,6 +32,7 @@ use crate::{
         DirectRecoveryListener, MAX_CONNECTIONS_PER_POLL, MAX_RESPONSE_BYTES, MAX_RESPONSE_WRAPS,
         RESPONSE_SCHEMA, read_request, wrap_response_record, write_response,
     },
+    health::ProviderHealth,
 };
 
 const SUBSCRIPTION_ID: &str = "immortal-provider-inbox";
@@ -233,6 +235,7 @@ struct RelayActor<M> {
     sessions: BTreeMap<String, SessionActor>,
     mode: M,
     direct_recovery: Option<DirectRecoveryListener>,
+    health: Arc<ProviderHealth>,
 }
 
 pub(crate) fn run_with_mode<M: ProviderMode>(
@@ -240,6 +243,7 @@ pub(crate) fn run_with_mode<M: ProviderMode>(
     signer: MarketSigner,
     mode: M,
     direct_recovery_bind: Option<SocketAddr>,
+    health: Arc<ProviderHealth>,
 ) -> Result<(), String> {
     let offering_address = format!("39601:{}:{}", signer.pubkey(), mode.offering_id());
     let direct_recovery = direct_recovery_bind
@@ -252,6 +256,7 @@ pub(crate) fn run_with_mode<M: ProviderMode>(
         sessions: BTreeMap::new(),
         mode,
         direct_recovery,
+        health,
     };
     actor.bootstrap_durable()?;
     if let Some(listener) = actor.direct_recovery.as_ref() {
@@ -267,6 +272,15 @@ pub(crate) fn validate_relay_url(relay_url: &str, mode_name: &str) -> Result<(),
     loopback_addresses(relay_url, mode_name).map(|_| ())
 }
 
+fn reconnect_exhaustion_is_fatal(
+    failures: usize,
+    direct_recovery_enabled: bool,
+    draining: bool,
+    active_sessions: bool,
+) -> bool {
+    failures > MAX_RECONNECT_ATTEMPTS && !direct_recovery_enabled && !(draining && active_sessions)
+}
+
 impl<M: ProviderMode> RelayActor<M> {
     fn bootstrap_durable(&mut self) -> Result<(), String> {
         self.rebuild(RelayHistory {
@@ -279,11 +293,22 @@ impl<M: ProviderMode> RelayActor<M> {
     fn run_persistent(&mut self) -> Result<(), String> {
         let mut failures = 0_usize;
         loop {
+            if self.health.is_draining() && self.sessions.is_empty() {
+                return Ok(());
+            }
             match self.run_connection() {
                 Ok(()) => return Ok(()),
                 Err(error) => {
+                    if self.health.is_draining() && self.sessions.is_empty() {
+                        return Ok(());
+                    }
                     failures = failures.saturating_add(1);
-                    if failures > MAX_RECONNECT_ATTEMPTS && self.direct_recovery.is_none() {
+                    if reconnect_exhaustion_is_fatal(
+                        failures,
+                        self.direct_recovery.is_some(),
+                        self.health.is_draining(),
+                        !self.sessions.is_empty(),
+                    ) {
                         return Err(format!(
                             "{} provider exhausted {MAX_RECONNECT_ATTEMPTS} relay reconnects: {error}",
                             self.mode.mode_name()
@@ -330,7 +355,12 @@ impl<M: ProviderMode> RelayActor<M> {
         authenticate(&mut reader, &self.signer, &self.relay_url, now)?;
         let mut publisher = connect(&self.relay_url, self.mode.mode_name())?;
         authenticate(&mut publisher, &self.signer, &self.relay_url, now)?;
-        self.publish_discovery(&mut publisher, now)?;
+        let mut drain_announced = self.health.is_draining();
+        self.publish_discovery_state(
+            &mut publisher,
+            now,
+            if drain_announced { "paused" } else { "active" },
+        )?;
         subscribe(&mut reader, self.signer.pubkey())?;
 
         let history = read_history(&mut reader)?;
@@ -346,6 +376,13 @@ impl<M: ProviderMode> RelayActor<M> {
         );
 
         loop {
+            if self.health.is_draining() && !drain_announced {
+                self.publish_discovery_state(&mut publisher, unix_now()?, "paused")?;
+                drain_announced = true;
+            }
+            if self.health.is_draining() && self.sessions.is_empty() {
+                return Ok(());
+            }
             self.poll_direct_recovery()?;
             match read_json(&mut reader.websocket) {
                 Ok(message) => {
@@ -366,10 +403,11 @@ impl<M: ProviderMode> RelayActor<M> {
         }
     }
 
-    fn publish_discovery(
+    fn publish_discovery_state(
         &self,
         publisher: &mut RelayClient,
         created_at: u64,
+        state: &str,
     ) -> Result<(), String> {
         let discovery = ProviderDiscoveryFactory::new(self.signer.pubkey())
             .map_err(|error| format!("could not initialize provider discovery: {error}"))?;
@@ -377,7 +415,7 @@ impl<M: ProviderMode> RelayActor<M> {
             .profile(
                 created_at,
                 self.mode.provider_id(),
-                "active",
+                state,
                 self.mode.discovery_metadata(),
             )
             .map_err(|error| format!("could not create provider profile: {error}"))?;
@@ -389,7 +427,7 @@ impl<M: ProviderMode> RelayActor<M> {
                 created_at,
                 self.mode.provider_id(),
                 self.mode.offering_id(),
-                "active",
+                state,
                 self.mode.offering(),
             )
             .map_err(|error| {
@@ -492,6 +530,7 @@ impl<M: ProviderMode> RelayActor<M> {
             }
             self.sessions.insert(session_id, actor);
         }
+        self.sync_active_sessions()?;
         Ok(())
     }
 
@@ -544,6 +583,7 @@ impl<M: ProviderMode> RelayActor<M> {
                     requester_pubkey: record.pubkey.clone(),
                     provider_pubkey: provider_pubkey.clone(),
                     offering_address,
+                    provider_route: None,
                 };
                 let session = ProviderSession::new(config).map_err(|error| {
                     format!("could not initialize session {session_id}: {error}")
@@ -648,6 +688,7 @@ impl<M: ProviderMode> RelayActor<M> {
         self.observe_record(&session_id, &record, RecordOrigin::Live)?;
         if provider_authored_close(&record, self.signer.pubkey()) {
             self.sessions.remove(&session_id);
+            self.sync_active_sessions()?;
             return Ok(());
         }
         self.advance_session(&session_id, &mut DeliveryTarget::Relay(publisher))
@@ -835,6 +876,9 @@ impl<M: ProviderMode> RelayActor<M> {
         let session_id = session_id(&record)?.to_owned();
         let mut inserted_session = false;
         if !self.sessions.contains_key(&session_id) {
+            if self.health.is_draining() {
+                return Err("provider is draining and accepts no new sessions".to_owned());
+            }
             if record.kind != MKT_RFQ_KIND {
                 return Err(format!(
                     "session {session_id} has no recoverable RFQ before kind {}",
@@ -865,6 +909,7 @@ impl<M: ProviderMode> RelayActor<M> {
                 requester_pubkey: record.pubkey.clone(),
                 provider_pubkey: self.signer.pubkey().to_owned(),
                 offering_address,
+                provider_route: None,
             };
             let session = ProviderSession::new(config)
                 .map_err(|error| format!("could not initialize session {session_id}: {error}"))?;
@@ -888,6 +933,7 @@ impl<M: ProviderMode> RelayActor<M> {
         if result.is_err() && inserted_session {
             self.sessions.remove(&session_id);
         }
+        self.sync_active_sessions()?;
         result
     }
 
@@ -979,6 +1025,7 @@ impl<M: ProviderMode> RelayActor<M> {
             }
             if terminal {
                 self.sessions.remove(session_id);
+                self.sync_active_sessions()?;
                 return Ok(());
             }
         }
@@ -1009,6 +1056,7 @@ impl<M: ProviderMode> RelayActor<M> {
                 self.mode.mode_name()
             );
             self.sessions.remove(session_id);
+            self.sync_active_sessions()?;
             return Ok(SessionAdvance::Removed);
         }
 
@@ -1056,6 +1104,7 @@ impl<M: ProviderMode> RelayActor<M> {
                 self.mode.mode_name()
             );
             self.sessions.remove(session_id);
+            self.sync_active_sessions()?;
             return Ok(SessionAdvance::Removed);
         }
         Ok(SessionAdvance::Action(action))
@@ -1083,7 +1132,14 @@ impl<M: ProviderMode> RelayActor<M> {
                 self.sessions.remove(&session_id);
             }
         }
+        self.sync_active_sessions()?;
         Ok(())
+    }
+
+    fn sync_active_sessions(&self) -> Result<(), String> {
+        self.health
+            .set_active_sessions(self.sessions.len())
+            .map_err(|error| format!("provider active-session metric failed: {error}"))
     }
 
     fn sign_private(&self, request: MktSigningRequest) -> Result<Event, String> {
@@ -1815,6 +1871,7 @@ mod tests {
             signer: signer.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),
+            health: Arc::new(ProviderHealth::default()),
             mode: RecoveryMode {
                 records: Vec::new(),
                 session_records: Vec::new(),
@@ -1839,6 +1896,7 @@ mod tests {
             signer,
             offering_address,
             sessions: BTreeMap::new(),
+            health: Arc::new(ProviderHealth::default()),
             mode: RecoveryMode {
                 records: Vec::new(),
                 session_records: Vec::new(),
@@ -1868,6 +1926,7 @@ mod tests {
             requester_pubkey: requester.pubkey().to_owned(),
             provider_pubkey: provider.pubkey().to_owned(),
             offering_address: offering_address.clone(),
+            provider_route: None,
         };
         let fixture: Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json"
@@ -1897,6 +1956,7 @@ mod tests {
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
+            health: Arc::new(ProviderHealth::default()),
             mode: RecoveryMode {
                 records: vec![rfq],
                 session_records: Vec::new(),
@@ -1927,6 +1987,7 @@ mod tests {
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
+            health: Arc::new(ProviderHealth::default()),
             mode: RecoveryMode {
                 records: Vec::new(),
                 session_records: Vec::new(),
@@ -1958,6 +2019,7 @@ mod tests {
             requester_pubkey: requester.pubkey().to_owned(),
             provider_pubkey: provider.pubkey().to_owned(),
             offering_address: offering_address.clone(),
+            provider_route: None,
         };
         let fixture: Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json"
@@ -2003,6 +2065,7 @@ mod tests {
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
+            health: Arc::new(ProviderHealth::default()),
             mode: RecoveryMode {
                 records: Vec::new(),
                 session_records: Vec::new(),
@@ -2052,6 +2115,7 @@ mod tests {
             requester_pubkey: requester.pubkey().to_owned(),
             provider_pubkey: provider.pubkey().to_owned(),
             offering_address: offering_address.clone(),
+            provider_route: None,
         };
         let fixture: Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json"
@@ -2119,6 +2183,7 @@ mod tests {
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
+            health: Arc::new(ProviderHealth::default()),
             mode: RecoveryMode {
                 records: Vec::new(),
                 session_records: history,
@@ -2214,6 +2279,18 @@ mod tests {
 
     #[test]
     fn recovery_enforces_the_active_session_bound() {
+        assert!(reconnect_exhaustion_is_fatal(
+            MAX_RECONNECT_ATTEMPTS + 1,
+            false,
+            false,
+            true,
+        ));
+        assert!(!reconnect_exhaustion_is_fatal(
+            MAX_RECONNECT_ATTEMPTS + 1,
+            false,
+            true,
+            true,
+        ));
         let provider = MarketSigner::from_secret_bytes([43; 32]).expect("provider signer");
         let offering_address = format!("39601:{}:recovery-test", provider.pubkey());
         let records: Vec<Event> = (0..=MAX_SESSIONS)
@@ -2227,6 +2304,7 @@ mod tests {
                     requester_pubkey: requester.pubkey().to_owned(),
                     provider_pubkey: provider.pubkey().to_owned(),
                     offering_address: offering_address.clone(),
+                    provider_route: None,
                 };
                 let factory = SwapRecordFactory::new(config).expect("record factory");
                 let fixtures: Value = serde_json::from_str(include_str!(
@@ -2261,6 +2339,7 @@ mod tests {
             signer: provider.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),
+            health: Arc::new(ProviderHealth::default()),
             mode: RecoveryMode {
                 records: records.clone(),
                 session_records: Vec::new(),
@@ -2285,6 +2364,7 @@ mod tests {
             signer: provider.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),
+            health: Arc::new(ProviderHealth::default()),
             mode: RecoveryMode {
                 records: records.clone(),
                 session_records: Vec::new(),
@@ -2309,6 +2389,7 @@ mod tests {
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
+            health: Arc::new(ProviderHealth::default()),
             mode: RecoveryMode {
                 records: Vec::new(),
                 session_records: Vec::new(),
@@ -2320,16 +2401,41 @@ mod tests {
             },
             direct_recovery: None,
         };
+        let drain_health = Arc::new(ProviderHealth::default());
+        drain_health.begin_drain();
+        let mut draining = RelayActor {
+            relay_url: "ws://127.0.0.1:1".to_owned(),
+            signer: rejected.signer.clone(),
+            offering_address: rejected.offering_address.clone(),
+            sessions: BTreeMap::new(),
+            mode: RecoveryMode {
+                records: Vec::new(),
+                session_records: Vec::new(),
+                has_prior_records: false,
+                reservation_confirmation: None,
+                prune_stalled: false,
+                record_observations: 0,
+                session_observations: 0,
+            },
+            direct_recovery: None,
+            health: drain_health,
+        };
+        assert_eq!(
+            draining.ingest_record(records[0].clone()),
+            Err("provider is draining and accepts no new sessions".to_owned())
+        );
         for record in records {
             let session_id = session_id(&record).expect("RFQ session").to_owned();
             rejected
                 .ingest_record(record)
                 .expect("valid RFQ must enter the actor");
+            assert_eq!(rejected.health.snapshot().active_sessions, 1);
             assert!(matches!(
                 rejected.prepare_session_advance(&session_id, 200),
                 Ok(SessionAdvance::Removed)
             ));
             assert!(rejected.sessions.is_empty());
+            assert_eq!(rejected.health.snapshot().active_sessions, 0);
         }
     }
 
@@ -2352,6 +2458,7 @@ mod tests {
             signer: provider.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),
+            health: Arc::new(ProviderHealth::default()),
             mode: RecoveryMode {
                 records: Vec::new(),
                 session_records: Vec::new(),
@@ -2371,6 +2478,7 @@ mod tests {
                 requester_pubkey: requester.pubkey().to_owned(),
                 provider_pubkey: provider.pubkey().to_owned(),
                 offering_address: offering_address.clone(),
+                provider_route: None,
             };
             let factory = SwapRecordFactory::new(config).expect("record factory");
             let request = factory
@@ -2411,6 +2519,7 @@ mod tests {
             requester_pubkey: requester.pubkey().to_owned(),
             provider_pubkey: provider.pubkey().to_owned(),
             offering_address: offering_address.clone(),
+            provider_route: None,
         };
         let fixtures: Value = serde_json::from_str(include_str!(
             "../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json"
@@ -2489,6 +2598,7 @@ mod tests {
             signer: provider.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),
+            health: Arc::new(ProviderHealth::default()),
             mode: RecoveryMode {
                 records: vec![rfq.clone(), quote.clone()],
                 session_records: Vec::new(),

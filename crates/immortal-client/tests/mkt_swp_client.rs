@@ -17,9 +17,9 @@ use immortal_client::{
         LightningProgressState, LightningReadinessRequest, LightningReadinessState,
         LightningRecoveryState, LocalBitcoinObservation, LocalLightningDisposition,
         LocalLightningProgress, LocalLightningReadiness, LocalRailEvidence,
-        LocalRecoveryObservation, MktSigningRequest, ParticipantRole, QuotePolicy, RecoveryAction,
-        RequesterContractLocalInputs, RequesterContractSigningInput, RequesterOrderInput,
-        RequesterPriceFeedView, RequesterSessionView, RequesterTerminalState,
+        LocalRecoveryObservation, MktSigningRequest, ParticipantRole, ProviderRoutePin,
+        QuotePolicy, RecoveryAction, RequesterContractLocalInputs, RequesterContractSigningInput,
+        RequesterOrderInput, RequesterPriceFeedView, RequesterSessionView, RequesterTerminalState,
         RequesterVerificationState, SignedRecordDelivery, StatusState, SwapClientConfig,
         SwapContractReferences, SwapRecordFactory, SwapSession, SwapType, TimeoutLadder,
         VerifyBeforeFundInput, provider_support, validate_cooperative_signing_exchange,
@@ -30,6 +30,55 @@ use immortal_client::{
         tagged_hash, tapleaf_hash, taproot_key_spend_sighash, taproot_output_key,
     },
 };
+
+#[test]
+fn provider_route_is_pinned_with_the_session_configuration() {
+    let mut config = Setup::new(&fixture()).config;
+    let pinned = ProviderRoutePin {
+        http_origin: "https://provider.example.com".to_owned(),
+        websocket_origin: "wss://provider.example.com".to_owned(),
+        selection_policy_sha256: "91".repeat(32),
+    };
+    config.provider_route = Some(pinned.clone());
+    config.validate().unwrap();
+    config.require_provider_route(&pinned).unwrap();
+
+    let encoded = serde_json::to_vec(&config).unwrap();
+    let restored: SwapClientConfig = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(restored.provider_route.as_ref(), Some(&pinned));
+
+    let mut changed = pinned.clone();
+    changed.websocket_origin = "wss://standby.example.com".to_owned();
+    assert_eq!(
+        restored.require_provider_route(&changed).unwrap_err().code,
+        "swp_provider_route_changed"
+    );
+
+    let mut insecure = pinned;
+    insecure.http_origin = "http://provider.example.com".to_owned();
+    config.provider_route = Some(insecure);
+    assert_eq!(
+        config.validate().unwrap_err().code,
+        "swp_provider_route_invalid"
+    );
+
+    for invalid_origin in [
+        "https://provider.example.com:abc",
+        "https://provider.example.com:0",
+        "https://[::1",
+        "https://provider.example.com:443:444",
+    ] {
+        config.provider_route = Some(ProviderRoutePin {
+            http_origin: invalid_origin.to_owned(),
+            websocket_origin: "wss://provider.example.com".to_owned(),
+            selection_policy_sha256: "91".repeat(32),
+        });
+        assert_eq!(
+            config.validate().unwrap_err().code,
+            "swp_provider_route_invalid"
+        );
+    }
+}
 use secp256k1::{Keypair, Parity, PublicKey, Secp256k1, SecretKey};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -4415,6 +4464,7 @@ impl Setup {
                 provider.pubkey(),
                 deterministic["offering_id"].as_str().unwrap()
             ),
+            provider_route: None,
         };
         Self {
             config,

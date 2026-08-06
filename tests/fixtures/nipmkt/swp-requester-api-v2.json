@@ -119,6 +119,33 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 256
+        },
+        "provider_route": {
+          "$ref": "#/$defs/provider_route_pin"
+        }
+      },
+      "additionalProperties": false
+    },
+    "provider_route_pin": {
+      "type": "object",
+      "required": [
+        "http_origin",
+        "websocket_origin",
+        "selection_policy_sha256"
+      ],
+      "properties": {
+        "http_origin": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "websocket_origin": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "selection_policy_sha256": {
+          "$ref": "#/$defs/hex32"
         }
       },
       "additionalProperties": false

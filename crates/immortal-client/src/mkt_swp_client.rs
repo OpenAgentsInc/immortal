@@ -1065,11 +1065,32 @@ impl ParticipantRole {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ProviderRoutePin {
+    pub http_origin: String,
+    pub websocket_origin: String,
+    pub selection_policy_sha256: String,
+}
+
+impl ProviderRoutePin {
+    fn validate(&self) -> Result<(), SwapClientError> {
+        validate_provider_origin(&self.http_origin, "http")?;
+        validate_provider_origin(&self.websocket_origin, "websocket")?;
+        require_lower_hex_32(
+            &self.selection_policy_sha256,
+            "provider selection policy digest",
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SwapClientConfig {
     pub session_id: String,
     pub requester_pubkey: String,
     pub provider_pubkey: String,
     pub offering_address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_route: Option<ProviderRoutePin>,
 }
 
 impl SwapClientConfig {
@@ -1094,7 +1115,29 @@ impl SwapClientConfig {
                 "Offering address does not belong to the provider",
             ));
         }
+        if let Some(route) = &self.provider_route {
+            route.validate()?;
+        }
         Ok(())
+    }
+
+    pub fn require_provider_route(
+        &self,
+        candidate: &ProviderRoutePin,
+    ) -> Result<(), SwapClientError> {
+        let pinned = self.provider_route.as_ref().ok_or_else(|| {
+            SwapClientError::new(
+                "swp_provider_route_unpinned",
+                "session has no pinned provider transport origin",
+            )
+        })?;
+        if pinned != candidate {
+            return Err(SwapClientError::new(
+                "swp_provider_route_changed",
+                "provider transport origin or selection policy changed after session creation",
+            ));
+        }
+        candidate.validate()
     }
 
     fn pubkey_for(&self, role: ParticipantRole) -> &str {
@@ -1103,6 +1146,97 @@ impl SwapClientConfig {
             ParticipantRole::Provider => &self.provider_pubkey,
         }
     }
+}
+
+fn validate_provider_origin(origin: &str, transport: &str) -> Result<(), SwapClientError> {
+    let (secure_prefix, loopback_prefix) = match transport {
+        "http" => ("https://", "http://"),
+        "websocket" => ("wss://", "ws://"),
+        _ => {
+            return Err(SwapClientError::new(
+                "swp_provider_route_invalid",
+                "provider transport type is unsupported",
+            ));
+        }
+    };
+    let (remainder, plaintext) = origin
+        .strip_prefix(secure_prefix)
+        .map(|remainder| (remainder, false))
+        .or_else(|| {
+            origin
+                .strip_prefix(loopback_prefix)
+                .map(|remainder| (remainder, true))
+        })
+        .ok_or_else(|| {
+            SwapClientError::new(
+                "swp_provider_route_invalid",
+                "provider origin must use its secure scheme or loopback plaintext",
+            )
+        })?;
+    if origin.len() > 2_048
+        || remainder.is_empty()
+        || remainder.contains(['/', '?', '#', '@', '\\'])
+        || origin
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return Err(SwapClientError::new(
+            "swp_provider_route_invalid",
+            "provider origin must be a bounded authority without userinfo or path",
+        ));
+    }
+    let host = parsed_provider_authority_host(remainder)?;
+    if plaintext {
+        let loopback = host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback());
+        if !loopback {
+            return Err(SwapClientError::new(
+                "swp_provider_route_invalid",
+                "plaintext provider origins are restricted to loopback",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn parsed_provider_authority_host(authority: &str) -> Result<&str, SwapClientError> {
+    let invalid = || {
+        SwapClientError::new(
+            "swp_provider_route_invalid",
+            "provider origin authority is invalid",
+        )
+    };
+    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+        let end = bracketed.find(']').ok_or_else(invalid)?;
+        let host = &bracketed[..end];
+        let suffix = &bracketed[end + 1..];
+        let port = if suffix.is_empty() {
+            None
+        } else {
+            Some(suffix.strip_prefix(':').ok_or_else(invalid)?)
+        };
+        if host.parse::<std::net::Ipv6Addr>().is_err() {
+            return Err(invalid());
+        }
+        (host, port)
+    } else {
+        match authority.split_once(':') {
+            Some((host, port)) if !port.contains(':') => (host, Some(port)),
+            Some(_) => return Err(invalid()),
+            None => (authority, None),
+        }
+    };
+    if host.is_empty()
+        || host
+            .bytes()
+            .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':')))
+        || port.is_some_and(|port| port.is_empty() || port.parse::<u16>().is_err() || port == "0")
+    {
+        return Err(invalid());
+    }
+    Ok(host)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2125,6 +2259,7 @@ pub mod provider_support {
             requester_pubkey: rfq.pubkey.clone(),
             provider_pubkey: quote.pubkey.clone(),
             offering_address: offering_address.to_owned(),
+            provider_route: None,
         };
         config.validate()?;
         Ok(config)

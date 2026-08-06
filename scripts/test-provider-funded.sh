@@ -22,6 +22,13 @@ driver_outcome=complete
 expected_driver_error=""
 injection_timeout_seconds="${IMMORTAL_PROVIDER_FUNDED_INJECTION_TIMEOUT_SECONDS:-300}"
 lightning_rail="${IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL:-cln}"
+shadow_reference_origin="${IMMORTAL_PROVIDER_FUNDED_SHADOW_REFERENCE_ORIGIN:-}"
+shadow_output="${IMMORTAL_PROVIDER_FUNDED_SHADOW_OUTPUT:-}"
+if { test -n "${shadow_reference_origin}" && test -z "${shadow_output}"; } \
+  || { test -z "${shadow_reference_origin}" && test -n "${shadow_output}"; }; then
+  echo "test-provider-funded: shadow reference and output must be configured together" >&2
+  exit 1
+fi
 boltz_publish_host="${IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST:-127.0.0.1}"
 provider_service=provider
 if test "${lightning_rail}" = lnd; then
@@ -1098,6 +1105,14 @@ fi
 boltz_provider_url="http://${boltz_published_endpoint}"
 wait_for "Boltz provider compatibility published endpoint" \
   curl --fail --silent --show-error "${boltz_provider_url}/v2/version"
+if test -n "${shadow_reference_origin}"; then
+  current_phase=boltz-readonly-live-shadow
+  python3 scripts/boltz-readonly-shadow.py \
+    --reference-origin "${shadow_reference_origin}" \
+    --candidate-origin "${boltz_provider_url}" \
+    --source-commit "$(git rev-parse HEAD)" \
+    --output "${shadow_output}"
+fi
 
 current_phase=boltz-go-client-engine-callback
 compose run --rm --no-deps \

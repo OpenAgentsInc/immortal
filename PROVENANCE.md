@@ -28,6 +28,21 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-05 — Codex 5.6 Sol, M12 migration closing packet / issue #19
+
+- Added the provider drain state shared by the native actor, compatibility
+  listener, health endpoint, and funded process. Draining pauses discovery,
+  refuses new sessions, retains relay recovery and watchtower work for active
+  sessions, and publishes bounded public counters until zero.
+- Added the immutable client provider-route tuple, committed Debian provider
+  environment/systemd/backup/TLS assets, and a clean-host acceptance gate that
+  verifies the release build, file modes, systemd graph, database backup digest,
+  and restore before running the funded smoke.
+- Added the seven-route GET-only Boltz shadow recorder and the swap-network
+  stand-up, cutover, drain, rollback, and claim-boundary runbook. Deployment,
+  live operator independence, and public replacement remain false until their
+  separate evidence gates pass.
+
 ### 2026-08-05 — Codex 5.6 Sol, M12 multi-provider negotiation / issue #32
 
 - Added the reusable three-CLN-role, two-relay, two-provider process gate. One

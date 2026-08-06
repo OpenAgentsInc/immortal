@@ -13,6 +13,21 @@
       "requires": ["relay"]
     },
     {
+      "name": "provider-v1-bounded-drain",
+      "mode": "funded",
+      "signals": ["SIGUSR1", "SIGTERM", "SIGINT"],
+      "discovery_state": "paused",
+      "new_native_sessions": false,
+      "new_boltz_compatibility_sessions": false,
+      "existing_sessions_continue": true,
+      "watchtower_continues": true,
+      "exit_when_active_sessions_reach_zero": true,
+      "metrics": [
+        "immortal_provider_draining",
+        "immortal_provider_sessions_active"
+      ]
+    },
+    {
       "name": "provider-v1-script-path-default-with-cooperative-signer-available",
       "taproot_script_path": true,
       "musig2_key_path": true,

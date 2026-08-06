@@ -28,6 +28,7 @@ impl Setup {
             requester_pubkey: requester.pubkey().into(),
             provider_pubkey: provider.pubkey().into(),
             offering_address: format!("39601:{}:regtest-swaps", provider.pubkey()),
+            provider_route: None,
         };
         Self {
             requester,

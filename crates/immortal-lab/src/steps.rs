@@ -153,6 +153,7 @@ fn rfq_for_offering(
         requester_pubkey: signer.pubkey().to_owned(),
         provider_pubkey: provider_pubkey.to_owned(),
         offering_address: offering_address.to_owned(),
+        provider_route: None,
     };
     let factory = SwapRecordFactory::new(config)
         .map_err(|error| format!("could not initialize the client engine: {error}"))?;
@@ -469,6 +470,7 @@ fn requester_quote_view(
         requester_pubkey: signer.pubkey().to_owned(),
         provider_pubkey: session.provider_pubkey.clone(),
         offering_address: session.offering_address.clone(),
+        provider_route: None,
     };
     let view = RequesterSessionView::from_signed_records(
         &config,

@@ -58,6 +58,8 @@ impl std::error::Error for HealthError {}
 #[derive(Default)]
 pub struct ProviderHealth {
     ready: AtomicBool,
+    draining: AtomicBool,
+    active_sessions: AtomicU64,
     chain_height: AtomicI64,
     last_chain_success: AtomicU64,
     consecutive_chain_failures: AtomicU32,
@@ -71,6 +73,8 @@ pub struct ProviderHealth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderHealthSnapshot {
     pub ready: bool,
+    pub draining: bool,
+    pub active_sessions: u64,
     pub chain_height: i64,
     pub last_chain_success: u64,
     pub consecutive_chain_failures: u32,
@@ -83,11 +87,29 @@ pub struct ProviderHealthSnapshot {
 
 impl ProviderHealth {
     pub fn mark_ready(&self) {
-        self.ready.store(true, Ordering::Release);
+        if !self.is_draining() {
+            self.ready.store(true, Ordering::Release);
+        }
     }
 
     pub fn mark_not_ready(&self) {
         self.ready.store(false, Ordering::Release);
+    }
+
+    pub fn begin_drain(&self) {
+        self.draining.store(true, Ordering::Release);
+        self.mark_not_ready();
+    }
+
+    pub fn is_draining(&self) -> bool {
+        self.draining.load(Ordering::Acquire)
+    }
+
+    pub fn set_active_sessions(&self, active_sessions: usize) -> Result<(), HealthError> {
+        let active_sessions = u64::try_from(active_sessions).map_err(|_| HealthError::Io)?;
+        self.active_sessions
+            .store(active_sessions, Ordering::Release);
+        Ok(())
     }
 
     pub fn record_chain_success(&self, height: i64, observed_at: u64) {
@@ -126,6 +148,8 @@ impl ProviderHealth {
     pub fn snapshot(&self) -> ProviderHealthSnapshot {
         ProviderHealthSnapshot {
             ready: self.ready.load(Ordering::Acquire),
+            draining: self.draining.load(Ordering::Acquire),
+            active_sessions: self.active_sessions.load(Ordering::Acquire),
             chain_height: self.chain_height.load(Ordering::Acquire),
             last_chain_success: self.last_chain_success.load(Ordering::Acquire),
             consecutive_chain_failures: self.consecutive_chain_failures.load(Ordering::Acquire),
@@ -141,6 +165,7 @@ impl ProviderHealth {
 impl ProviderHealthSnapshot {
     fn health_body(self) -> &'static str {
         if self.ready
+            && !self.draining
             && self.pending_effects == 0
             && self.unresolved_effects == 0
             && self.unresolved_watch_jobs == 0
@@ -153,6 +178,7 @@ impl ProviderHealthSnapshot {
 
     fn health_status(self) -> &'static str {
         if self.ready
+            && !self.draining
             && self.pending_effects == 0
             && self.unresolved_effects == 0
             && self.unresolved_watch_jobs == 0
@@ -167,6 +193,8 @@ impl ProviderHealthSnapshot {
         format!(
             concat!(
                 "immortal_provider_ready {}\n",
+                "immortal_provider_draining {}\n",
+                "immortal_provider_sessions_active {}\n",
                 "immortal_provider_chain_height {}\n",
                 "immortal_provider_last_chain_success_seconds {}\n",
                 "immortal_provider_chain_failures_consecutive {}\n",
@@ -177,6 +205,8 @@ impl ProviderHealthSnapshot {
                 "immortal_provider_watch_jobs_unresolved {}\n"
             ),
             u8::from(self.ready),
+            u8::from(self.draining),
+            self.active_sessions,
             self.chain_height,
             self.last_chain_success,
             self.consecutive_chain_failures,
@@ -457,6 +487,14 @@ mod tests {
         assert_eq!(health.snapshot().health_status(), "503 Service Unavailable");
         health.mark_ready();
         assert_eq!(health.snapshot().health_status(), "200 OK");
+        health.set_active_sessions(2).unwrap();
+        assert_eq!(health.snapshot().active_sessions, 2);
+        health.begin_drain();
+        assert_eq!(health.snapshot().health_status(), "503 Service Unavailable");
+        assert!(health.snapshot().draining);
+        assert!(!health.snapshot().ready);
+        health.draining.store(false, Ordering::Release);
+        health.mark_ready();
         health.set_ledger_counts(1, 0, 0, 0, 1);
         assert_eq!(health.snapshot().health_status(), "503 Service Unavailable");
         health.set_ledger_counts(1, 1, 0, 0, 0);

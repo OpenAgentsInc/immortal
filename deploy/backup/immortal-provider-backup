@@ -1,0 +1,37 @@
+#!/bin/sh
+set -eu
+
+backup_dir=/var/backups/immortal-provider
+retention_days=14
+stamp="$(date -u +%Y-%m-%dT%H%M%SZ)"
+destination="${backup_dir}/immortal-provider-${stamp}.dump"
+digest_destination="${destination}.sha256"
+temporary="${destination}.tmp"
+digest_temporary="${digest_destination}.tmp"
+
+cleanup() {
+    if test -n "${temporary}"; then
+        rm -f -- "${temporary}"
+    fi
+    if test -n "${digest_temporary}"; then
+        rm -f -- "${digest_temporary}"
+    fi
+}
+trap cleanup EXIT HUP INT TERM
+
+umask 077
+test -d "${backup_dir}"
+pg_dump --dbname=immortal_provider --format=custom --no-owner --no-acl \
+    --file="${temporary}"
+chmod 0600 "${temporary}"
+sha256sum "${temporary}" | sed "s#${temporary}#$(basename "${destination}")#" \
+    >"${digest_temporary}"
+chmod 0600 "${digest_temporary}"
+mv -- "${temporary}" "${destination}"
+temporary=
+mv -- "${digest_temporary}" "${digest_destination}"
+digest_temporary=
+
+find "${backup_dir}" -type f \
+    \( -name 'immortal-provider-*.dump' -o -name 'immortal-provider-*.dump.sha256' \) \
+    -mtime "+${retention_days}" -delete

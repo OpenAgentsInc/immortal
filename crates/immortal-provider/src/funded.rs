@@ -171,8 +171,11 @@ async fn run_async() -> Result<(), FundedError> {
     )
     .map_err(|error| FundedError::Watchtower(error.to_string()))?;
     let (shutdown_sender, shutdown_receiver) = watch::channel(false);
-    let mut health_task =
-        tokio::spawn(serve_health(health_bind, health, shutdown_receiver.clone()));
+    let mut health_task = tokio::spawn(serve_health(
+        health_bind,
+        health.clone(),
+        shutdown_receiver.clone(),
+    ));
     let mut watchtower_task = tokio::spawn(watchtower.run(shutdown_receiver.clone()));
     let mut boltz_task = match (boltz_config, boltz_store) {
         (Some(boltz_config), Some(boltz_store)) => {
@@ -183,6 +186,7 @@ async fn run_async() -> Result<(), FundedError> {
                 boltz_pricing,
                 network,
                 boltz_config.allowed_origin,
+                health.clone(),
             );
             Some(tokio::spawn(serve_boltz(
                 boltz_config.bind,
@@ -198,10 +202,11 @@ async fn run_async() -> Result<(), FundedError> {
         }
     };
     let (relay_sender, mut relay_receiver) = oneshot::channel();
-    let _relay_thread = thread::Builder::new()
+    let relay_health = health.clone();
+    let relay_thread = thread::Builder::new()
         .name("immortal-provider-relay".to_owned())
         .spawn(move || {
-            let result = run_with_mode(relay_url, signer, mode, direct_recovery_bind);
+            let result = run_with_mode(relay_url, signer, mode, direct_recovery_bind, relay_health);
             if relay_sender.send(result).is_err() {
                 eprintln!("immortal-provider: relay result receiver closed during shutdown");
             }
@@ -213,10 +218,8 @@ async fn run_async() -> Result<(), FundedError> {
         network_name(network),
         health_bind
     );
-    tokio::select! {
-        signal = tokio::signal::ctrl_c() => {
-            signal.map_err(|_| FundedError::Shutdown)?;
-        }
+    let drain_signal = tokio::select! {
+        signal = wait_for_drain_signal() => signal?,
         result = &mut health_task => {
             return match result {
                 Ok(Ok(())) => Err(FundedError::Health("health server stopped before shutdown".to_owned())),
@@ -245,7 +248,19 @@ async fn run_async() -> Result<(), FundedError> {
                 Err(_) => Err(FundedError::Boltz("listener task failed".to_owned())),
             };
         }
+    };
+    health.begin_drain();
+    println!(
+        "immortal-provider: drain started signal={} active_sessions={}",
+        drain_signal,
+        health.snapshot().active_sessions
+    );
+    match relay_receiver.await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(FundedError::Configuration(error)),
+        Err(_) => return Err(FundedError::Shutdown),
     }
+    relay_thread.join().map_err(|_| FundedError::Shutdown)?;
     shutdown_sender
         .send(true)
         .map_err(|_| FundedError::Shutdown)?;
@@ -255,6 +270,37 @@ async fn run_async() -> Result<(), FundedError> {
         await_boltz_shutdown(task).await?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+async fn wait_for_drain_signal() -> Result<&'static str, FundedError> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut terminate = signal(SignalKind::terminate()).map_err(|_| FundedError::Shutdown)?;
+    let mut user_defined =
+        signal(SignalKind::user_defined1()).map_err(|_| FundedError::Shutdown)?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            result.map_err(|_| FundedError::Shutdown)?;
+            Ok("interrupt")
+        }
+        received = terminate.recv() => {
+            received.ok_or(FundedError::Shutdown)?;
+            Ok("terminate")
+        }
+        received = user_defined.recv() => {
+            received.ok_or(FundedError::Shutdown)?;
+            Ok("user_defined_1")
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_drain_signal() -> Result<&'static str, FundedError> {
+    tokio::signal::ctrl_c()
+        .await
+        .map_err(|_| FundedError::Shutdown)?;
+    Ok("interrupt")
 }
 
 async fn wait_for_boltz_failure(

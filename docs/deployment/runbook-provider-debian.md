@@ -7,9 +7,9 @@ Core Lightning or LND. The wallet seed, Lightning wallet, node credentials,
 private keys, and unreleased preimages never enter provider Postgres or relay
 state.
 
-The M12 closing packet (#19) records the clean-host execution evidence and
-adds the network shadow/cutover procedure. The commands and boundaries here
-are the configuration needed by the #25 funded smoke and by that later proof.
+The M12 closing packet (#19) binds this runbook to committed deployment
+assets, fresh-host execution evidence, and the network shadow/cutover procedure
+in [`runbook-swap-network.md`](runbook-swap-network.md).
 
 ## 1. Prerequisites
 
@@ -129,8 +129,18 @@ relay, a shell command, a support bundle, or this repository.
 
 ## 5. Configure the environment
 
-Create `/etc/immortal-provider/provider.env`, owned `root:immortal-provider`
-and mode `0640`. Replace every placeholder with the operator's value:
+Install the committed example as `/etc/immortal-provider/provider.env`, owned
+by root and mode `0600`, then replace every placeholder with the operator's
+value:
+
+```sh
+sudo install -d -o root -g root -m 0700 /etc/immortal-provider
+sudo install -o root -g root -m 0600 deploy/immortal-provider.env.example \
+  /etc/immortal-provider/provider.env
+sudoedit /etc/immortal-provider/provider.env
+```
+
+The installed file has this production shape:
 
 ```ini
 IMMORTAL_PROVIDER_DATABASE_URL=postgres://immortal_provider:<DB_PASSWORD>@127.0.0.1:5432/immortal_provider
@@ -173,8 +183,8 @@ IMMORTAL_PROVIDER_BOLTZ_CONFORMANCE_SHA256=<OUTPUT_FROM_PROVIDER_CONTRACT>
 IMMORTAL_PROVIDER_BOLTZ_ALLOWED_ORIGIN=https://wallet.example.com
 ```
 
-Expose that private plaintext listener only through the operator's authenticated
-TLS reverse proxy. Configure the relay handoff origin to the proxy's HTTPS
+Expose that private plaintext listener only through the operator's TLS reverse
+proxy. Configure the relay handoff origin to the proxy's HTTPS
 origin and configure adapted clients to use its `wss://.../v2/ws` endpoint
 directly. Do not make the provider bind public. The surface is a compatibility
 API and is never advertised in relay NIP-11.
@@ -216,13 +226,9 @@ result and refuses new Quotes when no estimate exists. An operator may set an
 explicit 1–2,000 sat/vB fallback after treating it as a pricing policy override;
 the regtest lab sets it because regtest has no fee history.
 
-Install it without exposing its contents:
+Verify it without exposing its contents:
 
 ```sh
-sudo install -d -o root -g immortal-provider -m 0750 /etc/immortal-provider
-sudo install -o root -g immortal-provider -m 0640 /dev/null \
-  /etc/immortal-provider/provider.env
-sudoedit /etc/immortal-provider/provider.env
 if sudo grep -q '<' /etc/immortal-provider/provider.env; then
   echo 'ERROR: unresolved provider placeholder remains' >&2
   false
@@ -234,41 +240,11 @@ and in `immortal-provider contract`.
 
 ## 6. Install the service
 
-Create `/etc/systemd/system/immortal-provider.service`:
+Install the committed unit:
 
-```ini
-[Unit]
-Description=Immortal liquidity provider
-After=network-online.target postgresql.service bitcoind.service lightningd.service immortal.service
-Wants=network-online.target
-Requires=postgresql.service bitcoind.service lightningd.service immortal.service
-
-[Service]
-Type=simple
-User=immortal-provider
-Group=immortal-provider
-EnvironmentFile=/etc/immortal-provider/provider.env
-ExecStart=/opt/immortal-provider/current/immortal-provider run
-Restart=on-failure
-RestartSec=5s
-TimeoutStopSec=30s
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-IPAddressDeny=any
-IPAddressAllow=localhost
-ReadOnlyPaths=/var/lib/immortal-provider/wallet.seed
-
-[Install]
-WantedBy=multi-user.target
+```sh
+sudo install -o root -g root -m 0644 deploy/systemd/immortal-provider.service \
+  /etc/systemd/system/immortal-provider.service
 ```
 
 For CLN, adjust the Lightning unit name and socket path to match the installed
@@ -284,6 +260,13 @@ sudo systemctl enable --now immortal-provider.service
 systemctl status immortal-provider.service --no-pager
 journalctl -u immortal-provider.service -n 30 --no-pager
 ```
+
+The provider unit requires its database and rail nodes, but it does not
+require or bind to `immortal.service`. Relay failure must not stop the provider
+watchtower. SIGUSR1, SIGTERM, and SIGINT begin the same drain: discovery moves
+to `paused`, new sessions are refused, existing sessions and recovery
+continue, and the process exits after its active-session count reaches zero.
+The unit deliberately has no forced stop timeout or SIGKILL fallback.
 
 Startup must fail if the configured networks disagree, bitcoind lacks the
 required RPCs, the selected Lightning rail lacks a required capability, an
@@ -333,11 +316,33 @@ the reservation release is durable.
 
 ## 8. Stop, backup, restore, and upgrade
 
-Before a planned stop, wait until metrics show no active reservations,
-pending effects, unresolved effects, pending watch jobs, or unresolved watch
-jobs. There is no v1 force-drain command. Stopping with an active timelock is
-an operator incident; the persisted watchtower state exists for restart, not
-as permission to stop casually.
+Begin a planned drain with SIGUSR1 and watch the public-only metrics:
+
+```sh
+sudo systemctl kill --signal=SIGUSR1 immortal-provider.service
+curl -fsS http://127.0.0.1:9091/metrics \
+  | grep -E 'immortal_provider_(draining|sessions_active|reservations_active|effects_pending|effects_unresolved|watch_jobs_pending|watch_jobs_unresolved)'
+```
+
+The process refuses new sessions, continues existing sessions and watchtower
+work, and exits only after the active-session count reaches zero. SIGTERM from
+`systemctl stop` has the same behavior. Do not force-kill a process with an
+active timelock.
+
+Install and start the committed database backup timer:
+
+```sh
+sudo install -d -o postgres -g postgres -m 0700 /var/backups/immortal-provider
+sudo install -o root -g root -m 0755 deploy/backup/immortal-provider-backup \
+  /usr/local/sbin/immortal-provider-backup
+sudo install -o root -g root -m 0644 \
+  deploy/backup/immortal-provider-backup.service \
+  deploy/backup/immortal-provider-backup.timer \
+  /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now immortal-provider-backup.timer
+sudo systemctl start immortal-provider-backup.service
+```
 
 Back up the provider database with `pg_dump` and immediately test restore into
 a disposable database. Back up the wallet seed and Lightning recovery material
@@ -345,6 +350,19 @@ separately through the operator's encrypted custody system. Database backups
 must never contain either. Restore the selected Lightning node through its
 supported recovery procedure; copying only provider Postgres cannot recover
 Lightning funds.
+
+Verify a database backup and its digest before an upgrade:
+
+```sh
+cd /var/backups/immortal-provider
+sha256sum --check immortal-provider-<TIMESTAMP>.dump.sha256
+sudo -u postgres createdb immortal_provider_restore_test
+sudo -u postgres pg_restore --dbname=immortal_provider_restore_test \
+  immortal-provider-<TIMESTAMP>.dump
+sudo -u postgres psql --dbname=immortal_provider_restore_test \
+  --command='SELECT version, name FROM provider_schema_migrations ORDER BY version;'
+sudo -u postgres dropdb immortal_provider_restore_test
+```
 
 For an upgrade:
 
@@ -372,6 +390,22 @@ cargo test --locked -p immortal-provider --lib provider_runtime_fixture
 ./scripts/test-provider-funded.sh
 IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL=lnd ./scripts/test-provider-funded.sh
 ```
+
+The closing-packet acceptance also exercises the committed install, systemd,
+backup, and restore assets inside fresh Debian 13 before running the funded
+smoke:
+
+```sh
+./scripts/run-debian-provider-funded.sh \
+  --receipt docs/conformance/records/<DATE>-debian-provider-<COMMIT>.json
+```
+
+The outer acceptance container uses apt Postgres and the release provider
+binary. Its systemd verification supplies named acceptance stubs for bitcoind
+and lightningd because the live nodes and hold plugin run inside the nested
+funded smoke; the receipt records that boundary. Operators must replace those
+names with their installed node units and run the same verification on the
+target host.
 
 The runtime fixture command exercises the held-HTLC, signed-deadline,
 hold-cancellation, and cooperative watch-retirement transitions through the

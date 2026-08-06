@@ -142,15 +142,16 @@ nonce, scalar, partial-signature, and aggregation logic is implemented
 in-repo over the allowlisted point/tweak operations and official vectors.
 The client transcript and provider signed actor support the cooperative key
 path, while the unilateral claim and refund paths remain mandatory. FundedMode
-owns the inactive submarine actor/effect lifecycle: it persists the exact
+owns the submarine actor/effect lifecycle: it persists the exact
 public provider exit package plus the signing and chain-claim requests before
 nonce allocation, accepts only signed Status Events already in session
 storage, and releases a final transaction through its durable
 watch-before-broadcast path. Restart
 aborts an unfinished transcript without recreating a nonce and can reconstruct
-public final transaction bytes from a signed final Status. The funded daemon
-continues to advertise script-path execution and withhold its signer capability
-until the #18 two-provider process lab passes. Reverse cooperation additionally
+public final transaction bytes from a signed final Status. After the #18
+two-provider process lab passed all 33 cases, the provider contract exposes
+submarine signer/runtime capability behind the explicit off-by-default
+`IMMORTAL_PROVIDER_COOPERATIVE_SIGNING=true` gate. Reverse cooperation still
 needs a signed preimage-release binding before a key-path claim can settle its
 held Lightning invoice.
 
@@ -245,9 +246,9 @@ Mapping the eight-item infrastructure list from
    and drain/exit procedure.
 
 Explicitly out of the first funded release: Liquid (`elementsd`), Ark
-(`arkd`), EVM and Cashu rails (extension issues #20-#23), automated MuSig2
-actor execution before the #18 lab gate (§4), autoswap/inventory strategy beyond the
-reservation ledger (operator policy, not daemon authority).
+(`arkd`), EVM and Cashu rails (extension issues #20-#23), cooperative reverse
+settlement before a signed preimage-release binding, and autoswap/inventory
+strategy beyond the reservation ledger (operator policy, not daemon authority).
 
 ## 7. What changes where
 

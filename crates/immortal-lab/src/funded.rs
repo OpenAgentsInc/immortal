@@ -5930,6 +5930,7 @@ fn prepare_quote_with_terms(
         requester_pubkey: environment.requester.pubkey().to_owned(),
         provider_pubkey: provider_pubkey.to_owned(),
         offering_address: format!("39601:{provider_pubkey}:{OFFERING_ID}"),
+        provider_route: None,
     };
     let factory = SwapRecordFactory::new(config.clone())
         .map_err(|error| format!("could not initialize funded requester: {error}"))?;
@@ -6019,6 +6020,7 @@ fn publish_quote_request_with_terms(
         requester_pubkey: environment.requester.pubkey().to_owned(),
         provider_pubkey: provider_pubkey.to_owned(),
         offering_address: format!("39601:{provider_pubkey}:{OFFERING_ID}"),
+        provider_route: None,
     })
     .map_err(|error| format!("could not initialize reservation contender: {error}"))?;
     let now = unix_now()?;
@@ -9127,6 +9129,7 @@ mod tests {
             requester_pubkey: sender.pubkey().to_owned(),
             provider_pubkey: requester.pubkey().to_owned(),
             offering_address: format!("39601:{}:{}", requester.pubkey(), "22".repeat(32)),
+            provider_route: None,
         };
         let factory = SwapRecordFactory::new(config).expect("factory config should be valid");
         let (event, raw_signed_event) = sign_request(

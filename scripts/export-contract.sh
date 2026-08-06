@@ -46,6 +46,7 @@ for path in sorted(fixture_root.rglob("*.json"), key=lambda item: item.relative_
         or relative.endswith("nipmkt/swp-provider-cooperative-runtime-v1.json")
         or relative.endswith("nipmkt/swp-pricing-v1.json")
         or relative.endswith("nipmkt/boltz-provider-api-v1.json")
+        or relative.endswith("nipmkt/swap-network-migration-v1.json")
     ):
         scope = "provider"
     elif (

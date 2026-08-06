@@ -2919,6 +2919,7 @@ pub mod fixture_replay {
             requester_pubkey: requester.pubkey().into(),
             provider_pubkey: provider.pubkey().into(),
             offering_address: format!("39601:{}:fixture-swaps", provider.pubkey()),
+            provider_route: None,
         };
         Ok(Setup {
             requester,

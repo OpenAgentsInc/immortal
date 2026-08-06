@@ -372,6 +372,12 @@
       "scope": "relay_and_client"
     },
     {
+      "path": "tests/fixtures/nipmkt/swap-network-migration-v1.json",
+      "sha256": "51f62cef4d59c31e752dbf3374e796fadc1c9a837a0c090008314a67e9bcea73",
+      "bytes": 2523,
+      "scope": "provider"
+    },
+    {
       "path": "tests/fixtures/nipmkt/swp-client-engine-v1.json",
       "sha256": "a475e70c8b1f173336deec09ccddf38eab83eeaf3600a9ccbbf261cf38946e68",
       "bytes": 14530,
@@ -433,8 +439,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/swp-requester-api-v2.json",
-      "sha256": "3037c61bb348bc34ae486b5949a080a83124968bfc5cadb1dd41822ca6c25486",
-      "bytes": 75963,
+      "sha256": "d618ff27d6537af9a87a7102b03b716219e876b33f5406389771089d89758941",
+      "bytes": 76611,
       "scope": "client"
     },
     {

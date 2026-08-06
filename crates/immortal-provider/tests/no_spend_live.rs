@@ -174,6 +174,7 @@ fn publish_incompatible_rfq(relay_url: &str, provider_pubkey: &str) -> Result<()
         requester_pubkey: requester.pubkey().to_owned(),
         provider_pubkey: provider_pubkey.to_owned(),
         offering_address: format!("39601:{provider_pubkey}:{OFFERING_ID}"),
+        provider_route: None,
     };
     let factory = SwapRecordFactory::new(config)
         .map_err(|error| format!("could not initialize incompatible RFQ factory: {error}"))?;
@@ -210,6 +211,7 @@ fn drive_flow(
         requester_pubkey: requester.pubkey().to_owned(),
         provider_pubkey: provider_pubkey.to_owned(),
         offering_address: format!("39601:{provider_pubkey}:{OFFERING_ID}"),
+        provider_route: None,
     };
     let factory = SwapRecordFactory::new(config.clone())
         .map_err(|error| format!("could not initialize requester factory: {error}"))?;

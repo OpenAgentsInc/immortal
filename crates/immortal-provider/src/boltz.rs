@@ -1,7 +1,7 @@
 use crate::{
     bitcoind::{BitcoindClient, RpcRequestId},
     contract::boltz_provider_conformance_sha256,
-    health::private_or_loopback,
+    health::{ProviderHealth, private_or_loopback},
     lightning::LightningRail,
     pricing::{PricingConfig, claim_spend_vbytes, lockup_vbytes},
     store::{InvoiceBinding, MAX_SESSION_RECORDS, ProviderStore},
@@ -152,6 +152,7 @@ pub struct BoltzApi {
     pricing: PricingConfig,
     network: BitcoinNetwork,
     allowed_origin: Arc<str>,
+    health: Arc<ProviderHealth>,
     rates: Arc<Mutex<BTreeMap<IpAddr, RateBudgets>>>,
 }
 
@@ -163,6 +164,7 @@ impl BoltzApi {
         pricing: PricingConfig,
         network: BitcoinNetwork,
         allowed_origin: String,
+        health: Arc<ProviderHealth>,
     ) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
@@ -171,6 +173,7 @@ impl BoltzApi {
             pricing,
             network,
             allowed_origin: Arc::from(allowed_origin),
+            health,
             rates: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
@@ -802,6 +805,7 @@ async fn create_response(
     request: &HttpRequest,
     swap_type: &str,
 ) -> Result<HttpResponse, ApiError> {
+    require_new_session_admission(&api.health)?;
     let body = request_object(request)?;
     if swap_type == "submarine" {
         exact_members(
@@ -921,6 +925,13 @@ async fn create_response(
             "onchainAmount":onchain_amount,
         })))
     }
+}
+
+fn require_new_session_admission(health: &ProviderHealth) -> Result<(), ApiError> {
+    if health.is_draining() {
+        return Err(ApiError::upstream("provider_draining"));
+    }
+    Ok(())
 }
 
 async fn validate_pair_hash(
@@ -2470,6 +2481,17 @@ mod tests {
     use immortal_core::domain::{MKT_ORDER_KIND, Tag};
     use immortal_core::market::MarketSigner;
     use immortal_core::mkt_swp_verify::{TransactionInput, TransactionOutput};
+
+    #[test]
+    fn drain_refuses_new_compatibility_sessions() {
+        let health = ProviderHealth::default();
+        require_new_session_admission(&health).expect("active provider should admit sessions");
+        health.begin_drain();
+        let error = require_new_session_admission(&health)
+            .expect_err("draining provider must refuse new sessions");
+        assert_eq!(error.status, 503);
+        assert_eq!(error.code, "provider_draining");
+    }
 
     #[test]
     fn fixture_pins_full_dependent_coverage_and_honest_surface_count() {

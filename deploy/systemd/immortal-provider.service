@@ -1,0 +1,65 @@
+[Unit]
+Description=Immortal liquidity provider
+Documentation=https://github.com/OpenAgentsInc/immortal/tree/main/docs/deployment
+After=network-online.target postgresql.service bitcoind.service lightningd.service
+Wants=network-online.target
+Requires=postgresql.service bitcoind.service lightningd.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=immortal-provider
+Group=immortal-provider
+EnvironmentFile=/etc/immortal-provider/provider.env
+ExecStartPre=/usr/bin/test -x /opt/immortal-provider/current/immortal-provider
+ExecStartPre=/usr/bin/test -r /etc/immortal-provider/provider.env
+ExecStartPre=/usr/bin/test -r /var/lib/immortal-provider/wallet.seed
+ExecStart=/opt/immortal-provider/current/immortal-provider run
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=infinity
+SendSIGKILL=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=immortal-provider
+
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StateDirectory=immortal-provider
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/immortal-provider
+ReadOnlyPaths=/etc/immortal-provider/provider.env
+ReadOnlyPaths=/var/lib/immortal-provider/wallet.seed
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+DevicePolicy=closed
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+KeyringMode=private
+RemoveIPC=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

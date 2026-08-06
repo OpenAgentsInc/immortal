@@ -39,6 +39,11 @@ store/watchtower/health/quote limits, terminal and failure vocabulary, custody
 exclusions, operational network scopes, settlement capabilities, v1
 exclusions, and exact fixture digests. Its identity binds the provider crate
 version and all three pinned NIP source-lane commits from `nips/manifest.json`.
+The operations section also pins the bounded drain contract: SIGUSR1, SIGTERM,
+and SIGINT pause discovery and reject new native and compatibility sessions,
+while existing sessions, relay retries, and the watchtower continue until the
+public active-session count reaches zero. The deployment service therefore has
+no relay-unit dependency or forced-stop timeout.
 The MuSig2 capability flags describe the available submarine signer/runtime;
 `musig2_key_path_enabled_by_default=false` records the production opt-in. The
 provider contract does not alter relay NIP-11.
@@ -51,6 +56,11 @@ contract` reads neither configuration nor custody material.
 Configuration values are never exported. Secret-bearing environment names
 are marked as secret, and the generator rejects configured values and
 custody-material object keys.
+
+`swap-network-migration-v1.json` is included in the provider fixture set. It
+pins the immutable client provider-route tuple, the seven-route GET-only
+shadow surface, provider drain laws, and new-session-only cutover and rollback.
+It changes neither the relay contract nor NIP-11.
 
 Regenerate the artifact or verify it byte-for-byte with:
 

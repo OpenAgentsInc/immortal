@@ -68,6 +68,68 @@ if ! grep -Fqx 'controller_log="${controller_directory}/container.log"' scripts/
     exit 1
 fi
 
+scripts/test-provider-deployment-assets.sh
+service postgresql start
+runuser -u postgres -- psql --set=ON_ERROR_STOP=1 --command \
+    "CREATE ROLE immortal_provider LOGIN PASSWORD 'immortal_provider_acceptance_only';"
+runuser -u postgres -- createdb --owner=immortal_provider immortal_provider
+IMMORTAL_PROVIDER_TEST_DATABASE_URL='postgres://immortal_provider:immortal_provider_acceptance_only@127.0.0.1:5432/immortal_provider' \
+    cargo test --locked -p immortal-provider --test provider_store_postgres
+cargo build --locked --release -p immortal-provider --bin immortal-provider
+
+useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin immortal-provider
+install -d -o root -g root -m 0755 /opt/immortal-provider/releases/acceptance
+install -o root -g root -m 0755 target/release/immortal-provider \
+    /opt/immortal-provider/releases/acceptance/immortal-provider
+ln -sfn /opt/immortal-provider/releases/acceptance /opt/immortal-provider/current
+install -d -o root -g root -m 0700 /etc/immortal-provider
+install -o root -g root -m 0600 deploy/immortal-provider.env.example \
+    /etc/immortal-provider/provider.env
+install -d -o immortal-provider -g immortal-provider -m 0700 /var/lib/immortal-provider
+install -o immortal-provider -g immortal-provider -m 0600 /dev/null \
+    /var/lib/immortal-provider/wallet.seed
+printf '%064d\n' 0 >/var/lib/immortal-provider/wallet.seed
+chown immortal-provider:immortal-provider /var/lib/immortal-provider/wallet.seed
+chmod 0600 /var/lib/immortal-provider/wallet.seed
+install -d -o postgres -g postgres -m 0700 /var/backups/immortal-provider
+install -o root -g root -m 0755 deploy/backup/immortal-provider-backup \
+    /usr/local/sbin/immortal-provider-backup
+install -o root -g root -m 0644 deploy/systemd/immortal-provider.service \
+    /etc/systemd/system/immortal-provider.service
+install -o root -g root -m 0644 deploy/backup/immortal-provider-backup.service \
+    /etc/systemd/system/immortal-provider-backup.service
+install -o root -g root -m 0644 deploy/backup/immortal-provider-backup.timer \
+    /etc/systemd/system/immortal-provider-backup.timer
+for unit_name in bitcoind lightningd; do
+    unit_path="/etc/systemd/system/${unit_name}.service"
+    install -o root -g root -m 0644 /dev/null "${unit_path}"
+    printf '%s\n' \
+        '[Unit]' \
+        "Description=${unit_name} acceptance prerequisite" \
+        '[Service]' \
+        'Type=oneshot' \
+        'ExecStart=/usr/bin/true' \
+        'RemainAfterExit=yes' >"${unit_path}"
+done
+systemd-analyze verify \
+    /etc/systemd/system/immortal-provider.service \
+    /etc/systemd/system/immortal-provider-backup.service \
+    /etc/systemd/system/immortal-provider-backup.timer
+test "$(stat -c %a /etc/immortal-provider/provider.env)" = 600
+test "$(stat -c %a /var/lib/immortal-provider/wallet.seed)" = 600
+
+runuser -u postgres -- /usr/local/sbin/immortal-provider-backup
+provider_backup="$(find /var/backups/immortal-provider -type f -name 'immortal-provider-*.dump' -print -quit)"
+test -n "${provider_backup}"
+test -f "${provider_backup}.sha256"
+(cd /var/backups/immortal-provider && sha256sum --check "$(basename "${provider_backup}.sha256")")
+runuser -u postgres -- createdb immortal_provider_restore_test
+runuser -u postgres -- pg_restore --dbname=immortal_provider_restore_test "${provider_backup}"
+test "$(runuser -u postgres -- psql --tuples-only --no-align \
+    --dbname=immortal_provider_restore_test \
+    --command='SELECT count(*) FROM provider_schema_migrations;')" = 2
+runuser -u postgres -- dropdb immortal_provider_restore_test
+
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 scripts/test-provider-funded.sh
 if docker ps --all --format '{{.Names}}' | grep -q '^immortal-provider-funded-'; then
@@ -98,10 +160,21 @@ if output.name != "result.json" or output.parent.name.startswith("immortal-debia
 
 root = pathlib.Path.cwd()
 paths = (
+    "scripts/run-debian-provider-funded.sh",
+    "scripts/test-debian-provider-funded.sh",
+    "scripts/test-provider-deployment-assets.sh",
     "scripts/test-provider-funded.sh",
     "tests/fixtures/provider/funded-smoke-v1.json",
     "tests/fixtures/lab/funded-checkpoints-v1.json",
     "tests/fixtures/lab/funded-matrix-v1.json",
+    "tests/fixtures/nipmkt/swap-network-migration-v1.json",
+    "deploy/immortal-provider.env.example",
+    "deploy/systemd/immortal-provider.service",
+    "deploy/backup/immortal-provider-backup",
+    "deploy/backup/immortal-provider-backup.service",
+    "deploy/backup/immortal-provider-backup.timer",
+    "deploy/caddy/immortal-provider.Caddyfile",
+    "deploy/nginx/immortal-provider.conf",
 )
 digests = {}
 for relative in paths:
@@ -131,6 +204,16 @@ record = {
         "journeys": ["submarine", "reverse", "noncooperative_refund"],
         "forced_restart": "submarine:funding_authorized",
         "passed": True,
+    },
+    "deployment_assets": {
+        "environment_file_mode": "0600",
+        "systemd_verified": True,
+        "systemd_prerequisite_units": "acceptance-only stubs; funded smoke proves live bitcoind and CLN processes",
+        "relay_unit_required": False,
+        "database_migrations_restored": 2,
+        "backup_digest_verified": True,
+        "backup_restore_passed": True,
+        "custody_backup_included": False,
     },
     "manifests": digests,
     "cleanup": {

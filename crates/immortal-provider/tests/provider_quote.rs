@@ -45,6 +45,7 @@ impl Setup {
             requester_pubkey: requester.pubkey().to_owned(),
             provider_pubkey: provider.pubkey().to_owned(),
             offering_address: format!("39601:{}:funded-swaps", provider.pubkey()),
+            provider_route: None,
         };
         let factory = SwapRecordFactory::new(config.clone()).expect("record factory");
         Self {

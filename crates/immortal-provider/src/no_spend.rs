@@ -1,5 +1,7 @@
 //! Persistent no-spend provider mode.
 
+use std::sync::Arc;
+
 use immortal_client::mkt_swp_client::{Cancellation, CloseOutcome, MktSigningRequest, StatusState};
 use immortal_core::{
     domain::{
@@ -11,7 +13,7 @@ use immortal_core::{
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::ProviderSession;
+use crate::{ProviderSession, health::ProviderHealth};
 
 use crate::relay_actor::{
     ProviderMode, QuoteConstructionError, RecordOrigin, has_kind_by_author, run_with_mode,
@@ -31,7 +33,13 @@ pub fn run() -> Result<(), String> {
     validate_relay_url(&relay_url, "no-spend")?;
     let identity_secret = required_environment("IMMORTAL_PROVIDER_IDENTITY_SECRET")?;
     let signer = signer_from_lower_hex(&identity_secret)?;
-    run_with_mode(relay_url, signer, NoSpendMode, None)
+    run_with_mode(
+        relay_url,
+        signer,
+        NoSpendMode,
+        None,
+        Arc::new(ProviderHealth::default()),
+    )
 }
 
 impl ProviderMode for NoSpendMode {
@@ -492,6 +500,7 @@ mod tests {
             requester_pubkey: requester.pubkey().to_owned(),
             provider_pubkey: provider.pubkey().to_owned(),
             offering_address: format!("39601:{}:{OFFERING_ID}", provider.pubkey()),
+            provider_route: None,
         };
         let fixtures: serde_json::Value =
             serde_json::from_str(FULL_SESSION_FIXTURES).expect("session fixtures");
