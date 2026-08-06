@@ -238,7 +238,22 @@ fn cooperative_signing_from_lookup(
     profile: Option<LabTimeoutProfile>,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<bool, ConfigError> {
-    let Some(value) = lookup("IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING") else {
+    let production = lookup("IMMORTAL_PROVIDER_COOPERATIVE_SIGNING");
+    let lab = lookup("IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING");
+    if production.is_some() && lab.is_some() {
+        return Err(ConfigError::Invalid(
+            "IMMORTAL_PROVIDER_COOPERATIVE_SIGNING",
+        ));
+    }
+    if let Some(value) = production {
+        if value != "true" {
+            return Err(ConfigError::Invalid(
+                "IMMORTAL_PROVIDER_COOPERATIVE_SIGNING",
+            ));
+        }
+        return Ok(true);
+    }
+    let Some(value) = lab else {
         return Ok(false);
     };
     if value != "true" || profile.is_none() {
@@ -506,6 +521,12 @@ mod tests {
         );
         assert_eq!(PRODUCTION_HOLD_INVOICE_EXPIRY_SECONDS, 604_800);
         assert_eq!(cooperative_signing_from_lookup(None, |_| None), Ok(false));
+        assert_eq!(
+            cooperative_signing_from_lookup(None, |name| {
+                (name == "IMMORTAL_PROVIDER_COOPERATIVE_SIGNING").then(|| "true".to_owned())
+            }),
+            Ok(true)
+        );
         let pricing = PricingConfig::from_lookup(|_| None).expect("default pricing validates");
         assert_eq!(pricing.quote_expiry_seconds, 300);
         assert!(
@@ -548,6 +569,26 @@ mod tests {
             }),
             Err(ConfigError::Invalid(
                 "IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING"
+            ))
+        );
+        assert_eq!(
+            cooperative_signing_from_lookup(profile, |name| {
+                match name {
+                    "IMMORTAL_PROVIDER_COOPERATIVE_SIGNING"
+                    | "IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING" => Some("true".to_owned()),
+                    _ => None,
+                }
+            }),
+            Err(ConfigError::Invalid(
+                "IMMORTAL_PROVIDER_COOPERATIVE_SIGNING"
+            ))
+        );
+        assert_eq!(
+            cooperative_signing_from_lookup(None, |name| {
+                (name == "IMMORTAL_PROVIDER_COOPERATIVE_SIGNING").then(|| "false".to_owned())
+            }),
+            Err(ConfigError::Invalid(
+                "IMMORTAL_PROVIDER_COOPERATIVE_SIGNING"
             ))
         );
         for network in [

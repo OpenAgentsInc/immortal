@@ -39,6 +39,9 @@ store/watchtower/health/quote limits, terminal and failure vocabulary, custody
 exclusions, operational network scopes, settlement capabilities, v1
 exclusions, and exact fixture digests. Its identity binds the provider crate
 version and all three pinned NIP source-lane commits from `nips/manifest.json`.
+The MuSig2 capability flags describe the available submarine signer/runtime;
+`musig2_key_path_enabled_by_default=false` records the production opt-in. The
+provider contract does not alter relay NIP-11.
 `immortal-provider address`
 is a read-only BIP86 receive-address
 operation: it reads the selected network and mode-0600 seed file but does not

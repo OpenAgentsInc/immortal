@@ -35,7 +35,7 @@ A restart never restores or persists a secret nonce. It produces a bounded
 abort Status and retains the committed script-path exit. This is deterministic
 local conformance evidence.
 
-`FundedMode` now owns the inactive runtime path. A process-gated submarine
+`FundedMode` owns the runtime path. A process-gated submarine
 Quote pins the provider's public exit destination, signer reference,
 claim-height window, and `cooperative_sign` effect intent. After both Swap
 Contracts bind the effect and commit the exact provider exit package, the
@@ -45,9 +45,10 @@ routed only after its signed Status is in `ProviderSession`. The signed final
 Status completes the signing effect, then releases bytes into the existing
 durable claim watch-before-broadcast path; restart can reconstruct the one-item
 key-path witness from that signed Status without a nonce. Exact package/effect
-reads are covered across Postgres restart. The production constructor still
-sets the process gate to false, and the exported `musig2_key_path` and
-`musig2_key_path_signer` flags remain false.
+reads are covered across Postgres restart. The production process enables the
+path only when `IMMORTAL_PROVIDER_COOPERATIVE_SIGNING=true`; it remains off by
+default. The exported `musig2_key_path` and `musig2_key_path_signer` capability
+flags are true and name only submarine swaps.
 
 The #18 cooperative subgate runs only when all three exact process conditions
 hold: `IMMORTAL_PROVIDER_BITCOIN_NETWORK=regtest`,
@@ -63,10 +64,13 @@ at 155 vB; restart changes the provider PID while retaining the database and
 wallet-file boundary, emits one abort, and never recreates a nonce or emits a
 partial or final signature.
 
-These four local cases do not advertise a public capability. The exported
-`musig2_key_path`, `musig2_key_path_signer`, and NIP-11 flags remain false
-until the complete #18 conformance packet passes under its active
-configuration. Reverse cooperative settlement remains disabled until the
-protocol binds preimage release for settling the held Lightning invoice; a
-key-path spend alone does not disclose that preimage. Public replacement
-claims remain gated on live deployment evidence.
+The complete #18 runner passed all 33 cases from pushed `main` commit
+`67efec7`; the bounded record is
+[`2026-08-05-adversarial-regtest-67efec7.json`](records/2026-08-05-adversarial-regtest-67efec7.json)
+with SHA-256
+`5231324450c9115d43f11cf0685ffb702dddcf0c93a6d77579ade60bf3539087`.
+This activates the provider contract capability and production opt-in. It does
+not add a relay NIP-11 extension. Reverse cooperative settlement remains
+disabled until the protocol binds preimage release for settling the held
+Lightning invoice; a key-path spend alone does not disclose that preimage.
+Public replacement claims remain gated on live deployment evidence.

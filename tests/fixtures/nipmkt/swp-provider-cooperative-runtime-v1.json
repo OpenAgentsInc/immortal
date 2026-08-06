@@ -1,12 +1,13 @@
 {
   "schema": "openagents.mkt-swp.provider-cooperative-runtime-fixtures.v1",
   "process_gate": {
-    "production_enabled": false,
-    "activation": "IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING=true with IMMORTAL_PROVIDER_LAB_PROFILE=regtest_adversarial and IMMORTAL_PROVIDER_BITCOIN_NETWORK=regtest",
+    "production_enabled": true,
+    "enabled_by_default": false,
+    "activation": "IMMORTAL_PROVIDER_COOPERATIVE_SIGNING=true, or IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING=true with IMMORTAL_PROVIDER_LAB_PROFILE=regtest_adversarial and IMMORTAL_PROVIDER_BITCOIN_NETWORK=regtest",
     "reverse_enabled": false,
-    "provider_contract_advertisement": false,
+    "provider_contract_advertisement": true,
     "nip11_affected": false,
-    "lab_evidence_required": "issue-18-two-provider-process-cooperative-and-mid-transcript-abort"
+    "lab_evidence": "docs/conformance/records/2026-08-05-adversarial-regtest-67efec7.json"
   },
   "quote_profile": {
     "terms_musig2_execution": true,

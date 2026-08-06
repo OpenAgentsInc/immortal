@@ -361,7 +361,9 @@ close the program. Profiles and rails beyond the Boltz-class replacement
 are the M13 ledger below.
 
 Current M12 status: #9, #10, upstream #9311, #11, #12, #13, #14, #16, #17,
-#24, #25, #28, and #29 are complete. The pinned relay exposes the
+#18, #24, #25, #26, #28, and #29 are complete. The pushed-main adversarial
+lab passed all 33 cases and published its bounded record under
+`docs/conformance/records/`; #19 is the closing packet. The pinned relay exposes the
 MKT-SWP and MKT-PFI v1 observable contracts and the off-by-default
 exact-conformance coordination handler without claiming PFI external
 authority or an executable profile. Verification primitives and the
@@ -424,7 +426,7 @@ sequenced first among extensions for commercial parity.
 | Issue | Packet | Depends on |
 | --- | --- | --- |
 | [#28](https://github.com/OpenAgentsInc/immortal/issues/28) | Provider pricing and quoting policy engine: configurable spread, miner-fee pass-through, dynamic min/max from the reservation ledger, deterministic derivation fixtures | #14, #25 |
-| [#26](https://github.com/OpenAgentsInc/immortal/issues/26) | MuSig2 cooperative key-path settlement: BIP-327 primitives, exact signed-Status provider actor, inactive FundedMode public-effect/watch recovery, and unchanged script-path fallback law; activation remains a #18 two-process gate, with reverse preimage-release vocabulary still required | #25 |
+| [#26](https://github.com/OpenAgentsInc/immortal/issues/26) | MuSig2 cooperative key-path settlement — **complete**: BIP-327 primitives and vectors, exact signed-Status provider actor, durable effect/watch recovery, provider-A/provider-B key-path proof, abort/crash script-path fallback, and an off-by-default production submarine opt-in. Reverse preimage-release vocabulary remains deferred | #25 |
 | [#29](https://github.com/OpenAgentsInc/immortal/issues/29) | LND provider rail via REST behind the `rustls` feature: pinned cert, macaroons, native hold invoices, mixed CLN/LND lab pairs | #25 |
 | [#30](https://github.com/OpenAgentsInc/immortal/issues/30) | 0-conf acceptance policy: opt-in, direction-bounded, RBF/conflict downgrade, explicit non-confirmed status vocabulary | #25, #18 |
 | [#31](https://github.com/OpenAgentsInc/immortal/issues/31) | Second operator-independent relay deployment: infrastructure-independent host, own identity and backups, relay-set docs; operator independence honestly deferred to recruitment | — |

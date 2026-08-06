@@ -92,9 +92,17 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
         assert_eq!(entry["sha256"], lower_hex(&Sha256::digest(bytes)));
     }
     let cooperative: Value = serde_json::from_slice(COOPERATIVE_RUNTIME_FIXTURE).unwrap();
-    assert_eq!(cooperative["process_gate"]["production_enabled"], false);
-    assert_eq!(contract["execution"]["musig2_key_path"], false);
-    assert_eq!(contract["execution"]["musig2_key_path_signer"], false);
+    assert_eq!(cooperative["process_gate"]["production_enabled"], true);
+    assert_eq!(contract["execution"]["musig2_key_path"], true);
+    assert_eq!(contract["execution"]["musig2_key_path_signer"], true);
+    assert_eq!(
+        contract["execution"]["musig2_key_path_enabled_by_default"],
+        false
+    );
+    assert_eq!(
+        contract["execution"]["musig2_key_path_swap_types"],
+        json!(["submarine"])
+    );
 }
 
 #[test]
@@ -250,6 +258,18 @@ fn provider_contract_distinguishes_required_and_optional_environment() {
     );
     assert_eq!(lab_cooperative_signing["lab_only"], true);
     assert_eq!(lab_cooperative_signing["defaulted"], false);
+
+    let cooperative_signing = variables
+        .iter()
+        .find(|variable| variable["name"] == "IMMORTAL_PROVIDER_COOPERATIVE_SIGNING")
+        .expect("provider contract must export the production cooperative signing gate");
+    assert_eq!(cooperative_signing["choices"], json!(["true"]));
+    assert_eq!(cooperative_signing["enabled_by_default"], false);
+    assert_eq!(
+        cooperative_signing["supported_swap_types"],
+        json!(["submarine"])
+    );
+    assert_eq!(cooperative_signing["defaulted"], false);
 
     let cln = variables
         .iter()

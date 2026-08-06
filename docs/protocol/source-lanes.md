@@ -781,12 +781,16 @@ bytes, and the existing claim watch-before-broadcast path supplies crash
 recovery. Restart of an unfinished transcript emits the committed script-path
 abort and never restores or recreates a nonce.
 
-The production process gate and provider contract flags remain
-`musig2_key_path=false` and `musig2_key_path_signer=false`. Activation and
-capability advertisement require #18 two-provider process evidence for a
-cooperative submarine claim and a mid-transcript abort. Reverse cooperation is
-deferred until a signed preimage-release binding can settle the held Lightning
-invoice after a key-path claim. This packet is not a deployment claim.
+The #18 process gate passed all 33 closed-world cases from pushed `main`
+`67efec7`, including both providers, abort-to-script-path, crash-cut recovery,
+and all doomsday cases. The provider contract therefore advertises
+`musig2_key_path=true` and `musig2_key_path_signer=true` for submarine swaps,
+with `musig2_key_path_enabled_by_default=false`; operators activate it with
+`IMMORTAL_PROVIDER_COOPERATIVE_SIGNING=true`. This is a provider contract
+decision and adds no relay NIP-11 claim. Reverse cooperation is deferred until
+a signed preimage-release binding can settle the held Lightning invoice after
+a key-path claim. The conformance record excludes live-deployment,
+operator-independence, and public-replacement claims.
 
 ## M12 Boltz released-client handoff decision (2026-08-05)
 

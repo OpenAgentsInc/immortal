@@ -1,0 +1,2673 @@
+{
+  "case_count": 33,
+  "cases": [
+    {
+      "case_id": "route-submarine-provider-a",
+      "expected": "completed",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "4498276dcffbdac1a2879a8ba36fdf670be1df1713a11be7c7878f77dc0e52a9",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "route-submarine-provider-a",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "03d187fdee2d52a5655fc7b81c872d05a5beef547a1fec8832cc73606dbfbc6363",
+          "provider_b_node_id": "037c456a14753c219f5ed50b49ca0cc968ad5cb3e06cd704965eb7684d682be040",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "020bc6aefc5ff9d25875fab809cf280d47163d2050a1d05d52320b7d06c40bfc7e"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532694]",
+          "provider_b": "net:[4026533158]",
+          "wallet": "net:[4026533410]"
+        },
+        "providers": {
+          "provider_a_pubkey": "0dd93b60258f715d0deaf00a06c7d61c90119e5d10cbb2799eadbb57e760ddbf",
+          "provider_b_pubkey": "ecf759f24405f6fd3384c5dba1549f40e201e4865c46c9748c104b999e5dd7cd",
+          "same_image": "sha256:664558f8e893f54742afe6b640712e574b03096175187d0485f47c82973e587b",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "routing",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "route-submarine-provider-a",
+        "expected": "completed",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "lightning_terminal_state": true,
+            "provider_health": true,
+            "signed_close": true
+          },
+          "claim_txid": "ac487cb619fbf54ccb2afa03117ae9e6ad617354af15138d598f1db9576c7e19",
+          "lockup_txid": "666d59bb91f20ace41920034773c770bf7c1d5ae02c1a7591bcdb4bf4b0c157b",
+          "lockup_vout": 0,
+          "order_id": "412c61d01e33abeb3dbc27e19320367456b6c970f5b83852a682637b76135ed7",
+          "outcome": "claimed",
+          "payment_hash": "e6b0c2b03d16e7f7a841f7a478d5168e8ccf06415c847e05d7263b96af23dd3b",
+          "proof_class": "funded_journey",
+          "provider_index": 0,
+          "provider_pubkey": "0dd93b60258f715d0deaf00a06c7d61c90119e5d10cbb2799eadbb57e760ddbf",
+          "resumed": false
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "route-submarine-provider-b",
+      "expected": "completed",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "673282c647880533d64250db4c4c41ab5c50ecc1b64cb3c21f33788acdb7df3e",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "route-submarine-provider-b",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "0217fc4e28c11a5a0109f7dc3518498d6c8ac0e0d5800f3f792f10956ccd378c25",
+          "provider_b_node_id": "025620d38a7659ded9459a4a7439f29ae5005b7bb1a60fda50f86b81d9c88cb114",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "039be5844dc919e1e1ce56bfc77b7d440016f2fcd8f77df7fde9ef6f3364e04f26"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532970]",
+          "provider_b": "net:[4026532814]",
+          "wallet": "net:[4026533385]"
+        },
+        "providers": {
+          "provider_a_pubkey": "7da6f3b6620201b7f5d3b6f1a019d73987099fffcc7f342d27f6060a7c466df5",
+          "provider_b_pubkey": "d4344cc97aade84ebf37fb210f395cba3d4b94da4652300e82f8c71117376062",
+          "same_image": "sha256:7e39bd1cd8ff2a11ef4d13f6920832bf30f7fcb1db56c9e3b559db6f17ee321b",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "routing",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "route-submarine-provider-b",
+        "expected": "completed",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "lightning_terminal_state": true,
+            "provider_health": true,
+            "signed_close": true
+          },
+          "claim_txid": "8957c0255e35c238158e97d66fce0510d0d9eda6403d1a57b2c161a6b9986685",
+          "lockup_txid": "76bdb787efc11f1ff7cd8d25c2f7fa20c2ed0f92a03d9464fcabf5951296f3e9",
+          "lockup_vout": 0,
+          "order_id": "eee98f7388480c24210231cfb3e833a210b032d377187cc35c4566de6e9987a6",
+          "outcome": "claimed",
+          "payment_hash": "dadefecaa03bb82aecbe6756838f2ec592f59657a80c722ba84264851d3deb2b",
+          "proof_class": "funded_journey",
+          "provider_index": 1,
+          "provider_pubkey": "d4344cc97aade84ebf37fb210f395cba3d4b94da4652300e82f8c71117376062",
+          "resumed": false
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "route-reverse-provider-a",
+      "expected": "completed",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "4f97c027b451f73e5f733b6d74e65f323530a4c9796e17dc2da09b1c072b7605",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "route-reverse-provider-a",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "0293e1b8501da9b832cacb1b1041d037cee78365c934bc7741aaab077eedf14d93",
+          "provider_b_node_id": "03e8a3c0f734d84ef3c92c9ce1264df747298fd30920796d6679079635e7487878",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "026bfa6c18fb955bb29a5426a0bef07390e4c0ad3806c652d5faecf58b377d8570"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532949]",
+          "provider_b": "net:[4026532975]",
+          "wallet": "net:[4026533406]"
+        },
+        "providers": {
+          "provider_a_pubkey": "e7971793582dac9ac093080b5c0322f42a623f058febb07ba3f78524d1d5b7b6",
+          "provider_b_pubkey": "3fe85aef58cc3e0515d11878fc81d80c87807c14dbd6e026ede50cecde806d10",
+          "same_image": "sha256:3ce87efb712ee9510cbbed4078d6f2207a17477a25820367e1a4a7c4d0b37981",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "routing",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "route-reverse-provider-a",
+        "expected": "completed",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "lightning_terminal_state": true,
+            "provider_health": true,
+            "signed_close": true
+          },
+          "claim_txid": "197425e9566d1a389dbb55f8f33db34cd4180595992fd98a213d36d760e3d774",
+          "lockup_txid": "51b40cf925ab456f89f3cb6daabe272962e4a1942baf6ebaec7e73c955436abf",
+          "lockup_vout": 0,
+          "order_id": "dc63d221ddfb21f3f11e844b79adecebf6fccecf1cec05ac1da3a83d53525add",
+          "outcome": "claimed",
+          "payment_hash": "007de01d993683df9431c4b4219aafde2c4802bfa5a32ba96e763b87de4e610f",
+          "proof_class": "funded_journey",
+          "provider_index": 0,
+          "provider_pubkey": "e7971793582dac9ac093080b5c0322f42a623f058febb07ba3f78524d1d5b7b6",
+          "resumed": false
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "route-reverse-provider-b",
+      "expected": "completed",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "24117b65a90b984ff0027859631dcd0e993beadef84010d0e6fc3d7a6343a492",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "route-reverse-provider-b",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "0245b8e0551c7ed9bf72ea33776d8bfbd56aa1c490ec6dd600657012ca22099067",
+          "provider_b_node_id": "03fa35e094fced5ab5de36ba88b6a1fe487086a0d46cf804bf04f334d673f7b571",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "02814d4e016d54fa3cc8e473a5eb9742629d2c519ac2d819a7d43f1b86bb3c4edd"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532975]",
+          "provider_b": "net:[4026533142]",
+          "wallet": "net:[4026533410]"
+        },
+        "providers": {
+          "provider_a_pubkey": "c63f6bf31f14096a135319f3af199f68e34529dde93e5abdc163fa444b3ffc1b",
+          "provider_b_pubkey": "30599d8691292bca19a723a73dd0d3529ebba84fb89195675ddc7930f47660c2",
+          "same_image": "sha256:ae5d2d82826e40d97baa53e45fe74daaa656a5a53f5078030094df8423ab1673",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "routing",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "route-reverse-provider-b",
+        "expected": "completed",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "lightning_terminal_state": true,
+            "provider_health": true,
+            "signed_close": true
+          },
+          "claim_txid": "2302fdd5b9ba87bbc1ed0115ca9f0d50937b467cbd89fdf5a792d829f8d58ea9",
+          "lockup_txid": "d82ef94e26eb548d7d1aa31c63e454970e6cfb5adcc976de47965945ec945537",
+          "lockup_vout": 0,
+          "order_id": "f4ecc36f711ea2cdbcf62533b91fedc5f503caebe53fbd315c3d3f89df8837b3",
+          "outcome": "claimed",
+          "payment_hash": "89eaca5639494c2136ef620c1a935036baa042eddc7f35c6e1828964d68d49c8",
+          "proof_class": "funded_journey",
+          "provider_index": 1,
+          "provider_pubkey": "30599d8691292bca19a723a73dd0d3529ebba84fb89195675ddc7930f47660c2",
+          "resumed": false
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "rank-two-cancelled-without-effect",
+      "expected": "cancelled",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "30cbf90a688a2827de4937d5271db299da010eaf5db27db7991ace7d1f694122",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "rank-two-cancelled-without-effect",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "02f27831619222949f43d735363b875ed95d9088af791d10cce088fe2c41065b5e",
+          "provider_b_node_id": "0254ccb5714d1183b49f9338b83e57c2db0b753ea368d30b31aff0564e66b558ef",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "02e409ad56758489710121983845d4eda9c76b0eb28efefe8da64961586529db2e"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026533072]",
+          "provider_b": "net:[4026532560]",
+          "wallet": "net:[4026533415]"
+        },
+        "providers": {
+          "provider_a_pubkey": "aa4fbd4e3b0e6afcef2f99537224b1f8aa4e0bed398efdcb74881bae3ca5f387",
+          "provider_b_pubkey": "1cc1ab870a77c16082de9f5e92f23b66e8c5f54a79a70e970c1638b932288f22",
+          "same_image": "sha256:ed8755f416ae4c2629fe7ffffc758e11516126f8fb6826b8417a0ab2a98fdc3e",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "routing",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "rank-two-cancelled-without-effect",
+        "expected": "cancelled",
+        "passed": true,
+        "proof": {
+          "proof_class": "funded_topology_cancellation",
+          "selected": {
+            "provider_pubkey": "1cc1ab870a77c16082de9f5e92f23b66e8c5f54a79a70e970c1638b932288f22",
+            "quote_id": "500cbe2cb93c8a08ad55636e216fe8fefa296221227a9258ea0dbfd7a132c717"
+          },
+          "unselected": {
+            "cancel_accepted_id": "3eb3449d4ef1c56c378c46479c1ffc595e5f0e2aabc618df0cb6d460dde5acef",
+            "cancel_effective_id": "bd0e682980dee7afd5dbba331f7ffa0e7040b444c65d4faed446ee01c8ef9e31",
+            "cancel_request_id": "20f8f234b7ba0207a3d94eba07f72fbb3b761b3cd2c7305ab8130afe6b66528f",
+            "close_id": "61caee69d15fcb91e2e148c1a13d231f4210c1f8ab59a39e2d4329f072193151",
+            "external_spend_effects": 0,
+            "order_id": "5f4f1fb9c1696f5113db8a885cca65bd91bb5f2b0a4e7ed14af9ea511d97674d",
+            "outcome": "cancelled",
+            "provider_pubkey": "aa4fbd4e3b0e6afcef2f99537224b1f8aa4e0bed398efdcb74881bae3ca5f387",
+            "reservation_released": "98400",
+            "session_id": "51967143c29487276f9fb571006e51099b985106ac839d5f57a15a3971c5d9c5"
+          }
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "relay-a-partition",
+      "expected": "completed_or_safe_exit",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "1aa2e4b880e4bbefe664f162be699aa48a1377647baa23bc33385364f46f8ede",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "relay-a-partition",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "022a8affd4faad890368666e488279522ac39c22e44493b22e45c7771c7845309d",
+          "provider_b_node_id": "02c08770a03d973cec1dc3683ef21d638112817914457cd42c6b1b753636b9e722",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "030972e88eb74415b391307a040fb384344355bf8697ede1dd9afdd3eba3ef8f29"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532959]",
+          "provider_b": "net:[4026532560]",
+          "wallet": "net:[4026533410]"
+        },
+        "providers": {
+          "provider_a_pubkey": "d0ce10278bc8e840fba18f70d087e3e7ceff5191b36bb788765e04b30d0377ac",
+          "provider_b_pubkey": "505c11a2bfdca93742b0abcaa89ec97dbbff193adfe4517a6d7b2d2d7b80d44b",
+          "same_image": "sha256:4cca88d9f490c35ca6955b5a48d672fd5109d5017f41ebb929ae274ebeacad4c",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "relay-a-partition",
+        "expected": "completed_or_safe_exit",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "lightning_terminal_state": true,
+            "provider_health": true,
+            "signed_close": true
+          },
+          "claim_txid": "f09d7c469f224503484c95e623eb124681c39c715143c6093f940ddd168db688",
+          "external_control": {
+            "checkpoint": "submarine:funding_execution_ready",
+            "evidence": {
+              "after_pid": 91616,
+              "before_pid": 81610,
+              "target": "relay-a",
+              "transition": "process_replaced_and_ready"
+            },
+            "injection": "relay_loss",
+            "restored": true,
+            "run_id": "145f5bd0a8088d35427a5b4de8bebc4c50aad192ad3901c6f2787781bf36e2fd",
+            "schema": "openagents.immortal.lab-injection-ack.v1"
+          },
+          "injection": "relay_loss",
+          "lockup_txid": "2ac16d9f732fa2ab1d5b6ef9a476d19253c3801b804bf56cf23df849196d0170",
+          "lockup_vout": 0,
+          "order_id": "017cbe20c21c509e19775d422c26ba34a3d8e83a2d9220262e77736aed32d24e",
+          "outcome": "claimed",
+          "payment_hash": "f62fac56c0a7d375289de80dde9df6bf640e0c02fdbbacb09c00f169dd533639",
+          "proof_class": "funded_journey",
+          "provider_index": 0,
+          "provider_pubkey": "d0ce10278bc8e840fba18f70d087e3e7ceff5191b36bb788765e04b30d0377ac",
+          "resumed": false
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "relay-b-partition",
+      "expected": "completed_or_safe_exit",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "3832ff251d0a252692490ceb71408c1adfd7cb52cdc1d710d2ccc7f9d4ef7613",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "relay-b-partition",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "02de0a30ec67a502844a1a490233e26105b59428ac9cb27d67093a70cecbfe8a7e",
+          "provider_b_node_id": "02705d518d3ec2a0a2e06d30ac48f2840a0cb881be706a1afb5c4822afdafdd117",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "02b2105593a92e2b5d23093aa1e2d5137b4b2d8a18919b2b087c782eea0e58d01d"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532694]",
+          "provider_b": "net:[4026532776]",
+          "wallet": "net:[4026533400]"
+        },
+        "providers": {
+          "provider_a_pubkey": "39afe12f17b910a328a71215c9410b4d5480fc65bdbefd1d1c5e18e02ecf8c88",
+          "provider_b_pubkey": "09a0c9e4a7ca48e97543bcb4bd745094a2cd122b34e2b519416e717c4791d7bc",
+          "same_image": "sha256:acbb019d5da5690040ff3208accf8dce73887ec69e6efc5c5b911327b476451a",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "relay-b-partition",
+        "expected": "completed_or_safe_exit",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "lightning_terminal_state": true,
+            "provider_health": true,
+            "signed_close": true
+          },
+          "claim_txid": "b16b7253bad1051c39ba43da345fda319eeba0456ad5949de625cea9c0fa6685",
+          "external_control": {
+            "checkpoint": "submarine:funding_execution_ready",
+            "evidence": {
+              "after_pid": 4370,
+              "before_pid": 93750,
+              "target": "relay-b",
+              "transition": "process_replaced_and_ready"
+            },
+            "injection": "relay_loss",
+            "restored": true,
+            "run_id": "d1be2d90d38d5ee98dd6f75b730374855f259164f16d016ff477cd0751d1ce7a",
+            "schema": "openagents.immortal.lab-injection-ack.v1"
+          },
+          "injection": "relay_loss",
+          "lockup_txid": "8fc75a72ec7aa9176ff6c11dddb182bb07f7cd32db5373184c5df41103be69ec",
+          "lockup_vout": 0,
+          "order_id": "ac7f79c899b811a7c4083c1ea52302ab9b4611cf727b6d4458aae509be033e61",
+          "outcome": "claimed",
+          "payment_hash": "c7e58bc433d8c93bf4ca1798e6e1ef4b84b19222aa71747e5a2cdad9e0cb8e61",
+          "proof_class": "funded_journey",
+          "provider_index": 1,
+          "provider_pubkey": "09a0c9e4a7ca48e97543bcb4bd745094a2cd122b34e2b519416e717c4791d7bc",
+          "resumed": false
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "provider-a-crash-restart",
+      "expected": "completed_or_safe_exit",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "2334d51b3b38b5115e82d671977fae20e06243e2e03f3206adff452ef4b16383",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "provider-a-crash-restart",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "0357b55d6cb04422a1f8797f88d0e4c98ebb98fd3f85d73dff6573577c1e5741b0",
+          "provider_b_node_id": "03ea74f298e3ed03b58709df394ee6b867318a023d488f2efe7c2e3a0a98ce17f8",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "03cf42a2150517c61b373d2a6b00d1cb63c9609dacf3988ff6e72f56cfb0d6b6e4"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532821]",
+          "provider_b": "net:[4026532693]",
+          "wallet": "net:[4026533380]"
+        },
+        "providers": {
+          "provider_a_pubkey": "f54a52de59cf8a53064a4ffe0f944a1a8bed83dba13c2de691553c49a0a21654",
+          "provider_b_pubkey": "69638c90762a619deb4e9f08f994868f2a15f859e51cdcf7879e512ce17a3ddb",
+          "same_image": "sha256:3fd5b1c3dcb0c69106dc08f9cfa8e5eb8a2f1662361c80253b8b10461c48831d",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "provider-a-crash-restart",
+        "expected": "completed_or_safe_exit",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "lightning_terminal_state": true,
+            "provider_health": true,
+            "signed_close": true
+          },
+          "claim_txid": "fa462c004fd3f037da84dd2b750bcb02cc3c66d1e3608ace867bc4353a6620db",
+          "external_control": {
+            "checkpoint": "submarine:funding_effect_recorded",
+            "evidence": {
+              "after_pid": 16736,
+              "before_pid": 16057,
+              "target": "provider-a",
+              "transition": "process_replaced_and_ready"
+            },
+            "injection": "provider_crash",
+            "restored": true,
+            "run_id": "401a26c4b49bfac01f436b12613acfa389f7498c17aa068168d7748da9e7a7ff",
+            "schema": "openagents.immortal.lab-injection-ack.v1"
+          },
+          "injection": "provider_crash",
+          "lockup_txid": "8ca14bff9920a4958026cb6bed56049f821f772b777134d93b139e33077f492e",
+          "lockup_vout": 0,
+          "order_id": "fe3e91d2a41ec51d4f7e412c66fb49f726d0c474ce2b3a5e04e47eb929a7670d",
+          "outcome": "claimed",
+          "payment_hash": "773264ae9453b5753d8fbb2e050ba872ac1319f49f857bae9f6ba55deaf8aad0",
+          "proof_class": "funded_journey",
+          "provider_index": 0,
+          "provider_pubkey": "f54a52de59cf8a53064a4ffe0f944a1a8bed83dba13c2de691553c49a0a21654",
+          "resumed": false
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "provider-b-crash-restart",
+      "expected": "completed_or_safe_exit",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "2be08bd1ed19fde2ec18c9235fb91a247cc969bb82867315fc776407b5f85d0d",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "provider-b-crash-restart",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "022f1d01684a3e3c607cf08d150c6d7e4e7ec94054154ecdd1a254ea1fba2fb38f",
+          "provider_b_node_id": "028bb5a6b7288ed42f33ffeebeed8a81f55dee00147caeaf467c0569ab9ca570ff",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "02bc24d31f793d48ee98210c7ed1f815f26e7f87285428c617b0d8061c87081928"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026533225]",
+          "provider_b": "net:[4026532959]",
+          "wallet": "net:[4026533401]"
+        },
+        "providers": {
+          "provider_a_pubkey": "9c48e81753d1b14f73ad13945d543dd126375f69a2a9d49c991da74a8760dc0e",
+          "provider_b_pubkey": "8cf15da5c2cd363b255b8783f109c56704d053e55e1aa336795bcd5e34feedf6",
+          "same_image": "sha256:9deff878e1e3c2b945b7c54ab163700c4adab1bd0efd3c5ec0d7dec4f158dd1c",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "provider-b-crash-restart",
+        "expected": "completed_or_safe_exit",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "lightning_terminal_state": true,
+            "provider_health": true,
+            "signed_close": true
+          },
+          "claim_txid": "e76dc209714e4c86379423a8b9193b42df017979defe085358d80eec83d6d334",
+          "external_control": {
+            "checkpoint": "submarine:funding_effect_recorded",
+            "evidence": {
+              "after_pid": 28940,
+              "before_pid": 28260,
+              "target": "provider-b",
+              "transition": "process_replaced_and_ready"
+            },
+            "injection": "provider_crash",
+            "restored": true,
+            "run_id": "7cc5f9471babb2395eb8da162efafd6f724171288cf67fd4d56f051712e51078",
+            "schema": "openagents.immortal.lab-injection-ack.v1"
+          },
+          "injection": "provider_crash",
+          "lockup_txid": "c1adaa97b4448920042bae4e82b3635e88ceb6e9ce3bb444c690cd7e83e4b566",
+          "lockup_vout": 0,
+          "order_id": "0f583fb20538497654623a02d210823fe3503e89ce6ad6a1b2ed6585d4288326",
+          "outcome": "claimed",
+          "payment_hash": "d5cc11fca6793dd087c0da88a994f279dfb97770ef71c7164c7455becd4c1c0f",
+          "proof_class": "funded_journey",
+          "provider_index": 1,
+          "provider_pubkey": "8cf15da5c2cd363b255b8783f109c56704d053e55e1aa336795bcd5e34feedf6",
+          "resumed": false
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "wallet-crash-restart",
+      "expected": "completed_or_safe_exit",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "17467331d4b574b1a0dfac863305e8a42e3fbecf19776f898729458063c1c65a",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "wallet-crash-restart",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "02461a7457f0df79a63e8085f27dd6f3a54a048df8b74c8b84a3cedef4f1f4768f",
+          "provider_b_node_id": "0318c6cfdb542bbb9453425dedb327ed4ae4f3d36593e8f05af44d7ad9ce051075",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "0305d7c5924f9b84dc048337a3d83ffd46fec5fd98561e253f8d4b4f4dc851c086"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532959]",
+          "provider_b": "net:[4026532693]",
+          "wallet": "net:[4026533380]"
+        },
+        "providers": {
+          "provider_a_pubkey": "7ab1df3612c9f88e3f370922bd436943521a364a8baaae8d706297a9f4e14b74",
+          "provider_b_pubkey": "c6c457f2c5f9e57205b5229ed8ba13547642df8ec99f8f68a4fa58b834120f95",
+          "same_image": "sha256:7fdffedf8b591afe630c04cde14af0b977ef5d98819fb43efd070b56fa6c3ce1",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "wallet-crash-restart",
+        "expected": "completed_or_safe_exit",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "lightning_terminal_state": true,
+            "provider_health": true,
+            "signed_close": true
+          },
+          "claim_txid": "f4a63934aea3cffbc1ee3f12d3801cd544fbbdbb2ba9e0df4957f4b992a49c20",
+          "external_control": {
+            "checkpoint": "submarine:funding_effect_recorded",
+            "evidence": {
+              "after_pid": 41133,
+              "before_pid": 41045,
+              "target": "wallet-driver",
+              "transition": "process_replaced_and_ready"
+            },
+            "injection": "wallet_crash",
+            "restored": true,
+            "run_id": "79e9f5d63f4ce4d449bafdd6d390d877b061e58da5e50704921738f4c0f9e8f4",
+            "schema": "openagents.immortal.lab-injection-ack.v1"
+          },
+          "injection": "wallet_crash",
+          "lockup_txid": "948532549c1227109629347f37ba337955d2ce74279cbb4ec84e866281d2c889",
+          "lockup_vout": 0,
+          "order_id": "e01cf0b86b9272a6a6205af2b7137244145964d193b886f2afc0af24af5aa04a",
+          "outcome": "claimed",
+          "payment_hash": "1472bc649f10a46eba796d8629666d7c315c6b1f9127d188b4b1a1f43f4d12f1",
+          "proof_class": "funded_journey",
+          "provider_index": 0,
+          "provider_pubkey": "7ab1df3612c9f88e3f370922bd436943521a364a8baaae8d706297a9f4e14b74",
+          "resumed": true
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "replay-identical-order",
+      "expected": "idempotent_no_second_effect",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "76aa893f4a787819ae91d662386e3cff93d5700a140c801f3b5e5daafb7e064d",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "replay-identical-order",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "0238aa5088738fa32bedce0db770f6fa1a5c48d14ab71befdf0c27cefe1156409a",
+          "provider_b_node_id": "0302c27b1a57b33077efc120d2fe7242f67b3bb7d8ec53ee3fc213fd1851739d30",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "023de877dc53828447da3666b22fb469b5327968678ab095c975105ca87c67106b"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026533081]",
+          "provider_b": "net:[4026532824]",
+          "wallet": "net:[4026533410]"
+        },
+        "providers": {
+          "provider_a_pubkey": "a73cfc4567bf71d1d864f02b7e7e0ecc92f59ae0fed4ab780a348f5a86bd8044",
+          "provider_b_pubkey": "69b4b7e1663a398d6ab12dcf2bb2b2d44462b86ba7e28336c7bff3a9d1a562cd",
+          "same_image": "sha256:51f5e0eeabdf9e534c9fffb547185b6d2062eae6bf93d2db3585c28f8ea5fa85",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "replay-identical-order",
+        "expected": "idempotent_no_second_effect",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "lightning_terminal_state": true,
+            "provider_health": true,
+            "signed_close": true
+          },
+          "claim_txid": "d487622a93a2263aea19c1d79a87c8bb1ced934d78458e99ac9c6bbe248036cf",
+          "injection": "duplicate_message",
+          "lockup_txid": "21e6077d27d5434761dc3c7f52ce18ff72649eb7daa522fa29a8b736c156734a",
+          "lockup_vout": 0,
+          "order_id": "aa4c0173dd902de83d751e55cfc96656eeeea49482719027d401759dc1474916",
+          "outcome": "claimed",
+          "payment_hash": "66da97309f4579cd36d827667d559aa7e486f033e3f094c6496215997eb4a6c6",
+          "proof_class": "funded_journey",
+          "provider_index": 0,
+          "provider_pubkey": "a73cfc4567bf71d1d864f02b7e7e0ecc92f59ae0fed4ab780a348f5a86bd8044",
+          "resumed": false
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "conflict-order-bytes",
+      "expected": "swp_idempotency_conflict",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "510f9048ef0658e11d495c5278c135fa9b21bfabbd667d423a5addc6d7aa0ea9",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "conflict-order-bytes",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "03b2e07fd14882c56d89901cd4ed20323a3f922133fe9b8f038ae5d8463a22dd16",
+          "provider_b_node_id": "0382d9ce7b6cdea464758652493b10ada94f77445061ee06b481ec349832ffdb5e",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "025c47ff90e2a4118ab11619a37e02787e87b7b63f0787af6edfee6a77adef1ea4"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532675]",
+          "provider_b": "net:[4026532560]",
+          "wallet": "net:[4026533395]"
+        },
+        "providers": {
+          "provider_a_pubkey": "82964b2db5f2f805259478eae37c2fef3daf6c911ce9898939a5e2aaf46d2bb4",
+          "provider_b_pubkey": "6ee23d1408f1bf09527e44717eddf86d6470f1b5b07b9d04b1401fba8de5212b",
+          "same_image": "sha256:8aa508ac11d143f51b75d0bd81ee673507ed8d28d0e6bbf95692fe647897a28a",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "conflict-order-bytes",
+        "expected": "swp_idempotency_conflict",
+        "passed": true,
+        "proof": {
+          "expected_code": "swp_idempotency_conflict",
+          "injection": "conflicting_message",
+          "outcome": "rejected_before_effect",
+          "proof_class": "expected_refusal"
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "stale-quote",
+      "expected": "swp_quote_expired",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "09e4b0f980db0d3cca5a2b79500838e31cfd2d39a8a08dc0937827f6f003b232",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "stale-quote",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "027cc8416599765fedad976b62972271976a51f8e394b5b20d6a81e4e0d3e89815",
+          "provider_b_node_id": "024829173694ccbed6738fd8d606e3df5a6ce75ff4dc671e12e15c508a015e81ac",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "034918c246ff5b4b74fe755061efd4954a864f73b4fb2fb86c574398ae4b1c2cb1"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532693]",
+          "provider_b": "net:[4026532952]",
+          "wallet": "net:[4026533381]"
+        },
+        "providers": {
+          "provider_a_pubkey": "fdcafc00ab3398f269f707adbf1521bb6314b2c87e215ea719dedc2e02ed5616",
+          "provider_b_pubkey": "de67da1a67b6a2a81dc2e8784880f9af36886946753cdc28df8c0e376d97e863",
+          "same_image": "sha256:7a7d79f2e8dad35361419cfac32ca585554b25e3b04a4e7a9cb231f5429c9b29",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "stale-quote",
+        "expected": "swp_quote_expired",
+        "passed": true,
+        "proof": {
+          "expected_code": "swp_quote_expired",
+          "injection": "stale_quote",
+          "outcome": "rejected_before_effect",
+          "proof_class": "expected_refusal"
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "double-reservation",
+      "expected": "swp_reservation_overallocated",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "6f658b8da1b2a72744b61cd8220f5923d75fd2cc8cfd75f50bcc5e4eb48be3be",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "double-reservation",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "0212f3dd1d3339917860c3d75dae89ba17136736f156e964f7c07b0aff369a2a60",
+          "provider_b_node_id": "03514eb41d3e58ef541b7295b1510eeb53fc6818cba82e43b5f3d26fd032e7a1de",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "03293b000119d6ded9871050a776efb966d244516459fae716db6cc33b5aa243d9"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532776]",
+          "provider_b": "net:[4026532990]",
+          "wallet": "net:[4026533380]"
+        },
+        "providers": {
+          "provider_a_pubkey": "3ac07ad6574aeda022a02c2cfc55e21c70c6879c7c2ac3b776725a5f81c57af3",
+          "provider_b_pubkey": "9ba50c8e8a6de95fafab537b992ce8309c2d6ddd5be4e2d0f77cee77a98acb84",
+          "same_image": "sha256:0bc8e8628f2c7d5e46769c4a85e1f2f7c72a043e7e33321e2ec93490dfb8c511",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "double-reservation",
+        "expected": "swp_reservation_overallocated",
+        "passed": true,
+        "proof": {
+          "active": {
+            "quote_id": "c9bea762f37e9c287f912f81224d3ec3c9cd94195b7e5e491966920066df9bcb",
+            "reservation_id": "b3cc837a5fc5809595256722b810bc2f147c9a0df210f66ffef6616ecc1a2b6b",
+            "rfq_id": "c1c28bb2ed8f3319d813683a7decf7ca282fd1473ec576e9392027dd042db13a",
+            "session_id": "ed80ada2cae4a11d622d054ca92179e89b5122e4f8573777135a09b61633015c"
+          },
+          "capacity_bucket_id": "lightning-outbound",
+          "checks": {
+            "daemon_backed_hard_reservation_effects": 1,
+            "overlapping_signed_sessions": true,
+            "same_capacity_bucket": true,
+            "same_provider": true
+          },
+          "daemon_reservation_id": "b3cc837a5fc5809595256722b810bc2f147c9a0df210f66ffef6616ecc1a2b6b",
+          "process_audit": {
+            "durable_disposition": "swp_reservation_overallocated",
+            "manifest_code": "swp_reservation_overallocated",
+            "provider_reservations": 1,
+            "provider_reserve_effects": 1,
+            "provider_wire_refusal": null,
+            "refused_external_effects": 0,
+            "refused_quote_records": 0,
+            "refused_session_records": 1,
+            "schema": "openagents.immortal.double-reservation-process-audit.v1"
+          },
+          "proof_class": "live_double_reservation",
+          "provider_pubkey": "3ac07ad6574aeda022a02c2cfc55e21c70c6879c7c2ac3b776725a5f81c57af3",
+          "refused": {
+            "expected_code": "swp_reservation_overallocated",
+            "provider_wire_refusal": null,
+            "rfq_id": "dcfb89e3296b8871c018bccbbc05558125738a42c0066d62a078894d5b095aba",
+            "session_id": "7584c2da92fe9e5e1efae88e434f3655af03e373906eb3ae3e4af54d7e8c0bf4",
+            "surface": "provider_session_disposition"
+          }
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "status-gap",
+      "expected": "swp_status_gap",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "468bfc0b64e62af48302b3b79cc20f8ea4533c91b33ceeac260e54b02a5abbc2",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "status-gap",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "029f96bcd47344bbc90a7eaaca2eeb6ab4da6cd0edd24ec38eb1d43d03709b01b8",
+          "provider_b_node_id": "0224a1cd072247e1f34664ff0213867d645352287258407b43f2ab07ed74a34c7d",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "03eb92eab0c4970c2126375ccfd07f8af3e33a5a46cb7eb195bf1588655eb8b4c5"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532693]",
+          "provider_b": "net:[4026533225]",
+          "wallet": "net:[4026533400]"
+        },
+        "providers": {
+          "provider_a_pubkey": "8151f5f42b8d6a5f662d5d102cffed8c5444bb74d324e3e6b8aba167e0bb8868",
+          "provider_b_pubkey": "72708ea0bb8543b82f42cef6a16f1f0365cb95cd8bb369696ab0cae3568a5769",
+          "same_image": "sha256:6036f532c8403283753b9121238ad704ea45a46911cccb1a12ed55390d2d3561",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "status-gap",
+        "expected": "swp_status_gap",
+        "passed": true,
+        "proof": {
+          "expected_code": "swp_status_gap",
+          "injection": "status_gap",
+          "outcome": "rejected_before_effect",
+          "proof_class": "expected_refusal"
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "status-fork",
+      "expected": "swp_status_fork",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "1c80a5a1cf1591fece0b23e5a35f4408e42ae186536feaee5837641c97987c56",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "status-fork",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "02331b8b91fd6d1121fea5bf9e0cfe7404802c16077769b2775f1464dcce5f00ba",
+          "provider_b_node_id": "0279a6083c1b9b28770fe5d2a9e7cf8d221e0c36afeb447110807a2c394789a3c0",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "03577bccc99b8891df9c1d29dfee0776f06928cff9eed58e1191a3e057ffaaa06b"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026533213]",
+          "provider_b": "net:[4026532985]",
+          "wallet": "net:[4026533400]"
+        },
+        "providers": {
+          "provider_a_pubkey": "9a5e03b191a7912f75c41c7481500d5840646f4bf4de63b704b4763a780de3b6",
+          "provider_b_pubkey": "2f97079d746c185ec2d125dfb9f74976cc523e69847859e7e1c98254615e986f",
+          "same_image": "sha256:f20a12e4194c01d8f0b1084a1f59c86a6691e6e7ff7c32f556ac2831fe31499f",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "status-fork",
+        "expected": "swp_status_fork",
+        "passed": true,
+        "proof": {
+          "expected_code": "swp_status_fork",
+          "injection": "status_fork",
+          "outcome": "rejected_before_effect",
+          "proof_class": "expected_refusal"
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "funding-reorg",
+      "expected": "wait_or_recover",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "375aa02074daea35400eaca989dcc5a6f3f346a4de905f6dfe2e6df046d79360",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "funding-reorg",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "03d0dfa695f4773f0ce0aa78bdc783137c9da93f269179506bc6dc0d09ce6f1189",
+          "provider_b_node_id": "0283e0e876eef0fef5532b5d327771e721130dc9279c31e363418a4d939ded5296",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "030aecfa433118f71d2ebe2478d162a9de093360aa65264ac8f198fc6f38fa6c97"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532818]",
+          "provider_b": "net:[4026532560]",
+          "wallet": "net:[4026533405]"
+        },
+        "providers": {
+          "provider_a_pubkey": "7b1f9e954c398f93cef8a77531f7c799b9ec56d05dc165a201a0b18ccfbd97ad",
+          "provider_b_pubkey": "5267d79ea87d61a27daf580e34280fdd213482a830bd6b738df43c7d756cf9d8",
+          "same_image": "sha256:51a5e73ec9a83d0bacce2310aead2dbc8cbc10f0bb6bd7b6448bad85d357cc37",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "funding-reorg",
+        "expected": "wait_or_recover",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "lightning_terminal_state": true,
+            "provider_health": true,
+            "signed_close": true
+          },
+          "claim_txid": "7bc77d72c88c3ca33928647b978894219b07da3df0ac66a3795ea83a46d4681f",
+          "external_control": {
+            "checkpoint": "submarine:funding_reorg_control",
+            "evidence": {
+              "competing_tip_hash": "45301e2c792f48075102d0f3f1da652a7445c4c661375b81e54d960c6a4db57c",
+              "orphaned_block_hash": "7324f308b5c4a1e0c164611959d6e62f5294abd60cf1112dd813a2eccde6ed61",
+              "reconfirmed_block_hash": "063dead3091de620150dfbe360f9a4a856f0e5d6f1fd5ace49120917c5f17fe1",
+              "recovery_state": "funding_final_after_reconfirmation",
+              "target": "provider-a",
+              "transaction_id": "f81cbcd9e2b6deee22e204a3b39834675fd2c97ad60c91284698fa2cc2bc9d82",
+              "transition": "funding_reorg_waited_and_resumed",
+              "wait_state": "funding_observed_without_finality"
+            },
+            "injection": "funding_reorg",
+            "restored": true,
+            "run_id": "0bed7bd4bd52d6a422c1c3fb2bf9637a2560aaf8f240e15fafe190eafb6e1524",
+            "schema": "openagents.immortal.lab-injection-ack.v1"
+          },
+          "injection": "funding_reorg",
+          "lockup_txid": "f81cbcd9e2b6deee22e204a3b39834675fd2c97ad60c91284698fa2cc2bc9d82",
+          "lockup_vout": 0,
+          "order_id": "6bb386b8c7f2c0a83a5aa2a9bc45282ff75676c6573c7354e270d37a3f2ccb84",
+          "outcome": "claimed",
+          "payment_hash": "a5a8beef7e71098561ce79d94f01f1cc7b37a8268beb71c342ab0a26766ad4c1",
+          "proof_class": "funded_journey",
+          "provider_index": 0,
+          "provider_pubkey": "7b1f9e954c398f93cef8a77531f7c799b9ec56d05dc165a201a0b18ccfbd97ad",
+          "resumed": false
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "claim-reorg",
+      "expected": "resume_claim_or_refund",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "7d6aa80d5e285b745b0f8035d528ae7e9adbe45e6ab8cad5943cf793036e880c",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "claim-reorg",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "039f299b6868a05cc4590a537a795db296964025baa50b8c748765019a275a97c5",
+          "provider_b_node_id": "031c5260ec9cbaf64fe575e891ed50a28b547ec429165f1fb7187ad94114b6bbe7",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "03ae799b86ff6b345f117d70d8a52dc84ddc104e5eaf5aecff87190d407e67f599"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532560]",
+          "provider_b": "net:[4026533015]",
+          "wallet": "net:[4026533415]"
+        },
+        "providers": {
+          "provider_a_pubkey": "5978fa93b70f968fda82296b677cb7309efc5ab51dc4c49c220d87fc12559a33",
+          "provider_b_pubkey": "1eae60a11f6cfc39a3007637a96b59585c66949fafedd18b4d2af8c927164d85",
+          "same_image": "sha256:04d9dca404b32d2816d2e10aad7be13ca88c10005d75a89db0e88dec2654955f",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "claim-reorg",
+        "expected": "resume_claim_or_refund",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "lightning_terminal_state": true,
+            "provider_health": true,
+            "signed_close": true
+          },
+          "claim_txid": "7663c5475966fa0eca10eefb3104aef46b1cda7140074f940004bb04f3f2bbd3",
+          "external_control": {
+            "checkpoint": "submarine:claim_reorg_control",
+            "evidence": {
+              "competing_tip_hash": "662545138c6530591a0c5bc9620aafe31fe810e25da492c1b82a7d2919055568",
+              "orphaned_block_hash": "0ea010d6a964e8d0c67e49558d5e06b34ef3d508000729eca64cabba7124bfc1",
+              "reconfirmed_block_hash": "140fc43217a14d54d5b7df10c8f6cd3a27a03d3df674733ad42f172fceb4a741",
+              "recovery_state": "claim_watch_reorg_then_reconfirmed",
+              "target": "provider-a",
+              "transaction_id": "7663c5475966fa0eca10eefb3104aef46b1cda7140074f940004bb04f3f2bbd3",
+              "transition": "claim_watch_reorged_and_reconfirmed",
+              "wait_state": "claim_watch_confirmed"
+            },
+            "injection": "claim_reorg",
+            "restored": true,
+            "run_id": "a2d81310f21ed2ef2ae401c00bc8a9e9149ba19dbd70880cff9088a8018bedb0",
+            "schema": "openagents.immortal.lab-injection-ack.v1"
+          },
+          "injection": "claim_reorg",
+          "lockup_txid": "26005bddcb2a7d6bc17b50825558081083dfb19e13a5245d523cb907b9025b95",
+          "lockup_vout": 0,
+          "order_id": "53277af0f0cdc49d1b6b6817e8dd832d67bf0d4512d8ccac42bb46081331c0e8",
+          "outcome": "claimed",
+          "payment_hash": "45809c8f883f808a9d8409a7b0f9709d031e49cedf4ef8cc1d88bd4717e7ff10",
+          "proof_class": "funded_journey",
+          "provider_index": 0,
+          "provider_pubkey": "5978fa93b70f968fda82296b677cb7309efc5ab51dc4c49c220d87fc12559a33",
+          "resumed": false
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "rbf-conflict",
+      "expected": "swp_rbf_policy_violation",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "65c3e3be93ff5785e6c6d1aaacbf72250f2317f1a8cf54e76c8d8f9fe49390aa",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "rbf-conflict",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "0284a200c85f0698789049b6c1cd38c2705d7481904b2f7478a4a5396034449e22",
+          "provider_b_node_id": "02ec16d78d7e51e19ee1a0c0d7d61c047f8ce3fb71478477a568d35e23c7b6d223",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "03dd1236c7ad36913564f383261235967badb8fed2d2f81119fda2cb0c687815f4"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532998]",
+          "provider_b": "net:[4026532693]",
+          "wallet": "net:[4026533380]"
+        },
+        "providers": {
+          "provider_a_pubkey": "b6a28a589d7769f106fceef63fff7bc53634b6c63cfabe34c146cb134b213106",
+          "provider_b_pubkey": "b3b2e9929a2f25cf3a15e9be0b707a04e00e9c7e5263c97285fdd08e0f05b115",
+          "same_image": "sha256:ef29e71707c729b302a6b0f65fc10f45fcfb6669fde14a65e0231c23b91fd58c",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "rbf-conflict",
+        "expected": "swp_rbf_policy_violation",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "committed_broadcast_rejected": true,
+            "conflict_broadcast_to_regtest": true,
+            "external_settlement_effects": 0,
+            "same_input": true
+          },
+          "committed_txid": "106a964b999b45937782656e6869bbe6352bf9cdc3edaa95f919901a43e9a409",
+          "conflict_txid": "0817fb108c925d47a045b01d7498f86b12de0f71a52e7b6da68bc9fc9734b9cb",
+          "expected_code": "swp_rbf_policy_violation",
+          "input_txid": "38c7d77977b215aed4ee0c1e5d4254568bf391e39f7acaa8adb380dcc0944839",
+          "input_vout": 1,
+          "order_id": "985a7ca279cf24d05c4facb2811f8e29f2810e8a50724cc669036e3081764d76",
+          "outcome": "rejected_before_effect",
+          "proof_class": "real_same_input_conflict",
+          "provider_pubkey": "b6a28a589d7769f106fceef63fff7bc53634b6c63cfabe34c146cb134b213106"
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "wrong-claim-key",
+      "expected": "rejected_before_effect",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "24d71482f6fdb96669e84553ea16a7c8b418c028f3cd4d6d905d528686da97d9",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "wrong-claim-key",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "0237ae58f69c25295a2c7721426d3af49b2738e63d13b026fca75e2e4ae7c7d954",
+          "provider_b_node_id": "025d43bfe8c0fed12ab50b2ba2fc12b6b61f0f953e5c046bc655d1b17cd164903a",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "03531bd553167181343b2c9d1da60547c8b834f9b70c6c7832164fb8e029095024"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532693]",
+          "provider_b": "net:[4026533225]",
+          "wallet": "net:[4026533400]"
+        },
+        "providers": {
+          "provider_a_pubkey": "58dcc4aa20f5bda773561ffb36875ac1b15ba32054c2b888e94b38db552b3835",
+          "provider_b_pubkey": "b2f0533cf8b118c3a227a1f1a548c8fc5ae97b2fcf848f45bc6bb3f329049c56",
+          "same_image": "sha256:0b9516db27750b6197c73cb453389bc866771b605553d4979e9434d6cde8e20c",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "wrong-claim-key",
+        "expected": "rejected_before_effect",
+        "passed": true,
+        "proof": {
+          "expected_code": "rejected_before_effect",
+          "injection": "wrong_claim_key",
+          "outcome": "rejected_before_effect",
+          "proof_class": "expected_refusal"
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "preimage-leak-rejected",
+      "expected": "swp_secret_material_forbidden",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "2893b9d8f29b12bc2b37f5f669fc37c646131860894fe39f42103c521fee705e",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "preimage-leak-rejected",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "020fd3a16aa1f6ae92052f576dbe032819b66510a6198554afda631f98512d3272",
+          "provider_b_node_id": "03c802449cea261f0eff432dc33859fbcd81ee253057e5219f127e7f835200ba03",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "031220e0c6ed3357aa99e7b3c88289c2681dd675b23dd5deb05a79a663977a3df2"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532689]",
+          "provider_b": "net:[4026532826]",
+          "wallet": "net:[4026533395]"
+        },
+        "providers": {
+          "provider_a_pubkey": "cf0a98182aee75ba2781d342d3616898f5f269fe00ceaffcbd8aad2acd12a7f9",
+          "provider_b_pubkey": "c86737bb9f5c8cb0d6c52f5ef29b66748cb6af1cbe6ea75629cc1e2d31af0fd2",
+          "same_image": "sha256:312007543c58c6ad19ef72d06a831c18f9b4ff47c8eed70de54baf2c8f45021e",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "preimage-leak-rejected",
+        "expected": "swp_secret_material_forbidden",
+        "passed": true,
+        "proof": {
+          "expected_code": "swp_secret_material_forbidden",
+          "injection": "secret_leak",
+          "outcome": "rejected_before_effect",
+          "proof_class": "expected_refusal"
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "seed-leak-rejected",
+      "expected": "swp_secret_material_forbidden",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "4cd2f8298187feec45a17af9c99b60ff1b8552d15844720ea224bd9c50cba940",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "seed-leak-rejected",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "02309b6bf03bfc4749a9ce72d53935e8ff078a5783ff32f8114fe60ac43873035b",
+          "provider_b_node_id": "03e39a20e64fd4c4fa0f2b9d06e848278435bdceb8e2c171f399f8e9b6ff2091cf",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "03ecb67b82af07ef298ed714acf8b0fd296ea0c5907ba55733285a92c12df4cfaf"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026533061]",
+          "provider_b": "net:[4026532693]",
+          "wallet": "net:[4026533415]"
+        },
+        "providers": {
+          "provider_a_pubkey": "f9d1c8e5641400c3b13b5402f84a508e89321a074e07138a91b3b7e631ef8500",
+          "provider_b_pubkey": "21bbd647e899895089b961904b45b7ae551baab8cc96c0d6a926e55cbf35b9e9",
+          "same_image": "sha256:216957dba5931bfabfb6e817e3816c2cd663be331b0cad5df98c66af68561474",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "seed-leak-rejected",
+        "expected": "swp_secret_material_forbidden",
+        "passed": true,
+        "proof": {
+          "expected_code": "swp_secret_material_forbidden",
+          "member": "wallet_seed_hex",
+          "outcome": "rejected_before_effect",
+          "proof_class": "custody_refusal"
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "macaroon-leak-rejected",
+      "expected": "swp_secret_material_forbidden",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "3cdf76ffacc75c57a1cb9862a418321c421b57da3eb96df4febe28824430df41",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "macaroon-leak-rejected",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "0302f9e2279997000895bf81471a255a56a88de99ef4a3498b0bb664c406e81670",
+          "provider_b_node_id": "036adfba22eea51ce01c2eabc9070e8db6ec622f59405bdd4438721d656c31a78c",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "03b0fe1632fc664734887ddd9415d98a87e93500cc752b8bfcc99608b508f9723e"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532959]",
+          "provider_b": "net:[4026532826]",
+          "wallet": "net:[4026533400]"
+        },
+        "providers": {
+          "provider_a_pubkey": "7b1702accda4c0cc7bf99051b2b0817b0e93f049bd179851afeebf0514672877",
+          "provider_b_pubkey": "3df2ac23bf3452d5c20cddfec15edc92c4f013b7fe590158e6a0b404237f4912",
+          "same_image": "sha256:6776bb68e4fec442ca25b5c7122b9fa1972c871b36b15c43b705cefe44382fee",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "macaroon-leak-rejected",
+        "expected": "swp_secret_material_forbidden",
+        "passed": true,
+        "proof": {
+          "expected_code": "swp_secret_material_forbidden",
+          "member": "admin_macaroon_hex",
+          "outcome": "rejected_before_effect",
+          "proof_class": "custody_refusal"
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "musig-nonce-leak-rejected",
+      "expected": "swp_secret_material_forbidden",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "18d24805bb94c49d46719719ff7f49d2cc3309fc891faf824b92a4b60e87c748",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "musig-nonce-leak-rejected",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "03b614e41538b304923f2d29ca6a3f8ac95818cfc9c8fb2cd028dc6721ef2c7c9e",
+          "provider_b_node_id": "027a5944f0b651722b773a5546ade84679dce75e2800a7c4c9c4223fbd14bac40b",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "032db6fc723655b429e4e3aa95f8233ac5d2fd76fd6b28b9a9cc226d461f2359ce"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532560]",
+          "provider_b": "net:[4026533092]",
+          "wallet": "net:[4026533395]"
+        },
+        "providers": {
+          "provider_a_pubkey": "80e525a770733d97b20ec432c7181752bb207a94d39e01c14394e9b201702cb5",
+          "provider_b_pubkey": "0f47dadf6fbf00b9be35ac8b7b1660e70f5f09acabf314caf21db4c5cae50e07",
+          "same_image": "sha256:6532eeec5c5fb50094cad88a1b84eff8f8019aca473585acf350f69c0accd51b",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "musig-nonce-leak-rejected",
+        "expected": "swp_secret_material_forbidden",
+        "passed": true,
+        "proof": {
+          "expected_code": "swp_secret_material_forbidden",
+          "member": "musig_secret_nonce",
+          "outcome": "rejected_before_effect",
+          "proof_class": "custody_refusal"
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "submarine-provider-noncooperative-refund",
+      "expected": "refunded",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "61095cd421d9db7a7b1d120f56d23472324e2d3751b58c5880da62f9059230ca",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "submarine-provider-noncooperative-refund",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "024ae21e0947ab1d30becf641d8c016bd839f4f0d8eecc567b6c4a0f21e1922455",
+          "provider_b_node_id": "02399f884ce02c495f9a1b0ec0b60579d674b494d377a9bafb7f8b8d1b6103cd25",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "0249ab733f436a47dd4c8b8d36e12d96d5c47f3c8c3b54cec533666748bdee98a1"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026533092]",
+          "provider_b": "net:[4026532820]",
+          "wallet": "net:[4026533390]"
+        },
+        "providers": {
+          "provider_a_pubkey": "5ddc5caae2d8af75f97ef53ae3111f76a3ada6f18141b9406f1c4d3429e99537",
+          "provider_b_pubkey": "e1bf3ee1ea0617b5fb6903d9929464137264acdd435847278ba97a924e4224bb",
+          "same_image": "sha256:f5492039ee8d25692359beb2a2a8e6e128a9b996059d9df5b97f371d8312600a",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "submarine-provider-noncooperative-refund",
+        "expected": "refunded",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "both_bitcoind_nodes_agree": true,
+            "client_recovery_authorized_wallet_refund": true,
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "exit_package_committed_before_funding": true,
+            "lightning_unpaid_final": true,
+            "provider_claim_effects": 0
+          },
+          "external_control": {
+            "checkpoint": "submarine_refund:funding_effect_recorded",
+            "evidence": {
+              "before_pid": 25589,
+              "target": "provider-a",
+              "transition": "process_stopped"
+            },
+            "injection": "provider_noncooperative",
+            "restored": false,
+            "run_id": "bbbc9b6efcb398dd6759f1d1e2b2bae654b25bbb0cd4b5441471f3305a506d0f",
+            "schema": "openagents.immortal.lab-injection-ack.v1"
+          },
+          "funding_confirmation_height": 133,
+          "injection": "provider_noncooperative",
+          "lockup_txid": "200f8b9542bde4e1fda9fc51651a88286bc5fa28d9d1aabe61d66e87f436af6e",
+          "lockup_vout": 0,
+          "order_id": "efb9680934a67e58172297dcc416148aa27160a27704f8b7a4bf58419fc209f7",
+          "outcome": "refunded",
+          "payment_hash": "eeaa7fce9e57095ff21130c4b1be29808dfe7a959aeee687c606e2db6577522f",
+          "proof_class": "funded_journey",
+          "provider_index": 0,
+          "provider_pubkey": "5ddc5caae2d8af75f97ef53ae3111f76a3ada6f18141b9406f1c4d3429e99537",
+          "refund_lock_height": 151,
+          "refund_txid": "c55b2fd3f048e6605913b53296002b6fa1dae4efdf243806b5f15e2ecb53ab19",
+          "resumed": false
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "reverse-requester-noncooperative-provider-refund",
+      "expected": "refunded",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "317a246c1be8168e52f31153153304d8afccb9ddaf93f24d74a53ba8519118d0",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "reverse-requester-noncooperative-provider-refund",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "035ae311d7e342899dd8db72f0af4e59451abd50c4bbc0063e34d2d475c8a758d8",
+          "provider_b_node_id": "02f4ee1975edc54f8f7909a3ecc45e2460982d82db757853da9f6bda278064b12b",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "02a9ad60855118a2d88c4204a19e7ed59664c27acc3e062ff4e6103d0c41446798"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026533218]",
+          "provider_b": "net:[4026533092]",
+          "wallet": "net:[4026533405]"
+        },
+        "providers": {
+          "provider_a_pubkey": "21081e27dd43c47a4d7742fde0f731f5729ab4588bed0becec5ba119d9facac9",
+          "provider_b_pubkey": "4dbd9986db5b203e915f9e5c8077efb351cf0e8baf3c2aab2f16981be96c656b",
+          "same_image": "sha256:2df13e765dfd498678aa212d8abb66bc88ac1a5841f85a2b291c70eba186c56e",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "failure_matrix",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "reverse-requester-noncooperative-provider-refund",
+        "expected": "refunded",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "confirmations": true,
+            "exact_transaction_outpoint_lineage": true,
+            "lightning_terminal_state": true,
+            "provider_health": true,
+            "signed_close": true
+          },
+          "lockup_txid": "562a2e17e92286b786d87a3152a7bdf495b662f97a7dbadee243e0bdf18a015a",
+          "lockup_vout": 0,
+          "order_id": "aeb109ba78521ee311c493c416013a772800e6abae623948eb687c701c1c862e",
+          "outcome": "refunded",
+          "payment_hash": "f0c43d137f6c78101ded65cdc2c9ea07f127b6da0a24e3903b82f6f0031f32dd",
+          "proof_class": "funded_journey",
+          "provider_index": 0,
+          "provider_pubkey": "21081e27dd43c47a4d7742fde0f731f5729ab4588bed0becec5ba119d9facac9",
+          "refund_txid": "777c362d23630b3a76c058b33b042bc2dcf87fb60ac48d5575aaa6262c98e2c3",
+          "resumed": false
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "doomsday-submarine-provider-gone",
+      "controller_audit": {
+        "case_id": "doomsday-submarine-provider-gone",
+        "direct_recovery_only_session_surface": false,
+        "direct_recovery_retained": false,
+        "keyless_process": null,
+        "provider_http_websocket_api_absent": true,
+        "relay_services_absent": true,
+        "schema": "openagents.immortal.doomsday-controller-audit.v1",
+        "stopped_targets": [
+          "provider-a",
+          "provider-b",
+          "relay-a",
+          "relay-b"
+        ],
+        "stopped_targets_absent_after_recovery": true,
+        "stopped_targets_absent_before_recovery": true
+      },
+      "expected": "refunded",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "075b0977694e0357cf7e5b6e1e69c3e160e5b0028aa134cbd2c917972b9ca333",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "doomsday-submarine-provider-gone",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "0306a163e321f3a29ac8a06a44879981dd3b635beea5582ad7ee1e232ba8eacb1c",
+          "provider_b_node_id": "0379a54e68e560bf439337ad7e3442f02b0a739712831a216aef9a7de20a0e31bd",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "02ec84c7bb301fb29f5bca8cacc17c1a80573b723d415ed6e953764c3b219de89b"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532560]",
+          "provider_b": "net:[4026532693]",
+          "wallet": "net:[4026533410]"
+        },
+        "providers": {
+          "provider_a_pubkey": "375717ae86f09ef4123b4f201dd374c28d30b83e86c96426db006a56b59136e0",
+          "provider_b_pubkey": "4a18410600739982271f880be3af72eb676cbe7a0ca87f90a9b111d91d3f19bd",
+          "same_image": "sha256:9eb2926e647d3459dd27caffe8e4bf4058ebc2725a003d211d1b101b15a6e390",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "doomsday",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "doomsday-submarine-provider-gone",
+        "expected": "refunded",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "both_bitcoind_nodes_agree": true,
+            "broadcast_before_timeout": false,
+            "exact_outpoint_spent": true,
+            "fresh_requester_process_restored_before_relay": true,
+            "keyless_process": false,
+            "lightning_unpaid_final": true,
+            "presigned_before_contract": true,
+            "presigned_before_funding": true,
+            "provider_process_absent": true,
+            "relay_connections_after_restore": 0,
+            "relay_processes_absent": true,
+            "transaction_confirmed": true,
+            "verified_local_chain_observation": true,
+            "verified_local_lightning_observation": true,
+            "wallet_sign_after_contract": false
+          },
+          "controller_audit": {
+            "case_id": "doomsday-submarine-provider-gone",
+            "direct_recovery_only_session_surface": false,
+            "direct_recovery_retained": false,
+            "keyless_process": null,
+            "provider_http_websocket_api_absent": true,
+            "relay_services_absent": true,
+            "schema": "openagents.immortal.doomsday-controller-audit.v1",
+            "stopped_targets": [
+              "provider-a",
+              "provider-b",
+              "relay-a",
+              "relay-b"
+            ],
+            "stopped_targets_absent_after_recovery": false,
+            "stopped_targets_absent_before_recovery": true
+          },
+          "funding_confirmation_height": 133,
+          "funding_output_index": 0,
+          "funding_transaction_id": "78e78547d522955d26a7dddf5a3511800abb1dc1957e35842559cb49bf31aac0",
+          "order_id": "f081dce46a420b6087f839a699cf1cc8cd132ecb983a8d2fcea619b25e58a062",
+          "outcome": "refunded",
+          "payment_hash": "1a7da6a0c8f60008696d30672ac3531ab6e901ebc59406fdcdd96e12f8762691",
+          "proof_class": "presigned_regtest_exit",
+          "provider_pubkey": "375717ae86f09ef4123b4f201dd374c28d30b83e86c96426db006a56b59136e0",
+          "refund_lock_height": 151,
+          "refund_transaction_id": "4ff5ba9b3a9425a776b08dfb111b95545e4f58c5967faa88898a80af426c6797"
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "doomsday-reverse-coordinator-gone",
+      "controller_audit": {
+        "case_id": "doomsday-reverse-coordinator-gone",
+        "direct_recovery_only_session_surface": true,
+        "direct_recovery_retained": true,
+        "keyless_process": null,
+        "provider_http_websocket_api_absent": true,
+        "relay_services_absent": true,
+        "schema": "openagents.immortal.doomsday-controller-audit.v1",
+        "stopped_targets": [
+          "provider-b",
+          "relay-a",
+          "relay-b"
+        ],
+        "stopped_targets_absent_after_recovery": true,
+        "stopped_targets_absent_before_recovery": true
+      },
+      "expected": "completed_or_refunded",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "24814ed6fb17b704b0f269086aa6870c6479c88db60172f07327e9b7f4df6d42",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "doomsday-reverse-coordinator-gone",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "03edb548a1b0907f7ac994f72b4ebe032dba595533467f64ea984f16e42238e055",
+          "provider_b_node_id": "021f8f22ffa0097ea1e407a624a982a09f297e651f93ff19968b05a9ba991d7879",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "03386c2855081898e70410045959a402a0db1b4feef7f30d1a6c1e45341dd45b54"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532824]",
+          "provider_b": "net:[4026533016]",
+          "wallet": "net:[4026533415]"
+        },
+        "providers": {
+          "provider_a_pubkey": "0af2766d160abf5a6978e3ab90a129e086e2ec62ce11d9e1cd0f19b92476ede9",
+          "provider_b_pubkey": "9f0519e19cbef83902b89aeb79c006d9db60a410e6c888f87628957c324561bb",
+          "same_image": "sha256:513bd496f21ac3724cd7bec5257035f6753e3bfd82a2b5ad9dac47bbb226176e",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "doomsday",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "doomsday-reverse-coordinator-gone",
+        "expected": "completed_or_refunded",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "direct_channel_nip59_only": true,
+            "direct_channel_opened_rfq_or_new_session": false,
+            "direct_channel_post_contract_only": true,
+            "direct_rounds": 6,
+            "exact_durable_rfq_replayed": true,
+            "exact_outpoint_spent": true,
+            "fresh_requester_process_restored_before_relay": true,
+            "lightning_paid": true,
+            "provider_http_websocket_api_absent": true,
+            "relay_connections_after_restore": 0,
+            "relay_processes_absent": true,
+            "reverse_package_mode": "wallet_sign",
+            "transaction_confirmed": true,
+            "verified_local_chain_observation": true,
+            "verified_local_lightning_observation": true
+          },
+          "claim_transaction_id": "6a4bf9120ef5ce1aa63e90f501ab89cf5f4f6bef45441368ae517d72c08953f4",
+          "controller_audit": {
+            "case_id": "doomsday-reverse-coordinator-gone",
+            "direct_recovery_only_session_surface": true,
+            "direct_recovery_retained": true,
+            "keyless_process": null,
+            "provider_http_websocket_api_absent": true,
+            "relay_services_absent": true,
+            "schema": "openagents.immortal.doomsday-controller-audit.v1",
+            "stopped_targets": [
+              "provider-b",
+              "relay-a",
+              "relay-b"
+            ],
+            "stopped_targets_absent_after_recovery": false,
+            "stopped_targets_absent_before_recovery": true
+          },
+          "funding_output_index": 0,
+          "funding_transaction_id": "e8b839bd8afeb3797fcf85af5df40bb6d98e4c199a855423b97d61431653748b",
+          "order_id": "c6512d6223c5d09936cc3f07eab0ca7fc30c06531233b9c5dd24fa3319dc06cb",
+          "outcome": "completed",
+          "payment_hash": "83e766c885c5f21cb514d4cea94d7dfb7ae09636c4899945ec1aaa6427530759",
+          "proof_class": "authenticated_direct_reverse_recovery",
+          "provider_pubkey": "0af2766d160abf5a6978e3ab90a129e086e2ec62ce11d9e1cd0f19b92476ede9"
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "doomsday-keyless-esplora-broadcast",
+      "controller_audit": {
+        "case_id": "doomsday-keyless-esplora-broadcast",
+        "direct_recovery_only_session_surface": false,
+        "direct_recovery_retained": false,
+        "keyless_process": {
+          "application_environment_names": [
+            "IMMORTAL_LAB_KEYLESS_REQUEST_FILE",
+            "IMMORTAL_LAB_KEYLESS_RESULT_FILE"
+          ],
+          "environment_allowlist_exact": true,
+          "exact_presigned_request_only": true,
+          "mount_allowlist_exact": true,
+          "mount_targets": [
+            "/keyless"
+          ],
+          "observed_environment_count": 3,
+          "observed_mount_count": 1,
+          "rail_access": false,
+          "runtime_environment_scan_passed": true,
+          "separate_container": true
+        },
+        "provider_http_websocket_api_absent": true,
+        "relay_services_absent": true,
+        "schema": "openagents.immortal.doomsday-controller-audit.v1",
+        "stopped_targets": [
+          "provider-a",
+          "provider-b",
+          "relay-a",
+          "relay-b"
+        ],
+        "stopped_targets_absent_after_recovery": true,
+        "stopped_targets_absent_before_recovery": true
+      },
+      "expected": "broadcast_complete_presigned_transaction",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "7ab35fa5f0a24d3edeaab34746f3a30aa0a578714e18e612e425e07eef80aef2",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "doomsday-keyless-esplora-broadcast",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "0255a296b2538e81a84231c5856255e3ad8f941850fbbae6ca1b3cb4c96390e928",
+          "provider_b_node_id": "033d4ef374b1ae2ec9e2d993a22024b666364065a1d5a5e3cb920711b58515881f",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "0288b8295e37f837994dd89ebb5c8a775d0f0da50214e03d1a2a834434755a3317"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026533075]",
+          "provider_b": "net:[4026532820]",
+          "wallet": "net:[4026533380]"
+        },
+        "providers": {
+          "provider_a_pubkey": "4a7d8d9c3d80d934bd15f5c08777a7932cfe8fcb9c9ee912af28910afa6437e9",
+          "provider_b_pubkey": "9ea823c138b4fe500557fd9b779ee9efba17701358c5bfe5c4938504eb8f53d0",
+          "same_image": "sha256:a3c13673ee2e80402fa000c53038072d60edaf789d0e35dbb160c34d1e7e4292",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "doomsday",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "doomsday-keyless-esplora-broadcast",
+        "expected": "broadcast_complete_presigned_transaction",
+        "passed": true,
+        "proof": {
+          "checks": {
+            "both_bitcoind_nodes_agree": true,
+            "broadcast_before_timeout": false,
+            "exact_outpoint_spent": true,
+            "fresh_requester_process_restored_before_relay": true,
+            "keyless_process": true,
+            "lightning_unpaid_final": true,
+            "presigned_before_contract": true,
+            "presigned_before_funding": true,
+            "provider_process_absent": true,
+            "relay_connections_after_restore": 0,
+            "relay_processes_absent": true,
+            "transaction_confirmed": true,
+            "verified_local_chain_observation": true,
+            "verified_local_lightning_observation": true,
+            "wallet_sign_after_contract": false
+          },
+          "controller_audit": {
+            "case_id": "doomsday-keyless-esplora-broadcast",
+            "direct_recovery_only_session_surface": false,
+            "direct_recovery_retained": false,
+            "keyless_process": {
+              "application_environment_names": [
+                "IMMORTAL_LAB_KEYLESS_REQUEST_FILE",
+                "IMMORTAL_LAB_KEYLESS_RESULT_FILE"
+              ],
+              "environment_allowlist_exact": true,
+              "exact_presigned_request_only": true,
+              "mount_allowlist_exact": true,
+              "mount_targets": [
+                "/keyless"
+              ],
+              "observed_environment_count": 3,
+              "observed_mount_count": 1,
+              "rail_access": false,
+              "runtime_environment_scan_passed": true,
+              "separate_container": true
+            },
+            "provider_http_websocket_api_absent": true,
+            "relay_services_absent": true,
+            "schema": "openagents.immortal.doomsday-controller-audit.v1",
+            "stopped_targets": [
+              "provider-a",
+              "provider-b",
+              "relay-a",
+              "relay-b"
+            ],
+            "stopped_targets_absent_after_recovery": false,
+            "stopped_targets_absent_before_recovery": true
+          },
+          "funding_confirmation_height": 133,
+          "funding_output_index": 0,
+          "funding_transaction_id": "5ddf25d0328e85bfd1ad6ada85a380d6410f85cca51981bf47a5c39dddb76e51",
+          "order_id": "38ea9b2a67f184aab46c2ee971e12e2d40e29a423f5ec62b01b2a0cd7aa5c90b",
+          "outcome": "refunded",
+          "payment_hash": "1f7042c1aca98db8799ba6764fdf7a29af8c13741f7bafaf5df495faacf91939",
+          "proof_class": "keyless_presigned_regtest_exit",
+          "provider_pubkey": "4a7d8d9c3d80d934bd15f5c08777a7932cfe8fcb9c9ee912af28910afa6437e9",
+          "refund_lock_height": 151,
+          "refund_transaction_id": "bd9d7bedb05a37de60322fc12257b0175a1be116aadc98c623481013307843ae"
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "musig2-submarine-provider-a",
+      "expected": "completed_key_path",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "7757d298875424a21aaf4eeff0b42e4a891eb8ccb844b4373c60b153f2bf347f",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "musig2-submarine-provider-a",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "02f446decd297244a570e8be1fcbd7b3e3e9204eca0d8abbb17b776aa1cf5e3b20",
+          "provider_b_node_id": "03487c2e0f39376bec7d00605155e2ff16bb49edaba97dacc30178980e5702912e",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "038be98558a9a2daecb9af61bca1fc50e8007bef1b6b6c3b9eed9001b0a1d09d2a"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026533092]",
+          "provider_b": "net:[4026532852]",
+          "wallet": "net:[4026533415]"
+        },
+        "providers": {
+          "provider_a_pubkey": "ef1ba684ee8fad012e3132e90c27404d1719b7b7f4403460d90d22822b6747ee",
+          "provider_b_pubkey": "7a901c1ff6ccac9a5bc89ae213f29359270d682e113ba1cd8e235dc2cbc752c3",
+          "same_image": "sha256:65893d3fc58806fe7f8206e32facd910403b259d01221b56623a24fe42811fa0",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "cooperative",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "musig2-submarine-provider-a",
+        "expected": "completed_key_path",
+        "passed": true,
+        "proof": {
+          "claim_txid": "5b0a400dd0610e156edd633577ddb102393acd9ed97ce3090f14c15ee794eb8b",
+          "cooperative_status_count": 7,
+          "cooperative_status_ids": [
+            "e68761d56c8455d11b2d13db066d808708839867a05982f146b7b3795152009e",
+            "f58d0fb31604b9f40d4a92a55bf2306c5dba9870e9a5a41cb159797bc5179289",
+            "05bfa4da336f9a3649ebee6385c33b1f81602a1aab2612d3ed01b30da22865bb",
+            "8252accb02898be825f66fc9ec1bbf621d58a4e745e40be705a2d0e2ec65de1c",
+            "51dcbc852a740f5fb8749f60b51d835d46b8126464f863c570b18c21527e90a8",
+            "e72e49285cfd4a20402d087e6d9ca241fd84d05386af28f7f75ff7cf31e0a5cb",
+            "e0786d4720c36d7257a1bfcd4ddf4912a7f29046b834019576d27eb572371c0f"
+          ],
+          "effect_states": {
+            "chain_claim": "applied",
+            "cooperative_sign": "applied"
+          },
+          "external_control": null,
+          "lockup_txid": "22712087f9a99e1941bc67ccdfba4a13980c5563e3f481d1b77b9a25f2b1cfb3",
+          "lockup_vout": 0,
+          "order_id": "5350f1fae4ede8a2c0f75faea2ed29518ce4287c26418b9f95c4c2afe43823f2",
+          "outcome": "completed_key_path",
+          "payment_hash": "2429d3904570b00b9a0776378b8ea9d72967c92cf429b8ec9f1c946156462878",
+          "proof_class": "funded_cooperative_process",
+          "provider_index": 0,
+          "provider_pubkey": "ef1ba684ee8fad012e3132e90c27404d1719b7b7f4403460d90d22822b6747ee",
+          "witness": {
+            "both_bitcoind_nodes_agree": true,
+            "control_block_item_count": 0,
+            "exact_funding_outpoint": true,
+            "input_count": 1,
+            "output_count": 1,
+            "path": "key_path",
+            "script_item_count": 0,
+            "virtual_size": 111,
+            "witness_item_count": 1,
+            "witness_item_lengths": [
+              64
+            ]
+          }
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "musig2-submarine-provider-b",
+      "expected": "completed_key_path",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "3d745f8b1846a169af85c0167552aaa5134ce76d2ef589b4a6cb95a587a0f967",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "musig2-submarine-provider-b",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "039dc0b9d4e9b893e509df71533ddbf0965ea52029ba31a58918159c678085ee5d",
+          "provider_b_node_id": "031a1564b3f5e31cf8528470c317369df28a81f41d54dfd66d655c1d53afb7d767",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "028fc99616d4c8792565be19fd1737b2024b6d5dc5645e0bf71134f89bfb244fe6"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532717]",
+          "provider_b": "net:[4026532560]",
+          "wallet": "net:[4026533415]"
+        },
+        "providers": {
+          "provider_a_pubkey": "b172ba3b7e1c06dd3fee440702e60d30bf3d3314e590d376f72d7a6e59668d57",
+          "provider_b_pubkey": "906a0a7e6f68e8602721136f5dc2082fc21838119c72e0f1a41b14d76f91f0dc",
+          "same_image": "sha256:b5ec37f8eef614b4d8b750d0fa73d33b7259b541e5cd6aaa73852dfe510f6dd8",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "cooperative",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "musig2-submarine-provider-b",
+        "expected": "completed_key_path",
+        "passed": true,
+        "proof": {
+          "claim_txid": "40528dc7a4ae65bb6f4b15dc7fb556c23188b5620533bda8e10f1e445b60406c",
+          "cooperative_status_count": 7,
+          "cooperative_status_ids": [
+            "fb0a16e5615306621c768862bc24f25f25c999ad966f67f6d8aeaa0e8fc26c33",
+            "1f5fc3d1c0dc09e49def72ab701b7c0f29a8fec4c36993e3852b6a857ef40a22",
+            "3ebf246c414ea486b6ab688eed47f97481bfd3e1d7176581a61d5be208845487",
+            "5f505818c60ee678b2200e8120ed146863932ebae1906ffda8c0255ea2256a71",
+            "3cc21b75fd2419f87d7ed9ae04b8d78838c3c5c28f9147d1dc30c2cd07c72261",
+            "73e56bdf5c9870acc4c16c53ecb87ea0a93a66d98aa1cd06322c2ff5c3fd1fe7",
+            "4dd70b65bcdfdd0248f7ee57feb6f95a8af23700339aebd2c1c300ff1264f1f4"
+          ],
+          "effect_states": {
+            "chain_claim": "applied",
+            "cooperative_sign": "applied"
+          },
+          "external_control": null,
+          "lockup_txid": "51a37285be42cdc7269d9d59437186733557aed179fc2265440eb738a44f9c30",
+          "lockup_vout": 0,
+          "order_id": "217412427eec46aa3d63994eeae008dac257308f6bc2ea07f557c9ed4fdd0a86",
+          "outcome": "completed_key_path",
+          "payment_hash": "f00df0e705f23a30bf5123e91a82921f72224985180375e311c6a16d7dda4970",
+          "proof_class": "funded_cooperative_process",
+          "provider_index": 1,
+          "provider_pubkey": "906a0a7e6f68e8602721136f5dc2082fc21838119c72e0f1a41b14d76f91f0dc",
+          "witness": {
+            "both_bitcoind_nodes_agree": true,
+            "control_block_item_count": 0,
+            "exact_funding_outpoint": true,
+            "input_count": 1,
+            "output_count": 1,
+            "path": "key_path",
+            "script_item_count": 0,
+            "virtual_size": 111,
+            "witness_item_count": 1,
+            "witness_item_lengths": [
+              64
+            ]
+          }
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "musig2-abort-script-path",
+      "expected": "completed_script_path",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "6a45a81dc204346ba532fa52d13ef1138091d9a84878c6012d0d326c7c9235b9",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "musig2-abort-script-path",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "0213ac60f24a916ac1b3c31b144d4e7e29388f66cac7b46bd8843617c9d598eec7",
+          "provider_b_node_id": "03d2c5bf203d6bac907f4ccd8bb91ef2cbf399fdd2a869fe95372c5650488df1db",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "0344dfa3de1b18e37c3f66e7158e7356cd2e635e4e7dd8afc961b952d9c0738149"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532560]",
+          "provider_b": "net:[4026532693]",
+          "wallet": "net:[4026533396]"
+        },
+        "providers": {
+          "provider_a_pubkey": "23f48f7f69d2d356aada55a454d276e2fa461efd2b97035c7d77d5a7c7a14f51",
+          "provider_b_pubkey": "ce153fbc0ff6d8a05fdf5f909eb8dd521be18f801efb2206a54be256f7a0b5d9",
+          "same_image": "sha256:e285bfaf8168542db4d0f67a9e640fe263fee93f8c97c733d434868aba7dc689",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "cooperative",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "musig2-abort-script-path",
+        "expected": "completed_script_path",
+        "passed": true,
+        "proof": {
+          "claim_txid": "519783002d471aeb6e67e6ec1278ba5af28fe0ef55ee172a8d5d90ba5e05b295",
+          "cooperative_status_count": 5,
+          "cooperative_status_ids": [
+            "b5a186e206fb13e51d23aa04a93557e6090fd842ede0e7cde86d1642f2b2fe82",
+            "bbaa53a6ece8aee6de3a57b6c178d333e71e0b6544e987cc34dda151a03b768c",
+            "335781eee55499800871bf3ed78fc4280f3e80084d8fed31c529413353cd57f0",
+            "f8185e9bdb8508e0aa60e9cffd813b2c228bae07f6863b2191ca18f0dddd9227",
+            "29e2b11b5c4135f9ba71d917f8b603ed5f4055c3ce99980f8f2b8a6d31db58df"
+          ],
+          "effect_states": {
+            "chain_claim": "applied",
+            "cooperative_sign": "applied"
+          },
+          "external_control": null,
+          "lockup_txid": "d2cf7ef14a40f082a706d158564bef747c4d936d7a6ce8c4b44be103fdd75db4",
+          "lockup_vout": 0,
+          "order_id": "ede8829fc2030b2f3ef0025573bab8ae6f9ad6f5e9ad3e6eb5c2631fa807995b",
+          "outcome": "completed_script_path",
+          "payment_hash": "502aaa40885cf6eab387f5fc8db3c450b2da9e05cbd0f5bb4053c57046bbfbce",
+          "proof_class": "funded_cooperative_process",
+          "provider_index": 0,
+          "provider_pubkey": "23f48f7f69d2d356aada55a454d276e2fa461efd2b97035c7d77d5a7c7a14f51",
+          "witness": {
+            "both_bitcoind_nodes_agree": true,
+            "control_block_bytes": 65,
+            "exact_contract_leaf_and_control": true,
+            "exact_funding_outpoint": true,
+            "input_count": 1,
+            "output_count": 1,
+            "path": "script_claim",
+            "taproot_script_bytes": 73,
+            "virtual_size": 155,
+            "witness_item_count": 4,
+            "witness_item_lengths": [
+              64,
+              32,
+              73,
+              65
+            ]
+          }
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    },
+    {
+      "case_id": "musig2-crash-cut-recovery",
+      "expected": "completed_or_script_path_without_nonce_recreation",
+      "infrastructure": {
+        "bitcoin": {
+          "best_block_hash": "07fafd6d46319accdb621aeb3c3219ee2287b2fe9588624c676dbcf08cfbc199",
+          "height": 130,
+          "node_count": 2,
+          "peered": true,
+          "separate_namespaces": true,
+          "separate_rpc_credentials": true
+        },
+        "case_id": "musig2-crash-cut-recovery",
+        "cln": {
+          "normal_channels_per_node": 2,
+          "provider_a_node_id": "03b8c70d7c4babdf8399c7c4686713b5eba8cbd57834f0adfdc934413a342c4721",
+          "provider_b_node_id": "039503df7d193c6f8352028d44aa3f8f432f1b897e84ef1bdab6cc0deeb476911e",
+          "separate_rpc_mounts": true,
+          "wallet_node_id": "02feea82b8ec85afd3e3cc77709e063423471b8883ca1b0c560445b9faa588fb31"
+        },
+        "host_ports_published": false,
+        "network_namespaces": {
+          "provider_a": "net:[4026532560]",
+          "provider_b": "net:[4026533196]",
+          "wallet": "net:[4026533406]"
+        },
+        "providers": {
+          "provider_a_pubkey": "1300093a3adfc7bff1d7c61f5b3d28a80ae1b997477ff4f571d92c1c37981ed1",
+          "provider_b_pubkey": "d9db94197bdb1ec16609d4938865b39b6d05ed0bae11e22c0a613220b52d876c",
+          "same_image": "sha256:ce1b128d4309c0768ae7f9e5b229960bc2c81568e22714de13997ba001841e21",
+          "separate_databases": true,
+          "separate_seed_mounts": true
+        },
+        "relays": {
+          "assignments": {
+            "provider-a": "relay-a",
+            "provider-b": "relay-b"
+          },
+          "relay_count": 2,
+          "separate_databases": true
+        },
+        "scenario_group": "cooperative",
+        "schema": "openagents.immortal.adversarial-infrastructure.v1"
+      },
+      "local_only": true,
+      "result": {
+        "case_id": "musig2-crash-cut-recovery",
+        "expected": "completed_or_script_path_without_nonce_recreation",
+        "passed": true,
+        "proof": {
+          "claim_txid": "927082c9d2183eee76884b0da25fea33f4bbff43a110735f617b851bbc23af12",
+          "cooperative_status_count": 4,
+          "cooperative_status_ids": [
+            "6bd6f653582d32d2d6478db9ad66e30a60cce60e021d1b5f821745ed04354bb8",
+            "6f8c30f7a55758647a9853538a21f4fa2b5b10acc67e551941c5f46ce96342d3",
+            "112317057798faf1964d2261380b35108f044c072f8f77c4e9744485b28b9bd2",
+            "8159c0a9cd6a630fd18819a70e1ec9613cde545b85c9b9e2c74433b3ae064646"
+          ],
+          "effect_states": {
+            "chain_claim": "applied",
+            "cooperative_sign": "applied"
+          },
+          "external_control": {
+            "checkpoint": "cooperative_crash_cut:provider_public_nonce_persisted",
+            "evidence": {
+              "after_pid": 24936,
+              "before_pid": 24260,
+              "state_boundary_unchanged": true,
+              "target": "provider-a",
+              "transition": "process_replaced_same_database_and_wallet_file"
+            },
+            "injection": "cooperative_crash_cut",
+            "restored": true,
+            "run_id": "a3c14d2c0b22ef777839007bc9a598a0bdfb3569972d86857699ee4268cff2db",
+            "schema": "openagents.immortal.lab-injection-ack.v1"
+          },
+          "lockup_txid": "36ab5ff23cb8eb7c492eb717f8ae1b20fcbb82b5fa05a3b20212af855e4d1461",
+          "lockup_vout": 0,
+          "order_id": "ceb4586944883b5efcb942a6e9193d5469e892e187ed5fa80167009dccc4b486",
+          "outcome": "completed_script_path",
+          "payment_hash": "b9c71e3997e1454f9ac293a785773db0b2c9eedd404403cbd5be2f8325e229dc",
+          "proof_class": "funded_cooperative_process",
+          "provider_index": 0,
+          "provider_pubkey": "1300093a3adfc7bff1d7c61f5b3d28a80ae1b997477ff4f571d92c1c37981ed1",
+          "witness": {
+            "both_bitcoind_nodes_agree": true,
+            "control_block_bytes": 65,
+            "exact_contract_leaf_and_control": true,
+            "exact_funding_outpoint": true,
+            "input_count": 1,
+            "output_count": 1,
+            "path": "script_claim",
+            "taproot_script_bytes": 73,
+            "virtual_size": 155,
+            "witness_item_count": 4,
+            "witness_item_lengths": [
+              64,
+              32,
+              73,
+              65
+            ]
+          }
+        },
+        "schema": "openagents.immortal.adversarial-case-result.v1"
+      },
+      "schema": "openagents.immortal.adversarial-lab-record.v1"
+    }
+  ],
+  "claims": {
+    "chain_swap": false,
+    "independent_operator_deployment": false,
+    "liquid": false,
+    "live_deployment": false,
+    "public_replacement": false,
+    "submarine_and_reverse_local_capability": true,
+    "zero_confirmation": false
+  },
+  "schema": "openagents.immortal.adversarial-lab-record.v1"
+}

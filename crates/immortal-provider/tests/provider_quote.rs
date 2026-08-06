@@ -216,15 +216,15 @@ fn fixture_builds_dynamic_submarine_and_reverse_hard_quotes() {
 }
 
 #[test]
-fn cooperative_quote_shape_exists_only_under_the_inactive_process_gate() {
+fn cooperative_quote_shape_exists_under_the_production_opt_in() {
     let runtime: Value = serde_json::from_str(include_str!(
         "../../../tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json"
     ))
     .expect("cooperative runtime fixture");
-    assert_eq!(runtime["process_gate"]["production_enabled"], false);
+    assert_eq!(runtime["process_gate"]["production_enabled"], true);
     assert_eq!(
         runtime["process_gate"]["provider_contract_advertisement"],
-        false
+        true
     );
 
     let fixture = fixture();

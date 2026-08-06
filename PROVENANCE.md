@@ -1023,6 +1023,21 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   dependency version, service, database, secret, advertisement, or GitHub
   automation.
 
+### 2026-08-05 — Codex 5.6 Sol, adversarial lab closure and MuSig2 activation
+
+- Executed the complete 33-case #18 matrix from pushed `main` `67efec7` with
+  two funded providers, two relays, separate provider databases/seed mounts,
+  two peered Bitcoin nodes, three CLN nodes, and fresh owned topology per case.
+- Published the bounded aggregate record under `docs/conformance/records/`.
+  Its claims exclude live deployment, operator independence, Liquid/chain
+  swaps, zero-confirmation settlement, and public replacement.
+- Enabled the off-by-default production submarine MuSig2 process gate and
+  provider contract capability flags after both provider key paths,
+  abort-to-script fallback, crash-cut recovery, and doomsday execution passed.
+  Reverse cooperation and relay NIP-11 remain unchanged.
+- Added no dependency, event kind, relay behavior, service, custody material,
+  GitHub workflow, or GitHub-billed automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

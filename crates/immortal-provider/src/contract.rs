@@ -207,8 +207,10 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
         },
         "execution":{
             "taproot_script_path":true,
-            "musig2_key_path":false,
-            "musig2_key_path_signer":false,
+            "musig2_key_path":true,
+            "musig2_key_path_signer":true,
+            "musig2_key_path_enabled_by_default":false,
+            "musig2_key_path_swap_types":["submarine"],
             "funding_before_bilateral_contract":false,
             "reverse_funding_transaction_precommitted_before_requester_payment":true,
             "chain_observation_requires_exact_committed_funding_bytes":true,
@@ -355,7 +357,6 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
         },
         "v1_exclusions":[
             "zmq",
-            "musig2_automated_actor_path",
             "outbound_https_price_feeds",
             "liquid",
             "ark",
@@ -939,6 +940,7 @@ fn environment_contract() -> Value {
             &["mainnet", "testnet", "signet", "regtest"]
         ),
         lab_profile_environment(),
+        cooperative_signing_environment(),
         lab_cooperative_signing_environment(),
         env_string(
             "IMMORTAL_PROVIDER_BITCOIND_HOST",
@@ -1275,6 +1277,21 @@ fn lab_cooperative_signing_environment() -> Value {
     value["required_network"] = Value::String("regtest".to_owned());
     value["required_lab_profile"] = Value::String("regtest_adversarial".to_owned());
     value["lab_only"] = Value::Bool(true);
+    value
+}
+
+fn cooperative_signing_environment() -> Value {
+    let mut value = optional_environment(
+        env_choice(
+            "IMMORTAL_PROVIDER_COOPERATIVE_SIGNING",
+            &["funded"],
+            &["true"],
+        ),
+        &["funded"],
+        false,
+    );
+    value["enabled_by_default"] = Value::Bool(false);
+    value["supported_swap_types"] = json!(["submarine"]);
     value
 }
 

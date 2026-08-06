@@ -133,6 +133,32 @@ fn cooperative_signing_gate_requires_the_exact_adversarial_profile() -> Result<(
     Ok(())
 }
 
+#[test]
+fn production_cooperative_signing_gate_is_explicit() -> Result<(), Box<dyn Error>> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_immortal-provider"));
+    let output = command
+        .arg("run")
+        .env_clear()
+        .env(
+            "IMMORTAL_PROVIDER_DATABASE_URL",
+            "postgresql://127.0.0.1/immortal_cooperative_profile",
+        )
+        .env("IMMORTAL_PROVIDER_RELAY_URL", "ws://127.0.0.1:17777")
+        .env("IMMORTAL_PROVIDER_BITCOIN_NETWORK", "mainnet")
+        .env("IMMORTAL_PROVIDER_COOPERATIVE_SIGNING", "true")
+        .output()?;
+    if output.status.success() {
+        return Err("incomplete cooperative production configuration unexpectedly started".into());
+    }
+    let stderr = String::from_utf8(output.stderr)?;
+    if stderr.trim()
+        != "provider configuration failed: required provider setting IMMORTAL_PROVIDER_BITCOIND_HOST is missing"
+    {
+        return Err(format!("production cooperative gate was rejected: {stderr}").into());
+    }
+    Ok(())
+}
+
 fn provider_startup(
     network: &str,
     profile_environment: &str,
