@@ -478,8 +478,9 @@ guarantor/underwriter and claims authority before a draft is honest.
       checker run in the local conformance suite; counterexamples become
       fixtures
 - [x] Fuzzing on the wire parser and filter matcher
-- [ ] Long-run soak: memory, connection churn, Postgres bloat,
-      `NOTIFY` storm behavior
+- [x] Long-run soak: memory, connection churn, Postgres bloat,
+      `NOTIFY` storm behavior; the one-hour two-relay qualification record is
+      [`2026-08-05-m8-soak-4a22930.json`](conformance/records/2026-08-05-m8-soak-4a22930.json)
 - [x] Security pass against the AGENTS.md rules; publish the results
 
 ## Operation Diamond Hands

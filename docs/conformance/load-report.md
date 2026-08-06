@@ -41,8 +41,10 @@ frames plus `EOSE`.
 The test Postgres cluster has no pre-existing data, external clients, TLS, or
 network latency. Production numbers will vary with storage latency, database
 topology, event/tag sizes, filters, reverse proxy, and concurrent subscriber
-fanout. M5's deployment acceptance and M8's soak work should add results from
-the target Debian profile rather than extrapolating this workstation result.
+fanout. M8's one-hour local soak is recorded in
+[`2026-08-05-m8-soak-4a22930.json`](records/2026-08-05-m8-soak-4a22930.json).
+It covers sustained two-relay behavior on this workstation; target Debian
+capacity still requires its own measurement.
 
 ## Reproduction
 

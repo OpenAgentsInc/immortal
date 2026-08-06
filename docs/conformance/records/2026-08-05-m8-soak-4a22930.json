@@ -1,0 +1,62 @@
+{
+  "schema": "openagents.immortal.m8-soak-record.v1",
+  "source_commit": "4a229307a2b5719877be549be360f5792033b8db",
+  "command": "scripts/test-soak.sh",
+  "started_at": "2026-08-05T22:36:10-05:00",
+  "finished_at": "2026-08-05T23:36:40-05:00",
+  "result": "passed",
+  "scope": "local-macos-disposable-two-relay-postgres",
+  "platform": {
+    "operating_system": "macOS 26.4",
+    "architecture": "arm64",
+    "postgres": "16.14",
+    "rustc": "1.94.1",
+    "cargo": "1.94.1"
+  },
+  "inputs": {
+    "tests/fixtures/nip01/soak-plan.json": "1022303f30d0730c39db71211334f62765fc0328c8793c8a6ba164c570d3ffcb",
+    "scripts/test-soak.sh": "419f17e8e6e5fb8882b7a5734255e9838b3c0e0814318cecdba4ef5408ea532b",
+    "crates/immortal-relay/tests/soak_postgres.rs": "21317297ac54f32f133f3ab4028c010f12f5a44ead545f6301f4ecbd7bfbc8be"
+  },
+  "result_record": {
+    "schema": "openagents.immortal.soak-result.v1",
+    "qualification": true,
+    "requested_seconds": 3600,
+    "elapsed_seconds": 3600,
+    "cycles": 3582,
+    "notification_storm_events": 4096,
+    "notification_publishers": 4,
+    "notification_storm_elapsed_ms": 848,
+    "notifications_observed": 36335,
+    "connection_churn": 57312,
+    "replacement_admissions": 28656,
+    "heartbeat_admissions": 3582,
+    "rss": {
+      "cold_bytes": 19349504,
+      "steady_bytes": 24248320,
+      "maximum_bytes": 24428544,
+      "final_bytes": 24363008,
+      "maximum_growth_bytes": 180224,
+      "samples": 360,
+      "limit_bytes": 134217728
+    },
+    "postgres": {
+      "initial_database_bytes": 9165847,
+      "final_database_bytes": 31744527,
+      "database_growth_bytes": 22578680,
+      "growth_bytes_per_admission": 621,
+      "growth_limit_bytes_per_admission": 65536,
+      "initial_relation_bytes": 704512,
+      "final_relation_bytes": 23101440,
+      "live_tuples": 7697,
+      "dead_tuples": 952,
+      "connections": 13,
+      "connection_limit": 16
+    }
+  },
+  "claims": {
+    "m8_local_soak_qualified": true,
+    "target_debian_capacity": false,
+    "live_deployment": false
+  }
+}
