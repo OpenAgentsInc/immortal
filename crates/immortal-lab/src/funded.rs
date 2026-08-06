@@ -2915,7 +2915,7 @@ fn prepare_doomsday_liquid_reverse(
             "signer_ref":prepared.liquid_request.exit_package.wallet_signing_handle_sha256,
             "preimage_recovery_ref":prepared.liquid_request.exit_package.preimage_recovery_ref,
             "exit_template_before_contract":true,
-            "preimage_persisted_before_contract":true,
+            "external_recovery_reference_bound_before_contract":true,
             "offering_id":offering.id,
         }),
     )?;
@@ -2931,7 +2931,7 @@ fn prepare_doomsday_liquid_reverse(
         "funding_output_index":funding_output_index,
         "package_mode":"wallet_sign",
         "exit_template_before_contract":true,
-        "preimage_persisted_before_contract":true,
+        "external_recovery_reference_bound_before_contract":true,
         "requester_process_exit":true,
     }))
 }
@@ -13697,6 +13697,22 @@ mod tests {
         assert_eq!(
             liquid_submarine_invoice_amount_sat().expect("fixture-pinned invoice amount"),
             adversarial["lab_profile"]["pricing"]["liquid_submarine_invoice_amount_sat"]
+        );
+    }
+
+    #[test]
+    fn liquid_doomsday_checkpoint_retains_only_an_external_recovery_reference() {
+        assert!(
+            provider_support::reject_custody_material(&json!({
+                "external_recovery_reference_bound_before_contract":true,
+            }))
+            .is_ok()
+        );
+        assert!(
+            provider_support::reject_custody_material(&json!({
+                "preimage_persisted_before_contract":true,
+            }))
+            .is_err()
         );
     }
 
