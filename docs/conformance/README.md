@@ -12,6 +12,7 @@ by `AGENTS.md`.
 | Contract | Primary proof |
 | --- | --- |
 | NIP-01 canonical event IDs, escaping, signatures, tags, exact filters, time bounds, kind classes, and replacement ordering | `tests/fixtures/nip01/` + `crates/immortal-core/tests/domain_fixtures.rs` |
+| Exhaustive bounded admission/replacement/deletion model, including restart, deletion-before-arrival, author ownership, timestamp ties, address horizons, deletion-request permanence, and ephemeral non-storage | `tests/fixtures/nip01/admission-state-model.json`, `crates/immortal-core/tests/admission_state_model.rs`, and `scripts/test-conformance.sh` |
 | NIP-01 EVENT/REQ/CLOSE and EVENT/OK/EOSE/CLOSED/NOTICE shapes | `nip01/gateway_messages.json`, gateway wire unit tests, and `crates/immortal-relay/tests/gateway_postgres.rs` |
 | NIP-09 deletion by event/address, deletion-before-arrival, author ownership, and races | `nip09/deletion.json`, domain fixtures, and the live store contract |
 | NIP-11 document fields, advertised limits, same-path HTTP, health, and required CORS headers | `nip11/document.json` plus gateway unit/live contracts |

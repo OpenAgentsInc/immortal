@@ -474,7 +474,7 @@ guarantor/underwriter and claims authority before a draft is honest.
 
 ## M8 — Hardening and formal work
 
-- [ ] Formal model of the admission/replacement/deletion state machine;
+- [x] Formal model of the admission/replacement/deletion state machine;
       checker run in the local conformance suite; counterexamples become
       fixtures
 - [ ] Fuzzing on the wire parser and filter matcher

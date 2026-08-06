@@ -114,6 +114,12 @@
       "scope": "client"
     },
     {
+      "path": "tests/fixtures/nip01/admission-state-model.json",
+      "sha256": "66315b9befe507f635582ef324445cc13dbdc2235bfc820f549dc0f2f8bd90b6",
+      "bytes": 4027,
+      "scope": "relay"
+    },
+    {
       "path": "tests/fixtures/nip01/events.json",
       "sha256": "a1a74424da21fb04e22d5a689ef17204aa2cb46f3937cfa8727a11d952f5bd3a",
       "bytes": 630,

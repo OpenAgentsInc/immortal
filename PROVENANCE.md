@@ -1062,6 +1062,19 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 - Added no dependency, event kind, relay behavior, service, custody material,
   GitHub workflow, or GitHub-billed automation.
 
+### 2026-08-05 — Codex 5.6 Sol, admission state model
+
+- Added an independent bounded reference model for regular, replaceable,
+  ephemeral, and deletion-event admission and compared it with the production
+  domain classification, replacement, and tombstone primitives over 111,111
+  histories.
+- Pinned counterexample traces for timestamp ties, deletion before arrival,
+  author ownership, address-deletion horizons, deletion-request permanence,
+  ephemeral replay, stale replacement, and restart persistence.
+- Added the checker to the manual conformance suite and deterministic fixture
+  manifest without adding a dependency, service, database, protocol behavior,
+  advertisement, workflow, or billed automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names
