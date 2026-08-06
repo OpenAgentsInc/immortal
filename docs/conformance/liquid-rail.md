@@ -173,3 +173,10 @@ A green local record establishes executable Liquid rail conformance for the
 tested configuration. It does not establish live deployment, operator
 independence, public liquidity, production finality, or a public Boltz
 replacement claim. Those claims require their own deployment evidence.
+
+The complete 43-case process gate passed from pushed `main` `6c4cd10` on
+2026-08-06. Its 247,375-byte aggregate remains below the fixture-pinned
+262,144-byte limit and is retained as
+[`records/2026-08-06-adversarial-regtest-6c4cd10.json`](records/2026-08-06-adversarial-regtest-6c4cd10.json).
+The record keeps `live_deployment`, `independent_operator_deployment`, and
+`public_replacement` false.

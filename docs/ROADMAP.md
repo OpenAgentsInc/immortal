@@ -361,9 +361,10 @@ close the program. Profiles and rails beyond the Boltz-class replacement
 are the M13 ledger below.
 
 Current M12 replacement-capability status: #9, #10, upstream #9311, #11, #12,
-#13, #14, #16, #17, #18, #19, #24, #25, #26, #28, and #29 are complete. The pushed-main adversarial
-lab passed all 33 cases and published its bounded record under
-`docs/conformance/records/`. At source commit `764d119`, #19 passed the fresh
+#13, #14, #16, #17, #18, #19, #24, #25, #26, #27, #28, and #29 are complete.
+The pushed-main adversarial lab passed all 43 cases at `6c4cd10` and published
+its bounded record under `docs/conformance/records/`. At source commit
+`764d119`, #19 passed the fresh
 Debian install/backup/restore/funded gate, seven public read-only GETs against
 the live Boltz API, and the cutover/rollback rehearsal. Five response-shape
 divergences are retained in the shadow record. The cutover record establishes
@@ -460,7 +461,7 @@ lanes.
 | Issue | Packet | Depends on |
 | --- | --- | --- |
 | [openagents#9312](https://github.com/OpenAgentsInc/openagents/issues/9312) | Draft MKT-P2P, MKT-MINT, and MKT-LSP profile NIPs upstream; decide the intent-market shape (Arkade solver model); shared vocabulary harvest (asset-id pairs, decimal-string amounts, price-feed pinning) | — |
-| [#27](https://github.com/OpenAgentsInc/immortal/issues/27) | Liquid rail: elementsd leg for BTC↔L-BTC swaps — provider RPC client, bounded confidential-transaction handling, client-engine Liquid legs, elementsd in the lab. First among extensions: core Boltz volume | M12 #25, #18 |
+| [#27](https://github.com/OpenAgentsInc/immortal/issues/27) | Liquid rail — **complete**: optional elementsd provider rail, bounded own-output confidential authority, exact Liquid Taproot exits and replay, client verify-before-fund/recovery for submarine/reverse/BTC↔L-BTC chain shapes, provider-A/provider-B execution, and two Liquid doomsday cases in the pushed-main 43-case adversarial record. Live deployment and public-replacement claims remain false | M12 #25, #18 |
 | [#20](https://github.com/OpenAgentsInc/immortal/issues/20) | Ark rail leg: VTXO/operator/exit verification, pre-signed exit packages as the doomsday-drill shape, covenant-reserve evidence, arkd in the lab | M12 #10, #12, #13 |
 | [#21](https://github.com/OpenAgentsInc/immortal/issues/21) | Adopt MKT-P2P: Mostro/NIP-69 bridge, bonds, disputes, per-trade key rotation — **complete**: upstream 9312 drafted `MKT-P2P.md`; the 2026-08-04 sync pinned it, and the relay now enforces the relay-observable v1 subset (Offering grammar, immutable wrapped kind-39620 Resolutions via migration 0012, source-reference mapping, admitted Status states, PII refusal, per-trade-key fixtures) with the 26-case manifest exported and gated `nip-mkt-p2p:1` discovery. Bond/dispute/settlement authority stays external | 9312 |
 | [#22](https://github.com/OpenAgentsInc/immortal/issues/22) | Adopt MKT-MINT: Cashu NUTs / Fedimint gateway quotes, NIP-87 cross-reference, custody disclosure — relay-observable v1 adopted (kind 39640, `nip-mkt-mint:1`, 29-case manifest; see `docs/protocol/nip-mkt-validation.md`); the optional cdk-mintd lab leg stays with #18 | 9312 |

@@ -1141,3 +1141,23 @@ tripwires required by the pinned source. The added positive, negative-schema,
 external-signature, and post-claim privacy fixtures make the corrected grammar
 executable. This allocation-free adoption changes no event kind, dependency,
 relay execution, Postgres schema, or NIP-11 advertisement.
+
+## M13 Liquid execution closure decision (2026-08-06)
+
+Issue #27 closes against the already pinned OpenAgents MKT-SWP source at
+`ac61a359043ec53c567873a344153c1069091d85`; no source-lane file advances in
+this packet. Immortal adopts executable local Liquid support only for the
+bounded authority recorded above: own-output unblinding through the
+participant's configured elementsd, exact transaction/template and
+script-path verification, and local consensus/mempool admission. It does not
+adopt arbitrary third-party confidential-proof authority.
+
+The pushed-main process gate at `6c4cd10` passed all 43 closed-world cases,
+including provider-A/provider-B Liquid submarine, reverse, and both BTC/L-BTC
+chain orientations, exact replay after provider restart, presigned Liquid
+submarine refund after provider removal, and direct Liquid reverse recovery
+after coordinator removal. The bounded aggregate record retains all case
+proofs and keeps live deployment, operator independence, generic Liquid,
+zero-confirmation, and public-replacement claims false. This closure allocates
+no event kind and changes no relay admission, Postgres schema, dependency, or
+NIP-11 advertisement.
