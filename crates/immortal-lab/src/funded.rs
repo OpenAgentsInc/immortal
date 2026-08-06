@@ -2680,11 +2680,12 @@ fn prepare_doomsday_liquid_submarine(
     if offering.pubkey != provider_pubkey {
         return Err("Liquid submarine doomsday discovered another provider".to_owned());
     }
+    let invoice_amount_sat = liquid_submarine_invoice_amount_sat()?;
     let invoice = runtime
         .block_on(
             environment.peer_cln.invoice(
                 &cln_id(case.invoice_label())?,
-                Millisatoshi::from_satoshis(OUTPUT_AMOUNT_SAT)
+                Millisatoshi::from_satoshis(invoice_amount_sat)
                     .map_err(|error| format!("Liquid doomsday amount is invalid: {error}"))?,
                 case.invoice_label(),
                 "Immortal Liquid doomsday refund",
