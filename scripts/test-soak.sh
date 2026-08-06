@@ -30,6 +30,10 @@ pg_ctl -D "${data_dir}" \
 
 database_user="$(id -un)"
 createdb -h "${socket_dir}" -U "${database_user}" immortal_soak
+soak_command=(cargo test --locked --release -p immortal-relay --test soak_postgres -- --ignored --nocapture)
+if command -v caffeinate >/dev/null; then
+  soak_command=(caffeinate -i "${soak_command[@]}")
+fi
 IMMORTAL_TEST_DATABASE_URL="host=${socket_dir} user=${database_user} dbname=immortal_soak" \
   IMMORTAL_TEST_ALLOW_DESTRUCTIVE=1 \
-  cargo test --locked --release -p immortal-relay --test soak_postgres -- --ignored --nocapture
+  "${soak_command[@]}"

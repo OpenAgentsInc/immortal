@@ -537,14 +537,42 @@ fn await_expected(
     while !expected.is_empty() {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(format!("timed out with {} notifications missing", expected.len()).into());
+            return Err(missing_notification_error(expected).into());
         }
-        let observed = receiver.recv_timeout(remaining)??;
+        let observed = match receiver.recv_timeout(remaining) {
+            Ok(observed) => observed?,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                return Err(missing_notification_error(expected).into());
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(format!(
+                    "subscription reader disconnected with {} notifications missing: {}",
+                    expected.len(),
+                    missing_notification_ids(expected)
+                )
+                .into());
+            }
+        };
         if !expected.remove(&observed) {
             return Err(format!("received unexpected or duplicate notification {observed}").into());
         }
     }
     Ok(())
+}
+
+fn missing_notification_error(expected: &HashSet<String>) -> String {
+    format!(
+        "timed out with {} notifications missing: {}",
+        expected.len(),
+        missing_notification_ids(expected)
+    )
+}
+
+fn missing_notification_ids(expected: &HashSet<String>) -> String {
+    let mut ids = expected.iter().cloned().collect::<Vec<_>>();
+    ids.sort();
+    ids.truncate(16);
+    ids.join(",")
 }
 
 fn connect_client(address: SocketAddr) -> TestResult<WebSocket<TcpStream>> {
