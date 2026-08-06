@@ -98,6 +98,23 @@ the pinned upstream applications.
   quoted script, amount, other verifier, and other leg byte stays frozen. The
   module verifies public artifacts only and never accepts wallet keys,
   preimages for storage, node credentials, or broadcast authority.
+- `nipmkt/liquid-rail-v1.json` pins the bounded Elements transaction,
+  asset-identity, own-output unblinding, verify-before-fund, and unilateral
+  script-path boundary, including exact-once local-elementsd replay for
+  presigned and wallet-signed exits, a digest-bound private broadcast artifact,
+  retained-artifact crash retry without re-signing, optional exact-tree and
+  unknown-member schema cases, and a post-claim snapshot tripwire.
+  `nipmkt/go-elements-v0.5.5-taproot-sighash.json`
+  supplies independently produced Elements Taproot and sighash vectors; both
+  are public client/core conformance inputs rather than custody material.
+- `provider/liquid-runtime-v1.json` pins the optional elementsd provider
+  lifecycle, exact-byte replay, restart recovery, reorg handling, and refusal
+  of arbitrary third-party confidential-proof authority. It also prices the
+  provider's single-input confidential funding and unilateral-exit effect set
+  for each Liquid and mixed-chain direction, derives the requester funding cap
+  and 300-vbyte exit share from the same signed rate, replays every shape at a
+  non-lab 10 sat/vbyte vector, and refuses split wallet capacity that would
+  introduce an unpriced funding input.
 - `provider/settlement-construction-v1.json` is a synthetic public provider
   authoring vector, not operator custody material. It binds the pinned
   BIP-341/342 and BOLT-11/payment-hash source boundary and fixes claim/refund
@@ -114,9 +131,10 @@ the pinned upstream applications.
   provider-owned CLN nodes with required hold RPCs, a separate wallet CLN
   node, two relay/provider identities, balanced channel edges, teardown
   ownership checks, the digest-checked funded-smoke CLN-plus-hold image build,
-  the implemented feature-gated LND process gate, and hook-only elementsd/arkd
-  extension boundaries. It contains no node credentials or custody material;
-  unimplemented rail hooks remain explicit.
+  the implemented feature-gated LND process gate, the implemented disposable
+  elementsd rail gate, and the hook-only arkd extension boundary. It contains
+  no node credentials or custody material; unimplemented rail hooks remain
+  explicit.
 - `lab/funded-checkpoints-v1.json` pins the wallet driver's restart labels,
   exact Bitcoin/Lightning recovery rules, bounded failure vocabulary, and
   custody-free request/acknowledgement control. `lab/funded-matrix-v1.json`
@@ -143,10 +161,12 @@ the pinned upstream applications.
   tiny-expiry profile; the complete routing, replay, reservation, crash,
   partition, reorg, RBF, custody-tripwire, unilateral-exit, doomsday, and
   MuSig2 activation matrix; independent rail/database evidence; and
-  ownership-checked cleanup. It explicitly excludes Liquid/chain-swap,
-  zero-confirmation, deployment, operator-independence, and public-replacement
-  claims. `scripts/test-lab-adversarial-manifest.sh` rejects omissions or
-  additions before the process runner can claim the matrix.
+  ownership-checked cleanup. Four bounded cases prove local BTC↔L-BTC chain
+  execution through both provider identities; the manifest still excludes a
+  generic Liquid/chain-swap claim, zero-confirmation, deployment,
+  operator-independence, and public-replacement claims.
+  `scripts/test-lab-adversarial-manifest.sh` rejects omissions or additions
+  before the process runner can claim the matrix.
 - `nipmkt/swp-profile-v1.json` pins the relay-observable MKT-SWP v1 adoption
   at OpenAgents commit `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`:
   Offering grammar, kind-39610 profile binding and immutable wrapped

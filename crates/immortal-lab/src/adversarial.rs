@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use immortal_client::mkt_swp_client::provider_support;
 use serde_json::{Map, Value, json};
 
-use crate::funded::{self, CooperativeJourney, DoomsdayCase, FundedJourney};
+use crate::funded::{
+    self, CooperativeJourney, DoomsdayCase, FundedJourney, LiquidChainDirection, LiquidJourney,
+};
 
 const MANIFEST: &str = include_str!("../../../tests/fixtures/lab/adversarial-v1.json");
 const MANIFEST_SCHEMA: &str = "openagents.immortal.adversarial-lab.v1";
@@ -11,9 +13,9 @@ const RESULT_SCHEMA: &str = "openagents.immortal.adversarial-case-result.v1";
 const CASE_ID_ENV: &str = "IMMORTAL_LAB_ADVERSARIAL_CASE_ID";
 const SELECTED_PROVIDER_ENV: &str = "IMMORTAL_LAB_ADVERSARIAL_SELECTED_PROVIDER";
 const EXPECTED_ENV: &str = "IMMORTAL_LAB_ADVERSARIAL_EXPECTED";
-const MAXIMUM_CASES: usize = 40;
+const MAXIMUM_CASES: usize = 48;
 const MAXIMUM_FIELD_BYTES: usize = 128;
-const MAXIMUM_RESULT_BYTES: usize = 16 * 1_024;
+const MAXIMUM_RESULT_BYTES: usize = 32 * 1_024;
 const SCENARIO_GROUPS: [&str; 4] = ["routing", "failure_matrix", "doomsday", "cooperative"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +61,14 @@ enum ProofPlan {
     Cooperative {
         provider_index: usize,
         journey: CooperativeJourney,
+    },
+    LiquidChain {
+        provider_index: usize,
+        direction: LiquidChainDirection,
+    },
+    LiquidJourney {
+        provider_index: usize,
+        journey: LiquidJourney,
     },
     Doomsday(DoomsdayCase),
     Unsupported {
@@ -291,6 +301,14 @@ fn execute_proof(selected: &SelectedCase) -> Result<Value, String> {
             let result = funded::run_adversarial_cooperative_journey(provider_index, journey)?;
             cooperative_proof(&result, provider_index, journey)
         }
+        ProofPlan::LiquidChain {
+            provider_index,
+            direction,
+        } => funded::run_adversarial_liquid_chain_journey(provider_index, direction),
+        ProofPlan::LiquidJourney {
+            provider_index,
+            journey,
+        } => funded::run_adversarial_liquid_journey(provider_index, journey),
         ProofPlan::Doomsday(case) => funded::recover_doomsday_case(case),
         ProofPlan::Unsupported { reason } => Err(format!(
             "unsupported adversarial proof for {}: {reason}",
@@ -827,6 +845,38 @@ fn proof_plan(case_id: &str) -> ProofPlan {
         "route-submarine-provider-b" => journey(1, FundedJourney::Submarine),
         "route-reverse-provider-a" => journey(0, FundedJourney::ReverseClaim),
         "route-reverse-provider-b" => journey(1, FundedJourney::ReverseClaim),
+        "route-chain-btc-to-lbtc-provider-a" => ProofPlan::LiquidChain {
+            provider_index: 0,
+            direction: LiquidChainDirection::BitcoinToLiquid,
+        },
+        "route-chain-btc-to-lbtc-provider-b" => ProofPlan::LiquidChain {
+            provider_index: 1,
+            direction: LiquidChainDirection::BitcoinToLiquid,
+        },
+        "route-chain-lbtc-to-btc-provider-a" => ProofPlan::LiquidChain {
+            provider_index: 0,
+            direction: LiquidChainDirection::LiquidToBitcoin,
+        },
+        "route-chain-lbtc-to-btc-provider-b" => ProofPlan::LiquidChain {
+            provider_index: 1,
+            direction: LiquidChainDirection::LiquidToBitcoin,
+        },
+        "route-liquid-submarine-provider-a" => ProofPlan::LiquidJourney {
+            provider_index: 0,
+            journey: LiquidJourney::Submarine,
+        },
+        "route-liquid-submarine-provider-b" => ProofPlan::LiquidJourney {
+            provider_index: 1,
+            journey: LiquidJourney::Submarine,
+        },
+        "route-liquid-reverse-provider-a" => ProofPlan::LiquidJourney {
+            provider_index: 0,
+            journey: LiquidJourney::Reverse,
+        },
+        "route-liquid-reverse-provider-b" => ProofPlan::LiquidJourney {
+            provider_index: 1,
+            journey: LiquidJourney::Reverse,
+        },
         "rank-two-cancelled-without-effect" => ProofPlan::TopologyCancellation,
         "replay-identical-order" => ProofPlan::Journey {
             provider_index: 0,
@@ -956,6 +1006,12 @@ fn proof_plan(case_id: &str) -> ProofPlan {
         "doomsday-keyless-esplora-broadcast" => {
             ProofPlan::Doomsday(DoomsdayCase::KeylessEsploraBroadcast)
         }
+        "doomsday-liquid-submarine-provider-gone" => {
+            ProofPlan::Doomsday(DoomsdayCase::LiquidSubmarineProviderGone)
+        }
+        "doomsday-liquid-reverse-coordinator-gone" => {
+            ProofPlan::Doomsday(DoomsdayCase::LiquidReverseCoordinatorGone)
+        }
         "musig2-submarine-provider-a" => ProofPlan::Cooperative {
             provider_index: 0,
             journey: CooperativeJourney::Complete,
@@ -1048,7 +1104,7 @@ mod tests {
     #[test]
     fn manifest_has_exact_bounded_case_ledger() {
         let cases = parse_manifest().expect("adversarial manifest should parse");
-        assert_eq!(cases.len(), 33);
+        assert_eq!(cases.len(), 43);
         assert_eq!(
             cases
                 .get("route-submarine-provider-a")
@@ -1060,6 +1116,12 @@ mod tests {
                 .get("rank-two-cancelled-without-effect")
                 .and_then(|case| case.provider.as_deref()),
             None
+        );
+        assert_eq!(
+            cases
+                .get("route-chain-btc-to-lbtc-provider-b")
+                .and_then(|case| case.provider.as_deref()),
+            Some("provider-b")
         );
         assert!(
             cases
@@ -1113,7 +1175,13 @@ mod tests {
             .keys()
             .filter(|case_id| !matches!(proof_plan(case_id), ProofPlan::Unsupported { .. }))
             .count();
-        assert_eq!(supported, 33);
+        assert_eq!(supported, 43);
+        let unsupported = cases
+            .keys()
+            .filter(|case_id| matches!(proof_plan(case_id), ProofPlan::Unsupported { .. }))
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        assert!(unsupported.is_empty());
         for case_id in cases.keys() {
             if let ProofPlan::Unsupported { reason } = proof_plan(case_id) {
                 assert!(

@@ -279,9 +279,48 @@
           "items": {
             "$ref": "#/$defs/exit_package_commitment"
           }
+        },
+        "funding_resolution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/requester_funding_resolution"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
+    },
+    "requester_funding_resolution": {
+      "additionalProperties": false,
+      "properties": {
+        "funding_transaction": {
+          "maxLength": 16000000,
+          "minLength": 2,
+          "pattern": "^([0-9a-f]{2})+$",
+          "type": "string"
+        },
+        "funding_transaction_sha256": {
+          "$ref": "#/$defs/hex32"
+        },
+        "leg_id": {
+          "const": "source"
+        },
+        "output_index": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "leg_id",
+        "funding_transaction",
+        "funding_transaction_sha256",
+        "output_index"
+      ],
+      "type": "object"
     },
     "requester_order_input": {
       "type": "object",
@@ -2291,7 +2330,7 @@
   },
   "source_fixture": {
     "path": "tests/fixtures/nipmkt/swp-full-sessions-v1.json",
-    "sha256": "28ea72d1ad2c86cdd342cbb29ee43f1141ed0b513dc7a90aa34ba4cc2c094c0a"
+    "sha256": "d17fd299b488aa8c15e319570aea65bb5b4878a07f955bffb2315a4cd8df3925"
   },
   "reference_semantics": {
     "$artifact_ref": "RFC 6901 pointer into this artifact; resolve before schema validation",
@@ -2781,7 +2820,7 @@
       "input": {
         "$artifact_ref": "#/vectors/terminal_signed_only"
       },
-      "expected_sha256": "76dc00f4d046aacd2fdfa1240db242d0a7223ee4c02526cadc7b565556f554ce"
+      "expected_sha256": "ded93172a9373c971f91f59d959fe011ccc36abc01eb34904cc0b910b225a692"
     },
     {
       "name": "requester-session-terminal-restored-authority",
@@ -2789,7 +2828,7 @@
       "input": {
         "$artifact_ref": "#/vectors/terminal_snapshot_valid"
       },
-      "expected_sha256": "78b42d0aaef11553adacb9a72f4f485b9326dd735a36609b19407055bf1c2ce9"
+      "expected_sha256": "4bee6b2262722b3d83b6aecb1c20df26a7c86083cd5b3d89d99919533991cacb"
     },
     {
       "name": "requester-session-terminal-request-digest-mutation",
@@ -2888,6 +2927,6 @@
   },
   "requester_api_source": {
     "path": "tests/fixtures/nipmkt/swp-requester-api-source-v2.json",
-    "sha256": "3f1f6beb1f87fcef4d46adf7896d659b175790368156f772b12016bb482b8f8c"
+    "sha256": "49ed87f25e2a7225ad8d232467aae4807ecc0ee0d02023ee834640158670b16a"
   }
 }

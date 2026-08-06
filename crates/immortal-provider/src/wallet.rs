@@ -1,5 +1,9 @@
 //! Provider-owned deterministic wallet and signing boundary.
 
+use immortal_core::liquid::{
+    LiquidGenesisHash, LiquidPrevout, LiquidTransaction, liquid_taproot_script_spend_sighash,
+    sign_liquid_taproot_sighash, verify_liquid_taproot_sighash_signature,
+};
 use immortal_core::mkt_swp_verify::{
     Musig2SecretNonce, Musig2Tweak, musig2_nonce_gen, musig2_partial_sign,
     musig2_tweaked_aggregate_key,
@@ -36,6 +40,7 @@ pub enum WalletError {
     AddressEncoding,
     Randomness,
     CooperativeSigning,
+    LiquidSigning,
 }
 
 impl fmt::Display for WalletError {
@@ -54,6 +59,7 @@ impl fmt::Display for WalletError {
             Self::AddressEncoding => "taproot address could not be encoded",
             Self::Randomness => "operating-system randomness is unavailable",
             Self::CooperativeSigning => "cooperative signing failed closed",
+            Self::LiquidSigning => "Liquid script-path signing failed closed",
         };
         formatter.write_str(message)
     }
@@ -301,6 +307,39 @@ impl ProviderWallet {
             .add_tweak(&tweak)
             .map_err(|_| WalletError::DerivationKey)?;
         sign_digest(tweaked_key, sighash)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn sign_liquid_script_path(
+        &self,
+        path: WalletPath,
+        transaction: &LiquidTransaction,
+        prevouts: &[LiquidPrevout],
+        input_index: usize,
+        genesis_hash: LiquidGenesisHash,
+        script: &[u8],
+        control_block: &[u8],
+    ) -> Result<WalletSignature, WalletError> {
+        let secret_key = self.derive_bip86_key(path)?;
+        let keypair = Keypair::from_secret_key(&Secp256k1::signing_only(), &secret_key);
+        let public_key = keypair.x_only_public_key().0;
+        let sighash = liquid_taproot_script_spend_sighash(
+            transaction,
+            prevouts,
+            input_index,
+            genesis_hash,
+            script,
+            control_block,
+            None,
+        )
+        .map_err(|_| WalletError::LiquidSigning)?;
+        let signature = sign_liquid_taproot_sighash(sighash, &keypair);
+        verify_liquid_taproot_sighash_signature(sighash, &signature, public_key)
+            .map_err(|_| WalletError::LiquidSigning)?;
+        Ok(WalletSignature {
+            public_key: public_key.serialize(),
+            signature,
+        })
     }
 
     pub fn begin_cooperative_signing(

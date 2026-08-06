@@ -14,6 +14,7 @@ Regenerate both artifacts after a protocol sync or adoption change:
 
 ```sh
 ./scripts/export-contract.sh
+./scripts/export-provider-contract.sh
 git diff -- contract/
 ```
 
@@ -21,6 +22,7 @@ Verify an unchanged tree without rewriting the artifacts:
 
 ```sh
 ./scripts/export-contract.sh --check
+./scripts/export-provider-contract.sh --check
 ```
 
 The artifact identifies the Immortal crate version and all three pinned NIP

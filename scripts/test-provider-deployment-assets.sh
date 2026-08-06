@@ -26,6 +26,12 @@ fi
 
 grep -Fqx 'IMMORTAL_PROVIDER_WALLET_SEED_FILE=/var/lib/immortal-provider/wallet.seed' "${environment}"
 grep -Fqx 'IMMORTAL_PROVIDER_RELAY_URL=ws://127.0.0.1:8080' "${environment}"
+grep -Fqx '# IMMORTAL_PROVIDER_LIQUID_ENABLED=true' "${environment}"
+grep -Fqx '# IMMORTAL_PROVIDER_ELEMENTSD_HOST=127.0.0.1' "${environment}"
+if grep -Eq '^IMMORTAL_PROVIDER_(LIQUID|ELEMENTSD)' "${environment}"; then
+    echo 'test-provider-deployment-assets: Liquid must remain off by default' >&2
+    exit 1
+fi
 if grep -Ev '^(#.*|$|[A-Z0-9_]+=.*(<[^>]+>|127\.0\.0\.1|/|mainnet|cln|hard|[0-9]+|true).*)$' "${environment}" >/dev/null; then
     echo 'test-provider-deployment-assets: provider environment example contains an unexpected value' >&2
     exit 1

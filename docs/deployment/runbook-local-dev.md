@@ -116,6 +116,29 @@ submarine, reverse, and chain sessions through bilateral contracts, mutual
 cancellation, and provider-authored zero-loss Close records. It performs no
 funding, payment, wallet, node, or broadcast action.
 
+## Run the disposable Liquid rail
+
+The Liquid conformance gate owns a temporary elementsd regtest node, wallet,
+dynamic loopback ports, image, container, and state directory. It verifies
+exact funding and unilateral-exit bytes, own-output unblinding, already-known
+replay, and ownership-checked teardown:
+
+```sh
+./scripts/test-provider-liquid.sh
+```
+
+The expanded adversarial gate adds Liquid submarine, Liquid reverse,
+BTC→L-BTC, and L-BTC→BTC sessions against both funded provider identities.
+It also executes a provider-absent presigned Liquid refund and a
+coordinator-absent direct Liquid claim with Lightning settlement:
+
+```sh
+./scripts/test-lab-adversarial.sh --all
+```
+
+These commands use throwaway regtest custody only. They do not configure a
+production elementsd wallet or establish a live deployment claim.
+
 ## Point clients at the relay
 
 Set the client relay URL to `ws://127.0.0.1:18080`. NIP-42 authentication is

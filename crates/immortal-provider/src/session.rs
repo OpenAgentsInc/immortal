@@ -756,6 +756,38 @@ impl ProviderSession {
         Ok(request)
     }
 
+    pub fn provider_status_after(
+        &self,
+        created_at: u64,
+        distinct: &str,
+        status: StatusState<'_>,
+        prerequisite_status_id: &str,
+        extra: Map<String, Value>,
+    ) -> Result<MktSigningRequest, SwapClientError> {
+        let request = self.factory.status_after(
+            ParticipantRole::Provider,
+            created_at,
+            distinct,
+            &self.order()?.id,
+            status,
+            prerequisite_status_id,
+            extra,
+        )?;
+        let unsigned = unsigned_event(&request);
+        self.validate_next_event(&unsigned)?;
+        let mut candidate = self.signed_records.clone();
+        candidate.push(unsigned.clone());
+        let projection = project_status(&self.config, &candidate)?;
+        require_signer_status_contiguous(&projection, &self.config.provider_pubkey)?;
+        if projection.invalid_claims.contains_key(&unsigned.id) {
+            return Err(provider_error(
+                "swp_status_transition_invalid",
+                "provider cannot author a Status without its exact cross-participant prerequisite",
+            ));
+        }
+        Ok(request)
+    }
+
     #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
     pub(crate) fn provider_cooperative_status(
         &self,
@@ -813,6 +845,26 @@ impl ProviderSession {
         reject_custody_material(&evidence)?;
         extra.insert("evidence".into(), evidence);
         self.provider_status(created_at, distinct, status, extra)
+    }
+
+    pub fn provider_status_with_evidence_after(
+        &self,
+        created_at: u64,
+        distinct: &str,
+        status: StatusState<'_>,
+        prerequisite_status_id: &str,
+        evidence: Value,
+        mut extra: Map<String, Value>,
+    ) -> Result<MktSigningRequest, SwapClientError> {
+        validate_mkt_swp_evidence_reference(&evidence).map_err(|error| {
+            provider_error(
+                "swp_evidence_invalid",
+                format!("provider evidence reference is invalid: {error}"),
+            )
+        })?;
+        reject_custody_material(&evidence)?;
+        extra.insert("evidence".into(), evidence);
+        self.provider_status_after(created_at, distinct, status, prerequisite_status_id, extra)
     }
 
     pub fn provider_swap_contract(
@@ -2958,11 +3010,13 @@ pub mod fixture_replay {
             .and_then(|record| record.get("content"))
             .and_then(Value::as_str)
             .ok_or_else(|| invalid("full-session fixture Quote is missing"))?;
-        serde_json::from_str::<Value>(quote)
+        let mut profile = serde_json::from_str::<Value>(quote)
             .map_err(|error| invalid(&format!("full-session Quote is invalid: {error}")))?
             .get("mkt_swp")
             .cloned()
-            .ok_or_else(|| invalid("full-session Quote profile is missing"))
+            .ok_or_else(|| invalid("full-session Quote profile is missing"))?;
+        upgrade_legacy_reverse_timeout_ladder(swap_type, &mut profile)?;
+        Ok(profile)
     }
 
     fn complete_rfq_profile(swap_type: &str) -> Result<Value, SwapClientError> {
@@ -3026,6 +3080,7 @@ pub mod fixture_replay {
             .ok_or_else(|| invalid("full-session fixture contract is missing"))?;
         contract["order_id"] = Value::String(order.id.clone());
         contract["quote_id"] = Value::String(quote.id.clone());
+        upgrade_legacy_reverse_timeout_ladder(swap_type, &mut contract)?;
         let quote_profile = mkt_swp_body(quote)?;
         let reservation = quote_profile
             .get("reservation_terms")
@@ -3078,6 +3133,30 @@ pub mod fixture_replay {
             .ok_or_else(|| invalid("full-session Quote profile is not an object"))?
             .remove("reservation_terms");
         Ok(profile)
+    }
+
+    fn upgrade_legacy_reverse_timeout_ladder(
+        swap_type: &str,
+        terms: &mut Value,
+    ) -> Result<(), SwapClientError> {
+        if swap_type != "reverse" {
+            return Ok(());
+        }
+        let timeout_ladder = if terms.get("timeout_ladder").is_some() {
+            terms.get_mut("timeout_ladder")
+        } else {
+            terms
+                .get_mut("terms")
+                .and_then(|terms| terms.get_mut("timeout_ladder"))
+        }
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| invalid("reverse Quote timeout ladder is missing"))?;
+        let current_height = timeout_ladder
+            .get("current_height")
+            .cloned()
+            .ok_or_else(|| invalid("reverse Quote current height is missing"))?;
+        timeout_ladder.insert("lightning_current_height".to_owned(), current_height);
+        Ok(())
     }
 
     fn fixture_zero_loss(swap_type: &str, reservation_released: &str) -> Value {

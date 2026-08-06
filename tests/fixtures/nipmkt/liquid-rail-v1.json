@@ -1,0 +1,440 @@
+{
+  "schema": "openagents.immortal.mkt-swp-liquid.v1",
+  "profile": "mkt-swp:1",
+  "upstream": {
+    "repository": "https://github.com/ElementsProject/elements",
+    "commit": "7110a84bb1feafcb32a611a3e75135e7375495c1",
+    "transaction_format": "doc/elements-tx-format.md",
+    "confidential_transactions": "doc/elements-confidential-transactions.md",
+    "taproot_sighash": "doc/taproot-sighash.mediawiki",
+    "reference_implementations": [
+      {
+        "repository": "https://github.com/vulpemventures/go-elements",
+        "version": "v0.5.5",
+        "files": ["transaction/transaction.go", "taproot/taproot.go", "transaction/data/tx_valid.json"]
+      },
+      {
+        "repository": "https://github.com/BoltzExchange/boltz-core",
+        "commit": "a932d49c4daaeae3d7940dc1519bf77ef92e6dc1",
+        "files": ["lib/liquid/swap/TaprootUtils.ts", "lib/liquid/swap/Claim.ts"]
+      },
+      {
+        "repository": "https://github.com/BoltzExchange/boltz-client",
+        "commit": "746f73c5ecbd3621f628f60108a404ef26f0de95",
+        "file": "pkg/boltz/liquid.go"
+      }
+    ]
+  },
+  "limits": {
+    "maximum_transaction_bytes": 4000000,
+    "maximum_inputs": 4096,
+    "maximum_outputs": 4096,
+    "maximum_script_bytes": 10000,
+    "maximum_proof_bytes": 80000
+  },
+  "network": {
+    "genesis_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "network_id": "bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pegged_asset": "1111111111111111111111111111111111111111111111111111111111111111",
+    "asset_id": "swp:1:bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:elements:1111111111111111111111111111111111111111111111111111111111111111:liquid"
+  },
+  "rpc_normalization": {
+    "mempool_transaction_missing_confirmations": "zero",
+    "confirmed_transaction_missing_confirmations": "reject",
+    "non_numeric_confirmations": "reject",
+    "positive_confirmations_without_blockhash": "reject",
+    "zero_confirmations_with_blockhash": "reject"
+  },
+  "parser_vectors": [
+    {
+      "name": "liquid-v1-confidential-own-output",
+      "source": "deterministic non-consensus parser vector",
+      "raw_transaction": "02000000010100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff020a79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980879be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179822512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980111111111111111111111111111111111111111111111111111111111111111110100000000000003e80000000000000000000001aa01bb0000",
+      "trusted_local_unblind": "02000000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff020111111111111111111111111111111111111111111111111111111111111111110100000000000186a00022512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817980111111111111111111111111111111111111111111111111111111111111111110100000000000003e8000000000000",
+      "output_index": 0,
+      "amount": "100000",
+      "script_pubkey": "512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "authority": "local_elementsd_unblind",
+      "expected": "accepted"
+    },
+    {
+      "name": "liquid-v1-negative-unblind-amount",
+      "mutation": "trusted unblind amount becomes 100001",
+      "expected": "swp_liquid_unblind_mismatch"
+    },
+    {
+      "name": "liquid-v1-negative-missing-range-proof",
+      "mutation": "remove selected output range proof",
+      "expected": "swp_liquid_output_invalid"
+    },
+    {
+      "name": "liquid-v1-negative-foreign-unblind",
+      "mutation": "omit trusted local unblind result",
+      "expected": "swp_liquid_unblind_failed"
+    }
+  ],
+  "taproot_sighash_vectors": [
+    {
+      "name": "liquid-v1-taproot-claim-default",
+      "source": "adapted with go-elements v0.5.5 HashForWitnessV1",
+      "raw_transaction": "02000000000211111111111111111111111111111111111111111111111111111111111111110100000000feffffff22222222222222222222222222222222222222222222222222222222222222220200000000ffffffff020133333333333333333333333333333333333333333333333333333333333333330100000000000003e80022512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179801333333333333333333333333333333333333333333333333333333333333333301000000000000006400002a000000",
+      "genesis_hash": "0000000000000000000000000000000000000000000000000000000000000001",
+      "input_index": 0,
+      "prevouts": [
+        {
+          "asset": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "value": "50000",
+          "script_pubkey": "512020cb14a42c61f892cb11cb0d858be4cfbdb003f1870ee6effe288aa72575a53d"
+        },
+        {
+          "asset": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "value": "75000",
+          "script_pubkey": "00144444444444444444444444444444444444444444"
+        }
+      ],
+      "internal_key": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "merkle_root": "b208532c89ae2515de74aeedf6c6b7479dc752bce591d4633b2697f38d9bb9a3",
+      "output_key": "20cb14a42c61f892cb11cb0d858be4cfbdb003f1870ee6effe288aa72575a53d",
+      "leaf_hash": "eda8db7da440143a1881c7b656877c499ef9d6d669890a02ea2fa64989f75089",
+      "script": "20f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9ac",
+      "control_block": "c579be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179892000f84636328af44df47796204782ee38497571aad78816027fb29bf3ba520",
+      "annex": null,
+      "signer": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "sighash": "4cc7f9b9ef6cebb3b75b8a1f74603aa6e6a265534739dfd8c885681a00296d9f",
+      "signature": "6abf170f8851af8f4077b9cc2705f8c473f86cb38c95b786ea50cffd3cfa54ee6a39090a8b9f97f539ddd0b3f87989d71b2cb135fee7ebb85afd59a8bd793f42",
+      "expected": "accepted"
+    },
+    {
+      "name": "liquid-v1-taproot-refund-default-annex",
+      "source": "adapted with go-elements v0.5.5 HashForWitnessV1",
+      "raw_transaction": "02000000000211111111111111111111111111111111111111111111111111111111111111110100000000feffffff22222222222222222222222222222222222222222222222222222222222222220200000000ffffffff020133333333333333333333333333333333333333333333333333333333333333330100000000000003e80022512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f8179801333333333333333333333333333333333333333333333333333333333333333301000000000000006400002a000000",
+      "genesis_hash": "0000000000000000000000000000000000000000000000000000000000000001",
+      "input_index": 0,
+      "prevouts": [
+        {
+          "asset": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "value": "50000",
+          "script_pubkey": "512020cb14a42c61f892cb11cb0d858be4cfbdb003f1870ee6effe288aa72575a53d"
+        },
+        {
+          "asset": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "value": "75000",
+          "script_pubkey": "00144444444444444444444444444444444444444444"
+        }
+      ],
+      "internal_key": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "merkle_root": "b208532c89ae2515de74aeedf6c6b7479dc752bce591d4633b2697f38d9bb9a3",
+      "output_key": "20cb14a42c61f892cb11cb0d858be4cfbdb003f1870ee6effe288aa72575a53d",
+      "leaf_hash": "92000f84636328af44df47796204782ee38497571aad78816027fb29bf3ba520",
+      "script": "029000b17520e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13ac",
+      "control_block": "c579be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798eda8db7da440143a1881c7b656877c499ef9d6d669890a02ea2fa64989f75089",
+      "annex": "50aabb",
+      "signer": "e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
+      "sighash": "d092a274e22d24e5627af85358dd3a16e62ebea76882d03f03b011f984c0a096",
+      "signature": "c93dcb958e95bf395f58f87d74382e2ea743b924409b1b518b8841da50853d2e25c5bab08207c33724f2982f38851971e721f66f92e59ddee9fb19302c70a04a",
+      "expected": "accepted"
+    }
+  ],
+  "taproot_sighash_mutations": [
+    {"name": "liquid-v1-negative-annex", "mutation": "change annex byte", "expected": "swp_liquid_output_invalid"},
+    {"name": "liquid-v1-negative-script", "mutation": "change revealed script byte", "expected": "swp_liquid_output_invalid"},
+    {"name": "liquid-v1-negative-control-block", "mutation": "change control-block branch byte", "expected": "swp_liquid_output_invalid"},
+    {"name": "liquid-v1-negative-input", "mutation": "change input sequence", "expected": "swp_liquid_output_invalid"},
+    {"name": "liquid-v1-negative-output", "mutation": "change output value", "expected": "swp_liquid_output_invalid"},
+    {"name": "liquid-v1-negative-prevout-asset", "mutation": "change prevout asset", "expected": "swp_liquid_output_invalid"},
+    {"name": "liquid-v1-negative-prevout-value", "mutation": "change prevout value", "expected": "swp_liquid_output_invalid"}
+  ],
+  "chain_status_vocabulary": [
+    {"state":"accepted","role":"provider","base_state":"accepted"},
+    {"state":"source_lock_terms_ready","role":"provider","base_state":"awaiting_input"},
+    {"state":"requester_source_verified","role":"requester","base_state":"awaiting_input"},
+    {"state":"destination_lock_terms_ready","role":"provider","base_state":"awaiting_input"},
+    {"state":"requester_destination_verified","role":"requester","base_state":"awaiting_input"},
+    {"state":"source_funding_required","role":"provider","base_state":"funding_required"},
+    {"state":"requester_source_broadcast","role":"requester","base_state":"funding_observed"},
+    {"state":"source_funding_observed","role":"provider","base_state":"funding_observed"},
+    {"state":"source_funding_final","role":"provider","base_state":"executing"},
+    {"state":"provider_destination_broadcast","role":"provider","base_state":"funding_observed"},
+    {"state":"destination_funding_observed","role":"provider","base_state":"funding_observed"},
+    {"state":"destination_funding_final","role":"provider","base_state":"executing"},
+    {"state":"requester_destination_claim_pending","role":"requester","base_state":"executing"},
+    {"state":"requester_destination_claimed","role":"requester","base_state":"executing"},
+    {"state":"provider_source_claim_pending","role":"provider","base_state":"settlement_pending"},
+    {"state":"provider_source_claimed","role":"provider","base_state":"executing"},
+    {"state":"provider_destination_refund_prepared","role":"provider","base_state":"refund_pending"},
+    {"state":"provider_destination_refund_pending","role":"provider","base_state":"refund_pending"},
+    {"state":"provider_destination_refunded","role":"provider","base_state":"refunded"},
+    {"state":"requester_source_refund_prepared","role":"requester","base_state":"refund_pending"},
+    {"state":"requester_source_refund_pending","role":"requester","base_state":"refund_pending"},
+    {"state":"requester_source_refunded","role":"requester","base_state":"refunded"}
+  ],
+  "terminal_evidence_vectors": {
+    "positive": [
+      {"name":"swp-v1-liquid-terminal-submarine-completed","swap_type":"submarine","outcome":"completed","liquid_leg":"source","class":"liquid_spend","rung":"settled","finality_state":"settled"},
+      {"name":"swp-v1-liquid-terminal-submarine-refunded","swap_type":"submarine","outcome":"refunded","liquid_leg":"source","class":"liquid_spend","rung":"settled","finality_state":"refunded_final"},
+      {"name":"swp-v1-liquid-terminal-reverse-completed","swap_type":"reverse","outcome":"completed","liquid_leg":"destination","class":"liquid_spend","rung":"settled","finality_state":"settled"},
+      {"name":"swp-v1-liquid-terminal-reverse-refunded","swap_type":"reverse","outcome":"refunded","liquid_leg":"destination","class":"liquid_spend","rung":"settled","finality_state":"refunded_final"},
+      {"name":"swp-v1-liquid-terminal-btc-liquid-completed","swap_type":"chain","direction":"btc_to_liquid","outcome":"completed","liquid_leg":"destination","class":"liquid_output","rung":"verified","finality_state":"funding_final"},
+      {"name":"swp-v1-liquid-terminal-liquid-btc-completed","swap_type":"chain","direction":"liquid_to_btc","outcome":"completed","liquid_leg":"source","class":"liquid_spend","rung":"settled","finality_state":"settled"},
+      {"name":"swp-v1-liquid-terminal-btc-liquid-unfunded-destination-refund","swap_type":"chain","direction":"btc_to_liquid","outcome":"refunded","liquid_leg":"destination","class":"reservation","rung":"verified","finality_state":"released_unfunded"},
+      {"name":"swp-v1-liquid-terminal-liquid-btc-unfunded-destination-refund","swap_type":"chain","direction":"liquid_to_btc","outcome":"refunded","liquid_leg":"source","class":"liquid_spend","rung":"settled","finality_state":"refunded_final"}
+    ],
+    "negative": [
+      {"name":"swp-v1-negative-liquid-terminal-spend-reuses-funding","mutation":"spend artifact equals contracted funding artifact","expected":"swp_external_effect_conflict"},
+      {"name":"swp-v1-negative-liquid-terminal-spend-outpoint","mutation":"spend reference differs from contracted funding outpoint","expected":"swp_external_effect_conflict"},
+      {"name":"swp-v1-negative-liquid-terminal-output-artifact","mutation":"output artifact differs from contracted funding transaction","expected":"swp_external_effect_conflict"},
+      {"name":"swp-v1-negative-liquid-terminal-unfunded-release","mutation":"unfunded destination release differs from contracted reservation","expected":"swp_external_effect_conflict"},
+      {"name":"swp-v1-negative-liquid-terminal-persisted-result","mutation":"persisted Liquid terminal result digest changes","expected":"swp_external_effect_conflict"}
+    ]
+  },
+  "client_vectors": [
+    {
+      "name": "swp-v1-liquid-submarine-regtest-refund",
+      "swap_type": "submarine",
+      "ordered_rails": ["liquid", "lightning"],
+      "purpose": "requester_broadcast",
+      "exit_path": "refund",
+      "expected": "accepted"
+    },
+    {
+      "name": "swp-v1-liquid-reverse-regtest-claim",
+      "swap_type": "reverse",
+      "ordered_rails": ["lightning", "liquid"],
+      "purpose": "counterparty_lock",
+      "pre_fund_node_requirement": "confirmed_lock",
+      "exit_path": "claim",
+      "expected": "accepted"
+    },
+    {
+      "name": "swp-v1-btc-liquid-chain-regtest",
+      "swap_type": "chain",
+      "ordered_rails": ["chain", "liquid"],
+      "purpose": "counterparty_lock",
+      "pre_fund_node_requirement": "mempool_acceptance_of_exact_unbroadcast_template",
+      "source_funding_required_signer": "provider",
+      "requester_source_broadcast_base_state": "funding_observed",
+      "provider_destination_broadcast_base_state": "funding_observed",
+      "exit_path": "claim",
+      "expected": "accepted"
+    },
+    {
+      "name": "swp-v1-negative-liquid-exit-outpoint",
+      "mutation": "unilateral exit spends another funding output",
+      "expected": "swp_exit_package_mismatch"
+    },
+    {
+      "name": "swp-v1-negative-liquid-exit-witness",
+      "mutation": "pre-signed unilateral exit has no script witness",
+      "expected": "swp_exit_package_unusable"
+    },
+    {
+      "name": "swp-v1-negative-liquid-exit-preimage",
+      "mutation": "change the claim preimage while preserving the package transaction digest",
+      "expected": "swp_exit_package_unusable"
+    },
+    {
+      "name": "swp-v1-negative-liquid-exit-script-witness",
+      "mutation": "change the script revealed by the witness while preserving the package transaction digest",
+      "expected": "swp_exit_package_mismatch"
+    },
+    {
+      "name": "swp-v1-negative-liquid-exit-control-block-witness",
+      "mutation": "change the control block revealed by the witness while preserving the package transaction digest",
+      "expected": "swp_exit_package_mismatch"
+    },
+    {
+      "name": "swp-v1-negative-liquid-exit-genesis",
+      "mutation": "change the full Elements genesis hash while retaining its CAIP-2 prefix",
+      "expected": "swp_liquid_output_invalid"
+    },
+    {
+      "name": "swp-v1-negative-liquid-exit-schema",
+      "mutation": "omit a required transaction, input, tree, genesis, or fee member from the Liquid recovery package",
+      "expected": "swp_exit_package_unusable"
+    },
+    {
+      "name": "swp-v1-liquid-exit-optional-taproot-tree",
+      "mutation": "include the exact bilateral verifier taproot_tree in the Liquid recovery package",
+      "expected": "restored"
+    },
+    {
+      "name": "swp-v1-negative-liquid-exit-unknown-member",
+      "mutation": "add an unrecognized member to the Liquid recovery verification object",
+      "expected": "swp_exit_package_unusable"
+    },
+    {
+      "name": "swp-v1-privacy-liquid-blinding-key-tripwire",
+      "mutation": "exit package contains a blinding_key member",
+      "expected": "swp_secret_material_forbidden"
+    },
+    {
+      "name": "swp-v1-negative-btc-liquid-destination-signature",
+      "mutation": "change the provider destination exit signature and recompute the package transaction digest",
+      "expected": "swp_liquid_output_invalid"
+    },
+    {
+      "name": "swp-v1-negative-btc-liquid-destination-mempool",
+      "mutation": "local elementsd rejects the exact unbroadcast destination transaction",
+      "expected": "swp_funding_not_authorized"
+    },
+    {
+      "name": "swp-v1-negative-btc-liquid-source-before-preflight",
+      "mutation": "requester broadcasts the source before the signed destination preflight ladder",
+      "expected": "swp_status_transition_invalid"
+    },
+    {
+      "name": "swp-v1-negative-cross-signer-status-prepublish",
+      "mutation": "dependent Status is present with a later created_at but does not reference the exact counterparty prerequisite Status",
+      "expected": "swp_status_transition_invalid"
+    },
+    {
+      "name": "swp-v1-negative-liquid-chain-terminal-refund-without-source-release",
+      "mutation": "provider terminal refunded follows its destination refund but does not reference the exact requester source-refunded Status",
+      "expected": "swp_status_transition_invalid"
+    },
+    {
+      "name": "swp-v1-negative-requester-claims-source-funding-required",
+      "mutation": "requester signs the provider source funding instruction",
+      "expected": "swp_status_signer_invalid"
+    }
+  ],
+  "timeout_vectors": [
+    {
+      "name": "swp-v1-liquid-reverse-cross-domain-timeout",
+      "ladder": {
+        "swap_type": "reverse",
+        "current_height": 100,
+        "lightning_current_height": 800,
+        "lock_last": 110,
+        "user_claim_last": 120,
+        "provider_refund_first": 140,
+        "hold_expiry_height": 880,
+        "chain_finality_blocks": 1,
+        "broadcast_safety_blocks": 2,
+        "reorg_safety_blocks": 6,
+        "lightning_settlement_blocks": 6,
+        "height_observed_at": 1000,
+        "height_observation_max_age_seconds": 120,
+        "chain_block_interval_seconds": 60,
+        "lightning_block_interval_seconds": 600,
+        "cross_domain_safety_seconds": 3600,
+        "provider_refund_expected_at": 3520,
+        "hold_expiry_expected_at": 49000
+      },
+      "observed_at": 1180,
+      "clock_skew_seconds": 60,
+      "expected": "accepted"
+    },
+    {
+      "name": "swp-v1-negative-liquid-reverse-cross-domain-timeout",
+      "ladder": {
+        "swap_type": "reverse",
+        "current_height": 100,
+        "lightning_current_height": 800,
+        "lock_last": 110,
+        "user_claim_last": 120,
+        "provider_refund_first": 140,
+        "hold_expiry_height": 880,
+        "chain_finality_blocks": 1,
+        "broadcast_safety_blocks": 2,
+        "reorg_safety_blocks": 6,
+        "lightning_settlement_blocks": 6,
+        "height_observed_at": 1000,
+        "height_observation_max_age_seconds": 120,
+        "chain_block_interval_seconds": 60,
+        "lightning_block_interval_seconds": 600,
+        "cross_domain_safety_seconds": 3600,
+        "provider_refund_expected_at": 3521,
+        "hold_expiry_expected_at": 49000
+      },
+      "observed_at": 1180,
+      "clock_skew_seconds": 60,
+      "expected": "swp_timeout_ladder_unsafe"
+    }
+  ],
+  "requester_engine_vectors": [
+    {
+      "name": "swp-v1-liquid-requester-submarine-persisted-refund",
+      "expected": "resolved_authorized_and_restored"
+    },
+    {
+      "name": "swp-v1-liquid-requester-reverse-persisted-claim",
+      "expected": "authorized_and_restored"
+    },
+    {
+      "name": "swp-v1-liquid-requester-btc-liquid-chain-persisted-claim",
+      "expected": "authorized_and_restored"
+    },
+    {
+      "name": "swp-v1-liquid-requester-liquid-btc-chain-post-order-refund",
+      "expected": "resolved_authorized_and_restored"
+    },
+    {
+      "name": "swp-v1-liquid-requester-source-resolution-tamper",
+      "expected": "swp_contract_terms_mismatch"
+    },
+    {
+      "name": "swp-v1-liquid-requester-chain-path-specific-exits",
+      "expected": "source_refund_and_destination_claim"
+    },
+    {
+      "name": "swp-v1-liquid-requester-provenance-tamper",
+      "expected": "swp_external_effect_conflict"
+    },
+    {
+      "name": "swp-v1-liquid-requester-exit-commitment-tamper",
+      "expected": "swp_exit_package_mismatch"
+    },
+    {
+      "name": "swp-v1-liquid-requester-recovery-binding",
+      "expected": "liquid_claim_or_refund_effect_bound"
+    },
+    {
+      "name": "swp-v1-liquid-requester-presigned-broadcast-replay",
+      "expected": "local_elementsd_exact_once"
+    },
+    {
+      "name": "swp-v1-liquid-requester-wallet-broadcast-replay",
+      "expected": "sign_then_local_elementsd_exact_once"
+    },
+    {
+      "name": "swp-v1-liquid-wallet-broadcast-crash-retry",
+      "expected": "load_exact_private_artifact_without_resigning"
+    },
+    {
+      "name": "swp-v1-liquid-exit-wallet-claim",
+      "expected": "exact_schema_and_private_broadcast_artifact"
+    },
+    {
+      "name": "swp-v1-privacy-post-claim-snapshot",
+      "expected": "effect_result_and_artifact_ref_without_claim_witness_or_preimage"
+    }
+  ],
+  "claims": {
+    "own_output_asset_and_amount_verification": true,
+    "taproot_tree_equivalence": true,
+    "taproot_default_script_path_sighash": true,
+    "taproot_non_default_sighash": false,
+    "arbitrary_tapscript_execution": false,
+    "elements_transaction_parser": true,
+    "client_verify_before_fund": true,
+    "client_unilateral_exit": true,
+    "client_presigned_exit_sighash_and_signature_verification": true,
+    "arbitrary_third_party_range_proof_verification": false,
+    "arbitrary_third_party_surjection_proof_verification": false,
+    "live_deployment": false,
+    "public_replacement": false
+  },
+  "forbidden_persistence": [
+    "wallet_seed",
+    "spend_key",
+    "claim_key",
+    "refund_key",
+    "blinding_key",
+    "value_blinder",
+    "asset_blinder",
+    "claim_witness",
+    "signed_claim_transaction",
+    "released_preimage"
+  ]
+}

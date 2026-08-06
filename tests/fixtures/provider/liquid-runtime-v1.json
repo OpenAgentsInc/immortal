@@ -1,0 +1,186 @@
+{
+  "schema": "openagents.immortal.provider-liquid-runtime.v1",
+  "now": 1785888000,
+  "bitcoin_network_id": "bip122:000000000019d6689c085ae165831e93",
+  "liquid_network_id": "bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "liquid_pegged_asset": "1111111111111111111111111111111111111111111111111111111111111111",
+  "taproot": {
+    "bitcoin_leaf_version": "c0",
+    "liquid_leaf_version": "c4",
+    "liquid_tag_domain": "elements",
+    "liquid_control_block_verifier": "verify_liquid_control_block",
+    "cooperative_pubkey_order": ["requester", "provider"]
+  },
+  "fee_weights": {
+    "single_input_only": true,
+    "observed_confidential_funding_vbytes": 1398,
+    "budgeted_confidential_funding_vbytes": 1700,
+    "budgeted_claim_vbytes": 300,
+    "budgeted_refund_vbytes": 300,
+    "liquid_submarine_total_vbytes": 300,
+    "liquid_reverse_total_vbytes": 2000,
+    "btc_to_lbtc_chain_total_vbytes": 2000,
+    "lbtc_to_btc_chain_total_vbytes": 455,
+    "at_10_sat_per_vbyte": {
+      "liquid_submarine": {
+        "quote_budget_sat": 3000,
+        "requester_liquid_funding_cap_sat": 17000,
+        "requester_exit_path": "refund",
+        "requester_exit_fee_sat": 3000
+      },
+      "liquid_reverse": {
+        "quote_budget_sat": 20000,
+        "requester_liquid_funding_cap_sat": null,
+        "requester_exit_path": "claim",
+        "requester_exit_fee_sat": 3000
+      },
+      "btc_to_lbtc_chain": {
+        "quote_budget_sat": 20000,
+        "requester_liquid_funding_cap_sat": null,
+        "requester_exit_path": "claim",
+        "requester_exit_fee_sat": 3000
+      },
+      "lbtc_to_btc_chain": {
+        "quote_budget_sat": 4550,
+        "requester_liquid_funding_cap_sat": 17000,
+        "requester_exit_path": "refund",
+        "requester_exit_fee_sat": 3000
+      }
+    }
+  },
+  "quote_cases": [
+    {
+      "name": "provider-liquid-v1-btc-to-lbtc-chain",
+      "expected_swap_type": "chain",
+      "source_rail": "bitcoin",
+      "destination_rail": "liquid",
+      "source_block_interval_seconds": 600,
+      "destination_block_interval_seconds": 60,
+      "destination_funding": "provider",
+      "restart": "replay_exact_effect_without_second_broadcast"
+    },
+    {
+      "name": "provider-liquid-v1-lbtc-to-btc-chain",
+      "expected_swap_type": "chain",
+      "source_rail": "liquid",
+      "destination_rail": "bitcoin",
+      "source_block_interval_seconds": 60,
+      "destination_block_interval_seconds": 600,
+      "destination_funding": "provider",
+      "restart": "replay_exact_effect_without_second_broadcast"
+    }
+  ],
+  "chain_lifecycle": [
+    "source_lock_terms_ready",
+    "destination_lock_terms_ready",
+    "source_funding_required",
+    "source_funding_observed",
+    "source_funding_final",
+    "provider_destination_broadcast",
+    "destination_funding_observed",
+    "destination_funding_final",
+    "requester_destination_claim_pending",
+    "provider_source_claim_pending",
+    "provider_source_claimed",
+    "completed"
+  ],
+  "chain_preflight": {
+    "destination_lock_terms_ready_after": "requester_source_verified",
+    "source_funding_required_after": "requester_destination_verified",
+    "provider_destination_broadcast_after": "source_funding_final"
+  },
+  "claim_handoff": {
+    "destination_funding_final_signer": "provider",
+    "requester_destination_claim_pending_signer": "requester",
+    "requester_destination_claimed_signer": "requester",
+    "provider_source_claim_pending_signer": "provider"
+  },
+  "destination_refund_lifecycle": [
+    "requester_destination_claim_pending",
+    "provider_destination_refund_pending",
+    "provider_destination_refunded",
+    "requester_source_refund_pending",
+    "requester_source_refunded",
+    "refunded"
+  ],
+  "source_only_refund_lifecycle": [
+    "source_funding_final",
+    "requester_source_refund_pending",
+    "requester_source_refunded",
+    "refunded"
+  ],
+  "source_only_destination_evidence": {
+    "state": "refunded",
+    "class": "reservation",
+    "rung": "verified",
+    "finality": "released_unfunded"
+  },
+  "submarine_lifecycle": [
+    "lock_terms_ready",
+    "funding_observed",
+    "funding_final",
+    "lightning_payment_pending",
+    "lightning_paid",
+    "provider_claim_pending",
+    "provider_claimed",
+    "completed"
+  ],
+  "reverse_lifecycle": [
+    "hold_invoice_ready",
+    "lightning_htlcs_held",
+    "provider_lock_terms_ready",
+    "provider_funding_broadcast",
+    "funding_observed",
+    "funding_final",
+    "lightning_settlement_pending",
+    "lightning_paid",
+    "completed"
+  ],
+  "reverse_refund_lifecycle": [
+    "funding_final",
+    "provider_refund_prepared",
+    "provider_refund_pending",
+    "provider_refunded",
+    "invoice_cancelled",
+    "refunded"
+  ],
+  "durable_operations": {
+    "bitcoin_destination_fund": "chain_fund",
+    "bitcoin_source_claim": "chain_claim",
+    "liquid_destination_fund": "liquid_chain_fund",
+    "liquid_destination_refund": "liquid_chain_refund",
+    "liquid_source_claim": "liquid_chain_claim",
+    "liquid_submarine_claim": "liquid_submarine_claim",
+    "liquid_reverse_fund": "liquid_reverse_fund",
+    "liquid_reverse_refund": "liquid_reverse_refund"
+  },
+  "restart_guards": [
+    "applied_funding_replays_without_rail_rpc",
+    "applied_exit_replays_without_rail_rpc",
+    "changed_full_effect_request_conflicts",
+    "pending_submarine_claim_retries_exact_effect",
+    "pending_reverse_refund_retries_exact_effect",
+    "announced_claim_supersedes_unapplied_reverse_refund"
+  ],
+  "spender_resolution": [
+    "exact_requester_claim_settles_hold_after_reorg_safe_finality",
+    "exact_provider_refund_cancels_hold_after_reorg_safe_finality",
+    "announced_claim_without_observed_spender_waits",
+    "announced_claim_conflicting_with_observed_spender_fails_closed"
+  ],
+  "fail_closed": [
+    "unsigned_liquid_exit",
+    "shape_only_liquid_witness",
+    "replacement_or_competing_spend",
+    "confirmation_reorg_below_contract_minimum",
+    "destination_refund_reorg_before_close",
+    "source_refund_reorg_before_close",
+    "source_claim_reorg_before_close",
+    "submarine_claim_reorg_before_close",
+    "reverse_claim_reorg_before_hold_settlement",
+    "reverse_refund_reorg_before_invoice_cancellation",
+    "stale_cross_domain_height_observation",
+    "changed_effect_request_after_restart",
+    "multiple_funding_inputs"
+  ]
+}

@@ -4,6 +4,7 @@ use crate::{
     config::FundedProviderConfig,
     funded_mode::{FundedMode, FundedModePolicy, signer_from_environment},
     health::{ProviderHealth, serve_health},
+    liquid::LiquidProviderRail,
     relay_actor::run_with_mode,
     store::ProviderStore,
     wallet::{BitcoinNetwork, WalletPath},
@@ -22,6 +23,7 @@ enum FundedError {
     Runtime,
     Database(String),
     Bitcoind(String),
+    Elementsd(String),
     Lightning(String),
     Wallet(String),
     Health(String),
@@ -39,6 +41,9 @@ impl fmt::Display for FundedError {
             Self::Runtime => formatter.write_str("provider async runtime could not start"),
             Self::Database(error) => write!(formatter, "provider database startup failed: {error}"),
             Self::Bitcoind(error) => write!(formatter, "provider bitcoind startup failed: {error}"),
+            Self::Elementsd(error) => {
+                write!(formatter, "provider elementsd startup failed: {error}")
+            }
             Self::Lightning(error) => {
                 write!(formatter, "provider Lightning startup failed: {error}")
             }
@@ -90,6 +95,12 @@ async fn run_async() -> Result<(), FundedError> {
         .map_err(|error| FundedError::Configuration(error.to_string()))?;
     let signer = signer_from_environment().map_err(FundedError::Configuration)?;
     verify_bitcoind(&config).await?;
+    if let Some(elementsd) = &config.elementsd {
+        elementsd
+            .startup_probe("provider-startup:liquid")
+            .await
+            .map_err(|error| FundedError::Elementsd(error.to_string()))?;
+    }
     config
         .lightning
         .probe("provider-startup")
@@ -126,6 +137,7 @@ async fn run_async() -> Result<(), FundedError> {
     };
     let relay_url = config.relay_url.clone();
     let mode_bitcoind = config.bitcoind.clone();
+    let mode_liquid = liquid_provider_rail(config.elementsd.clone());
     let watch_bitcoind = config.bitcoind.clone();
     let mode_lightning = config.lightning.clone();
     let boltz_bitcoind = config.bitcoind.clone();
@@ -139,6 +151,7 @@ async fn run_async() -> Result<(), FundedError> {
     let minimum_confirmations = config.minimum_confirmations;
     let reorg_safety_blocks = config.reorg_safety_blocks;
     let pricing = config.pricing;
+    let lab_forces_fallback_feerate = config.lab_forces_fallback_feerate;
     let hold_invoice_expiry_seconds = config.hold_invoice_expiry_seconds;
     let cooperative_signing = config.cooperative_signing;
     let boltz_pricing = pricing.clone();
@@ -150,12 +163,14 @@ async fn run_async() -> Result<(), FundedError> {
         wallet,
         mode_bitcoind,
         mode_lightning,
+        mode_liquid,
         FundedModePolicy {
             network,
             cooperative_signing,
             minimum_confirmations,
             reorg_safety_blocks,
             pricing,
+            lab_forces_fallback_feerate,
             hold_invoice_expiry_seconds,
         },
     );
@@ -270,6 +285,12 @@ async fn run_async() -> Result<(), FundedError> {
         await_boltz_shutdown(task).await?;
     }
     Ok(())
+}
+
+fn liquid_provider_rail(
+    elementsd: Option<crate::elementsd::ElementsdClient>,
+) -> Option<LiquidProviderRail> {
+    elementsd.map(LiquidProviderRail::new)
 }
 
 #[cfg(unix)]
@@ -399,5 +420,37 @@ fn network_name(network: BitcoinNetwork) -> &'static str {
         BitcoinNetwork::Testnet => "testnet",
         BitcoinNetwork::Signet => "signet",
         BitcoinNetwork::Regtest => "regtest",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use immortal_core::liquid::{LiquidAssetId, LiquidNetworkId};
+
+    use crate::{
+        bitcoind::{BitcoindAuth, BitcoindEndpoint, BitcoindLimits},
+        elementsd::{ElementsdClient, ElementsdWalletName},
+    };
+
+    use super::liquid_provider_rail;
+
+    #[test]
+    fn elementsd_configuration_is_passed_into_the_funded_mode_rail() {
+        assert!(liquid_provider_rail(None).is_none());
+        let network = LiquidNetworkId::parse("bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .expect("fixture Liquid network");
+        let asset = LiquidAssetId::parse(&"11".repeat(32)).expect("fixture Liquid asset");
+        let elementsd = ElementsdClient::new(
+            BitcoindEndpoint::new("127.0.0.1", 18884).expect("fixture endpoint"),
+            BitcoindAuth::new("fixture-user", "fixture-password").expect("fixture auth"),
+            BitcoindLimits::default(),
+            ElementsdWalletName::new("provider-liquid").expect("fixture wallet"),
+            network.clone(),
+            asset,
+        )
+        .expect("fixture elementsd");
+        let rail = liquid_provider_rail(Some(elementsd)).expect("enabled Liquid rail");
+        assert_eq!(rail.network_id(), network.as_str());
+        assert_eq!(rail.pegged_asset_id(), "11".repeat(32));
     }
 }

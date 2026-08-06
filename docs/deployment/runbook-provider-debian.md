@@ -3,9 +3,10 @@
 This is the operator contract for the custody-bearing `immortal-provider` v1
 binary. It runs as a product separate from the `immortal` relay, owns a
 separate Postgres database, and drives operator-owned Bitcoin Core and either
-Core Lightning or LND. The wallet seed, Lightning wallet, node credentials,
-private keys, and unreleased preimages never enter provider Postgres or relay
-state.
+Core Lightning or LND. An optional Liquid rail drives an operator-owned
+elementsd wallet over loopback. The wallet seed, Lightning and Elements
+wallets, node credentials, private keys, and unreleased preimages never enter
+provider Postgres or relay state.
 
 The M12 closing packet (#19) binds this runbook to committed deployment
 assets, fresh-host execution evidence, and the network shadow/cutover procedure
@@ -25,6 +26,12 @@ Choose one Lightning rail:
   v0.3.3; or
 - LND v0.20.1-beta with its TLS REST listener bound to loopback, native hold
   invoices, and separate readonly, invoices, and router macaroons.
+
+For BTC↔L-BTC service, also install Elements Core 23.3.3 with JSON-RPC bound
+to loopback and a dedicated provider wallet. Keep Liquid disabled when this
+node and its funded wallet are unavailable; the daemon then omits every
+Liquid Offering side. The Elements node is an optional rail prerequisite, not
+a relay dependency.
 
 The local conformance gate pins Bitcoin Core 31.1, Core Lightning v26.06.6,
 and `hold` v0.3.3. Its independently checked hold archives and hashes are in
@@ -61,6 +68,14 @@ TLS handshake signature, and refuses a public resolved or connected peer. It
 probes `getinfo` and the block notifier before becoming ready. No gRPC client,
 LND admin macaroon, or hold plugin is used. ZMQ, HTTPS price feeds, and public
 `wss://` provider transport remain excluded.
+
+For Elements, enable wallet and transaction indexing, bind RPC to loopback,
+and create a wallet dedicated to this provider. The daemon uses the same
+bounded hand-written HTTP/1.1 JSON-RPC transport as bitcoind. It checks the
+genesis-derived BIP-122 network identifier and `getsidechaininfo.pegged_asset`
+before serving Liquid sides. It may unblind only its own wallet outputs. Do
+not export the wallet's private keys, blinding keys, value blinders, or asset
+blinders into the provider environment, Postgres, relay, or support bundles.
 
 ## 2. Build and install
 
@@ -167,6 +182,35 @@ IMMORTAL_PROVIDER_RESERVATION_TIER=hard
 IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM=1000
 ```
 
+To enable Liquid, append every value below. Derive both identifiers from the
+exact local node; do not substitute a network label or ticker:
+
+```sh
+elements-cli -rpcwallet=provider-liquid getblockhash 0
+elements-cli -rpcwallet=provider-liquid getsidechaininfo \
+  | jq -r '.pegged_asset'
+```
+
+The BIP-122 value is `bip122:` followed by the first 32 lowercase hexadecimal
+characters of the displayed genesis hash.
+
+```ini
+IMMORTAL_PROVIDER_LIQUID_ENABLED=true
+IMMORTAL_PROVIDER_ELEMENTSD_HOST=127.0.0.1
+IMMORTAL_PROVIDER_ELEMENTSD_PORT=7041
+IMMORTAL_PROVIDER_ELEMENTSD_RPC_USER=<ELEMENTSD_RPC_USER>
+IMMORTAL_PROVIDER_ELEMENTSD_RPC_PASSWORD=<ELEMENTSD_RPC_PASSWORD>
+IMMORTAL_PROVIDER_ELEMENTSD_WALLET=provider-liquid
+IMMORTAL_PROVIDER_LIQUID_NETWORK_ID=bip122:<32_LOWERCASE_HEX>
+IMMORTAL_PROVIDER_LIQUID_PEGGED_ASSET=<64_LOWERCASE_HEX>
+```
+
+Use a distinct elementsd RPC credential and protect its configuration as
+custody-adjacent operator state. The provider environment contains the RPC
+password but never the Elements wallet keys. Omitting
+`IMMORTAL_PROVIDER_LIQUID_ENABLED` disables the rail; partial or stray Liquid
+settings fail startup.
+
 The Boltz compatibility listener is optional and absent unless all three
 values below are present. Read the digest from the installed bytes, paste that
 exact value into the environment file, bind the daemon to a private or loopback
@@ -249,9 +293,10 @@ sudo install -o root -g root -m 0644 deploy/systemd/immortal-provider.service \
 
 For CLN, adjust the Lightning unit name and socket path to match the installed
 service. For LND, replace `lightningd.service` with the local LND unit and add
-all four configured credential paths to `ReadOnlyPaths`. Keep Postgres,
-bitcoind, relay, Lightning REST, health, and alert traffic on loopback. Then
-verify and start:
+all four configured credential paths to `ReadOnlyPaths`. When Liquid is
+enabled, order the provider after the local elementsd unit without binding its
+lifetime to the relay unit. Keep Postgres, bitcoind, elementsd, relay,
+Lightning REST, health, and alert traffic on loopback. Then verify and start:
 
 ```sh
 sudo systemd-analyze verify /etc/systemd/system/immortal-provider.service
@@ -268,10 +313,11 @@ to `paused`, new sessions are refused, existing sessions and recovery
 continue, and the process exits after its active-session count reaches zero.
 The unit deliberately has no forced stop timeout or SIGKILL fallback.
 
-Startup must fail if the configured networks disagree, bitcoind lacks the
-required RPCs, the selected Lightning rail lacks a required capability, an
-LND certificate or macaroon is unsafe, the wallet file is unsafe, the provider
-migration is unknown, or any endpoint exceeds its allowed scope.
+Startup must fail if the configured networks disagree, bitcoind or an enabled
+elementsd lacks the required RPCs, the selected Lightning rail lacks a
+required capability, an LND certificate or macaroon is unsafe, the wallet
+file is unsafe, the provider migration is unknown, or any endpoint exceeds
+its allowed scope.
 
 ## 7. Health, funding, and liquidity
 
@@ -298,6 +344,29 @@ provider reads the selected rail's channel balance and will not issue a hard
 reservation without durable capacity. Channel balancing, fee policy, and
 capital limits remain operator responsibilities.
 
+When Liquid is enabled, obtain a confidential receiving address from the
+dedicated Elements wallet and fund it with L-BTC according to the same hot
+inventory policy:
+
+```sh
+elements-cli -rpcwallet=provider-liquid getnewaddress
+```
+
+Verify the wallet's available pegged-asset balance and the daemon's readiness
+before allowing Liquid RFQs. The wallet is the unblinding and signing
+authority for provider-owned outputs. Back up and drain it using Elements
+Core's wallet procedures separately from provider Postgres. Never copy a
+wallet backup into the provider database-backup directory.
+
+Liquid v1 prices a one-input confidential funding transaction. Maintain at
+least one confirmed provider-wallet output per intended provider-funded swap
+that alone covers the swap amount plus the full signed fee budget. The funding
+transaction may spend only its weight-proportional share of that budget; the
+larger admission bound leaves the unilateral exit funded. The daemon does not
+combine smaller outputs: doing so would exceed the fixture-pinned 1,700-vbyte
+funding weight. Consolidate and confirm inventory before opening discovery,
+then let the reservation gate select the exact output.
+
 The reverse hard-reservation gate selects exact controlled UTXOs before the
 Quote binds a signed funding transaction, its SHA-256 digest, and output index.
 Both participants sign that transaction commitment. The provider rebuilds it
@@ -314,6 +383,34 @@ the noncooperative path keeps that watch active through confirmed refund. A
 journey is not terminal until the client accepts the provider-signed Close and
 the reservation release is durable.
 
+Elements Core 23.3.3 has no `gettxspendingprevout` RPC. Liquid recovery scans
+the bounded mempool and 144 most recent blocks for the exact spending input,
+then checks `gettxout`. If the output is spent but its spender is older than
+that window, the provider fails the observation and remains unavailable; it
+does not infer an unspent output. Page on the resulting unresolved effect and
+restore the exact public transaction history before resuming new sessions.
+At startup, readiness also probes the configured wallet and the exact methods
+used for `listunspent`, descriptor/address derivation, PSBT funding, wallet
+signing, finalization, unblinding, observation, and broadcast. A partial wallet
+surface does not advertise Liquid sides. Every funding transaction must spend
+the exact durable reservation inputs and carry one explicit fee output equal
+to the node-reported fee under the signed Quote maximum.
+
+Before deploying or re-enabling Liquid, run the disposable local rail and
+expanded process gates from the exact release bytes:
+
+```sh
+scripts/test-provider-liquid.sh
+scripts/test-lab-adversarial.sh --all
+```
+
+The Liquid record must show exact funding and exit bytes, submarine and
+reverse settlement on both rails, both chain directions through both provider
+identities, restart recovery, the provider-absent and coordinator-absent exit
+paths, settled outpoints, and zero wrapper-owned artifacts after teardown. A
+local pass is conformance evidence; it is not proof of live liquidity or
+deployment.
+
 ## 8. Stop, backup, restore, and upgrade
 
 Begin a planned drain with SIGUSR1 and watch the public-only metrics:
@@ -328,6 +425,12 @@ The process refuses new sessions, continues existing sessions and watchtower
 work, and exits only after the active-session count reaches zero. SIGTERM from
 `systemctl stop` has the same behavior. Do not force-kill a process with an
 active timelock.
+
+When Liquid is enabled, keep elementsd and its selected wallet available until
+`sessions_active`, `effects_pending`, `effects_unresolved`,
+`watch_jobs_pending`, and `watch_jobs_unresolved` are all zero. Back up or stop
+the Elements node only after that drain completes; provider Postgres cannot
+replace the wallet's signing and unblinding state.
 
 Install and start the committed database backup timer:
 
@@ -345,11 +448,11 @@ sudo systemctl start immortal-provider-backup.service
 ```
 
 Back up the provider database with `pg_dump` and immediately test restore into
-a disposable database. Back up the wallet seed and Lightning recovery material
-separately through the operator's encrypted custody system. Database backups
-must never contain either. Restore the selected Lightning node through its
-supported recovery procedure; copying only provider Postgres cannot recover
-Lightning funds.
+a disposable database. Back up the Bitcoin wallet seed, Lightning recovery
+material, and optional Elements wallet separately through the operator's
+encrypted custody system. Database backups must never contain any of them.
+Restore the selected Lightning and Elements nodes through their supported
+recovery procedures; copying only provider Postgres cannot recover rail funds.
 
 Verify a database backup and its digest before an upgrade:
 

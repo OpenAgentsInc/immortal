@@ -164,7 +164,7 @@
       ["sibling_seed", "swp_secret_material_forbidden"],
       ["sibling_macaroon", "swp_secret_material_forbidden"]
     ],
-    "forbidden_custody_members": ["seed", "private_key", "claim_private_key", "refund_private_key", "preimage", "macaroon", "nwc", "nwc_string", "musig_secret_nonce", "signing_nonce"]
+    "forbidden_custody_members": ["seed", "private_key", "claim_private_key", "refund_private_key", "preimage", "macaroon", "nwc", "nwc_string", "musig_secret_nonce", "signing_nonce", "blinding_key", "blindingKey", "value_blinder", "valueBlinder", "asset_blinder", "assetBlinder"]
   },
   "client_only_requirements": {
     "relay_enforced": false,

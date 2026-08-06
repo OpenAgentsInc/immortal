@@ -173,12 +173,14 @@ including byte bounds and secret classifications, is exported by
 
 The funded process connects only to a `ws://` relay whose resolved and
 connected peer is loopback, a loopback bitcoind JSON-RPC endpoint, and one
-selected Lightning rail. The default `cln` rail uses an absolute Unix socket
-and keeps the seven-dependency build free of a TLS stack. The optional `lnd`
-feature adds the owner-approved rustls chain and speaks bounded REST over TLS
-to a loopback LND endpoint whose exact leaf certificate is operator-pinned.
-A provider operator can run a separately configured local relay product on
-the same host; public `wss://` provider transport is not claimed.
+selected Lightning rail. An explicitly enabled Liquid rail adds a loopback
+`elementsd` JSON-RPC endpoint and a provider-owned Elements wallet. The
+default `cln` rail uses an absolute Unix socket and keeps the seven-dependency
+build free of a TLS stack. The optional `lnd` feature adds the owner-approved
+rustls chain and speaks bounded REST over TLS to a loopback LND endpoint whose
+exact leaf certificate is operator-pinned. A provider operator can run a
+separately configured local relay product on the same host; public `wss://`
+provider transport is not claimed.
 
 ### Provider required variables
 
@@ -204,13 +206,24 @@ the same host; public `wss://` provider transport is not claimed.
 The identity, database credential, RPC credentials, CLN socket path, LND
 macaroon paths, and wallet seed path are sensitive. They must not appear in
 argv, logs, fixtures, provider Postgres, relay state, or configured values in
-the contract artifact.
+the contract artifact. The same rule applies to the optional elementsd RPC
+credential. Elements wallet keys and confidential-output blinding data stay
+inside the operator-owned elementsd wallet; the provider stores only public
+transaction commitments and locally verified evidence.
 
 ### Provider optional variables
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `IMMORTAL_PROVIDER_LIGHTNING_RAIL` | `cln` | Selected internal Lightning rail: `cln` or, when built with `--features lnd`, `lnd`. Selecting unavailable or incomplete rail configuration fails startup. |
+| `IMMORTAL_PROVIDER_LIQUID_ENABLED` | unset | The sole admitted value is `true`. It activates the Liquid rail only when every elementsd setting below is present and startup verifies the configured network and pegged asset. Absence disables Liquid sides and rejects stray elementsd settings. |
+| `IMMORTAL_PROVIDER_ELEMENTSD_HOST` | unset | Required when Liquid is enabled. Host that resolves and connects only to loopback. |
+| `IMMORTAL_PROVIDER_ELEMENTSD_PORT` | unset | Required when Liquid is enabled. JSON-RPC port, 1–65,535. |
+| `IMMORTAL_PROVIDER_ELEMENTSD_RPC_USER` | unset | Required when Liquid is enabled. Basic-auth username, 1–256 bytes. |
+| `IMMORTAL_PROVIDER_ELEMENTSD_RPC_PASSWORD` | unset | Required when Liquid is enabled. Basic-auth password, 1–1,024 bytes. |
+| `IMMORTAL_PROVIDER_ELEMENTSD_WALLET` | unset | Required when Liquid is enabled. Bounded provider-owned wallet name used only for its own output unblinding, inventory, construction, and broadcast. |
+| `IMMORTAL_PROVIDER_LIQUID_NETWORK_ID` | unset | Required when Liquid is enabled. Exact `bip122:<32-lower-hex>` identifier derived from the configured Elements genesis block. |
+| `IMMORTAL_PROVIDER_LIQUID_PEGGED_ASSET` | unset | Required when Liquid is enabled. Exact 64-lower-hex display-order `pegged_asset` returned by that node. V1 admits no other Elements asset. |
 | `IMMORTAL_PROVIDER_COOPERATIVE_SIGNING` | unset | Production opt-in for BIP-327 cooperative key-path settlement on submarine swaps. The sole value is `true`; absence keeps script-path settlement as the default. The unilateral script-path exit remains mandatory. Do not set this together with `IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING`. |
 | `IMMORTAL_PROVIDER_LAB_PROFILE` | unset | Lab-only timeout selector. The sole value is `regtest_adversarial`, which is rejected unless the Bitcoin network is `regtest`; it fixes Quote expiry at 3 seconds and hold-invoice expiry at 30 seconds. It does not change production defaults. |
 | `IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING` | unset | Lab-only cooperative-signing gate. The sole value is `true`; it is rejected unless the Bitcoin network is `regtest` and `IMMORTAL_PROVIDER_LAB_PROFILE=regtest_adversarial`. The adversarial runner supplies it only for its four MuSig2 process cases. Do not set it together with `IMMORTAL_PROVIDER_COOPERATIVE_SIGNING`. |
@@ -236,6 +249,16 @@ the production script-path weights: 155 vB for claim, 139 vB for refund, 155
 vB for provider lockup, 294 vB for reverse lockup-plus-refund, and 310 vB for
 the chain worst case. The configured spread, routing budget, quote window, and
 unallocated reservation-ledger capacity determine the remaining terms.
+
+Liquid Quote and execution paths additionally bind the raw Elements
+transaction digest, exact output index, asset, amount, script, serialized
+commitments, and unilateral exit package. Confidential output verification is
+limited to outputs the configured wallet can unblind. The provider labels that
+authority `local_elementsd_unblind`; it does not claim independent range-proof
+or surjection-proof verification for arbitrary third-party outputs. A
+completed Liquid spend must pass the configured node's consensus and mempool
+policy before broadcast, and an exact already-known transaction is accepted
+only after its retrieved raw bytes match byte-for-byte.
 
 `GET /healthz` returns `200 ready` only when startup completed and there are
 no pending effects, unresolved effects, or unresolved watch jobs. `GET

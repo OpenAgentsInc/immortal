@@ -29,6 +29,57 @@ services:
     networks:
       - adversarial
 
+  elements-provider-a:
+    profiles: ["liquid"]
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.elements
+    command: ["-conf=/run/immortal-private/elements-provider-a.conf", "-datadir=/var/lib/elements", "-printtoconsole"]
+    depends_on:
+      - bitcoin-a
+    network_mode: service:bitcoin-a
+    restart: "no"
+    volumes:
+      - elements-provider-a-data:/var/lib/elements
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/elements-provider-a.conf
+        target: /run/immortal-private/elements-provider-a.conf
+        read_only: true
+
+  elements-provider-b:
+    profiles: ["liquid"]
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.elements
+    command: ["-conf=/run/immortal-private/elements-provider-b.conf", "-datadir=/var/lib/elements", "-printtoconsole"]
+    depends_on:
+      - bitcoin-b
+    network_mode: service:bitcoin-b
+    restart: "no"
+    volumes:
+      - elements-provider-b-data:/var/lib/elements
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/elements-provider-b.conf
+        target: /run/immortal-private/elements-provider-b.conf
+        read_only: true
+
+  elements-wallet:
+    profiles: ["liquid"]
+    build:
+      context: ../../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.elements
+    command: ["-conf=/run/immortal-private/elements-wallet.conf", "-datadir=/var/lib/elements", "-printtoconsole"]
+    depends_on:
+      - wallet-gateway
+    network_mode: service:wallet-gateway
+    restart: "no"
+    volumes:
+      - elements-wallet-data:/var/lib/elements
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/elements-wallet.conf
+        target: /run/immortal-private/elements-wallet.conf
+        read_only: true
+
   relay-a-postgres:
     image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
     environment:
@@ -398,6 +449,9 @@ networks:
 volumes:
   bitcoin-a-data:
   bitcoin-b-data:
+  elements-provider-a-data:
+  elements-provider-b-data:
+  elements-wallet-data:
   cln-provider-a-data:
   cln-provider-a-rpc:
   cln-provider-b-data:

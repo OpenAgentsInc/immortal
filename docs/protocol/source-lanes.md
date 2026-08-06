@@ -369,11 +369,11 @@ contract-bounded fee capacity and cannot hide principal; reverse destination
 refund recovery branches on the observed Lightning disposition instead of
 claiming counterparty completion.
 
-The exported client corpus was narrowed from descriptive proxy names to 62
+The exported client corpus was narrowed from descriptive proxy names to 64
 closed-world cases that invoke production validators and actions, backed by
 exact serialized sessions. It covers all six terminal flows, all bounded
 verify-before-fund refusals, the two-stage reverse gate, sequencing, both
-orphan-effect crash windows, cancellation, loss, and recovery. Twenty custody
+orphan-effect crash windows, cancellation, loss, and recovery. Twenty-three custody
 tripwires separately invoke the recursive production validator. No source-lane
 precedence exception, kind allocation, dependency, or relay advertisement was
 added.
@@ -1014,3 +1014,130 @@ database, custody boundary, dependency, or NIP-11 advertisement. The Liquid
 execution claim remains unavailable until the #27 core, client, provider,
 lab, fixture, contract-export, and runbook gates pass under an active
 `elementsd` configuration.
+
+## M13 MKT-SWP Liquid sequencing correction (2026-08-06)
+
+Issue #27 advances only the OpenAgents `MKT-SWP.md` source from
+`4ca362b6050c1762f5f8a383c0c18f50acf02ba0` to
+`340ebc1d0401bacfbebd30495e2fb7e34f75c9ec`. The other 45 Markdown files in
+the lane are byte-identical. The correction requires a BTC-to-L-BTC
+requester to verify the exact provider-signed Liquid destination transaction,
+selected output and Taproot tree, persisted claim exit, and local
+`elementsd` mempool acceptance before broadcasting the Bitcoin source. The
+destination preflight is intentionally unbroadcast and may have zero
+confirmations. The provider broadcasts only those preflighted bytes after
+source finality. Reverse counterparty locks retain their signed confirmation
+policy.
+
+The corrected chain order moves `destination_lock_terms_ready` and
+`requester_destination_verified` before `source_funding_required`; the
+provider signs the source-funding instruction. This changes no event kind,
+lane precedence, relay admission, Postgres state, dependency, custody
+boundary, or NIP-11 advertisement. Immortal's #27 fixtures and runtime must
+fail closed on destination-signature, mempool-preflight, source-before-
+preflight, and wrong-signer cases before the Liquid execution claim may be
+enabled. Contract exports remain deferred until that adoption gate is green.
+
+## M13 MKT-SWP cross-domain timeout correction (2026-08-06)
+
+Issue #27 advances only the OpenAgents `MKT-SWP.md` source from
+`340ebc1d0401bacfbebd30495e2fb7e34f75c9ec` to
+`d776a0aa08ebc5b27446f376a3f32bd89d585b88`; the other 45 lane files remain
+byte-identical. The correction separates the selected chain leg's height
+from Lightning's Bitcoin CLTV height. Bitcoin reverse swaps retain the direct
+height inequality. Liquid reverse swaps instead pin both heights, their
+observation time, bounded block-interval assumptions, and a recomputable
+cross-domain wall-time safety margin. The assumptions are disclosed signed
+terms, not deterministic block-production claims, and the provider must
+recheck the remaining margin immediately before funding.
+
+This sync allocates no event kind and changes no relay admission, Postgres
+state, dependency, custody boundary, or NIP-11 advertisement. The new
+positive and negative fixture names must be executable before #27 can claim
+Liquid reverse support. Contract exports remain deferred until the complete
+runtime and process-lab gate is green.
+
+## M13 MKT-SWP cross-participant causality correction (2026-08-06)
+
+Issue #27 advances only the OpenAgents `MKT-SWP.md` source from
+`d776a0aa08ebc5b27446f376a3f32bd89d585b88` to
+`f78bb0d04cce9ff3760f37a3b3b7cfb0efe813ef`; the other 45 lane files remain
+byte-identical. The correction uses the existing `e` tag `status` marker to
+bind every effect-authorizing cross-participant transition to the exact
+counterparty Status it consumes. Record-set existence, relay order, array
+order, and author-controlled `created_at` no longer count as proof of this
+causal edge.
+
+This sync allocates no event kind and changes no relay admission, Postgres
+schema, dependency, custody boundary, or NIP-11 advertisement. The client,
+provider, and process lab must reject a pre-published dependency before #27
+can close. Contract exports remain deferred until that gate is green.
+
+## M13 MKT-SWP terminal refund causality correction (2026-08-06)
+
+Issue #27 advances only the OpenAgents `MKT-SWP.md` source from
+`f78bb0d04cce9ff3760f37a3b3b7cfb0efe813ef` to
+`7e9a7f13306cb5e515f7eca38eb8654ea3528bdc`; the other 45 lane files remain
+byte-identical. The correction requires a provider terminal `refunded`
+Status after destination funding to reference the exact requester
+`requester_source_refunded` Status. A provider destination refund alone does
+not establish release of the requester source principal.
+
+This sync allocates no event kind and changes no relay admission, Postgres
+schema, dependency, custody boundary, or NIP-11 advertisement. The client,
+provider, and process lab must prove both funded outpoints reached their
+verified refund paths before #27 can close. Contract exports remain deferred
+until the complete runtime and lab gate is green.
+
+## M13 MKT-SWP unfunded-destination evidence clarification (2026-08-06)
+
+Issue #27 advances only the OpenAgents `MKT-SWP.md` source from
+`7e9a7f13306cb5e515f7eca38eb8654ea3528bdc` to
+`48db404cbb55f44ce51bf2cce4fecc056a2f8c5d`; the other 45 lane files remain
+byte-identical. A source-funded, destination-never-funded chain refund now
+binds the destination leg to the exact Contract reservation ID, verified
+reservation release, and absence of a destination broadcast, funding effect,
+or contracted outpoint. Source output or refund evidence cannot stand in for
+the unfunded destination leg.
+
+This sync allocates no event kind and changes no relay admission, Postgres
+schema, dependency, custody boundary, or NIP-11 advertisement. The client and
+provider fixtures exercise exact reservation-release evidence and reject
+duplicated source evidence. Contract exports remain deferred until the
+complete #27 runtime and lab gate is green.
+
+## M13 Liquid closure-audit decision (2026-08-06)
+
+The #27 closure audit advances only the OpenAgents `MKT-SWP.md` source from
+`48db404cbb55f44ce51bf2cce4fecc056a2f8c5d` to
+`ac61a359043ec53c567873a344153c1069091d85`; the other 45 lane files remain
+byte-identical. The corrected authority binds exact funding and exit
+transaction templates, input index, signature hash, script-path verification
+members, full genesis hash, and fee output. It names distinct invalid and
+mismatched external-signature errors and specifies local Liquid broadcast as
+the exact `sendrawtransaction` effect over a digest-bound private artifact.
+
+Runtime snapshots retain the broadcast effect ID, transaction and result
+digests, external transaction ID, and opaque private-artifact reference. They
+must not duplicate a completed hashlock claim transaction, witness, or released
+preimage. Typed recovery remains executable after restore by resolving the
+private artifact through the embedding application. Its typed recorder derives
+the result from the resolved bytes; a crash retry reloads them without
+re-signing or overwriting the artifact. Optional `taproot_tree` is accepted
+only when it matches the bilateral verifier, and unknown members fail closed.
+The implementation binds exact local genesis and Section 12
+destination/fee/window/broadcast policy and
+carries the full absence target for an unfunded destination. The committed exit
+package binds its destination; no provider Quote verifier field is invented for
+requester-local recovery data.
+
+On the provider side, both BTC/L-BTC orientations derive refund heights from
+one wall-clock ladder using each rail's interval; funding is bound to the exact
+reservation inputs and observed fee; a requester claim supersedes only an
+unapplied prepared reverse refund; wallet readiness covers every production
+Elements RPC; and confirmation/block-hash pairs are closed. The relay contract
+exports Liquid asset/evidence grammar and the blinding-material custody
+tripwires required by the pinned source. The added positive, negative-schema,
+external-signature, and post-claim privacy fixtures make the corrected grammar
+executable. This allocation-free adoption changes no event kind, dependency,
+relay execution, Postgres schema, or NIP-11 advertisement.

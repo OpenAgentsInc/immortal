@@ -119,8 +119,13 @@
     {
       "id": "elementsd",
       "issue": 27,
-      "state": "hook-only",
+      "state": "repo-owned-process",
       "hook_environment": "IMMORTAL_LAB_ELEMENTSD_HOOK",
+      "default_hook": "scripts/lab-elementsd.sh",
+      "version": "23.3.3",
+      "image_build_source": "scripts/support/provider-funded/Dockerfile.elements",
+      "rail_gate": "scripts/test-provider-liquid.sh",
+      "host_port_allocation": "runtime-assigned-loopback",
       "ports": {
         "p2p": 18886,
         "rpc": 18884

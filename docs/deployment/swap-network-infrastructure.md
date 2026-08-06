@@ -113,8 +113,11 @@ review set), a real swap provider runs roughly eight things:
    equivalent feed is a term mismatch; the feed is never a settlement
    authority.
 
-Per additional rail, add: `elementsd` for Liquid, `arkd` (plus its
-wallet) for the Ark leg
+The optional Liquid rail adds a loopback `elementsd` and a provider-owned
+Elements wallet under the bounds in
+[`runbook-provider-debian.md`](runbook-provider-debian.md). It remains disabled
+unless the exact network and pegged asset pass startup and local conformance.
+Further rails add `arkd` (plus its wallet) for the Ark leg
 ([#20](https://github.com/OpenAgentsInc/immortal/issues/20)), an EVM RPC
 endpoint for a stablecoin leg, a Cashu mint for MKT-MINT
 ([#22](https://github.com/OpenAgentsInc/immortal/issues/22)). All of

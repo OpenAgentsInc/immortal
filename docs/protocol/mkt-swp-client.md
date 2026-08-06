@@ -52,6 +52,11 @@ the reservation proof commitment; the wallet adds its executable funding and
 exit bindings, then `requester_contract` revalidates the RFQ, Quote, Order,
 complete Contract, and requester topology before returning a signing request.
 The funded lab uses this public path rather than a private fixture Contract.
+When a requester-funded Bitcoin or Liquid source transaction does not exist at
+Quote time, `RequesterContractLocalInputs::funding_resolution` supplies the
+exact transaction bytes, lowercase SHA-256, and output index after the Order.
+Those are the only admitted additions: the composer re-derives the source
+verifier digest and rejects replacement of a commitment already in the Quote.
 
 `RequesterSessionView` is the custody-free consumer projection. Its versioned
 schema exposes asset IDs, canonical amounts, fee equation and payer, rounding,
@@ -164,6 +169,56 @@ no authorization boolean is trusted. Restoring a snapshot revalidates its
 signed records, full funding templates, exit packages, authorization request,
 and effect ledger before it can resume the authorized typestate.
 
+Liquid submarine, reverse, and BTC/L-BTC chain sessions use
+`LiquidVerifyBeforeFundInput`. The engine binds the exact ordered assets,
+funding transaction digest and bytes, output, pegged asset, amount, script,
+Taproot commitment, confidentiality mode, confirmation policy, and unilateral
+exit-package digest to both signed Contract records. Confidential outputs are
+accepted only through `verify_before_fund_with_liquid`'s local-elementsd
+unblind adapter; callers cannot inject `trusted_unblind_transaction` into this
+production path. The exact local genesis hash, network, pegged asset, selected
+output, funding digest, and unblind-result digest are retained as typed public
+provenance. A refund may retain a complete presigned transaction. A hashlock
+claim retains only a `wallet_sign` template, deterministic effect ID, and
+non-secret signer/preimage-recovery reference; the unreleased preimage never
+enters the package, authorization request, snapshot, or effect ledger.
+The recovery decoder accepts an optional `taproot_tree` only when it equals the
+complete bilateral verifier tree. All other unknown members fail closed.
+
+Liquid-source submarine and chain flows produce `BroadcastLiquid` with the
+exact transaction ID and output index bound by the Contract; reverse flows
+still produce the exact Lightning invoice action after Liquid lock
+verification, and BTC-to-Liquid chain flows produce the Bitcoin source
+broadcast only after the Liquid destination and its claim exit verify. For a
+BTC-to-Liquid chain, that preflight requires local elementsd mempool acceptance
+of the exact signed, unbroadcast destination template at zero confirmations;
+the ordinary reverse counterparty lock still requires the signed confirmation
+policy. A Liquid-to-Bitcoin chain verifies the exact Bitcoin destination
+template in the same authorization. Both destination checks precede
+`source_funding_required`; the provider broadcasts the already-verified
+destination only after source finality. Restore reruns the bilateral term,
+package-commitment, effect, provenance, destination, fee-policy, broadcast-
+window, and exact-genesis bindings before it can recover `FundingAuthorized`.
+Recovery selects the typed Liquid package by leg and path; a claim invokes the
+local secret-store/wallet callback and validates the returned witness before
+broadcast. A presigned refund exposes an exact `LiquidBroadcastRequest`
+immediately, while a wallet claim exposes one only for the verified signed
+transaction. Both pin `sendrawtransaction`, the local-elementsd network and
+full genesis, the signed-transaction digest, and an opaque reference to the
+dedicated private broadcast artifact. The executor loads the exact bytes from
+that artifact and verifies the digest before RPC. The generic effect recorder
+rejects Liquid broadcasts; its typed recorder resolves the opaque reference,
+checks the signed transaction and digest, and derives the transaction ID and
+result digest from those bytes. A crash after `sendrawtransaction` but before
+effect recording therefore reloads the retained artifact without signing or
+overwriting it. Wallet signing is not an effect result; recording the
+digest-bound broadcast request makes restart replay idempotent.
+The exit destination is inside the committed package and is
+re-derived from those transaction bytes. It is not added as an unquoted
+verifier member. Snapshots retain no signed claim transaction, claim witness,
+preimage, unblinded transaction bytes, blinding key, value blinder, asset
+blinder, or spend key.
+
 The RFQ comparison covers the ordered asset pair, exact or ranged amount, fee
 cap, confirmation and replacement constraints, script mode, completion time,
 invoice digest, payment hash, firm-Quote requirement, and requester spend
@@ -205,6 +260,13 @@ Esplora `POST /tx` request by `KeylessEsploraExecutor`. Plaintext Esplora is
 restricted to IPv4, IPv6, or `localhost` loopback; remote endpoints require
 HTTPS.
 
+Each verifier may expose a generic provider-selected `exit_path` alongside
+`claim_script`/`refund_script` and their path-specific control blocks. The
+generic fields must agree with their declared tree leaf, while requester exit
+packages select their own path-specific fields: chain source refund and chain
+destination claim. The canonical chain source refund is CLTV, matching the
+provider Quote topology and the pre-signed requester exit.
+
 External wallet, payment, and broadcast operations use deterministic effect
 IDs. Snapshot schema v2 stores each bounded typed public request beside a
 result row containing its exact request digest, external identifier, and
@@ -215,6 +277,13 @@ Lightning-disposition observations require the exact durable funding request
 and effect. Their typed requests remain restorable in the crash window before
 a Status, Cancel, or Close cites them. Recovery observations bind the session,
 Order, and canonical per-rail digest before any action is selected.
+Liquid legs are chain-like recovery rails: their canonical binding carries the
+funding digest, output, amount, script, confirmation policy, expected
+unfunded-destination identities, and deterministic claim/refund effect IDs.
+Their Section-12-shaped recovery package is represented by its dedicated
+typed funding binding rather than a Bitcoin `ExitPackage`. Its `broadcast`
+member uses the local-elementsd method/network/genesis binding in place of a
+Bitcoin Esplora endpoint allowlist.
 Recovery is rail-specific. A reverse requester claims the destination output
 when it is claimable. A chain requester claims
 the destination first, waits while that output remains funded and unclaimed,
@@ -259,13 +328,13 @@ Run its native/no-default/WASM gate with:
 ./scripts/test-swp-verification.sh
 ```
 
-The deterministic 62-case client corpus is
+The deterministic 64-case client corpus is
 `tests/fixtures/nipmkt/swp-client-engine-v1.json`, backed by exact serialized
 sessions in `tests/fixtures/nipmkt/swp-full-sessions-v1.json`. Its closed-world
 replay executes the production client APIs for all six completed/refunded
 flows, every requester topology, the bounded verification-refusal set,
 sequencing, effect crash windows, cancellation, balanced loss, and recovery.
-The 20 custody tripwires independently execute the recursive production
+The 23 custody tripwires independently execute the recursive production
 validator. The nameset and every expected error, result, and action are pinned;
 drift fails replay on native and in the zero-import WASM probe. The probe-only
 feature does not enter ordinary client or server builds. The full repository

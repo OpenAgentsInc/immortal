@@ -39,6 +39,11 @@ const DIRECT_RECOVERY_FIXTURE: &[u8] =
 const MIGRATION_FIXTURE_PATH: &str = "tests/fixtures/nipmkt/swap-network-migration-v1.json";
 const MIGRATION_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/nipmkt/swap-network-migration-v1.json");
+const LIQUID_FIXTURE_PATH: &str = "tests/fixtures/nipmkt/liquid-rail-v1.json";
+const LIQUID_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/nipmkt/liquid-rail-v1.json");
+const LIQUID_RUNTIME_FIXTURE_PATH: &str = "tests/fixtures/provider/liquid-runtime-v1.json";
+const LIQUID_RUNTIME_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/liquid-runtime-v1.json");
 pub(crate) const BOLTZ_CONFIGURATION_SCHEMA: &str = concat!(
     "openagents.mkt-swp.boltz-provider-api.config.v1\n",
     "activation=exact_fixture_digest_private_bind_and_exact_browser_origin\n",
@@ -111,7 +116,8 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
             "funded":{
                 "custody_bearing":true,
                 "rail_access":true,
-                "prerequisites":["postgres","bitcoind","configured_lightning_rail"]
+                "prerequisites":["postgres","bitcoind","configured_lightning_rail"],
+                "optional_prerequisites":["elementsd"]
             },
             "no_spend":{
                 "custody_bearing":false,
@@ -138,6 +144,26 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                     "wallet_discovery":["scantxoutset"],
                     "execution":["sendrawtransaction"]
                 }
+            },
+            "elementsd":{
+                "enabled_by":"IMMORTAL_PROVIDER_LIQUID_ENABLED=true",
+                "enabled_by_default":false,
+                "transport":"bounded_http_1_1_json_rpc",
+                "network_scope":"resolved_and_connected_loopback_only",
+                "authentication":"basic",
+                "wallet_scope":"provider_owned_wallet_only",
+                "funding_inputs":"one_confirmed_provider_owned_output_per_swap",
+                "fee_weight_vbytes":{
+                    "confidential_funding":crate::pricing::LIQUID_SINGLE_INPUT_FUNDING_VBYTES,
+                    "claim":crate::pricing::LIQUID_CLAIM_VBYTES,
+                    "refund":crate::pricing::LIQUID_REFUND_VBYTES
+                },
+                "network_identity":"bip122_genesis_and_exact_pegged_asset",
+                "confidential_authority":"local_elementsd_unblind_own_outputs_only",
+                "independent_range_proof_verification":false,
+                "independent_surjection_proof_verification":false,
+                "runtime_methods":crate::elementsd::ELEMENTSD_PRODUCTION_RUNTIME_METHODS,
+                "already_known_policy":"retrieve_and_compare_exact_raw_bytes"
             },
             "cln":{
                 "selected_by":"IMMORTAL_PROVIDER_LIGHTNING_RAIL=cln",
@@ -214,6 +240,12 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
             "musig2_key_path_signer":true,
             "musig2_key_path_enabled_by_default":false,
             "musig2_key_path_swap_types":["submarine"],
+            "liquid_enabled_by_default":false,
+            "liquid_swap_types":["submarine","reverse","chain"],
+            "liquid_client_verify_before_fund":true,
+            "liquid_unilateral_script_path_exit":true,
+            "liquid_own_output_unblind_authority":true,
+            "liquid_arbitrary_confidential_proof_authority":false,
             "funding_before_bilateral_contract":false,
             "reverse_funding_transaction_precommitted_before_requester_payment":true,
             "chain_observation_requires_exact_committed_funding_bytes":true,
@@ -375,7 +407,6 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
         "v1_exclusions":[
             "zmq",
             "outbound_https_price_feeds",
-            "liquid",
             "ark",
             "evm",
             "cashu",
@@ -395,7 +426,9 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 fixture_entry(ADVERSARIAL_LAB_FIXTURE_PATH, ADVERSARIAL_LAB_FIXTURE),
                 fixture_entry(CLN_ADVERSARIAL_HOLD_FIXTURE_PATH, CLN_ADVERSARIAL_HOLD_FIXTURE),
                 fixture_entry(DIRECT_RECOVERY_FIXTURE_PATH, DIRECT_RECOVERY_FIXTURE),
-                fixture_entry(MIGRATION_FIXTURE_PATH, MIGRATION_FIXTURE)
+                fixture_entry(MIGRATION_FIXTURE_PATH, MIGRATION_FIXTURE),
+                fixture_entry(LIQUID_FIXTURE_PATH, LIQUID_FIXTURE),
+                fixture_entry(LIQUID_RUNTIME_FIXTURE_PATH, LIQUID_RUNTIME_FIXTURE)
             ]
         },
         "relay_contract_affected":false,
@@ -427,6 +460,16 @@ fn limits_contract() -> Value {
                 "request_bytes":crate::bitcoind::DEFAULT_MAX_REQUEST_BYTES,
                 "response_bytes":crate::bitcoind::DEFAULT_MAX_RESPONSE_BYTES,
                 "resolved_addresses":crate::bitcoind::MAX_RESOLVED_ADDRESSES
+            },
+            "elementsd":{
+                "header_bytes":crate::bitcoind::DEFAULT_MAX_HEADER_BYTES,
+                "request_bytes":crate::bitcoind::DEFAULT_MAX_REQUEST_BYTES,
+                "response_bytes":crate::bitcoind::DEFAULT_MAX_RESPONSE_BYTES,
+                "resolved_addresses":crate::bitcoind::MAX_RESOLVED_ADDRESSES,
+                "spender_mempool_transactions":crate::elementsd::MAX_SPENDER_MEMPOOL_TRANSACTIONS,
+                "spender_recent_blocks":crate::elementsd::MAX_SPENDER_RECENT_BLOCKS,
+                "spender_block_transactions":crate::elementsd::MAX_SPENDER_BLOCK_TRANSACTIONS,
+                "spender_inputs":crate::elementsd::MAX_SPENDER_INPUTS
             },
             "cln":{
                 "request_bytes":crate::cln::DEFAULT_MAX_REQUEST_BYTES,
@@ -518,6 +561,12 @@ fn limits_contract() -> Value {
         "session":{"records":512,"effects":128,"snapshot_bytes":2097152},
         "rail_rpc":{
             "bitcoind":{
+                "header_bytes":16384,
+                "request_bytes":4194304,
+                "response_bytes":16777216,
+                "resolved_addresses":8
+            },
+            "elementsd":{
                 "header_bytes":16384,
                 "request_bytes":4194304,
                 "response_bytes":16777216,
@@ -689,7 +738,7 @@ pub fn validate_provider_contract(value: &Value) -> Result<(), ProviderContractE
                 .bytes()
                 .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
             || !valid_mode_scope(variable)
-            || !valid_lightning_environment_contract(name, variable)
+            || !valid_conditional_environment_contract(name, variable)
         {
             return Err(ProviderContractError::InvalidShape);
         }
@@ -985,6 +1034,67 @@ fn environment_contract() -> Value {
             true,
             None
         ),
+        liquid_selector_environment(),
+        conditional_liquid_environment(optional_env_string(
+            "IMMORTAL_PROVIDER_ELEMENTSD_HOST",
+            &["funded"],
+            1,
+            253,
+            false,
+            Some("loopback_host"),
+            false
+        )),
+        conditional_liquid_environment(optional_env_integer_without_default(
+            "IMMORTAL_PROVIDER_ELEMENTSD_PORT",
+            &["funded"],
+            1,
+            65535
+        )),
+        conditional_liquid_environment(optional_env_string(
+            "IMMORTAL_PROVIDER_ELEMENTSD_RPC_USER",
+            &["funded"],
+            1,
+            256,
+            true,
+            None,
+            false
+        )),
+        conditional_liquid_environment(optional_env_string(
+            "IMMORTAL_PROVIDER_ELEMENTSD_RPC_PASSWORD",
+            &["funded"],
+            1,
+            1024,
+            true,
+            None,
+            false
+        )),
+        conditional_liquid_environment(optional_env_string(
+            "IMMORTAL_PROVIDER_ELEMENTSD_WALLET",
+            &["funded"],
+            1,
+            128,
+            false,
+            Some("elements_wallet_name"),
+            false
+        )),
+        conditional_liquid_environment(optional_env_string(
+            "IMMORTAL_PROVIDER_LIQUID_NETWORK_ID",
+            &["funded"],
+            39,
+            39,
+            false,
+            Some("bip122_lowercase_hex"),
+            false
+        )),
+        conditional_liquid_environment(optional_env_string(
+            "IMMORTAL_PROVIDER_LIQUID_PEGGED_ASSET",
+            &["funded"],
+            64,
+            64,
+            false,
+            Some("lowercase_hex"),
+            false
+        )),
         lightning_selector_environment(),
         conditional_lightning_environment(
             optional_env_string(
@@ -1266,6 +1376,14 @@ fn lightning_selector_environment() -> Value {
     value
 }
 
+fn liquid_selector_environment() -> Value {
+    optional_environment(
+        env_choice("IMMORTAL_PROVIDER_LIQUID_ENABLED", &["funded"], &["true"]),
+        &["funded"],
+        false,
+    )
+}
+
 fn lab_profile_environment() -> Value {
     let mut value = optional_environment(
         env_choice(
@@ -1279,6 +1397,8 @@ fn lab_profile_environment() -> Value {
     value["required_network"] = Value::String("regtest".to_owned());
     value["quote_expiry_seconds"] = json!(3);
     value["hold_invoice_expiry_seconds"] = json!(30);
+    value["pricing_source"] = Value::String("configured_fallback_only".to_owned());
+    value["fallback_feerate_required"] = Value::Bool(true);
     value
 }
 
@@ -1322,6 +1442,15 @@ fn conditional_lightning_environment(
         "environment":"IMMORTAL_PROVIDER_LIGHTNING_RAIL",
         "equals":choice,
         "or_selector_absent":selector_absent,
+    });
+    value
+}
+
+fn conditional_liquid_environment(mut value: Value) -> Value {
+    value["required_when"] = json!({
+        "environment":"IMMORTAL_PROVIDER_LIQUID_ENABLED",
+        "equals":"true",
+        "or_selector_absent":false,
     });
     value
 }
@@ -1385,6 +1514,7 @@ fn environment_name_is_secret(name: &str) -> bool {
             name,
             "IMMORTAL_PROVIDER_DATABASE_URL"
                 | "IMMORTAL_PROVIDER_BITCOIND_RPC_USER"
+                | "IMMORTAL_PROVIDER_ELEMENTSD_RPC_USER"
                 | "IMMORTAL_PROVIDER_CLN_RPC_PATH"
                 | "IMMORTAL_PROVIDER_LND_READONLY_MACAROON_FILE"
                 | "IMMORTAL_PROVIDER_LND_INVOICE_MACAROON_FILE"
@@ -1414,7 +1544,7 @@ fn valid_mode_scope(variable: &Map<String, Value>) -> bool {
     required ^ optional
 }
 
-fn valid_lightning_environment_contract(name: &str, variable: &Map<String, Value>) -> bool {
+fn valid_conditional_environment_contract(name: &str, variable: &Map<String, Value>) -> bool {
     let implicit_choice = variable
         .get("implicit_choice_when_absent")
         .and_then(Value::as_str);
@@ -1423,7 +1553,7 @@ fn valid_lightning_environment_contract(name: &str, variable: &Map<String, Value
         return implicit_choice == Some("cln") && required_when.is_none();
     }
     let expected = if name == "IMMORTAL_PROVIDER_CLN_RPC_PATH" {
-        Some(("cln", true))
+        Some(("IMMORTAL_PROVIDER_LIGHTNING_RAIL", "cln", true))
     } else if matches!(
         name,
         "IMMORTAL_PROVIDER_LND_HOST"
@@ -1433,17 +1563,27 @@ fn valid_lightning_environment_contract(name: &str, variable: &Map<String, Value
             | "IMMORTAL_PROVIDER_LND_INVOICE_MACAROON_FILE"
             | "IMMORTAL_PROVIDER_LND_ROUTER_MACAROON_FILE"
     ) {
-        Some(("lnd", false))
+        Some(("IMMORTAL_PROVIDER_LIGHTNING_RAIL", "lnd", false))
+    } else if matches!(
+        name,
+        "IMMORTAL_PROVIDER_ELEMENTSD_HOST"
+            | "IMMORTAL_PROVIDER_ELEMENTSD_PORT"
+            | "IMMORTAL_PROVIDER_ELEMENTSD_RPC_USER"
+            | "IMMORTAL_PROVIDER_ELEMENTSD_RPC_PASSWORD"
+            | "IMMORTAL_PROVIDER_ELEMENTSD_WALLET"
+            | "IMMORTAL_PROVIDER_LIQUID_NETWORK_ID"
+            | "IMMORTAL_PROVIDER_LIQUID_PEGGED_ASSET"
+    ) {
+        Some(("IMMORTAL_PROVIDER_LIQUID_ENABLED", "true", false))
     } else {
         None
     };
     match (expected, required_when) {
         (None, None) => implicit_choice.is_none(),
-        (Some((choice, selector_absent)), Some(condition)) => {
+        (Some((selector, choice, selector_absent)), Some(condition)) => {
             implicit_choice.is_none()
                 && condition.len() == 3
-                && condition.get("environment").and_then(Value::as_str)
-                    == Some("IMMORTAL_PROVIDER_LIGHTNING_RAIL")
+                && condition.get("environment").and_then(Value::as_str) == Some(selector)
                 && condition.get("equals").and_then(Value::as_str) == Some(choice)
                 && condition.get("or_selector_absent").and_then(Value::as_bool)
                     == Some(selector_absent)

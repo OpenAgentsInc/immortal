@@ -2987,7 +2987,9 @@ mod tests {
                 "funding_observed" => evidence_extra("submarine", "measured", "bitcoin_output"),
                 "funding_final" => evidence_extra("submarine", "verified", "bitcoin_output"),
                 "lightning_paid" => evidence_extra("submarine", "settled", "lightning_payment"),
-                "provider_claim_pending" => evidence_extra("submarine", "measured", "claim"),
+                "provider_claim_pending" => {
+                    evidence_extra("submarine", "measured", "bitcoin_spend")
+                }
                 "provider_claimed" => evidence_extra("submarine", "settled", "bitcoin_spend"),
                 _ => Map::new(),
             };
@@ -3013,12 +3015,11 @@ mod tests {
         .enumerate()
         {
             let mut extra = if state == "refund_pending" {
-                let mut extra = evidence_extra("submarine", "settled", "claim");
+                let mut extra = evidence_extra("submarine", "settled", "bitcoin_spend");
                 let evidence = extra
                     .get_mut("evidence")
                     .and_then(Value::as_object_mut)
                     .expect("requester refund evidence");
-                evidence.insert("class".to_owned(), Value::String("refund".to_owned()));
                 evidence.insert(
                     "producer_pubkey".to_owned(),
                     Value::String(
@@ -3120,7 +3121,9 @@ mod tests {
                 "funding_observed" => evidence_extra("submarine", "measured", "bitcoin_output"),
                 "funding_final" => evidence_extra("submarine", "verified", "bitcoin_output"),
                 "lightning_paid" => evidence_extra("submarine", "settled", "lightning_payment"),
-                "provider_claim_pending" => evidence_extra("submarine", "measured", "claim"),
+                "provider_claim_pending" => {
+                    evidence_extra("submarine", "measured", "bitcoin_spend")
+                }
                 "provider_claimed" => evidence_extra("submarine", "settled", "bitcoin_spend"),
                 _ => Map::new(),
             };
@@ -3253,9 +3256,28 @@ mod tests {
         let mut optional_state_skip = session_records_fixture("submarine");
         append_status(
             &mut optional_state_skip,
+            ParticipantRole::Provider,
+            298,
+            "accepted",
+            Map::new(),
+        );
+        append_status(
+            &mut optional_state_skip,
+            ParticipantRole::Provider,
+            299,
+            "lock_terms_ready",
+            Map::new(),
+        );
+        let lock_terms_status_id = optional_state_skip
+            .last()
+            .map(|event| event.id.clone())
+            .expect("provider lock-terms Status");
+        append_status_after(
+            &mut optional_state_skip,
             ParticipantRole::Requester,
             300,
             "requester_verification_passed",
+            &lock_terms_status_id,
             Map::new(),
         );
         append_status(
@@ -3475,45 +3497,107 @@ mod tests {
     #[test]
     fn prepared_refund_and_wrong_signer_fail_closed() {
         let mut records = session_records_fixture("reverse");
-        for (index, state) in [
+        append_status(
+            &mut records,
+            ParticipantRole::Provider,
+            0,
             "accepted",
+            Map::new(),
+        );
+        append_status(
+            &mut records,
+            ParticipantRole::Provider,
+            1,
             "hold_invoice_ready",
+            Map::new(),
+        );
+        let hold_invoice_status_id = records
+            .last()
+            .map(|event| event.id.clone())
+            .expect("hold-invoice Status");
+        append_status_after(
+            &mut records,
+            ParticipantRole::Requester,
+            2,
+            "requester_invoice_verified",
+            &hold_invoice_status_id,
+            Map::new(),
+        );
+        append_status(
+            &mut records,
+            ParticipantRole::Requester,
+            3,
+            "lightning_payment_pending",
+            Map::new(),
+        );
+        let lightning_payment_status_id = records
+            .last()
+            .map(|event| event.id.clone())
+            .expect("Lightning-payment Status");
+        append_status_after(
+            &mut records,
+            ParticipantRole::Provider,
+            4,
             "lightning_htlcs_held",
-            "provider_lock_terms_ready",
-            "provider_funding_broadcast",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            append_status(
-                &mut records,
-                ParticipantRole::Provider,
-                u64::try_from(index).expect("test index"),
-                state,
-                Map::new(),
-            );
-        }
+            &lightning_payment_status_id,
+            Map::new(),
+        );
         append_status(
             &mut records,
             ParticipantRole::Provider,
             5,
+            "provider_lock_terms_ready",
+            Map::new(),
+        );
+        let provider_lock_status_id = records
+            .last()
+            .map(|event| event.id.clone())
+            .expect("provider lock-terms Status");
+        append_status_after(
+            &mut records,
+            ParticipantRole::Requester,
+            6,
+            "requester_lock_verified",
+            &provider_lock_status_id,
+            Map::new(),
+        );
+        let requester_lock_status_id = records
+            .last()
+            .map(|event| event.id.clone())
+            .expect("requester lock-verification Status");
+        append_status_after(
+            &mut records,
+            ParticipantRole::Provider,
+            7,
+            "provider_funding_broadcast",
+            &requester_lock_status_id,
+            Map::new(),
+        );
+        append_status(
+            &mut records,
+            ParticipantRole::Provider,
+            8,
             "funding_observed",
             evidence_extra("reverse", "measured", "bitcoin_output"),
         );
         append_status(
             &mut records,
             ParticipantRole::Provider,
-            6,
+            9,
             "funding_final",
             evidence_extra("reverse", "verified", "bitcoin_output"),
         );
         append_status(
             &mut records,
             ParticipantRole::Provider,
-            7,
+            10,
             "provider_refund_prepared",
             Map::new(),
         );
+        let (config, session) =
+            validated_bilateral_session(&records).expect("prepared bilateral session");
+        provider_support::validate_status_history(&config, &records, &session.contract)
+            .expect("prepared native Status history");
         assert_eq!(
             project_status(&"a".repeat(64), &records).expect("prepared projection")["status"],
             "transaction.confirmed"
@@ -3552,7 +3636,9 @@ mod tests {
                 "funding_observed" => evidence_extra("submarine", "measured", "bitcoin_output"),
                 "funding_final" => evidence_extra("submarine", "verified", "bitcoin_output"),
                 "lightning_paid" => evidence_extra("submarine", "settled", "lightning_payment"),
-                "provider_claim_pending" => evidence_extra("submarine", "measured", "claim"),
+                "provider_claim_pending" => {
+                    evidence_extra("submarine", "measured", "bitcoin_spend")
+                }
                 "provider_claimed" => evidence_extra("submarine", "settled", "bitcoin_spend"),
                 _ => Map::new(),
             };
@@ -3862,8 +3948,136 @@ mod tests {
             "../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json"
         ))
         .expect("full session fixture");
-        serde_json::from_value(fixture["flows"][swap_type]["snapshot"]["signed_records"].clone())
-            .expect("signed session records")
+        let mut records: Vec<Event> = serde_json::from_value(
+            fixture["flows"][swap_type]["snapshot"]["signed_records"].clone(),
+        )
+        .expect("signed session records");
+        if swap_type == "reverse" {
+            upgrade_legacy_reverse_timeout_ladder(&mut records);
+        }
+        records
+    }
+
+    fn upgrade_legacy_reverse_timeout_ladder(records: &mut [Event]) {
+        let quote_index = records
+            .iter()
+            .position(|event| event.kind == MKT_QUOTE_KIND)
+            .expect("fixture Quote");
+        let old_quote_id = records[quote_index].id.clone();
+        let mut quote_content: Value =
+            serde_json::from_str(&records[quote_index].content).expect("fixture Quote content");
+        insert_legacy_lightning_height(
+            quote_content
+                .get_mut("mkt_swp")
+                .and_then(|profile| profile.get_mut("terms"))
+                .expect("fixture Quote terms"),
+        );
+        let provider = fixture_signer(ParticipantRole::Provider);
+        let quote = provider.sign(
+            records[quote_index].created_at,
+            records[quote_index].kind,
+            records[quote_index].tags.clone(),
+            serde_json::to_string(&quote_content).expect("current Quote content"),
+        );
+        let new_quote_id = quote.id.clone();
+        records[quote_index] = quote;
+
+        let order_index = records
+            .iter()
+            .position(|event| event.kind == 39606)
+            .expect("fixture Order");
+        let old_order_id = records[order_index].id.clone();
+        let mut order_tags = records[order_index].tags.clone();
+        replace_marked_reference(&mut order_tags, "quote", &new_quote_id);
+        let mut order_content: Value =
+            serde_json::from_str(&records[order_index].content).expect("fixture Order content");
+        replace_json_string(&mut order_content, &old_quote_id, &new_quote_id);
+        let requester = fixture_signer(ParticipantRole::Requester);
+        let order = requester.sign(
+            records[order_index].created_at,
+            records[order_index].kind,
+            order_tags,
+            serde_json::to_string(&order_content).expect("current Order content"),
+        );
+        let new_order_id = order.id.clone();
+        records[order_index] = order;
+
+        for contract in records
+            .iter_mut()
+            .filter(|event| event.kind == MKT_SWP_SWAP_CONTRACT_KIND)
+        {
+            let mut tags = contract.tags.clone();
+            replace_marked_reference(&mut tags, "quote", &new_quote_id);
+            replace_marked_reference(&mut tags, "order", &new_order_id);
+            let mut content: Value =
+                serde_json::from_str(&contract.content).expect("fixture Contract content");
+            replace_json_string(&mut content, &old_quote_id, &new_quote_id);
+            replace_json_string(&mut content, &old_order_id, &new_order_id);
+            insert_legacy_lightning_height(
+                content
+                    .get_mut("mkt_swp")
+                    .and_then(|profile| profile.get_mut("contract"))
+                    .expect("fixture Contract terms"),
+            );
+            let contract_sha256 = lower_hex(&Sha256::digest(
+                provider_support::canonical_json(
+                    content
+                        .get("mkt_swp")
+                        .and_then(|profile| profile.get("contract"))
+                        .expect("current fixture Contract terms"),
+                )
+                .expect("canonical current fixture Contract"),
+            ));
+            content
+                .get_mut("mkt_swp")
+                .and_then(Value::as_object_mut)
+                .expect("fixture Contract profile")
+                .insert(
+                    "contract_sha256".to_owned(),
+                    Value::String(contract_sha256.clone()),
+                );
+            replace_tag_value(&mut tags, "x", &contract_sha256);
+            let signer = if contract.pubkey == requester.pubkey() {
+                &requester
+            } else {
+                &provider
+            };
+            *contract = signer.sign(
+                contract.created_at,
+                contract.kind,
+                tags,
+                serde_json::to_string(&content).expect("current Contract content"),
+            );
+        }
+    }
+
+    fn insert_legacy_lightning_height(terms: &mut Value) {
+        let timeout_ladder = terms
+            .get_mut("timeout_ladder")
+            .and_then(Value::as_object_mut)
+            .expect("fixture reverse timeout ladder");
+        let current_height = timeout_ladder
+            .get("current_height")
+            .cloned()
+            .expect("fixture reverse current height");
+        timeout_ladder.insert("lightning_current_height".to_owned(), current_height);
+    }
+
+    fn replace_json_string(value: &mut Value, old: &str, new: &str) {
+        match value {
+            Value::String(candidate) if candidate == old => *candidate = new.to_owned(),
+            Value::Array(values) => {
+                for value in values {
+                    replace_json_string(value, old, new);
+                }
+            }
+            Value::Object(values) => {
+                for value in values.values_mut() {
+                    replace_json_string(value, old, new);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn append_status(
@@ -3874,6 +4088,54 @@ mod tests {
         extra: Map<String, Value>,
     ) {
         append_status_signed_by(records, role, role, created_at, state, extra);
+    }
+
+    fn append_status_after(
+        records: &mut Vec<Event>,
+        role: ParticipantRole,
+        created_at: u64,
+        state: &str,
+        prerequisite_status_id: &str,
+        extra: Map<String, Value>,
+    ) {
+        let config = provider_support::session_config(records).expect("session config");
+        let factory = SwapRecordFactory::new(config.clone()).expect("record factory");
+        let signer = fixture_signer(role);
+        let statuses = records
+            .iter()
+            .filter(|event| event.kind == MKT_STATUS_KIND && event.pubkey == signer.pubkey())
+            .collect::<Vec<_>>();
+        let sequence = u64::try_from(statuses.len()).expect("status count");
+        let previous = statuses.last().map(|event| event.id.as_str());
+        let order_id = records
+            .iter()
+            .find(|event| event.kind == 39606)
+            .map(|event| event.id.as_str())
+            .expect("Order");
+        let request = factory
+            .status_after(
+                role,
+                created_at,
+                &lower_hex(&Sha256::digest(
+                    format!("boltz-status:{role:?}:{sequence}:{state}").as_bytes(),
+                )),
+                order_id,
+                StatusState {
+                    sequence,
+                    previous,
+                    base_state: test_base_state(state),
+                    swp_state: state,
+                },
+                prerequisite_status_id,
+                extra,
+            )
+            .expect("Status request");
+        records.push(signer.sign(
+            request.created_at,
+            request.kind,
+            request.tags,
+            request.content,
+        ));
     }
 
     fn append_status_signed_by(
@@ -4045,14 +4307,10 @@ mod tests {
                 .get("output_index")
                 .and_then(Value::as_u64)
                 .expect("fixture output index");
-            let reference = if class == "claim" {
-                "f".repeat(64)
-            } else {
-                format!(
-                    "{}:{output_index}",
-                    lower_hex(&transaction.txid().expect("fixture funding txid"))
-                )
-            };
+            let reference = format!(
+                "{}:{output_index}",
+                lower_hex(&transaction.txid().expect("fixture funding txid"))
+            );
             ("bitcoin", "mkt-swp-bitcoin-v1", reference)
         };
         let artifact_sha256 = if class == "bitcoin_output" {
@@ -4082,12 +4340,11 @@ mod tests {
     }
 
     fn requester_refund_extra(rung: &str) -> Map<String, Value> {
-        let mut extra = evidence_extra("submarine", rung, "claim");
+        let mut extra = evidence_extra("submarine", rung, "bitcoin_spend");
         let evidence = extra
             .get_mut("evidence")
             .and_then(Value::as_object_mut)
             .expect("requester refund evidence");
-        evidence.insert("class".to_owned(), Value::String("refund".to_owned()));
         evidence.insert(
             "producer_pubkey".to_owned(),
             Value::String(
@@ -4102,7 +4359,9 @@ mod tests {
     fn test_base_state(state: &str) -> &'static str {
         match state {
             "accepted" => "accepted",
-            "requester_verification_passed" => "awaiting_input",
+            "requester_verification_passed"
+            | "requester_invoice_verified"
+            | "requester_lock_verified" => "awaiting_input",
             "requester_funding_broadcast" => "funding_observed",
             "lock_terms_ready" | "hold_invoice_ready" | "provider_lock_terms_ready" => {
                 "awaiting_input"

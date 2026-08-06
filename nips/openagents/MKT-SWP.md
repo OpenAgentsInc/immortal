@@ -339,7 +339,9 @@ A Quote commits:
 - public keys used by each claim and refund path;
 - confirmation, reorg, RBF, replacement, and zero-confirmation policy;
 - every absolute time, chain height, CLTV value, and safety margin in the
-  timeout ladder, including `hold_expiry_height` for a reverse swap;
+  timeout ladder, including the selected-chain and Lightning height domains,
+  their pinned observation time and block-interval assumptions, and
+  `hold_expiry_height` for a reverse swap;
 - the cooperative MuSig2 path and unilateral script-path exits;
 - evidence requirements, verifier policy, recovery channel, and exit-package
   requirements;
@@ -456,7 +458,7 @@ The required leg and exit signer map is:
 | reverse hold invoice        | requester     | payment effect binding, payment-hash commitment, and local preimage-recovery-handle commitment | hold-invoice digest, settle/cancel effect bindings, and node-local recovery-handle commitment |
 | reverse chain lock          | provider      | claim template and cooperative-signing transcript commitment                                   | funding template plus unilateral refund package                                               |
 | chain source lock           | requester     | funding template plus unilateral source-refund package                                         | source-claim template and cooperative-signing transcript commitment                           |
-| chain destination lock      | provider      | destination-claim template and cooperative-signing transcript commitment                       | funding template plus unilateral destination-refund package                                   |
+| chain destination lock      | provider      | destination-claim template and cooperative-signing transcript commitment                       | complete provider-signed funding transaction plus unilateral destination-refund package       |
 
 A commitment is a digest and public execution description. It does not carry
 the preimage, private claim/refund key, secret nonce, seed, macaroon, NWC
@@ -647,11 +649,11 @@ The context has this exact logical shape:
   "unsigned_transaction": "<lowercase raw transaction hex without witness>",
   "transaction_sha256": "<64-lower-hex>",
   "input_index": 0,
-  "prevouts": [{"amount":"<canonical sats>","script_pubkey":"<lower-hex>"}],
+  "prevouts": [{ "amount": "<canonical sats>", "script_pubkey": "<lower-hex>" }],
   "signature_hash": "<64-lower-hex>",
   "sighash_type": "DEFAULT",
-  "participant_keys": ["<requester compressed key>","<provider compressed key>"],
-  "tweaks": [{"value":"<64-lower-hex>","xonly":true}],
+  "participant_keys": ["<requester compressed key>", "<provider compressed key>"],
+  "tweaks": [{ "value": "<64-lower-hex>", "xonly": true }],
   "aggregate_key": "<64-lower-hex>",
   "exit_package_sha256": "<64-lower-hex>",
   "latest_safe_height": "500"
@@ -760,6 +762,33 @@ Section 12. No blinding key, value blinder, asset blinder, seed, or spend key
 may enter a Swap Contract, relay artifact, provider database, or retained lab
 record.
 
+For a BTC-to-L-BTC chain swap, the provider prepares and signs the complete
+Liquid destination funding transaction before the requester broadcasts the
+Bitcoin source. The provider delivers the exact serialized transaction and
+its digest with `destination_lock_terms_ready`. Before it signs
+`requester_destination_verified`, the requester MUST verify the provider's
+transaction signatures, the exact transaction digest and selected output,
+the asset, amount, confidentiality envelope, script and Taproot tree, and its
+persisted destination-claim exit package. It MUST also submit that exact
+transaction to its allowlisted local `elementsd` mempool-acceptance RPC and
+receive acceptance under the active policy. A provider-decoded transaction,
+transaction ID, different serialization, or acceptance result for another
+digest does not satisfy this gate.
+
+This BTC-to-L-BTC destination preflight is allowed at zero confirmations. The
+transaction has not been broadcast, and destination confirmations MUST NOT be
+a precondition for `requester_destination_verified`,
+`source_funding_required`, or `requester_source_broadcast`. After the Bitcoin
+source reaches its signed finality policy, the provider may broadcast only
+the exact preflighted Liquid transaction. Destination confirmations then
+advance `destination_funding_observed` to `destination_funding_final` under
+the signed policy.
+
+This exception applies only to the provider-prepared destination leg of a
+BTC-to-L-BTC chain swap. A reverse swap verifies the provider's already
+broadcast counterparty lock and MUST still reach the signed confirmation
+policy before the requester may claim it.
+
 ## 8. Timeout ladders
 
 Every height is a canonical decimal string. Every Unix time is an integer.
@@ -793,6 +822,10 @@ requester enters refund preparation. The requester broadcasts at or after
 
 Let:
 
+- `H_chain_now` be the signed `current_height` in the selected chain leg's
+  height domain;
+- `H_lightning_now` be the signed `lightning_current_height` in the
+  Lightning/Bitcoin CLTV height domain;
 - `H_hold_expiry` be the signed `hold_expiry_height` value in the Quote and
   matching Swap Contract records. It is the minimum acceptable value of the
   shortest incoming Lightning HTLC expiry, not an observation that an HTLC
@@ -806,11 +839,61 @@ Let:
 The Quote MUST satisfy:
 
 ```text
-current_height < H_lock_last
+H_chain_now < H_lock_last
 H_lock_last + chain_finality_blocks <= H_user_claim
 H_user_claim + broadcast_safety_blocks + reorg_safety_blocks < H_provider_refund
-H_provider_refund + broadcast_safety_blocks + lightning_settlement_blocks < H_hold_expiry
+H_lightning_now < H_hold_expiry
 ```
+
+When the chain leg and Lightning use the same Bitcoin height domain, the
+Quote also MUST satisfy:
+
+```text
+H_provider_refund + broadcast_safety_blocks
+                  + lightning_settlement_blocks < H_hold_expiry
+```
+
+When they use different height domains, such as Liquid and Lightning, their
+heights MUST NOT be compared directly. The signed timeout ladder instead
+includes:
+
+- `height_observed_at`, the Unix time at which both signed tip heights were
+  sampled;
+- positive `height_observation_max_age_seconds`, bounded to 120 seconds in
+  v1;
+- positive `chain_block_interval_seconds` and
+  `lightning_block_interval_seconds` assumptions;
+- positive `cross_domain_safety_seconds`;
+- `provider_refund_expected_at`, calculated as
+  `height_observed_at + (H_provider_refund - H_chain_now +
+broadcast_safety_blocks) * chain_block_interval_seconds`; and
+- `hold_expiry_expected_at`, calculated as
+  `height_observed_at + (H_hold_expiry - H_lightning_now) *
+lightning_block_interval_seconds`.
+
+The exact integer calculations MUST be recomputable without overflow and
+MUST satisfy:
+
+```text
+provider_refund_expected_at
+  + lightning_settlement_blocks * lightning_block_interval_seconds
+  + cross_domain_safety_seconds < hold_expiry_expected_at
+```
+
+These signed intervals are disclosed operational assumptions, not a claim
+that either chain has deterministic block production. A requester verifies
+the pinned tips against its configured nodes and rejects stale, weakened, or
+uncomputable assumptions. A provider MUST NOT fund after the remaining
+locally observed conversion margin falls below the signed inequality. A
+profile advertising a cross-domain reverse pair MUST publish the permitted
+interval and safety ranges; mutable provider defaults cannot fill missing
+values. At Quote receipt, a participant's local observation time MUST NOT
+exceed `height_observed_at + height_observation_max_age_seconds +
+clock_skew_seconds`; only a replacement Quote before Order can refresh those
+signed terms. Immediately before funding, the provider refreshes both local
+tips and recomputes the remaining margin under the signed intervals. It
+refuses funding if the inequality no longer holds; it does not mutate an
+effective Order's timeout ladder.
 
 Before it funds the chain lock, the provider MUST observe at least one held
 incoming HTLC for the bound payment and MUST verify:
@@ -880,22 +963,60 @@ passes Section 4.5. Neither value is established by a Status claim.
 
 The base `state` is determined from `swp_state` as follows:
 
-| MKT-SWP state class                                                                                                      | Base `state`         |
-| ------------------------------------------------------------------------------------------------------------------------ | -------------------- |
-| `accepted`                                                                                                               | `accepted`           |
-| any `*_terms_ready`, `*_verified`, `verification_passed`, or `hold_invoice_ready`                                        | `awaiting_input`     |
-| `funding_required` or `source_funding_required`                                                                          | `funding_required`   |
-| any `*_funding_broadcast` or `*_funding_observed`                                                                        | `funding_observed`   |
+| MKT-SWP state class                                                                                                                                     | Base `state`         |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| `accepted`                                                                                                                                              | `accepted`           |
+| any `*_terms_ready`, `*_verified`, `verification_passed`, or `hold_invoice_ready`                                                                       | `awaiting_input`     |
+| `funding_required` or `source_funding_required`                                                                                                         | `funding_required`   |
+| `funding_observed`, `requester_source_broadcast`, `provider_destination_broadcast`, or any `*_funding_broadcast` or `*_funding_observed`                | `funding_observed`   |
 | any `*_funding_final`, `*_payment_pending`, `*_htlcs_held`, `*_claim_pending`, `*_claimed`, or `cooperative_signing_pending` before both legs are final | `executing`          |
-| `lightning_settlement_pending` or `provider_source_claim_pending`                                                        | `settlement_pending` |
-| `completed`                                                                                                              | `completed`          |
-| any `*_refund_prepared`, `*_refund_pending`, `invoice_cancel_pending`, or `refund_prepared`                              | `refund_pending`     |
-| `refunded`, `*_refunded`, or `invoice_cancelled` after all principal is released                                         | `refunded`           |
-| `disputed`                                                                                                               | `disputed`           |
-| `failed` or `unresolved`                                                                                                 | `failed`             |
+| `lightning_settlement_pending` or `provider_source_claim_pending`                                                                                       | `settlement_pending` |
+| `completed`                                                                                                                                             | `completed`          |
+| any `*_refund_prepared`, `*_refund_pending`, `invoice_cancel_pending`, or `refund_prepared`                                                             | `refund_pending`     |
+| `refunded`, `*_refunded`, or `invoice_cancelled` after all principal is released                                                                        | `refunded`           |
+| `disputed`                                                                                                                                              | `disputed`           |
+| `failed` or `unresolved`                                                                                                                                | `failed`             |
 
 `contract_pending` and `contract_bound` have no Status mapping. A value that
 matches no row is `swp_status_transition_invalid`.
+
+### Cross-participant causal gates
+
+When an action Status consumes a counterparty-authored prerequisite Status,
+it MUST carry exactly one `e` reference marked `status` to that exact signed
+prerequisite. The referenced Status MUST be present, signature-valid,
+contiguous in its author's `seq`/`previous` stream, valid for the same
+session, Order, and profile, and valid for the required signer, state, terms,
+and evidence. A matching state elsewhere in the record set, relay arrival
+order, array order, or a `created_at` comparison does not establish this
+causal edge.
+
+The v1 cross-participant gates are:
+
+| Action Status                                               | Required referenced Status                 |
+| ----------------------------------------------------------- | ------------------------------------------ |
+| `requester_verification_passed`                             | provider `lock_terms_ready`                |
+| provider `lightning_htlcs_held`                             | requester `lightning_payment_pending`      |
+| `requester_invoice_verified`                                | provider `hold_invoice_ready`              |
+| `requester_lock_verified`                                   | provider `provider_lock_terms_ready`       |
+| provider `provider_funding_broadcast`                       | requester `requester_lock_verified`        |
+| `requester_claim_pending`                                   | provider `funding_final`                   |
+| provider `lightning_settlement_pending`                     | requester `requester_claimed`              |
+| `requester_source_verified`                                 | provider `source_lock_terms_ready`         |
+| provider `destination_lock_terms_ready`                     | requester `requester_source_verified`      |
+| `requester_destination_verified`                            | provider `destination_lock_terms_ready`    |
+| provider `source_funding_required`                          | requester `requester_destination_verified` |
+| `requester_source_broadcast`                                | provider `source_funding_required`         |
+| `requester_destination_claim_pending`                       | provider `destination_funding_final`       |
+| provider `provider_source_claim_pending`                    | requester `requester_destination_claimed`  |
+| `requester_source_refund_pending` after destination funding | provider `provider_destination_refunded`   |
+| provider terminal `refunded` after destination funding      | requester `requester_source_refunded`      |
+
+The `status` reference is additional to the same-author `previous` reference.
+An implementation retains a missing, foreign, ambiguous, forked, or
+pre-published dependency as an invalid claim and MUST NOT perform the action's
+external effect. A participant creates the dependent Status only after it has
+verified and durably retained the referenced bytes.
 
 ### 9.1 Common terminal rules
 
@@ -906,6 +1027,15 @@ matches no row is `swp_status_transition_invalid`.
   and complete loss accounting.
 - `unresolved` records missing evidence, an unexecutable exit, or principal
   whose terminal disposition is unknown.
+
+For a chain swap whose source was funded and refunded before the destination
+was funded, the destination leg's terminal Close evidence uses class
+`reservation`, references the exact Contract `reservation_id`, and has rung
+`verified`. The verifier MUST establish that the reservation was released and
+that no `provider_destination_broadcast`, destination funding effect, or
+contracted destination outpoint exists. Source funding or refund evidence MUST
+NOT be duplicated as evidence for the unfunded destination leg.
+
 - `cancelled` is valid only when no irreversible external effect remains.
 - `expired` is valid before funding, or after all funded effects have reached
   a separately proved refund/release outcome.
@@ -974,10 +1104,10 @@ The provider signs `accepted`, `hold_invoice_ready`,
 ```text
 ordered -> accepted -> contract_pending -> contract_bound
         -> source_lock_terms_ready
-        -> requester_source_verified -> source_funding_required
+        -> requester_source_verified -> destination_lock_terms_ready
+        -> requester_destination_verified -> source_funding_required
         -> requester_source_broadcast -> source_funding_observed
-        -> source_funding_final -> destination_lock_terms_ready
-        -> requester_destination_verified -> provider_destination_broadcast
+        -> source_funding_final -> provider_destination_broadcast
         -> destination_funding_observed -> destination_funding_final
         -> requester_destination_claim_pending
         -> requester_destination_claimed
@@ -1001,9 +1131,9 @@ any funded state -> disputed|failed|unresolved
 ```
 
 The requester signs requester-prefixed actions. The provider signs
-provider-prefixed actions and `accepted`, `source_lock_terms_ready`, and
-`destination_lock_terms_ready`. Each participant may report a rail
-observation without promoting its rung.
+provider-prefixed actions and `accepted`, `source_lock_terms_ready`,
+`destination_lock_terms_ready`, and `source_funding_required`. Each
+participant may report a rail observation without promoting its rung.
 
 ### 9.5 Illegal transitions, gaps, and forks
 
@@ -1061,13 +1191,13 @@ private artifacts stay off-relay.
 
 Evidence rungs are monotonic only for the exact artifact and policy:
 
-| Rung       | Authority                                                                                     |
-| ---------- | --------------------------------------------------------------------------------------------- |
-| `pledged`  | Evidence producer signed a claim.                                                             |
-| `reserved` | A reservation proof policy admitted a capacity commitment.                                    |
-| `measured` | A named observer saw the rail object in its stated view.                                      |
-| `verified` | An allowlisted verifier re-derived the artifact and terms under the pinned policy.            |
-| `paid`     | The relevant Lightning node or payment proof establishes payment under the Quote.             |
+| Rung       | Authority                                                                                              |
+| ---------- | ------------------------------------------------------------------------------------------------------ |
+| `pledged`  | Evidence producer signed a claim.                                                                      |
+| `reserved` | A reservation proof policy admitted a capacity commitment.                                             |
+| `measured` | A named observer saw the rail object in its stated view.                                               |
+| `verified` | An allowlisted verifier re-derived the artifact and terms under the pinned policy.                     |
+| `paid`     | The relevant Lightning node or payment proof establishes payment under the Quote.                      |
 | `settled`  | Bitcoin, Liquid, or Lightning finality rules in the Quote are satisfied in the verifier's stated view. |
 
 The local wallet is the authority for whether it enables a fund, claim, or
@@ -1136,6 +1266,7 @@ serialized with RFC 8785 and has this logical shape:
   "effect_id": "<64-lower-hex>",
   "funding": {
     "transaction_id": null,
+    "transaction_template": "<lowercase transaction hex>",
     "transaction_template_sha256": "<64-lower-hex>",
     "output_index": 0,
     "amount": "100000",
@@ -1146,11 +1277,14 @@ serialized with RFC 8785 and has this logical shape:
     "mode": "presigned|wallet_sign|external_signer",
     "path": "claim|refund",
     "transaction_template_sha256": "<64-lower-hex>",
+    "transaction_template": "<lowercase transaction hex>",
     "signed_transaction": null,
     "signer_ref": null,
     "transaction_version": 2,
     "lock_time": 0,
     "input_sequence": 0,
+    "input_index": null,
+    "signature_hash": null,
     "sighash_type": "DEFAULT",
     "destination_script_pubkey": "<lowercase hex>",
     "earliest_broadcast_height": "0",
@@ -1164,7 +1298,13 @@ serialized with RFC 8785 and has this logical shape:
   "verification": {
     "swap_tree_sha256": "<64-lower-hex>",
     "quote_id": "<64-lower-hex>",
-    "verifier_digest": "<64-lower-hex>"
+    "verifier_digest": "<64-lower-hex>",
+    "taproot_script": "<lowercase hex>",
+    "taproot_control_block": "<lowercase hex>",
+    "taproot_tree": [],
+    "genesis_hash": null,
+    "fee_output_index": null,
+    "fee_amount": null
   },
   "secret_commitments": {
     "payment_hash": "<64-lower-hex>",
@@ -1176,6 +1316,55 @@ serialized with RFC 8785 and has this logical shape:
   }
 }
 ```
+
+`funding.transaction_template` is the exact funding serialization whose
+SHA-256 digest is `funding.transaction_template_sha256`. The
+`exit.transaction_template` member is the exact serialization authorized for
+the unilateral path. It is unsigned for `wallet_sign` or `external_signer` and
+may equal `signed_transaction` for `presigned`. A package MUST NOT require a
+wallet to reconstruct either serialization from mutable coordinator state.
+
+Bitcoin packages carry `swap_tree_sha256`, `taproot_script`,
+`taproot_control_block`, and the complete `taproot_tree`. Liquid packages
+carry `swap_tree_sha256`, `taproot_script`, `taproot_control_block`, the full
+Elements `genesis_hash`, `fee_output_index`, and canonical decimal-string
+`fee_amount`. For Liquid, `exit.input_index` selects the exact input and
+`exit.signature_hash` binds the Elements-specific signature digest;
+`taproot_tree` may be omitted because the signed verifier and
+`swap_tree_sha256` bind the complete tree. The conditional Liquid members are
+absent, not `null`, on a Bitcoin package. Unknown members fail closed.
+
+For a Liquid leg, the `broadcast` member is the following exact local-node
+policy instead of an Esplora policy:
+
+```json
+{
+  "broadcast": {
+    "mode": "local_elementsd",
+    "rpc_method": "sendrawtransaction",
+    "network_id": "bip122:<reference>",
+    "genesis_hash": "<64-lower-hex>"
+  }
+}
+```
+
+`network_id` and the full `genesis_hash` MUST equal the verified funding leg.
+The client derives a typed request containing those members, the signed
+transaction's SHA-256 digest, and an opaque reference to the dedicated private
+broadcast artifact that holds the exact bytes. The executor loads those bytes
+through the reference and requires their digest to match before any RPC.
+Wallet signing alone is not a completed claim or refund effect. The effect is
+recorded only after the exact `sendrawtransaction` request succeeds or the
+local node proves those same transaction bytes are already known; a
+conflicting transaction fails closed.
+
+A completed hashlock claim transaction discloses its preimage to the rail.
+The durable client session snapshot MUST NOT duplicate that transaction,
+witness, or preimage in its retained external-effect request map. It retains
+the effect ID, transaction digest or ID, result digest, and an opaque reference
+to the dedicated private wallet or broadcast artifact that owns exact-byte
+retry. This rule does not weaken exact-byte idempotency and does not make the
+artifact a relay or provider record.
 
 The package contains a fully signed unilateral transaction when the rail and
 known outpoint permit it. Otherwise it contains the complete deterministic
@@ -1433,6 +1622,8 @@ Profile errors are stable lowercase identifiers:
 | `swp_exit_package_mismatch`       | Package digest or terms differ from the Swap Contract.                            |
 | `swp_exit_package_unusable`       | Package still depends on unavailable coordination or secrets it does not possess. |
 | `swp_secret_material_forbidden`   | A relay/server artifact contains prohibited custody material.                     |
+| `swp_external_signature_invalid`  | An external signer returned malformed bytes or an invalid signature.              |
+| `swp_external_signature_mismatch` | An external signer changed the exact event or transaction template it was given.  |
 | `swp_privacy_violation`           | Field audience or receipt consent was exceeded.                                   |
 | `swp_external_effect_conflict`    | One effect ID maps to different external operations.                              |
 | `swp_idempotency_conflict`        | Same signed-record or effect key has changed input.                               |
@@ -1455,63 +1646,74 @@ heights, verifier inputs, and expected evidence rung.
 
 ### 18.1 Positive
 
-| Fixture                                    | Required result                                                                                         |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| `swp-v1-offering-btc-ln-enabled`           | Accept canonical pair, bounds, fee promise, and `evm_extension=unsupported`.                            |
-| `swp-v1-contract-matching-bilateral`       | Accept requester/provider `kind:39610` records with one shared contract digest and complementary roles. |
-| `swp-v1-submarine-regtest-cooperative`     | Complete invoice payment and MuSig2 provider claim after all verification gates.                        |
-| `swp-v1-submarine-regtest-script-refund`   | Provider disappears; requester broadcasts the bound refund after `H_refund`.                            |
-| `swp-v1-reverse-regtest-cooperative`       | Hold invoice, provider lock, requester claim, preimage settlement, and finality complete.               |
-| `swp-v1-reverse-regtest-provider-refund`   | Requester never claims; provider refunds and cancels held Lightning HTLCs.                              |
-| `swp-v1-reverse-hold-expiry-at-minimum`    | Accept observed shortest incoming expiry equal to signed `hold_expiry_height`.                          |
-| `swp-v1-reverse-hold-expiry-above-minimum` | Accept observed shortest incoming expiry above signed `hold_expiry_height`.                             |
-| `swp-v1-chain-regtest-cooperative`         | Source and destination locks, requester claim, provider claim, both final.                              |
-| `swp-v1-chain-regtest-dual-refund`         | Destination is unclaimed; provider and requester execute the safe ordered refunds.                      |
-| `swp-v1-liquid-submarine-regtest-refund`   | Requester verifies its pegged-asset output, persists the Liquid exit, and refunds after timeout.         |
-| `swp-v1-liquid-reverse-regtest-claim`      | Requester unblinds the provider lock, verifies amount/asset/script, and claims without coordinator keys. |
-| `swp-v1-btc-liquid-chain-regtest`          | Both chain legs verify their own asset, output, timeout, and unilateral exit before either funds.        |
-| `swp-v1-covenant-hard-reservation`         | Independent verifier admits the covenant-enforced minimum once.                                         |
-| `swp-v1-price-feed-exact-pointer`          | Exact URL, response digest, RFC 6901 pointer, and observed value reproduce terms.                       |
-| `swp-v1-public-receipt-redacted`           | Receipt exposes only consented outcome and verifier reference.                                          |
+| Fixture                                      | Required result                                                                                                                                                        |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `swp-v1-offering-btc-ln-enabled`             | Accept canonical pair, bounds, fee promise, and `evm_extension=unsupported`.                                                                                           |
+| `swp-v1-contract-matching-bilateral`         | Accept requester/provider `kind:39610` records with one shared contract digest and complementary roles.                                                                |
+| `swp-v1-submarine-regtest-cooperative`       | Complete invoice payment and MuSig2 provider claim after all verification gates.                                                                                       |
+| `swp-v1-submarine-regtest-script-refund`     | Provider disappears; requester broadcasts the bound refund after `H_refund`.                                                                                           |
+| `swp-v1-reverse-regtest-cooperative`         | Hold invoice, provider lock, requester claim, preimage settlement, and finality complete.                                                                              |
+| `swp-v1-reverse-regtest-provider-refund`     | Requester never claims; provider refunds and cancels held Lightning HTLCs.                                                                                             |
+| `swp-v1-reverse-hold-expiry-at-minimum`      | Accept observed shortest incoming expiry equal to signed `hold_expiry_height`.                                                                                         |
+| `swp-v1-reverse-hold-expiry-above-minimum`   | Accept observed shortest incoming expiry above signed `hold_expiry_height`.                                                                                            |
+| `swp-v1-chain-regtest-cooperative`           | Provider signs the source-funding instruction; source and destination locks, requester claim, provider claim, both final.                                              |
+| `swp-v1-chain-regtest-dual-refund`           | Destination is unclaimed; provider and requester execute the safe ordered refunds.                                                                                     |
+| `swp-v1-liquid-submarine-regtest-refund`     | Requester verifies its pegged-asset output, persists the Liquid exit, and refunds after timeout.                                                                       |
+| `swp-v1-liquid-reverse-regtest-claim`        | Requester unblinds the provider lock, verifies amount/asset/script, and claims without coordinator keys.                                                               |
+| `swp-v1-liquid-exit-wallet-claim`            | Persist the exact Liquid template, input, signature digest, tree commitment, fee output, distinct local recovery refs, and local-node broadcast policy before funding. |
+| `swp-v1-liquid-reverse-cross-domain-timeout` | Accept separately pinned Liquid and Lightning heights whose signed wall-time conversion preserves the refund and settlement margin.                                    |
+| `swp-v1-btc-liquid-chain-regtest`            | Requester verifies the provider-signed Liquid transaction, output/tree, claim exit, and local mempool acceptance at zero confirmations before Bitcoin source funding.  |
+| `swp-v1-covenant-hard-reservation`           | Independent verifier admits the covenant-enforced minimum once.                                                                                                        |
+| `swp-v1-price-feed-exact-pointer`            | Exact URL, response digest, RFC 6901 pointer, and observed value reproduce terms.                                                                                      |
+| `swp-v1-public-receipt-redacted`             | Receipt exposes only consented outcome and verifier reference.                                                                                                         |
 
 ### 18.2 Negative verification and grammar
 
-| Fixture                                                  | Expected error                                                              |
-| -------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `swp-v1-negative-ticker-pair`                            | `swp_invalid_asset_id`                                                      |
-| `swp-v1-negative-json-number-amount`                     | `swp_invalid_amount`                                                        |
-| `swp-v1-negative-leading-zero-amount`                    | `swp_invalid_amount`                                                        |
-| `swp-v1-negative-disabled-side`                          | `swp_side_disabled`                                                         |
-| `swp-v1-negative-fee-promise-change`                     | `swp_terms_mismatch`                                                        |
-| `swp-v1-negative-feed-redirect`                          | `swp_price_feed_invalid`                                                    |
-| `swp-v1-negative-feed-substitute-host`                   | `swp_price_feed_invalid`                                                    |
-| `swp-v1-negative-feed-pointer`                           | `swp_price_feed_invalid`                                                    |
-| `swp-v1-negative-feed-stale`                             | `swp_price_feed_stale`                                                      |
-| `swp-v1-negative-invoice-network`                        | `swp_invoice_invalid`                                                       |
-| `swp-v1-negative-invoice-amountless`                     | `swp_invoice_invalid`                                                       |
-| `swp-v1-negative-payment-hash`                           | `swp_payment_hash_mismatch`                                                 |
-| `swp-v1-negative-taproot-tree`                           | `swp_script_commitment_mismatch`                                            |
-| `swp-v1-negative-liquid-ticker-asset`                    | `swp_invalid_asset_id`                                                      |
-| `swp-v1-negative-liquid-pegged-asset`                    | `swp_liquid_network_mismatch`                                               |
-| `swp-v1-negative-liquid-output-commitment`               | `swp_liquid_output_invalid`                                                 |
-| `swp-v1-negative-liquid-unblind-foreign-output`          | `swp_liquid_unblind_failed`                                                 |
-| `swp-v1-negative-liquid-unblind-amount`                  | `swp_liquid_unblind_mismatch`                                               |
-| `swp-v1-negative-liquid-bitcoin-sighash`                 | `swp_liquid_output_invalid`                                                 |
-| `swp-v1-negative-refund-key`                             | `swp_terms_mismatch`                                                        |
-| `swp-v1-negative-timeout-ladder`                         | `swp_timeout_ladder_unsafe`                                                 |
-| `swp-v1-negative-hold-expiry-below-minimum`              | `swp_timeout_ladder_unsafe`                                                 |
-| `swp-v1-negative-rbf-forbidden`                          | `swp_rbf_policy_violation`                                                  |
-| `swp-v1-negative-insufficient-confirmations`             | `swp_confirmation_insufficient`                                             |
-| `swp-v1-negative-order-mutation`                         | `swp_order_selection_invalid`                                               |
-| `swp-v1-negative-bare-swap-contract`                     | NIP-MKT bare-private rejection `restricted: mkt-private-requires-gift-wrap` |
-| `swp-v1-negative-contract-one-signer`                    | `swp_contract_missing`                                                      |
-| `swp-v1-negative-contract-role`                          | `swp_contract_signer_invalid`                                               |
-| `swp-v1-negative-contract-digest-fork`                   | `swp_contract_digest_mismatch`                                              |
-| `swp-v1-negative-contract-order-mismatch`                | `swp_contract_terms_mismatch`                                               |
-| `swp-v1-negative-nonnull-evm-leg`                        | `swp_unsupported_extension`                                                 |
-| `swp-v1-negative-missing-exit-package`                   | `swp_exit_package_missing`                                                  |
-| `swp-v1-negative-provider-claims-requester-verification` | `swp_status_signer_invalid`                                                 |
-| `swp-v1-negative-settlement-overclaim`                   | `swp_settlement_overclaim`                                                  |
+| Fixture                                                    | Expected error                                                              |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `swp-v1-negative-ticker-pair`                              | `swp_invalid_asset_id`                                                      |
+| `swp-v1-negative-json-number-amount`                       | `swp_invalid_amount`                                                        |
+| `swp-v1-negative-leading-zero-amount`                      | `swp_invalid_amount`                                                        |
+| `swp-v1-negative-disabled-side`                            | `swp_side_disabled`                                                         |
+| `swp-v1-negative-fee-promise-change`                       | `swp_terms_mismatch`                                                        |
+| `swp-v1-negative-feed-redirect`                            | `swp_price_feed_invalid`                                                    |
+| `swp-v1-negative-feed-substitute-host`                     | `swp_price_feed_invalid`                                                    |
+| `swp-v1-negative-feed-pointer`                             | `swp_price_feed_invalid`                                                    |
+| `swp-v1-negative-feed-stale`                               | `swp_price_feed_stale`                                                      |
+| `swp-v1-negative-invoice-network`                          | `swp_invoice_invalid`                                                       |
+| `swp-v1-negative-invoice-amountless`                       | `swp_invoice_invalid`                                                       |
+| `swp-v1-negative-payment-hash`                             | `swp_payment_hash_mismatch`                                                 |
+| `swp-v1-negative-taproot-tree`                             | `swp_script_commitment_mismatch`                                            |
+| `swp-v1-negative-liquid-ticker-asset`                      | `swp_invalid_asset_id`                                                      |
+| `swp-v1-negative-liquid-pegged-asset`                      | `swp_liquid_network_mismatch`                                               |
+| `swp-v1-negative-liquid-output-commitment`                 | `swp_liquid_output_invalid`                                                 |
+| `swp-v1-negative-liquid-unblind-foreign-output`            | `swp_liquid_unblind_failed`                                                 |
+| `swp-v1-negative-liquid-unblind-amount`                    | `swp_liquid_unblind_mismatch`                                               |
+| `swp-v1-negative-liquid-bitcoin-sighash`                   | `swp_liquid_output_invalid`                                                 |
+| `swp-v1-negative-liquid-exit-schema`                       | `swp_exit_package_unusable`                                                 |
+| `swp-v1-negative-btc-liquid-destination-signature`         | `swp_liquid_output_invalid`                                                 |
+| `swp-v1-negative-btc-liquid-destination-mempool`           | `swp_funding_not_authorized`                                                |
+| `swp-v1-negative-btc-liquid-source-before-preflight`       | `swp_status_transition_invalid`                                             |
+| `swp-v1-negative-cross-signer-status-prepublish`           | `swp_status_transition_invalid`                                             |
+| `swp-v1-negative-refund-key`                               | `swp_terms_mismatch`                                                        |
+| `swp-v1-negative-timeout-ladder`                           | `swp_timeout_ladder_unsafe`                                                 |
+| `swp-v1-negative-hold-expiry-below-minimum`                | `swp_timeout_ladder_unsafe`                                                 |
+| `swp-v1-negative-liquid-reverse-cross-domain-timeout`      | `swp_timeout_ladder_unsafe`                                                 |
+| `swp-v1-negative-rbf-forbidden`                            | `swp_rbf_policy_violation`                                                  |
+| `swp-v1-negative-insufficient-confirmations`               | `swp_confirmation_insufficient`                                             |
+| `swp-v1-negative-order-mutation`                           | `swp_order_selection_invalid`                                               |
+| `swp-v1-negative-bare-swap-contract`                       | NIP-MKT bare-private rejection `restricted: mkt-private-requires-gift-wrap` |
+| `swp-v1-negative-contract-one-signer`                      | `swp_contract_missing`                                                      |
+| `swp-v1-negative-contract-role`                            | `swp_contract_signer_invalid`                                               |
+| `swp-v1-negative-contract-digest-fork`                     | `swp_contract_digest_mismatch`                                              |
+| `swp-v1-negative-contract-order-mismatch`                  | `swp_contract_terms_mismatch`                                               |
+| `swp-v1-negative-nonnull-evm-leg`                          | `swp_unsupported_extension`                                                 |
+| `swp-v1-negative-missing-exit-package`                     | `swp_exit_package_missing`                                                  |
+| `swp-v1-negative-external-signature-invalid`               | `swp_external_signature_invalid`                                            |
+| `swp-v1-negative-external-signature-mismatch`              | `swp_external_signature_mismatch`                                           |
+| `swp-v1-negative-provider-claims-requester-verification`   | `swp_status_signer_invalid`                                                 |
+| `swp-v1-negative-requester-claims-source-funding-required` | `swp_status_signer_invalid`                                                 |
+| `swp-v1-negative-settlement-overclaim`                     | `swp_settlement_overclaim`                                                  |
 
 ### 18.3 Reservation, replay, fork, and expiry
 
@@ -1534,17 +1736,18 @@ heights, verifier inputs, and expected evidence rung.
 
 ### 18.4 Privacy and custody
 
-| Fixture                                      | Required result                                                                                          |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `swp-v1-privacy-public-offering`             | Secret scanner finds no exact amount, live inventory, invoice, address, script, or reserve witness.      |
-| `swp-v1-privacy-wrap-recipient`              | Only requester, provider, sender recovery copy, and declared handler can decrypt their intended records. |
-| `swp-v1-privacy-public-receipt-overreach`    | Reject with `swp_privacy_violation`.                                                                     |
-| `swp-v1-privacy-seed-tripwire`               | Reject with `swp_secret_material_forbidden`.                                                             |
-| `swp-v1-privacy-preimage-tripwire`           | Reject unsafe relay/server artifact with `swp_secret_material_forbidden`.                                |
-| `swp-v1-privacy-macaroon-tripwire`           | Reject with `swp_secret_material_forbidden`.                                                             |
-| `swp-v1-privacy-claim-key-tripwire`          | Reject with `swp_secret_material_forbidden`.                                                             |
-| `swp-v1-privacy-musig-secret-nonce-tripwire` | Reject with `swp_secret_material_forbidden`.                                                             |
-| `swp-v1-privacy-liquid-blinding-key-tripwire` | Reject with `swp_secret_material_forbidden`.                                                             |
+| Fixture                                       | Required result                                                                                                           |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `swp-v1-privacy-public-offering`              | Secret scanner finds no exact amount, live inventory, invoice, address, script, or reserve witness.                       |
+| `swp-v1-privacy-wrap-recipient`               | Only requester, provider, sender recovery copy, and declared handler can decrypt their intended records.                  |
+| `swp-v1-privacy-public-receipt-overreach`     | Reject with `swp_privacy_violation`.                                                                                      |
+| `swp-v1-privacy-seed-tripwire`                | Reject with `swp_secret_material_forbidden`.                                                                              |
+| `swp-v1-privacy-preimage-tripwire`            | Reject unsafe relay/server artifact with `swp_secret_material_forbidden`.                                                 |
+| `swp-v1-privacy-macaroon-tripwire`            | Reject with `swp_secret_material_forbidden`.                                                                              |
+| `swp-v1-privacy-claim-key-tripwire`           | Reject with `swp_secret_material_forbidden`.                                                                              |
+| `swp-v1-privacy-musig-secret-nonce-tripwire`  | Reject with `swp_secret_material_forbidden`.                                                                              |
+| `swp-v1-privacy-liquid-blinding-key-tripwire` | Reject with `swp_secret_material_forbidden`.                                                                              |
+| `swp-v1-privacy-post-claim-snapshot`          | Retain effect and result evidence, but no claim witness, signed transaction, or preimage in the durable session snapshot. |
 
 ### 18.5 Reorg, replacement, and recovery
 
@@ -1607,6 +1810,55 @@ required secp256k1-zkp primitives.
 - [Arkade, solver, Mostro, Cashu, and WDK teardown](../teardowns/2026-08-04-ark-solver-mostro-cashu-rails-teardown.md)
 
 ## Changelog
+
+**v1 cross-participant causality correction (2026-08-06)**
+
+- Required effect-authorizing Status records to reference the exact
+  counterparty Status they consume with the existing `status` marker.
+- Rejected record-set existence, relay order, and author-controlled
+  `created_at` as proof that a cross-signer prerequisite preceded an action.
+- Required a chain provider's terminal `refunded` Status to consume the exact
+  requester `requester_source_refunded` Status after destination funding, so
+  both funded principals have signed release evidence before terminal close.
+
+**v1 unfunded-destination evidence clarification (2026-08-06)**
+
+- Bound a source-only chain refund's destination evidence to the exact released
+  reservation and verified absence of destination funding.
+- Prohibited duplicating source evidence as the unfunded destination leg's
+  terminal proof.
+
+**v1 Liquid exit-package correction (2026-08-06)**
+
+- Made the exact funding and unilateral transaction serializations explicit
+  and defined the Liquid input, Elements signature digest, tree commitment,
+  genesis, and fee members.
+- Required exact `sendrawtransaction` idempotency through the bound local
+  `elementsd` network and genesis policy.
+- Kept completed claim witnesses and preimages out of durable client session
+  snapshots while retaining digest-bound private-artifact recovery.
+- Added external-signer error vocabulary and conformance fixtures for the
+  corrected package, signing, and snapshot boundaries.
+
+**v1 Liquid sequencing correction (2026-08-06)**
+
+- Required BTC-to-L-BTC requesters to preflight the exact provider-signed
+  Liquid destination transaction, selected output and tree, claim exit, and
+  local `elementsd` mempool acceptance before Bitcoin source broadcast.
+- Moved destination terms and requester verification before the chain source
+  funding instruction. The provider still broadcasts the destination only
+  after source finality.
+- Made zero confirmations valid for that unbroadcast destination preflight.
+  Reverse counterparty locks still require their signed confirmation policy.
+
+**v1 cross-domain timeout correction (2026-08-06)**
+
+- Separated the selected chain height from Lightning's Bitcoin CLTV height.
+- Prohibited direct Liquid-height versus Bitcoin-height comparisons and
+  required a signed, recomputable wall-time conversion with an explicit
+  safety margin for cross-domain reverse swaps.
+- Retained the stronger direct-height inequality when both legs share the
+  Bitcoin height domain.
 
 **v1 Liquid addendum (2026-08-05)**
 

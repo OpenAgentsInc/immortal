@@ -1055,7 +1055,9 @@ fn asset(network: &str, rail: &str) -> String {
 }
 
 fn complete_quote_profile(swap_type: &str) -> Value {
-    complete_record_profile(swap_type, 39_605, None)
+    let mut profile = complete_record_profile(swap_type, 39_605, None);
+    upgrade_legacy_reverse_timeout_ladder(swap_type, &mut profile);
+    profile
 }
 
 fn complete_rfq_profile(swap_type: &str) -> Value {
@@ -1103,6 +1105,7 @@ fn complete_contract(
         complete_record_profile(swap_type, 39_610, Some("requester"))["contract"].clone();
     contract["order_id"] = json!(order.id);
     contract["quote_id"] = json!(quote.id);
+    upgrade_legacy_reverse_timeout_ladder(swap_type, &mut contract);
     let quote_content: Value = serde_json::from_str(&quote.content).unwrap();
     let reservation = &quote_content["mkt_swp"]["reservation_terms"];
     let proof_ref = reservation["proof_ref"].as_str().unwrap();
@@ -1126,6 +1129,23 @@ fn complete_contract(
         "covenant_commitment":null
     });
     contract
+}
+
+fn upgrade_legacy_reverse_timeout_ladder(swap_type: &str, terms: &mut Value) {
+    if swap_type != "reverse" {
+        return;
+    }
+    let timeout_ladder = if terms.get("timeout_ladder").is_some() {
+        terms.get_mut("timeout_ladder")
+    } else {
+        terms
+            .get_mut("terms")
+            .and_then(|terms| terms.get_mut("timeout_ladder"))
+    }
+    .and_then(Value::as_object_mut)
+    .expect("legacy reverse timeout ladder");
+    let current_height = timeout_ladder["current_height"].clone();
+    timeout_ladder.insert("lightning_current_height".to_owned(), current_height);
 }
 
 fn hex(bytes: &[u8]) -> String {

@@ -4,6 +4,7 @@ use immortal_provider::contract::{
     ProviderContractError, provider_contract_bytes, provider_contract_sha256,
     provider_contract_value, validate_provider_contract,
 };
+use immortal_provider::elementsd::ELEMENTSD_PRODUCTION_RUNTIME_METHODS;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -29,6 +30,9 @@ const CLN_ADVERSARIAL_HOLD_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/cln-adversarial-hold-v1.json");
 const DIRECT_RECOVERY_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/direct-recovery-v1.json");
+const LIQUID_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/nipmkt/liquid-rail-v1.json");
+const LIQUID_RUNTIME_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/liquid-runtime-v1.json");
 
 #[test]
 fn provider_contract_is_canonical_byte_stable_and_matches_export() {
@@ -86,6 +90,11 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
             "tests/fixtures/provider/direct-recovery-v1.json",
             DIRECT_RECOVERY_FIXTURE,
         ),
+        ("tests/fixtures/nipmkt/liquid-rail-v1.json", LIQUID_FIXTURE),
+        (
+            "tests/fixtures/provider/liquid-runtime-v1.json",
+            LIQUID_RUNTIME_FIXTURE,
+        ),
     ] {
         let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();
         assert_eq!(entry["bytes"], bytes.len());
@@ -102,6 +111,22 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
     assert_eq!(
         contract["execution"]["musig2_key_path_swap_types"],
         json!(["submarine"])
+    );
+    assert_eq!(
+        contract["execution"]["liquid_swap_types"],
+        json!(["submarine", "reverse", "chain"])
+    );
+    assert_eq!(
+        contract["rails"]["elementsd"]["confidential_authority"],
+        "local_elementsd_unblind_own_outputs_only"
+    );
+    assert_eq!(
+        contract["rails"]["elementsd"]["independent_range_proof_verification"],
+        false
+    );
+    assert_eq!(
+        contract["rails"]["elementsd"]["runtime_methods"],
+        json!(ELEMENTSD_PRODUCTION_RUNTIME_METHODS)
     );
 }
 
@@ -313,6 +338,34 @@ fn provider_contract_distinguishes_required_and_optional_environment() {
             json!({
                 "environment":"IMMORTAL_PROVIDER_LIGHTNING_RAIL",
                 "equals":"lnd",
+                "or_selector_absent":false,
+            })
+        );
+    }
+    let liquid_enabled = variables
+        .iter()
+        .find(|variable| variable["name"] == "IMMORTAL_PROVIDER_LIQUID_ENABLED")
+        .expect("Liquid selector environment contract");
+    assert_eq!(liquid_enabled["choices"], json!(["true"]));
+    assert_eq!(liquid_enabled["defaulted"], false);
+    for name in [
+        "IMMORTAL_PROVIDER_ELEMENTSD_HOST",
+        "IMMORTAL_PROVIDER_ELEMENTSD_PORT",
+        "IMMORTAL_PROVIDER_ELEMENTSD_RPC_USER",
+        "IMMORTAL_PROVIDER_ELEMENTSD_RPC_PASSWORD",
+        "IMMORTAL_PROVIDER_ELEMENTSD_WALLET",
+        "IMMORTAL_PROVIDER_LIQUID_NETWORK_ID",
+        "IMMORTAL_PROVIDER_LIQUID_PEGGED_ASSET",
+    ] {
+        let variable = variables
+            .iter()
+            .find(|variable| variable["name"] == name)
+            .expect("conditional Liquid environment contract");
+        assert_eq!(
+            variable["required_when"],
+            json!({
+                "environment":"IMMORTAL_PROVIDER_LIQUID_ENABLED",
+                "equals":"true",
                 "or_selector_absent":false,
             })
         );

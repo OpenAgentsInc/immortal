@@ -110,7 +110,7 @@
         {
           "leg_id": "source",
           "path": "refund",
-          "condition": "csv"
+          "condition": "cltv"
         },
         {
           "leg_id": "destination",
@@ -329,6 +329,16 @@
       "name": "swp-v1-negative-reverse-progress-terminal-state",
       "operation": "reverse_progress_terminal_state",
       "error": "swp_unresolved_loss"
+    },
+    {
+      "name": "swp-v1-negative-external-signature-invalid",
+      "operation": "external_signer_returns_invalid_signature",
+      "error": "swp_external_signature_invalid"
+    },
+    {
+      "name": "swp-v1-negative-external-signature-mismatch",
+      "operation": "external_signer_changes_requested_bytes",
+      "error": "swp_external_signature_mismatch"
     }
   ],
   "recovery": [
@@ -425,6 +435,9 @@
     { "member": "wallet_rpc_payload", "error": "swp_secret_material_forbidden" },
     { "member": "musig_secret_nonce", "error": "swp_secret_material_forbidden" },
     { "member": "secretNonce", "error": "swp_secret_material_forbidden" },
-    { "member": "signing_nonce", "error": "swp_secret_material_forbidden" }
+    { "member": "signing_nonce", "error": "swp_secret_material_forbidden" },
+    { "member": "blinding_key", "error": "swp_secret_material_forbidden" },
+    { "member": "valueBlinder", "error": "swp_secret_material_forbidden" },
+    { "member": "asset-blinder", "error": "swp_secret_material_forbidden" }
   ]
 }

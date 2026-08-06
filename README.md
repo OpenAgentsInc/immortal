@@ -25,8 +25,11 @@ The products:
   liquidity-provider daemon for the swap network. Its no-spend mode rehearses
   complete sessions without rail effects. Funded mode reserves operator-owned
   Bitcoin and Lightning capacity, drives bitcoind plus either Core Lightning
-  or feature-gated LND, and
-  executes script-path claim/refund recovery. Its allowlist-only MuSig2
+  or feature-gated LND, and executes script-path claim/refund recovery. An
+  optional, off-by-default Liquid rail drives a loopback elementsd wallet for
+  exact BTC↔L-BTC quoting, own-output unblinding, and unilateral script-path
+  exits without claiming independent verification of arbitrary confidential
+  proofs. Its allowlist-only MuSig2
   foundation and signed actor support the cooperative key-path protocol. The
   actor is fail-closed on exact stored Status bytes and the pre-committed
   provider exit package. Submarine signer/runtime capability is available

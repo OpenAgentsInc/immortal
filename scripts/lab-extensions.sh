@@ -53,9 +53,15 @@ extension_dir() {
 }
 
 hook_path() {
-  local extension="$1" hook_environment
+  local extension="$1" hook_environment configured default_hook
   hook_environment="$(extension_json "${extension}" | jq -er '.hook_environment')"
-  printf '%s' "${!hook_environment:-}"
+  configured="${!hook_environment:-}"
+  if test -n "${configured}"; then
+    printf '%s' "${configured}"
+    return
+  fi
+  default_hook="$(extension_json "${extension}" | jq -r '.default_hook // empty')"
+  printf '%s' "${default_hook}"
 }
 
 invoke_hook() {
@@ -92,7 +98,7 @@ cmd_up() {
   fi
   hook="$(hook_path "${extension}")"
   if test -z "${hook}" || ! test -x "${hook}"; then
-    echo "lab-extensions: ${extension} is hook-only until issue #$(extension_json "${extension}" | jq -r .issue); configure $(extension_json "${extension}" | jq -r .hook_environment) with an executable" >&2
+    echo "lab-extensions: ${extension} has no executable hook; configure $(extension_json "${extension}" | jq -r .hook_environment)" >&2
     exit 2
   fi
   mkdir -p "${directory}"
@@ -102,9 +108,12 @@ cmd_up() {
   chmod 600 "${directory}/hook" "${directory}/run-id"
   touch "${directory}/wrapper-created"
   if ! invoke_hook "${extension}" "${hook}" up; then
-    invoke_hook "${extension}" "${hook}" down >/dev/null 2>&1 || true
-    rm -rf "${directory}"
-    echo "lab-extensions: ${extension} hook failed; wrapper-owned state was removed" >&2
+    if invoke_hook "${extension}" "${hook}" down >/dev/null 2>&1; then
+      rm -rf "${directory}"
+      echo "lab-extensions: ${extension} hook failed; partial resources were removed" >&2
+    else
+      echo "lab-extensions: ${extension} hook and rollback failed; retained ${directory} for retry" >&2
+    fi
     exit 1
   fi
   touch "${directory}/active"
@@ -115,13 +124,17 @@ cmd_status() {
   local extension directory hook
   extension="$(require_extension "${1:-}")"
   directory="$(extension_dir "${extension}")"
-  if ! test -f "${directory}/wrapper-created" || ! test -f "${directory}/active"; then
+  if ! test -f "${directory}/wrapper-created"; then
     if test -n "$(hook_path "${extension}")"; then
       echo "lab-extensions: ${extension} inactive (hook configured)"
     else
       echo "lab-extensions: ${extension} inactive (hook not configured; owned by issue #$(extension_json "${extension}" | jq -r .issue))"
     fi
     return 0
+  fi
+  if ! test -f "${directory}/active"; then
+    echo "lab-extensions: ${extension} has an incomplete start; run down to retry teardown" >&2
+    return 1
   fi
   hook="$(cat "${directory}/hook")"
   if ! test -x "${hook}"; then
@@ -139,8 +152,8 @@ cmd_down() {
     echo "lab-extensions: ${extension} has no wrapper-owned state"
     return 0
   fi
-  if ! test -f "${directory}/wrapper-created" || ! test -f "${directory}/active"; then
-    echo "lab-extensions: ${directory} has no active ownership record; refusing teardown" >&2
+  if ! test -f "${directory}/wrapper-created"; then
+    echo "lab-extensions: ${directory} has no wrapper ownership record; refusing teardown" >&2
     exit 1
   fi
   hook="$(cat "${directory}/hook")"

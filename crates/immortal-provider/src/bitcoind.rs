@@ -227,6 +227,16 @@ impl BitcoindClient {
         method: &'static str,
         params: Value,
     ) -> Result<Value, BitcoindError> {
+        self.call_path(request_id, "/", method, params).await
+    }
+
+    pub(crate) async fn call_path(
+        &self,
+        request_id: &RpcRequestId,
+        path: &str,
+        method: &'static str,
+        params: Value,
+    ) -> Result<Value, BitcoindError> {
         if method.is_empty()
             || method.len() > 64
             || !method
@@ -238,6 +248,7 @@ impl BitcoindClient {
                 "RPC method or params are invalid",
             ));
         }
+        validate_rpc_path(path)?;
         let body = serde_json::to_vec(&json!({
             "jsonrpc":"1.0",
             "id":request_id.as_str(),
@@ -258,7 +269,7 @@ impl BitcoindClient {
             format!("{}:{}", self.endpoint.host, self.endpoint.port)
         };
         let request_head = format!(
-            "POST / HTTP/1.1\r\nHost: {host}\r\nAuthorization: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "POST {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             self.auth.authorization_value(),
             body.len()
         );
@@ -460,6 +471,24 @@ impl BitcoindClient {
         }
         Ok(stream)
     }
+}
+
+fn validate_rpc_path(path: &str) -> Result<(), BitcoindError> {
+    if path == "/" {
+        return Ok(());
+    }
+    let Some(wallet) = path.strip_prefix("/wallet/") else {
+        return Err(BitcoindError::InvalidConfiguration("RPC path is invalid"));
+    };
+    if wallet.is_empty()
+        || wallet.len() > 128
+        || !wallet
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(BitcoindError::InvalidConfiguration("RPC path is invalid"));
+    }
+    Ok(())
 }
 
 fn parse_feerate_estimate(result: &Value) -> Result<Option<u64>, BitcoindError> {

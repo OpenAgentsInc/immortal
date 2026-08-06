@@ -78,6 +78,9 @@ pub(crate) const MAX_SPREAD_BPS: u64 = 1_000;
 pub(crate) const MAX_FEERATE_SAT_PER_VB: u64 = 2_000;
 pub(crate) const MAX_QUOTE_EXPIRY_SECONDS: u64 = 3_600;
 pub(crate) const MAX_LIGHTNING_ROUTING_FEE_PPM: u64 = 100_000;
+pub const LIQUID_SINGLE_INPUT_FUNDING_VBYTES: u64 = 1_700;
+pub const LIQUID_CLAIM_VBYTES: u64 = 300;
+pub const LIQUID_REFUND_VBYTES: u64 = 300;
 
 /// Bitcoin Core's dust threshold for a P2TR output: dustRelayFee of
 /// 3 sat/vB applied to the 43-byte output plus the 67.75-vbyte input needed
@@ -251,11 +254,39 @@ pub fn worst_case_redeem_vbytes(swap_type: SwapType) -> u64 {
     }
 }
 
+pub fn liquid_submarine_quote_vbytes() -> u64 {
+    LIQUID_CLAIM_VBYTES
+}
+
+pub fn liquid_reverse_quote_vbytes() -> u64 {
+    LIQUID_SINGLE_INPUT_FUNDING_VBYTES + LIQUID_REFUND_VBYTES
+}
+
+pub fn bitcoin_to_liquid_chain_quote_vbytes() -> u64 {
+    LIQUID_SINGLE_INPUT_FUNDING_VBYTES + LIQUID_REFUND_VBYTES.max(claim_spend_vbytes())
+}
+
+pub fn liquid_to_bitcoin_chain_quote_vbytes() -> u64 {
+    lockup_vbytes() + LIQUID_CLAIM_VBYTES.max(refund_spend_vbytes())
+}
+
 pub fn funding_feerate_from_quote_budget(
     swap_type: SwapType,
     miner_fee_budget_sat: u64,
 ) -> Result<u64, SwapClientError> {
-    let priced_vbytes = worst_case_redeem_vbytes(swap_type);
+    funding_feerate_from_priced_vbytes(worst_case_redeem_vbytes(swap_type), miner_fee_budget_sat)
+}
+
+pub fn funding_feerate_from_priced_vbytes(
+    priced_vbytes: u64,
+    miner_fee_budget_sat: u64,
+) -> Result<u64, SwapClientError> {
+    if priced_vbytes == 0 {
+        return Err(provider_error(
+            "swp_invalid_fee",
+            "signed miner-fee weight must be positive",
+        ));
+    }
     if miner_fee_budget_sat % priced_vbytes != 0 {
         return Err(provider_error(
             "swp_invalid_fee",
@@ -820,9 +851,33 @@ pub fn derive_quote(
     request: &QuoteRequest,
     created_at: u64,
 ) -> Result<DerivedQuote, SwapClientError> {
+    derive_quote_with_worst_case_vbytes(
+        config,
+        feerate,
+        capacity,
+        request,
+        created_at,
+        worst_case_redeem_vbytes(request.swap_type),
+    )
+}
+
+pub fn derive_quote_with_worst_case_vbytes(
+    config: &PricingConfig,
+    feerate: &FeerateObservation,
+    capacity: &CapacityBounds,
+    request: &QuoteRequest,
+    created_at: u64,
+    worst_case_vbytes: u64,
+) -> Result<DerivedQuote, SwapClientError> {
     config
         .validate()
         .map_err(|error| provider_error("swp_invalid_fee", error.0))?;
+    if worst_case_vbytes == 0 || worst_case_vbytes > 100_000 {
+        return Err(provider_error(
+            "swp_invalid_fee",
+            "quote fee weight is outside the provider bound",
+        ));
+    }
     let sat_per_vb = feerate.sat_per_vb();
     if !(1..=MAX_FEERATE_SAT_PER_VB).contains(&sat_per_vb) {
         return Err(provider_error(
@@ -839,7 +894,6 @@ pub fn derive_quote(
     }
     let available = canonical_sat(&capacity.available_capacity, "available capacity")?;
 
-    let worst_case_vbytes = worst_case_redeem_vbytes(request.swap_type);
     let miner_fee_budget = worst_case_vbytes
         .checked_mul(sat_per_vb)
         .ok_or_else(|| provider_error("swp_invalid_fee", "miner fee component overflows"))?;

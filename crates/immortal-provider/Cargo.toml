@@ -34,6 +34,10 @@ name = "provider_liquidity"
 required-features = ["funded"]
 
 [[test]]
+name = "provider_liquid"
+required-features = ["funded"]
+
+[[test]]
 name = "provider_quote"
 required-features = ["funded"]
 

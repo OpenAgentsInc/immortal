@@ -21,7 +21,7 @@
         "lane": "openagents",
         "repo": "https://github.com/OpenAgentsInc/openagents",
         "subdir": "docs/nips",
-        "commit": "4ca362b6050c1762f5f8a383c0c18f50acf02ba0"
+        "commit": "ac61a359043ec53c567873a344153c1069091d85"
       }
     ]
   },
@@ -633,7 +633,7 @@
       "swap_contract_publication": "private_signed_record_nip59_only",
       "contract_digest_validation": "lower_hex_shape_and_x_body_equality; rfc8785_recomputation_is_client_or_handler_scope",
       "network_id_pattern": "^bip122:[0-9a-f]{32}$",
-      "asset_id_pattern": "^swp:1:bip122:[0-9a-f]{32}:btc:(chain|lightning)$",
+      "asset_id_pattern": "^swp:1:bip122:[0-9a-f]{32}:(btc:(chain|lightning)|elements:[0-9a-f]{64}:liquid)$",
       "canonical_amount_pattern": "^(0|[1-9][0-9]*)$",
       "offering_required_members": [
         "swap_types",
@@ -689,6 +689,9 @@
         "bitcoin_transaction",
         "bitcoin_output",
         "bitcoin_spend",
+        "liquid_transaction",
+        "liquid_output",
+        "liquid_spend",
         "reservation",
         "covenant_reserve",
         "claim",
@@ -704,7 +707,7 @@
         "paid",
         "settled"
       ],
-      "evidence_reference_validation": "class_rail_compatibility; lower_hex_payment_or_transaction_ids; bitcoin_output_and_spend_txid_vout; reservation_reorg_replacement_refs_are_bounded_opaque",
+      "evidence_reference_validation": "class_rail_compatibility; lower_hex_payment_or_transaction_ids; bitcoin_or_liquid_output_and_spend_txid_vout; reservation_reorg_replacement_refs_are_bounded_opaque",
       "public_receipt_outcomes": [
         "completed",
         "cancelled",
@@ -734,7 +737,13 @@
         "wallet_rpc_payload",
         "musig_secret_nonce",
         "secretNonce",
-        "signing_nonce"
+        "signing_nonce",
+        "blinding_key",
+        "blindingKey",
+        "value_blinder",
+        "valueBlinder",
+        "asset_blinder",
+        "assetBlinder"
       ],
       "upstream_fixture_cases": 70,
       "coordination": {

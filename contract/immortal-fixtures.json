@@ -24,7 +24,7 @@
         "lane": "openagents",
         "repo": "https://github.com/OpenAgentsInc/openagents",
         "subdir": "docs/nips",
-        "commit": "4ca362b6050c1762f5f8a383c0c18f50acf02ba0"
+        "commit": "ac61a359043ec53c567873a344153c1069091d85"
       }
     ]
   },
@@ -79,8 +79,8 @@
     },
     {
       "path": "tests/fixtures/lab/adversarial-v1.json",
-      "sha256": "7c8c3c22ecd77d42a127fef09739c9927c71580161332010e9952a66627fbe07",
-      "bytes": 8294,
+      "sha256": "6893084627a01d0aff3b563fafb0528ea86589fd22e68635cc6eaab431af0427",
+      "bytes": 18393,
       "scope": "client"
     },
     {
@@ -97,8 +97,8 @@
     },
     {
       "path": "tests/fixtures/lab/provisioning-v1.json",
-      "sha256": "cf01761ad46bc62cd4b9ded836ca64b33bccf07507ebe23c0b694388a365ad70",
-      "bytes": 3758,
+      "sha256": "0a8d29b2bbb5b28983991810a28e9a334076e056a721c4c0bbedc78aa0599e08",
+      "bytes": 4040,
       "scope": "client"
     },
     {
@@ -366,10 +366,22 @@
       "scope": "relay"
     },
     {
+      "path": "tests/fixtures/nipmkt/go-elements-v0.5.5-taproot-sighash.json",
+      "sha256": "803122f4c9357ff8e3c842b3d498ee2343c6620d8a6be3acc5f549fb256d9c5a",
+      "bytes": 13666,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/nipmkt/immutability.json",
       "sha256": "16eb76f7594be1fc94cc164c30672a4a792cf3cc7e695efc0a42cd47c0d45bd7",
       "bytes": 881,
       "scope": "relay"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/liquid-rail-v1.json",
+      "sha256": "b1c11e2664f163c1650502514ea0bc88b65df96ed39232debf6ef39a5f06171b",
+      "bytes": 22959,
+      "scope": "client"
     },
     {
       "path": "tests/fixtures/nipmkt/lsp-profile-v1.json",
@@ -415,8 +427,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/swp-client-engine-v1.json",
-      "sha256": "a475e70c8b1f173336deec09ccddf38eab83eeaf3600a9ccbbf261cf38946e68",
-      "bytes": 14530,
+      "sha256": "7190837a337df44b247e1bfb8ea50e43b8c28a258723b4bb3049c172c3687a84",
+      "bytes": 15130,
       "scope": "client"
     },
     {
@@ -433,8 +445,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/swp-full-sessions-v1.json",
-      "sha256": "28ea72d1ad2c86cdd342cbb29ee43f1141ed0b513dc7a90aa34ba4cc2c094c0a",
-      "bytes": 209865,
+      "sha256": "d17fd299b488aa8c15e319570aea65bb5b4878a07f955bffb2315a4cd8df3925",
+      "bytes": 211615,
       "scope": "client"
     },
     {
@@ -445,8 +457,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/swp-profile-v1.json",
-      "sha256": "9e50f308f9f5bfea49f50c265c89a4c0ed3a00988eb107943d463dbdc0daaf22",
-      "bytes": 11402,
+      "sha256": "5f1a2569d424411e0db95545b01090a835f42ff3f21d4e0738670e8e3ae42fe5",
+      "bytes": 11499,
       "scope": "relay_and_client"
     },
     {
@@ -463,7 +475,7 @@
     },
     {
       "path": "tests/fixtures/nipmkt/swp-requester-api-source-v2.json",
-      "sha256": "3f1f6beb1f87fcef4d46adf7896d659b175790368156f772b12016bb482b8f8c",
+      "sha256": "49ed87f25e2a7225ad8d232467aae4807ecc0ee0d02023ee834640158670b16a",
       "bytes": 663110,
       "scope": "client"
     },
@@ -475,8 +487,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/swp-requester-api-v2.json",
-      "sha256": "d618ff27d6537af9a87a7102b03b716219e876b33f5406389771089d89758941",
-      "bytes": 76611,
+      "sha256": "bf52fda5f4d349fbbe195e4cff58af59a3930e1ee8ab1f1413b6338ba44fb3a8",
+      "bytes": 77545,
       "scope": "client"
     },
     {

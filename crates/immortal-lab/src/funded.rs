@@ -9,18 +9,24 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use immortal_client::liquid::{
+    LiquidBeforeFundRequest, LiquidConfidentiality, LiquidExitMode, LiquidFundingVerificationInput,
+    LiquidLegPurpose, LiquidNodeAuthority, LiquidNodeRequest, LiquidSwapType, LiquidUnblindRequest,
+    LocalLiquidNodeObservation, LocalLiquidObservation,
+};
 use immortal_client::mkt_swp_client::{
     AwaitingVerification, Cancellation, ChainRecoveryState, CooperativeSigningAction,
     CooperativeSigningContext, CooperativeSigningMessage, DeliveryProvenance,
     EsploraBroadcastRequest, ExitPackage, ExitSigningOutcome, ExternalEffectRequest, FundingAction,
     FundingAuthorized, FundingVerificationInput, InvoiceVerificationInput, KeylessEsploraExecutor,
     LightningProgressState, LightningReadinessState, LightningRecoveryState,
-    LocalBitcoinObservation, LocalLightningProgress, LocalLightningReadiness, LocalRailEvidence,
-    LocalRecoveryObservation, ParticipantRole, RailObservationRequest, RecoveryAction,
-    RequesterContractLocalInputs, RequesterContractSigningInput, RequesterOrderInput,
+    LiquidBroadcastRequest, LiquidVerifyBeforeFundInput, LocalBitcoinObservation,
+    LocalLightningProgress, LocalLightningReadiness, LocalRailEvidence, LocalRecoveryObservation,
+    ParticipantRole, RailObservationRequest, RecoveryAction, RequesterContractLocalInputs,
+    RequesterContractSigningInput, RequesterFundingResolution, RequesterOrderInput,
     RequesterQuoteView, RequesterSessionView, RequesterVerificationState, SignedRecordDelivery,
-    StatusState, SwapClientConfig, SwapRecordFactory, SwapSession, SwapType, VerifyBeforeFundInput,
-    provider_support,
+    StatusState, SwapClientConfig, SwapRecordFactory, SwapSession, SwapType, TimeoutLadder,
+    VerifyBeforeFundInput, provider_support,
 };
 use immortal_core::{
     domain::{
@@ -28,6 +34,7 @@ use immortal_core::{
         MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND, MktProfileSupport,
         Tag, parse_unique_json, validate_mkt_public_event,
     },
+    liquid::{LiquidAssetId, LiquidNetworkId, LiquidTransaction, parse_liquid_transaction},
     market::{MarketSigner, WrapMaterial, unwrap_mkt_record_raw, wrap_mkt_record},
     mkt_swp_verify::{Transaction, TransactionInput, TransactionOutput, sha256},
 };
@@ -36,7 +43,19 @@ use immortal_provider::{
         BitcoindAuth, BitcoindClient, BitcoindEndpoint, BitcoindError, BitcoindLimits, RpcRequestId,
     },
     cln::{ClnClient, ClnEndpoint, ClnLimits, ClnRequestId, Millisatoshi, PaymentResult},
+    elementsd::{
+        ElementsdClient, ElementsdError, ElementsdMempoolAdmission, ElementsdSignedFunding,
+        ElementsdWalletName,
+    },
     funding::{FundingInput, FundingRequest, SignedFundingTransaction, build_funding_transaction},
+    liquid::{LiquidProviderRail, VerifiedProviderLiquid},
+    pricing::{
+        CapacityBounds, FeerateObservation, LIQUID_CLAIM_VBYTES, LIQUID_REFUND_VBYTES,
+        LIQUID_SINGLE_INPUT_FUNDING_VBYTES, PricingConfig, QuoteRequest, QuoteSide,
+        ReservationTier, bitcoin_to_liquid_chain_quote_vbytes, derive_quote_with_worst_case_vbytes,
+        funding_feerate_from_priced_vbytes, liquid_reverse_quote_vbytes,
+        liquid_submarine_quote_vbytes, liquid_to_bitcoin_chain_quote_vbytes,
+    },
     settlement::{
         ClaimPreimage, CooperativeSettlementTemplate, CooperativeSigningRound, SettlementBridge,
         SettlementTemplate,
@@ -78,6 +97,7 @@ const DOOMSDAY_KEYLESS_REQUEST_SCHEMA: &str = "openagents.immortal.doomsday-keyl
 const DOOMSDAY_KEYLESS_RESULT_SCHEMA: &str = "openagents.immortal.doomsday-keyless-result.v1";
 const FUNDED_TOPOLOGY_FIXTURE: &str =
     include_str!("../../../tests/fixtures/lab/topology-funded-v1.json");
+const ADVERSARIAL_FIXTURE: &str = include_str!("../../../tests/fixtures/lab/adversarial-v1.json");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FundedJourney {
@@ -85,6 +105,50 @@ pub enum FundedJourney {
     SubmarineRefund,
     ReverseClaim,
     ReverseRefund,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiquidChainDirection {
+    BitcoinToLiquid,
+    LiquidToBitcoin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiquidJourney {
+    Submarine,
+    Reverse,
+}
+
+impl LiquidJourney {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Submarine => "liquid_submarine",
+            Self::Reverse => "liquid_reverse",
+        }
+    }
+
+    fn swap_type(self) -> SwapType {
+        match self {
+            Self::Submarine => SwapType::Submarine,
+            Self::Reverse => SwapType::Reverse,
+        }
+    }
+
+    fn liquid_swap_type(self) -> LiquidSwapType {
+        match self {
+            Self::Submarine => LiquidSwapType::Submarine,
+            Self::Reverse => LiquidSwapType::Reverse,
+        }
+    }
+}
+
+impl LiquidChainDirection {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::BitcoinToLiquid => "btc-to-lbtc",
+            Self::LiquidToBitcoin => "lbtc-to-btc",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +173,8 @@ pub enum DoomsdayCase {
     SubmarineProviderGone,
     ReverseCoordinatorGone,
     KeylessEsploraBroadcast,
+    LiquidSubmarineProviderGone,
+    LiquidReverseCoordinatorGone,
 }
 
 impl DoomsdayCase {
@@ -117,6 +183,8 @@ impl DoomsdayCase {
             "doomsday-submarine-provider-gone" => Ok(Self::SubmarineProviderGone),
             "doomsday-reverse-coordinator-gone" => Ok(Self::ReverseCoordinatorGone),
             "doomsday-keyless-esplora-broadcast" => Ok(Self::KeylessEsploraBroadcast),
+            "doomsday-liquid-submarine-provider-gone" => Ok(Self::LiquidSubmarineProviderGone),
+            "doomsday-liquid-reverse-coordinator-gone" => Ok(Self::LiquidReverseCoordinatorGone),
             _ => Err("selected case is not a doomsday scenario".to_owned()),
         }
     }
@@ -126,6 +194,8 @@ impl DoomsdayCase {
             Self::SubmarineProviderGone => "doomsday_submarine_provider_gone",
             Self::ReverseCoordinatorGone => "doomsday_reverse_coord_gone",
             Self::KeylessEsploraBroadcast => "doomsday_keyless_esplora_exit",
+            Self::LiquidSubmarineProviderGone => "liquid_submarine_provider_gone",
+            Self::LiquidReverseCoordinatorGone => "liquid_reverse_coordinator_gone",
         }
     }
 
@@ -134,6 +204,8 @@ impl DoomsdayCase {
             Self::SubmarineProviderGone => "immortal-doomsday-submarine",
             Self::ReverseCoordinatorGone => "immortal-doomsday-reverse",
             Self::KeylessEsploraBroadcast => "immortal-doomsday-keyless",
+            Self::LiquidSubmarineProviderGone => "immortal-doomsday-liquid-submarine",
+            Self::LiquidReverseCoordinatorGone => "immortal-doomsday-liquid-reverse",
         }
     }
 
@@ -142,8 +214,25 @@ impl DoomsdayCase {
             Self::SubmarineProviderGone => "doomsday-submarine-provider-gone",
             Self::ReverseCoordinatorGone => "doomsday-reverse-coordinator-gone",
             Self::KeylessEsploraBroadcast => "doomsday-keyless-esplora-broadcast",
+            Self::LiquidSubmarineProviderGone => "doomsday-liquid-submarine-provider-gone",
+            Self::LiquidReverseCoordinatorGone => "doomsday-liquid-reverse-coordinator-gone",
         }
     }
+}
+
+fn liquid_doomsday_journey_name(
+    case: DoomsdayCase,
+    prepared_journey_name: &str,
+) -> Result<&'static str, String> {
+    let expected_prepared_journey = match case {
+        DoomsdayCase::LiquidSubmarineProviderGone => "liquid_submarine",
+        DoomsdayCase::LiquidReverseCoordinatorGone => "liquid_reverse",
+        _ => return Err("selected doomsday case is not a Liquid scenario".to_owned()),
+    };
+    if prepared_journey_name != expected_prepared_journey {
+        return Err("Liquid doomsday preparation used another journey".to_owned());
+    }
+    Ok(case.journey_name())
 }
 
 impl FundedJourney {
@@ -172,8 +261,16 @@ struct SmokeEnvironment {
     wallet: ProviderWallet,
     bitcoind: BitcoindClient,
     peer_cln: ClnClient,
+    liquid: Option<LiquidLabEnvironment>,
     terminal_confirmations: u64,
     control: StepControl,
+}
+
+struct LiquidLabEnvironment {
+    elementsd: ElementsdClient,
+    rail: LiquidProviderRail,
+    network_id: String,
+    pegged_asset: String,
 }
 
 struct SessionContext {
@@ -704,8 +801,9 @@ enum LightningTerminalCheck<'a> {
 struct TerminalRailCheck<'a> {
     runtime: &'a Runtime,
     environment: &'a SmokeEnvironment,
-    bitcoin_settlement_txid: &'a str,
-    lightning: LightningTerminalCheck<'a>,
+    bitcoin_settlement_txid: Option<&'a str>,
+    liquid_settlement_txid: Option<&'a str>,
+    lightning: Option<LightningTerminalCheck<'a>>,
 }
 
 #[derive(Clone, Copy)]
@@ -718,6 +816,46 @@ struct NegotiationInput<'a> {
     requester_funding_input: Option<&'a FundingInput>,
     exit_destination_script_pubkey: &'a [u8],
     presign_submarine_refund: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ChainNegotiationInput {
+    direction: LiquidChainDirection,
+    payment_hash: [u8; 32],
+    source_requester_key: [u8; 32],
+    destination_requester_key: [u8; 32],
+}
+
+enum ChainFundingTransaction {
+    Bitcoin(SignedFundingTransaction),
+    Liquid(ElementsdSignedFunding),
+}
+
+struct PreparedChainSession {
+    pending: PendingSession,
+    source_funding: ChainFundingTransaction,
+    liquid_request: LiquidBeforeFundRequest,
+    preimage: [u8; 32],
+    destination_exit_path: WalletPath,
+}
+
+#[derive(Clone)]
+struct LiquidNegotiationInput {
+    journey: LiquidJourney,
+    payment_hash: [u8; 32],
+    invoice: Option<String>,
+    requester_key: [u8; 32],
+}
+
+struct PreparedLiquidSession {
+    pending: PendingSession,
+    funding: Option<ElementsdSignedFunding>,
+    liquid_request: LiquidBeforeFundRequest,
+}
+
+struct LiquidClaimRecoveryRefs {
+    wallet_signing_handle_sha256: String,
+    preimage_recovery_ref: String,
 }
 
 pub fn test_bounded_numeric_output_index() {
@@ -1192,6 +1330,956 @@ pub fn run_adversarial_funded_journey(
     Ok(result)
 }
 
+pub fn run_adversarial_liquid_chain_journey(
+    provider_index: usize,
+    direction: LiquidChainDirection,
+) -> Result<Value, String> {
+    let runtime =
+        Runtime::new().map_err(|error| format!("could not start chain lab runtime: {error}"))?;
+    let environment = SmokeEnvironment::load_topology_selected(
+        provider_index,
+        Some(HarnessInjection::ProviderCrash),
+    )?;
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid chain journey has no local elementsd".to_owned())?;
+    let network = runtime
+        .block_on(liquid.rail.network_view("chain-requester-network"))
+        .map_err(|error| format!("could not verify requester Liquid network: {error}"))?;
+    if network.network_id.as_str() != liquid.network_id
+        || network.pegged_asset.to_string() != liquid.pegged_asset
+    {
+        return Err("requester elementsd differs from the configured Liquid network".to_owned());
+    }
+    eprintln!("immortal-lab: Liquid chain progress network-verified");
+    verify_health(&environment.health_url)?;
+    let offering = discover_provider_offering(
+        &environment.relay_url,
+        &environment.requester,
+        JOURNEY_TIMEOUT,
+    )?;
+    eprintln!("immortal-lab: Liquid chain progress offering-discovered");
+    let provider_pubkey = offering.pubkey.clone();
+    let source_exit_path = WalletPath::new(4, false, 0)
+        .map_err(|error| format!("chain source key path is invalid: {error}"))?;
+    let destination_exit_path = WalletPath::new(4, false, 1)
+        .map_err(|error| format!("chain destination key path is invalid: {error}"))?;
+    let source_requester_key = environment
+        .wallet
+        .derive_address(source_exit_path)
+        .map_err(|error| format!("could not derive chain source key: {error}"))?
+        .internal_key;
+    let destination_requester_key = environment
+        .wallet
+        .derive_address(destination_exit_path)
+        .map_err(|error| format!("could not derive chain destination key: {error}"))?
+        .internal_key;
+    let preimage = random_32()?;
+    store_funded_secret(&environment.control.paths, "chain", &preimage)?;
+    let input = ChainNegotiationInput {
+        direction,
+        payment_hash: sha256(&preimage),
+        source_requester_key,
+        destination_requester_key,
+    };
+    let prepared = prepare_chain_order(
+        &runtime,
+        &environment,
+        prepare_chain_quote(&environment, &provider_pubkey, input)?,
+        input,
+        preimage,
+    )?;
+    eprintln!("immortal-lab: Liquid chain progress requester-contract-prepared");
+    let PreparedChainSession {
+        pending,
+        source_funding,
+        liquid_request,
+        mut preimage,
+        destination_exit_path,
+    } = prepared;
+    let mut session = finalize_negotiation(pending)?;
+    session.wait_provider_state("accepted")?;
+    eprintln!("immortal-lab: Liquid chain progress accepted");
+    session.wait_provider_state("source_lock_terms_ready")?;
+    eprintln!("immortal-lab: Liquid chain progress source-lock-terms-ready");
+    verify_chain_source(&runtime, &environment, &session, &liquid_request, direction)?;
+    session.publish_requester_status("requester_source_verified", Map::new())?;
+    eprintln!("immortal-lab: Liquid chain progress requester-source-verified");
+    session.wait_provider_state("destination_lock_terms_ready")?;
+    eprintln!("immortal-lab: Liquid chain progress destination-lock-terms-ready");
+    validate_chain_destination_template(&session.contract, direction)?;
+    if direction == LiquidChainDirection::BitcoinToLiquid {
+        runtime
+            .block_on(liquid.rail.verify_before_fund(&liquid_request))
+            .map_err(|error| {
+                format!("production Liquid rail rejected destination preflight: {error}")
+            })?;
+    }
+    let authorized =
+        authorize_chain_funding(&runtime, &environment, &session, &liquid_request, direction)?;
+    session.set_authorized_verifier(authorized)?;
+    session.publish_requester_status("requester_destination_verified", Map::new())?;
+    eprintln!("immortal-lab: Liquid chain progress requester-destination-verified");
+    session.wait_provider_state("source_funding_required")?;
+    eprintln!("immortal-lab: Liquid chain progress source-funding-required");
+
+    let (source_transaction_id, source_output_index, source_transaction_hex) = match &source_funding
+    {
+        ChainFundingTransaction::Bitcoin(funding) => {
+            let transaction_id = transaction_id(&funding.raw_transaction)?;
+            broadcast_bitcoin_once(
+                &runtime,
+                &environment.bitcoind,
+                "chain-bitcoin-source-funding",
+                &funding.raw_transaction,
+                &transaction_id,
+            )?;
+            (transaction_id, 0, funding.raw_transaction.clone())
+        }
+        ChainFundingTransaction::Liquid(funding) => {
+            let verified = runtime
+                .block_on(liquid.rail.verify_before_fund(&liquid_request))
+                .map_err(|error| {
+                    format!("production Liquid rail rejected exact source funding: {error}")
+                })?;
+            let receipt = runtime
+                .block_on(liquid.rail.broadcast_funding(&verified))
+                .map_err(|error| format!("could not broadcast Liquid source funding: {error}"))?;
+            if receipt.transaction_id != funding.transaction_id {
+                return Err("elementsd broadcast another Liquid source transaction".to_owned());
+            }
+            (
+                receipt.transaction_id,
+                funding.output_index,
+                lower_hex(&funding.raw_transaction),
+            )
+        }
+    };
+    session.record_funding_effect(
+        source_transaction_id.clone(),
+        sha256(&decode_hex(&source_transaction_hex)?),
+    )?;
+    session.publish_requester_status(
+        "requester_source_broadcast",
+        Map::from_iter([
+            (
+                "transaction_id".to_owned(),
+                Value::String(source_transaction_id.clone()),
+            ),
+            ("output_index".to_owned(), json!(source_output_index)),
+        ]),
+    )?;
+    eprintln!("immortal-lab: Liquid chain progress requester-source-broadcast");
+    let source_rail = contract_leg_rail_name(&session.contract, "source")?.to_owned();
+    let destination_rail = contract_leg_rail_name(&session.contract, "destination")?.to_owned();
+    mine_chain_leg(
+        &runtime,
+        &environment,
+        &source_rail,
+        environment.terminal_confirmations,
+        "chain-source-finality",
+    )?;
+    session.wait_provider_state("source_funding_observed")?;
+    eprintln!("immortal-lab: Liquid chain progress source-funding-observed");
+    session.wait_provider_state("source_funding_final")?;
+    eprintln!("immortal-lab: Liquid chain progress source-funding-final");
+    let destination_broadcast = session.wait_provider_state("provider_destination_broadcast")?;
+    eprintln!("immortal-lab: Liquid chain progress provider-destination-broadcast");
+    let (destination_transaction_id, destination_output_index) =
+        status_outpoint(&destination_broadcast)?;
+    session.persist_authorized_details(
+        "provider_funding_effect_recorded",
+        true,
+        json!({"external_identifier":destination_transaction_id.clone()}),
+    )?;
+    verify_health(&environment.health_url)?;
+    let restart_proof = load_funded_injection_proof(&environment.control.paths)?
+        .ok_or_else(|| "chain provider restart has no controller acknowledgement".to_owned())?;
+    let replayed_destination = session.wait_provider_state("provider_destination_broadcast")?;
+    if replayed_destination.id != destination_broadcast.id
+        || status_outpoint(&replayed_destination)?
+            != (destination_transaction_id.clone(), destination_output_index)
+    {
+        return Err("provider restart replayed another destination effect".to_owned());
+    }
+    wait_for_chain_transaction_propagation(
+        &runtime,
+        &environment,
+        &destination_rail,
+        &destination_transaction_id,
+        "chain-destination-funding",
+    )?;
+    eprintln!("immortal-lab: Liquid chain progress destination-funding-propagated");
+    mine_chain_leg(
+        &runtime,
+        &environment,
+        &destination_rail,
+        environment.terminal_confirmations,
+        "chain-destination-finality",
+    )?;
+    session.wait_provider_state("destination_funding_observed")?;
+    eprintln!("immortal-lab: Liquid chain progress destination-funding-observed");
+    session.wait_provider_state("destination_funding_final")?;
+    eprintln!("immortal-lab: Liquid chain progress destination-funding-final");
+    session.publish_requester_status("requester_destination_claim_pending", Map::new())?;
+    eprintln!("immortal-lab: Liquid chain progress requester-destination-claim-pending");
+
+    let (destination_claim_transaction_id, destination_claim_transaction_hex) = match direction {
+        LiquidChainDirection::BitcoinToLiquid => {
+            let authorized = session.authorized_verifier.as_mut().ok_or_else(|| {
+                "Liquid destination claim lost its pre-fund authorization".to_owned()
+            })?;
+            claim_chain_liquid_destination(
+                &runtime,
+                &environment,
+                authorized,
+                &liquid_request,
+                destination_exit_path,
+                preimage,
+                "chain",
+            )?
+        }
+        LiquidChainDirection::LiquidToBitcoin => claim_chain_bitcoin_destination(
+            &runtime,
+            &environment,
+            &session.contract,
+            &destination_transaction_id,
+            destination_output_index,
+            destination_exit_path,
+            preimage,
+        )?,
+    };
+    if direction == LiquidChainDirection::BitcoinToLiquid {
+        session.persist_authorized_details(
+            "liquid_claim_broadcast_recorded",
+            true,
+            json!({"external_identifier":destination_claim_transaction_id.clone()}),
+        )?;
+    }
+    remove_funded_secret(&environment.control.paths, "chain")?;
+    preimage.fill(0);
+    session.publish_requester_status(
+        "requester_destination_claimed",
+        Map::from_iter([(
+            "transaction_id".to_owned(),
+            Value::String(destination_claim_transaction_id.clone()),
+        )]),
+    )?;
+    eprintln!("immortal-lab: Liquid chain progress requester-destination-claimed");
+    mine_chain_leg(
+        &runtime,
+        &environment,
+        &destination_rail,
+        environment.terminal_confirmations,
+        "chain-destination-claim-propagation",
+    )?;
+    let source_claim = session.wait_provider_state("provider_source_claim_pending")?;
+    eprintln!("immortal-lab: Liquid chain progress provider-source-claim-pending");
+    let source_claim_transaction_id = status_transaction_id(&source_claim)?;
+    wait_for_chain_transaction_propagation(
+        &runtime,
+        &environment,
+        &source_rail,
+        &source_claim_transaction_id,
+        "chain-source-claim",
+    )?;
+    eprintln!("immortal-lab: Liquid chain progress source-claim-propagated");
+    mine_chain_leg(
+        &runtime,
+        &environment,
+        &source_rail,
+        environment.terminal_confirmations,
+        "chain-source-claim-finality",
+    )?;
+    session.wait_provider_state("provider_source_claimed")?;
+    eprintln!("immortal-lab: Liquid chain progress provider-source-claimed");
+    session.wait_provider_state("completed")?;
+    eprintln!("immortal-lab: Liquid chain progress completed");
+    let (bitcoin_settlement_txid, liquid_settlement_txid) = chain_terminal_settlement_ids(
+        &source_rail,
+        &destination_rail,
+        &source_claim_transaction_id,
+        &destination_claim_transaction_id,
+    )?;
+    let close = session.wait_provider_close(
+        "completed",
+        TerminalRailCheck {
+            runtime: &runtime,
+            environment: &environment,
+            bitcoin_settlement_txid: Some(bitcoin_settlement_txid),
+            liquid_settlement_txid: Some(liquid_settlement_txid),
+            lightning: None,
+        },
+    )?;
+    eprintln!("immortal-lab: Liquid chain progress close");
+
+    let destination_transaction_hex = chain_raw_transaction(
+        &runtime,
+        &environment,
+        &destination_rail,
+        &destination_transaction_id,
+        "chain-destination-funding-proof",
+    )?;
+    let source_claim_transaction_hex = chain_raw_transaction(
+        &runtime,
+        &environment,
+        &source_rail,
+        &source_claim_transaction_id,
+        "chain-source-claim-proof",
+    )?;
+    let records = session.verifier.signed_records();
+    let lifecycle = chain_lifecycle_event_ids(records, &offering, &close)?;
+    let provider_destination_count = records
+        .iter()
+        .filter(|record| {
+            record.kind == MKT_STATUS_KIND
+                && record.pubkey == provider_pubkey
+                && record_profile(record)
+                    .ok()
+                    .and_then(|profile| profile.get("swp_state").cloned())
+                    .and_then(|state| state.as_str().map(str::to_owned))
+                    .as_deref()
+                    == Some("provider_destination_broadcast")
+        })
+        .count();
+    if provider_destination_count != 1 {
+        return Err("provider restart created a duplicate destination Status".to_owned());
+    }
+    let selected_provider = if provider_index == 0 {
+        "provider-a"
+    } else {
+        "provider-b"
+    };
+    let (bitcoin, liquid_proof) = match direction {
+        LiquidChainDirection::BitcoinToLiquid => (
+            chain_leg_process_proof(
+                "bitcoin",
+                &source_transaction_id,
+                source_output_index,
+                &source_transaction_hex,
+                &source_claim_transaction_id,
+                &source_claim_transaction_hex,
+            ),
+            chain_leg_process_proof(
+                "liquid",
+                &destination_transaction_id,
+                destination_output_index,
+                &destination_transaction_hex,
+                &destination_claim_transaction_id,
+                &destination_claim_transaction_hex,
+            ),
+        ),
+        LiquidChainDirection::LiquidToBitcoin => (
+            chain_leg_process_proof(
+                "bitcoin",
+                &destination_transaction_id,
+                destination_output_index,
+                &destination_transaction_hex,
+                &destination_claim_transaction_id,
+                &destination_claim_transaction_hex,
+            ),
+            chain_leg_process_proof(
+                "liquid",
+                &source_transaction_id,
+                source_output_index,
+                &source_transaction_hex,
+                &source_claim_transaction_id,
+                &source_claim_transaction_hex,
+            ),
+        ),
+    };
+    let (shape, provider_effect_operations, terminal_actor) = match direction {
+        LiquidChainDirection::BitcoinToLiquid => (
+            "chain-btc-to-lbtc",
+            vec!["liquid_chain_fund", "chain_claim"],
+            "requester",
+        ),
+        LiquidChainDirection::LiquidToBitcoin => (
+            "chain-lbtc-to-btc",
+            vec!["chain_fund", "liquid_chain_claim"],
+            "provider",
+        ),
+    };
+    let checkpoint_effect_operation = provider_effect_operations
+        .first()
+        .copied()
+        .unwrap_or_default();
+    let proof = json!({
+        "liquid_case":{
+            "schema":"openagents.immortal.adversarial-liquid-case.v1",
+            "shape":shape,
+            "selected_provider":selected_provider,
+            "signed_lifecycle_event_ids":lifecycle,
+            "rails":{"bitcoin":bitcoin,"liquid":liquid_proof},
+            "provider_effect_operations":provider_effect_operations,
+            "provider_status_anchors":["provider_destination_broadcast"],
+            "provider_restart":{
+                "target":selected_provider,
+                "checkpoint_effect_operation":checkpoint_effect_operation,
+                "checkpoint_status_state":"provider_destination_broadcast",
+                "process_replaced":restart_proof.pointer("/evidence/transition").and_then(Value::as_str)
+                    == Some("process_replaced_and_ready"),
+                "restored_from_postgres":replayed_destination.id == destination_broadcast.id,
+                "exact_known_replay":replayed_destination.id == destination_broadcast.id,
+                "duplicate_external_effects":provider_destination_count.saturating_sub(1),
+            },
+            "liquid_terminal":{
+                "actor":terminal_actor,
+                "path":"claim",
+                "effect_class":"liquid_spend",
+                "confirmed":true,
+            },
+            "lightning_terminal":null,
+            "recovery":null,
+        }
+    });
+    provider_support::reject_custody_material(&proof)
+        .map_err(|error| format!("chain process proof contains custody material: {error}"))?;
+    Ok(proof)
+}
+
+pub fn run_adversarial_liquid_journey(
+    provider_index: usize,
+    journey: LiquidJourney,
+) -> Result<Value, String> {
+    let runtime =
+        Runtime::new().map_err(|error| format!("could not start Liquid lab runtime: {error}"))?;
+    let environment = SmokeEnvironment::load_topology_selected(
+        provider_index,
+        Some(HarnessInjection::ProviderCrash),
+    )?;
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid journey has no local elementsd".to_owned())?;
+    let network = runtime
+        .block_on(liquid.rail.network_view("liquid-requester-network"))
+        .map_err(|error| format!("could not verify requester Liquid network: {error}"))?;
+    if network.network_id.as_str() != liquid.network_id
+        || network.pegged_asset.to_string() != liquid.pegged_asset
+    {
+        return Err("requester elementsd differs from the configured Liquid network".to_owned());
+    }
+    verify_health(&environment.health_url)?;
+    let offering = discover_provider_offering(
+        &environment.relay_url,
+        &environment.requester,
+        JOURNEY_TIMEOUT,
+    )?;
+    match journey {
+        LiquidJourney::Submarine => {
+            run_liquid_submarine_route(&runtime, &environment, offering, provider_index)
+        }
+        LiquidJourney::Reverse => {
+            run_liquid_reverse_route(&runtime, &environment, offering, provider_index)
+        }
+    }
+}
+
+fn run_liquid_submarine_route(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    offering: Event,
+    provider_index: usize,
+) -> Result<Value, String> {
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid submarine route has no local elementsd".to_owned())?;
+    let invoice_amount_sat = liquid_submarine_invoice_amount_sat()?;
+    let invoice = runtime
+        .block_on(
+            environment.peer_cln.invoice(
+                &cln_id("liquid-submarine-invoice")?,
+                Millisatoshi::from_satoshis(invoice_amount_sat)
+                    .map_err(|error| format!("Liquid submarine amount is invalid: {error}"))?,
+                "immortal-liquid-submarine",
+                "Immortal Liquid submarine route",
+                86_400,
+            ),
+        )
+        .map_err(|error| format!("could not create Liquid submarine invoice: {error}"))?;
+    let refund_path = WalletPath::new(5, false, 0)
+        .map_err(|error| format!("Liquid submarine refund path is invalid: {error}"))?;
+    let requester_key = environment
+        .wallet
+        .derive_address(refund_path)
+        .map_err(|error| format!("could not derive Liquid submarine refund key: {error}"))?
+        .internal_key;
+    let destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 40)
+                .map_err(|error| format!("Liquid submarine destination is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive Liquid submarine destination: {error}"))?;
+    let input = LiquidNegotiationInput {
+        journey: LiquidJourney::Submarine,
+        payment_hash: decode_fixed_hex(&invoice.payment_hash, "Liquid submarine payment hash")?,
+        invoice: Some(invoice.bolt11.clone()),
+        requester_key,
+    };
+    let prepared = prepare_liquid_order(
+        runtime,
+        environment,
+        prepare_liquid_quote(environment, &offering.pubkey, &input)?,
+        &input,
+        refund_path,
+        &destination.script_pubkey,
+        None,
+    )?;
+    let PreparedLiquidSession {
+        pending,
+        funding,
+        liquid_request,
+    } = prepared;
+    let funding = funding
+        .ok_or_else(|| "Liquid submarine has no contract-bound funding transaction".to_owned())?;
+    let mut session = finalize_negotiation(pending)?;
+    session.wait_provider_state("accepted")?;
+    session.wait_provider_state("lock_terms_ready")?;
+    let (authorized, retained) = authorize_liquid_submarine(
+        runtime,
+        environment,
+        &session,
+        &liquid_request,
+        &invoice.bolt11,
+    )?;
+    session.set_authorized_verifier(authorized)?;
+    session.publish_requester_status("requester_verification_passed", Map::new())?;
+    session.persist_authorized_details(
+        "funding_execution_ready",
+        true,
+        json!({"external_identifier":funding.transaction_id.clone()}),
+    )?;
+    let receipt = runtime
+        .block_on(liquid.rail.broadcast_funding(&retained))
+        .map_err(|error| format!("could not broadcast Liquid submarine funding: {error}"))?;
+    if receipt.transaction_id != funding.transaction_id {
+        return Err("elementsd accepted another Liquid submarine funding transaction".to_owned());
+    }
+    session.record_funding_effect(
+        funding.transaction_id.clone(),
+        sha256(&funding.raw_transaction),
+    )?;
+    session.publish_requester_status(
+        "requester_funding_broadcast",
+        Map::from_iter([
+            (
+                "transaction_id".to_owned(),
+                Value::String(funding.transaction_id.clone()),
+            ),
+            ("output_index".to_owned(), json!(funding.output_index)),
+        ]),
+    )?;
+    wait_for_liquid_transaction_propagation(
+        runtime,
+        liquid,
+        &funding.transaction_id,
+        "liquid-submarine-funding-propagation",
+    )?;
+    mine_chain_leg(
+        runtime,
+        environment,
+        "liquid",
+        environment.terminal_confirmations,
+        "liquid-submarine-funding",
+    )?;
+    session.wait_provider_state("funding_observed")?;
+    session.wait_provider_state("funding_final")?;
+    session.wait_provider_state("lightning_payment_pending")?;
+    session.wait_provider_state("lightning_paid")?;
+    let claim_pending = session.wait_provider_state("provider_claim_pending")?;
+    let claim_transaction_id = status_transaction_id(&claim_pending)?;
+    session.persist_authorized_details(
+        "provider_claim_effect_recorded",
+        true,
+        json!({"external_identifier":claim_transaction_id}),
+    )?;
+    let restart_proof = load_funded_injection_proof(&environment.control.paths)?
+        .ok_or_else(|| "Liquid submarine provider restart has no controller proof".to_owned())?;
+    let replayed_claim = session.wait_provider_state("provider_claim_pending")?;
+    if replayed_claim.id != claim_pending.id
+        || status_transaction_id(&replayed_claim)? != claim_transaction_id
+    {
+        return Err("Liquid submarine restart replayed another claim effect".to_owned());
+    }
+    wait_for_liquid_transaction_propagation(
+        runtime,
+        liquid,
+        &claim_transaction_id,
+        "liquid-submarine-claim-propagation",
+    )?;
+    mine_chain_leg(
+        runtime,
+        environment,
+        "liquid",
+        environment.terminal_confirmations,
+        "liquid-submarine-claim",
+    )?;
+    session.wait_provider_state("provider_claimed")?;
+    session.wait_provider_state("completed")?;
+    verify_requester_invoice_paid(runtime, &environment.peer_cln, &invoice.payment_hash)?;
+    let close = session.wait_provider_close(
+        "completed",
+        TerminalRailCheck {
+            runtime,
+            environment,
+            bitcoin_settlement_txid: None,
+            liquid_settlement_txid: Some(&claim_transaction_id),
+            lightning: Some(LightningTerminalCheck::IncomingInvoice {
+                payment_hash: &invoice.payment_hash,
+            }),
+        },
+    )?;
+    let funding_hex = liquid_raw_transaction(
+        runtime,
+        liquid,
+        &funding.transaction_id,
+        "liquid-submarine-funding-proof",
+    )?;
+    let claim_hex = liquid_raw_transaction(
+        runtime,
+        liquid,
+        &claim_transaction_id,
+        "liquid-submarine-claim-proof",
+    )?;
+    let lifecycle =
+        chain_lifecycle_event_ids(session.verifier.signed_records(), &offering, &close)?;
+    Ok(liquid_route_proof(
+        "liquid-submarine",
+        provider_index,
+        lifecycle,
+        chain_leg_process_proof(
+            "liquid",
+            &funding.transaction_id,
+            funding.output_index,
+            &funding_hex,
+            &claim_transaction_id,
+            &claim_hex,
+        ),
+        vec!["liquid_submarine_claim"],
+        vec!["provider_claim_pending", "provider_claimed"],
+        "provider",
+        "claim",
+        &invoice.payment_hash,
+        &restart_proof,
+    ))
+}
+
+fn run_liquid_reverse_route(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    offering: Event,
+    provider_index: usize,
+) -> Result<Value, String> {
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid reverse route has no local elementsd".to_owned())?;
+    let mut preimage = random_32()?;
+    store_funded_secret(
+        &environment.control.paths,
+        LiquidJourney::Reverse.name(),
+        &preimage,
+    )?;
+    let payment_hash = sha256(&preimage);
+    let claim_path = WalletPath::new(5, false, 1)
+        .map_err(|error| format!("Liquid reverse claim path is invalid: {error}"))?;
+    let requester_key = environment
+        .wallet
+        .derive_address(claim_path)
+        .map_err(|error| format!("could not derive Liquid reverse claim key: {error}"))?
+        .internal_key;
+    let destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 41)
+                .map_err(|error| format!("Liquid reverse destination is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive Liquid reverse destination: {error}"))?;
+    let input = LiquidNegotiationInput {
+        journey: LiquidJourney::Reverse,
+        payment_hash,
+        invoice: None,
+        requester_key,
+    };
+    let prepared = prepare_liquid_order(
+        runtime,
+        environment,
+        prepare_liquid_quote(environment, &offering.pubkey, &input)?,
+        &input,
+        claim_path,
+        &destination.script_pubkey,
+        Some(LiquidJourney::Reverse.name()),
+    )?;
+    let mut session = finalize_negotiation(prepared.pending)?;
+    session.wait_provider_state("accepted")?;
+    let invoice_status = session.wait_provider_state("hold_invoice_ready")?;
+    let invoice = record_profile(&invoice_status)?
+        .get("invoice")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Liquid reverse hold-invoice Status has no invoice".to_owned())?
+        .to_owned();
+    session.publish_requester_status("requester_invoice_verified", Map::new())?;
+    let payment_task = spawn_reverse_payment_once(
+        runtime,
+        &environment.peer_cln,
+        LiquidJourney::Reverse.name(),
+        invoice.clone(),
+        lower_hex(&payment_hash),
+    )?;
+    session.publish_requester_status("lightning_payment_pending", Map::new())?;
+    session.wait_provider_state("lightning_htlcs_held")?;
+    session.wait_provider_state("provider_lock_terms_ready")?;
+    let funding_raw = decode_hex(&prepared.liquid_request.funding.raw_transaction)?;
+    let funding_transaction = parse_liquid_transaction(&funding_raw)
+        .map_err(|error| format!("Liquid reverse funding template is invalid: {error}"))?;
+    let expected_funding_transaction_id = lower_hex(&funding_transaction.transaction_id);
+    observe_liquid_mempool_template(
+        runtime,
+        liquid,
+        &LiquidNodeRequest {
+            transaction_id: expected_funding_transaction_id.clone(),
+            transaction_sha256: prepared.liquid_request.funding.transaction_sha256.clone(),
+            output_index: prepared.liquid_request.funding.output_index,
+            purpose: LiquidLegPurpose::CounterpartyLock,
+            raw_transaction: funding_raw,
+        },
+        "liquid-reverse-template-preflight",
+    )?;
+    session.publish_requester_status("requester_lock_verified", Map::new())?;
+    let funding_status = session.wait_provider_state("provider_funding_broadcast")?;
+    let (funding_transaction_id, funding_output_index) = status_outpoint(&funding_status)?;
+    if funding_transaction_id != expected_funding_transaction_id
+        || funding_output_index != prepared.liquid_request.funding.output_index
+    {
+        return Err("provider broadcast another Liquid reverse funding transaction".to_owned());
+    }
+    wait_for_liquid_transaction_propagation(
+        runtime,
+        liquid,
+        &funding_transaction_id,
+        "liquid-reverse-funding-propagation",
+    )?;
+    mine_chain_leg(
+        runtime,
+        environment,
+        "liquid",
+        environment.terminal_confirmations,
+        "liquid-reverse-funding",
+    )?;
+    session.wait_provider_state("funding_observed")?;
+    session.wait_provider_state("funding_final")?;
+    let (authorized, _verified) = authorize_liquid_reverse(
+        runtime,
+        environment,
+        &session,
+        &prepared.liquid_request,
+        &invoice,
+    )?;
+    session.set_authorized_verifier(authorized)?;
+    session.record_funding_effect(lower_hex(&payment_hash), payment_hash)?;
+    session.persist_authorized_details(
+        "provider_funding_effect_recorded",
+        true,
+        json!({"external_identifier":funding_transaction_id.clone()}),
+    )?;
+    let restart_proof = load_funded_injection_proof(&environment.control.paths)?
+        .ok_or_else(|| "Liquid reverse provider restart has no controller proof".to_owned())?;
+    let replayed_funding = session.wait_provider_state("provider_funding_broadcast")?;
+    if replayed_funding.id != funding_status.id
+        || status_outpoint(&replayed_funding)?
+            != (funding_transaction_id.clone(), funding_output_index)
+    {
+        return Err("Liquid reverse restart replayed another funding effect".to_owned());
+    }
+    session.publish_requester_status("requester_claim_pending", Map::new())?;
+    let authorized = session
+        .authorized_verifier
+        .as_mut()
+        .ok_or_else(|| "Liquid reverse claim lost its pre-fund authorization".to_owned())?;
+    let (claim_transaction_id, _claim_transaction_hex) = execute_liquid_wallet_claim(
+        runtime,
+        environment,
+        authorized,
+        &prepared.liquid_request,
+        "destination",
+        claim_path,
+        preimage,
+        LiquidJourney::Reverse.name(),
+        "liquid-reverse-claim",
+    )?;
+    session.persist_authorized_details(
+        "liquid_claim_broadcast_recorded",
+        true,
+        json!({"external_identifier":claim_transaction_id.clone()}),
+    )?;
+    remove_funded_secret(&environment.control.paths, LiquidJourney::Reverse.name())?;
+    preimage.fill(0);
+    session.publish_requester_status(
+        "requester_claimed",
+        Map::from_iter([(
+            "transaction_id".to_owned(),
+            Value::String(claim_transaction_id.clone()),
+        )]),
+    )?;
+    wait_for_liquid_transaction_propagation(
+        runtime,
+        liquid,
+        &claim_transaction_id,
+        "liquid-reverse-claim-propagation",
+    )?;
+    mine_chain_leg(
+        runtime,
+        environment,
+        "liquid",
+        environment.terminal_confirmations,
+        "liquid-reverse-claim",
+    )?;
+    session.wait_provider_state("lightning_settlement_pending")?;
+    session.wait_provider_state("lightning_paid")?;
+    session.wait_provider_state("completed")?;
+    let payment = runtime
+        .block_on(payment_task)
+        .map_err(|error| format!("Liquid reverse payment task failed: {error}"))?
+        .map_err(|error| format!("Liquid reverse payment did not settle: {error}"))?;
+    if payment.status != "complete" || payment.payment_hash != lower_hex(&payment_hash) {
+        return Err("Liquid reverse payment completed with another result".to_owned());
+    }
+    let terminal_payment = wait_for_lightning_payment_terminal(
+        runtime,
+        &environment.peer_cln,
+        &invoice,
+        &lower_hex(&payment_hash),
+    )?;
+    if terminal_payment.status != "complete" {
+        return Err("Liquid reverse requester CLN did not report terminal settlement".to_owned());
+    }
+    let close = session.wait_provider_close(
+        "completed",
+        TerminalRailCheck {
+            runtime,
+            environment,
+            bitcoin_settlement_txid: None,
+            liquid_settlement_txid: Some(&claim_transaction_id),
+            lightning: Some(LightningTerminalCheck::OutgoingPayment {
+                invoice: &invoice,
+                payment_hash: &lower_hex(&payment_hash),
+                expected_status: "complete",
+            }),
+        },
+    )?;
+    let funding_hex = liquid_raw_transaction(
+        runtime,
+        liquid,
+        &funding_transaction_id,
+        "liquid-reverse-funding-proof",
+    )?;
+    let claim_hex = liquid_raw_transaction(
+        runtime,
+        liquid,
+        &claim_transaction_id,
+        "liquid-reverse-claim-proof",
+    )?;
+    let lifecycle =
+        chain_lifecycle_event_ids(session.verifier.signed_records(), &offering, &close)?;
+    Ok(liquid_route_proof(
+        "liquid-reverse",
+        provider_index,
+        lifecycle,
+        chain_leg_process_proof(
+            "liquid",
+            &funding_transaction_id,
+            funding_output_index,
+            &funding_hex,
+            &claim_transaction_id,
+            &claim_hex,
+        ),
+        vec!["liquid_reverse_fund"],
+        vec!["provider_funding_broadcast"],
+        "requester",
+        "claim",
+        &lower_hex(&payment_hash),
+        &restart_proof,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn liquid_route_proof(
+    shape: &str,
+    provider_index: usize,
+    lifecycle: Value,
+    liquid_rail: Value,
+    provider_effect_operations: Vec<&str>,
+    provider_status_anchors: Vec<&str>,
+    terminal_actor: &str,
+    terminal_path: &str,
+    payment_hash: &str,
+    restart_proof: &Value,
+) -> Value {
+    let selected_provider = if provider_index == 0 {
+        "provider-a"
+    } else {
+        "provider-b"
+    };
+    let checkpoint_effect_operation = provider_effect_operations
+        .first()
+        .copied()
+        .unwrap_or_default();
+    let checkpoint_status_state = provider_status_anchors.first().copied().unwrap_or_default();
+    json!({
+        "liquid_case":{
+            "schema":"openagents.immortal.adversarial-liquid-case.v1",
+            "shape":shape,
+            "selected_provider":selected_provider,
+            "signed_lifecycle_event_ids":lifecycle,
+            "rails":{"liquid":liquid_rail},
+            "provider_effect_operations":provider_effect_operations,
+            "provider_status_anchors":provider_status_anchors,
+            "provider_restart":{
+                "target":selected_provider,
+                "checkpoint_effect_operation":checkpoint_effect_operation,
+                "checkpoint_status_state":checkpoint_status_state,
+                "process_replaced":restart_proof.pointer("/evidence/transition").and_then(Value::as_str)
+                    == Some("process_replaced_and_ready"),
+                "restored_from_postgres":true,
+                "exact_known_replay":true,
+                "duplicate_external_effects":0,
+            },
+            "liquid_terminal":{
+                "actor":terminal_actor,
+                "path":terminal_path,
+                "effect_class":"liquid_spend",
+                "confirmed":true,
+            },
+            "lightning_terminal":match shape {
+                "liquid-submarine" => json!({
+                    "actor":"requester",
+                    "effect_actor":"provider",
+                    "operation":"invoice_pay",
+                    "status_anchor":"lightning_paid",
+                    "state":"settled",
+                    "observation_authority":"requester-cln",
+                    "payment_hash":payment_hash,
+                }),
+                "liquid-reverse" => json!({
+                    "actor":"requester",
+                    "effect_actor":"provider",
+                    "operation":"invoice_settle",
+                    "status_anchor":"lightning_paid",
+                    "state":"settled",
+                    "observation_authority":"requester-cln",
+                    "payment_hash":payment_hash,
+                }),
+                _ => Value::Null,
+            },
+            "recovery":null,
+        }
+    })
+}
+
 pub fn run_adversarial_double_reservation() -> Result<Value, String> {
     let runtime =
         Runtime::new().map_err(|error| format!("could not start lab runtime: {error}"))?;
@@ -1374,6 +2462,12 @@ pub fn prepare_doomsday_case(case: DoomsdayCase) -> Result<Value, String> {
         DoomsdayCase::ReverseCoordinatorGone => {
             prepare_doomsday_reverse(&runtime, &environment, &provider_pubkey, case)
         }
+        DoomsdayCase::LiquidSubmarineProviderGone => {
+            prepare_doomsday_liquid_submarine(&runtime, &environment, &provider_pubkey, case)
+        }
+        DoomsdayCase::LiquidReverseCoordinatorGone => {
+            prepare_doomsday_liquid_reverse(&runtime, &environment, &provider_pubkey, case)
+        }
     }
 }
 
@@ -1392,6 +2486,12 @@ pub fn recover_doomsday_case(case: DoomsdayCase) -> Result<Value, String> {
         }
         DoomsdayCase::ReverseCoordinatorGone => {
             recover_doomsday_reverse(&runtime, &environment, restored, case)
+        }
+        DoomsdayCase::LiquidSubmarineProviderGone => {
+            recover_doomsday_liquid_submarine(&runtime, &environment, restored, case)
+        }
+        DoomsdayCase::LiquidReverseCoordinatorGone => {
+            recover_doomsday_liquid_reverse(&runtime, &environment, restored, case)
         }
     }
 }
@@ -1428,6 +2528,7 @@ struct DoomsdayRestoredSession {
     journey_name: String,
     controller_audit: Value,
     pending_provider_close: Option<Event>,
+    offering_id: Option<String>,
 }
 
 struct PreparedSubmarineRecovery {
@@ -1543,7 +2644,11 @@ fn prepare_doomsday_submarine(
         "case_id":match case {
             DoomsdayCase::SubmarineProviderGone => "doomsday-submarine-provider-gone",
             DoomsdayCase::KeylessEsploraBroadcast => "doomsday-keyless-esplora-broadcast",
-            DoomsdayCase::ReverseCoordinatorGone => return Err("reverse case reached submarine preparation".to_owned()),
+            DoomsdayCase::ReverseCoordinatorGone
+            | DoomsdayCase::LiquidSubmarineProviderGone
+            | DoomsdayCase::LiquidReverseCoordinatorGone => {
+                return Err("another case reached Bitcoin submarine preparation".to_owned());
+            }
         },
         "provider_pubkey":provider_pubkey,
         "order_id":session.order.id,
@@ -1553,6 +2658,279 @@ fn prepare_doomsday_submarine(
         "signer_ref":null,
         "signed_before_contract":true,
         "signed_before_funding":true,
+        "requester_process_exit":true,
+    }))
+}
+
+fn prepare_doomsday_liquid_submarine(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    case: DoomsdayCase,
+) -> Result<Value, String> {
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid submarine doomsday has no local elementsd".to_owned())?;
+    let offering = discover_provider_offering(
+        &environment.relay_url,
+        &environment.requester,
+        JOURNEY_TIMEOUT,
+    )?;
+    if offering.pubkey != provider_pubkey {
+        return Err("Liquid submarine doomsday discovered another provider".to_owned());
+    }
+    let invoice = runtime
+        .block_on(
+            environment.peer_cln.invoice(
+                &cln_id(case.invoice_label())?,
+                Millisatoshi::from_satoshis(OUTPUT_AMOUNT_SAT)
+                    .map_err(|error| format!("Liquid doomsday amount is invalid: {error}"))?,
+                case.invoice_label(),
+                "Immortal Liquid doomsday refund",
+                SUBMARINE_REFUND_INVOICE_EXPIRY_SECONDS,
+            ),
+        )
+        .map_err(|error| format!("could not create Liquid doomsday invoice: {error}"))?;
+    let refund_path = WalletPath::new(5, false, 2)
+        .map_err(|error| format!("Liquid doomsday refund path is invalid: {error}"))?;
+    let requester_key = environment
+        .wallet
+        .derive_address(refund_path)
+        .map_err(|error| format!("could not derive Liquid doomsday refund key: {error}"))?
+        .internal_key;
+    let destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 42)
+                .map_err(|error| format!("Liquid doomsday destination is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive Liquid doomsday destination: {error}"))?;
+    let input = LiquidNegotiationInput {
+        journey: LiquidJourney::Submarine,
+        payment_hash: decode_fixed_hex(&invoice.payment_hash, "Liquid doomsday payment hash")?,
+        invoice: Some(invoice.bolt11.clone()),
+        requester_key,
+    };
+    let mut prepared = prepare_liquid_order(
+        runtime,
+        environment,
+        prepare_liquid_quote(environment, provider_pubkey, &input)?,
+        &input,
+        refund_path,
+        &destination.script_pubkey,
+        None,
+    )?;
+    prepared.pending.journey_name =
+        liquid_doomsday_journey_name(case, &prepared.pending.journey_name)?.to_owned();
+    if prepared.liquid_request.exit_package.mode != LiquidExitMode::Presigned
+        || prepared.liquid_request.exit_package.path != "refund"
+    {
+        return Err("Liquid doomsday refund is not an exact pre-signed package".to_owned());
+    }
+    let funding = prepared
+        .funding
+        .ok_or_else(|| "Liquid doomsday has no source funding".to_owned())?;
+    let mut session = finalize_negotiation(prepared.pending)?;
+    session.wait_provider_state("accepted")?;
+    session.wait_provider_state("lock_terms_ready")?;
+    let (authorized, retained) = authorize_liquid_submarine(
+        runtime,
+        environment,
+        &session,
+        &prepared.liquid_request,
+        &invoice.bolt11,
+    )?;
+    session.set_authorized_verifier(authorized)?;
+    session.publish_requester_status("requester_verification_passed", Map::new())?;
+    let receipt = runtime
+        .block_on(liquid.rail.broadcast_funding(&retained))
+        .map_err(|error| format!("could not broadcast Liquid doomsday funding: {error}"))?;
+    if receipt.transaction_id != funding.transaction_id {
+        return Err("Liquid doomsday broadcast another funding transaction".to_owned());
+    }
+    session.record_funding_effect(
+        funding.transaction_id.clone(),
+        sha256(&funding.raw_transaction),
+    )?;
+    session.persist_authorized_details(
+        "doomsday_prepared",
+        true,
+        json!({
+            "funding_transaction_id":funding.transaction_id,
+            "refund_lock_height":prepared.liquid_request.exit_package.timelock,
+            "package_mode":"presigned",
+            "signed_before_contract":true,
+            "signed_before_funding":true,
+            "offering_id":offering.id,
+        }),
+    )?;
+    Ok(json!({
+        "schema":"openagents.immortal.doomsday-prepared.v1",
+        "case_id":case.case_id(),
+        "provider_pubkey":provider_pubkey,
+        "order_id":session.order.id,
+        "funding_transaction_id":receipt.transaction_id,
+        "refund_lock_height":prepared.liquid_request.exit_package.timelock,
+        "package_mode":"presigned",
+        "signer_ref":null,
+        "signed_before_contract":true,
+        "signed_before_funding":true,
+        "requester_process_exit":true,
+    }))
+}
+
+fn prepare_doomsday_liquid_reverse(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    case: DoomsdayCase,
+) -> Result<Value, String> {
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid reverse doomsday has no local elementsd".to_owned())?;
+    let offering = discover_provider_offering(
+        &environment.relay_url,
+        &environment.requester,
+        JOURNEY_TIMEOUT,
+    )?;
+    if offering.pubkey != provider_pubkey {
+        return Err("Liquid reverse doomsday discovered another provider".to_owned());
+    }
+    let mut preimage = random_32()?;
+    store_funded_secret(&environment.control.paths, case.journey_name(), &preimage)?;
+    let payment_hash = sha256(&preimage);
+    let claim_path = WalletPath::new(5, false, 3)
+        .map_err(|error| format!("Liquid doomsday claim path is invalid: {error}"))?;
+    let requester_key = environment
+        .wallet
+        .derive_address(claim_path)
+        .map_err(|error| format!("could not derive Liquid doomsday claim key: {error}"))?
+        .internal_key;
+    let destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 43)
+                .map_err(|error| format!("Liquid reverse destination is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive Liquid reverse destination: {error}"))?;
+    let input = LiquidNegotiationInput {
+        journey: LiquidJourney::Reverse,
+        payment_hash,
+        invoice: None,
+        requester_key,
+    };
+    let mut prepared = prepare_liquid_order(
+        runtime,
+        environment,
+        prepare_liquid_quote(environment, provider_pubkey, &input)?,
+        &input,
+        claim_path,
+        &destination.script_pubkey,
+        Some(case.journey_name()),
+    )?;
+    prepared.pending.journey_name =
+        liquid_doomsday_journey_name(case, &prepared.pending.journey_name)?.to_owned();
+    if prepared.liquid_request.exit_package.mode != LiquidExitMode::Wallet
+        || prepared.liquid_request.exit_package.path != "claim"
+        || prepared
+            .liquid_request
+            .exit_package
+            .wallet_signing_handle_sha256
+            .is_none()
+        || prepared
+            .liquid_request
+            .exit_package
+            .preimage_recovery_ref
+            .is_none()
+        || prepared
+            .liquid_request
+            .exit_package
+            .wallet_signing_handle_sha256
+            == prepared.liquid_request.exit_package.preimage_recovery_ref
+    {
+        return Err("Liquid reverse doomsday claim has no distinct recovery references".to_owned());
+    }
+    let mut session = finalize_negotiation(prepared.pending)?;
+    session.wait_provider_state("accepted")?;
+    let invoice_status = session.wait_provider_state("hold_invoice_ready")?;
+    let invoice = record_profile(&invoice_status)?
+        .get("invoice")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Liquid doomsday provider Status has no hold invoice".to_owned())?
+        .to_owned();
+    session.publish_requester_status("requester_invoice_verified", Map::new())?;
+    let payment_task = spawn_reverse_payment_once(
+        runtime,
+        &environment.peer_cln,
+        case.journey_name(),
+        invoice.clone(),
+        lower_hex(&payment_hash),
+    )?;
+    session.publish_requester_status("lightning_payment_pending", Map::new())?;
+    wait_for_lightning_payment_attempt(
+        runtime,
+        &environment.peer_cln,
+        &invoice,
+        &lower_hex(&payment_hash),
+    )?;
+    session.wait_provider_state("lightning_htlcs_held")?;
+    session.wait_provider_state("provider_lock_terms_ready")?;
+    session.publish_requester_status("requester_lock_verified", Map::new())?;
+    let funding_status = session.wait_provider_state("provider_funding_broadcast")?;
+    let (funding_transaction_id, funding_output_index) = status_outpoint(&funding_status)?;
+    wait_for_liquid_transaction_propagation(
+        runtime,
+        liquid,
+        &funding_transaction_id,
+        "doomsday-liquid-reverse-funding",
+    )?;
+    mine_chain_leg(
+        runtime,
+        environment,
+        "liquid",
+        environment.terminal_confirmations,
+        "doomsday-liquid-reverse-funding",
+    )?;
+    session.wait_provider_state("funding_observed")?;
+    session.wait_provider_state("funding_final")?;
+    let (authorized, _) = authorize_liquid_reverse(
+        runtime,
+        environment,
+        &session,
+        &prepared.liquid_request,
+        &invoice,
+    )?;
+    session.set_authorized_verifier(authorized)?;
+    session.record_funding_effect(lower_hex(&payment_hash), payment_hash)?;
+    session.persist_authorized_details(
+        "doomsday_prepared",
+        true,
+        json!({
+            "funding_transaction_id":funding_transaction_id,
+            "funding_output_index":funding_output_index,
+            "package_mode":"wallet_sign",
+            "signer_ref":prepared.liquid_request.exit_package.wallet_signing_handle_sha256,
+            "preimage_recovery_ref":prepared.liquid_request.exit_package.preimage_recovery_ref,
+            "exit_template_before_contract":true,
+            "preimage_persisted_before_contract":true,
+            "offering_id":offering.id,
+        }),
+    )?;
+    drop(payment_task);
+    preimage.fill(0);
+    Ok(json!({
+        "schema":"openagents.immortal.doomsday-prepared.v1",
+        "case_id":case.case_id(),
+        "provider_pubkey":provider_pubkey,
+        "order_id":session.order.id,
+        "payment_hash":lower_hex(&payment_hash),
+        "funding_transaction_id":funding_transaction_id,
+        "funding_output_index":funding_output_index,
+        "package_mode":"wallet_sign",
+        "exit_template_before_contract":true,
+        "preimage_persisted_before_contract":true,
         "requester_process_exit":true,
     }))
 }
@@ -1608,6 +2986,11 @@ fn restore_doomsday_session(
         journey_name: journey_name.to_owned(),
         controller_audit: Value::Null,
         pending_provider_close: None,
+        offering_id: checkpoint
+            .details
+            .get("offering_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     })
 }
 
@@ -1638,8 +3021,12 @@ fn load_doomsday_controller_audit(case: DoomsdayCase) -> Result<Value, String> {
         })
         .ok_or_else(|| "doomsday controller evidence has unknown or missing members".to_owned())?;
     let expected_targets = match case {
-        DoomsdayCase::ReverseCoordinatorGone => ["provider-b", "relay-a", "relay-b"].as_slice(),
-        DoomsdayCase::SubmarineProviderGone | DoomsdayCase::KeylessEsploraBroadcast => {
+        DoomsdayCase::ReverseCoordinatorGone | DoomsdayCase::LiquidReverseCoordinatorGone => {
+            ["provider-b", "relay-a", "relay-b"].as_slice()
+        }
+        DoomsdayCase::SubmarineProviderGone
+        | DoomsdayCase::KeylessEsploraBroadcast
+        | DoomsdayCase::LiquidSubmarineProviderGone => {
             ["provider-a", "provider-b", "relay-a", "relay-b"].as_slice()
         }
     };
@@ -1673,7 +3060,10 @@ fn load_doomsday_controller_audit(case: DoomsdayCase) -> Result<Value, String> {
     {
         return Err("doomsday controller evidence does not bind the removal cut".to_owned());
     }
-    let expects_direct = case == DoomsdayCase::ReverseCoordinatorGone;
+    let expects_direct = matches!(
+        case,
+        DoomsdayCase::ReverseCoordinatorGone | DoomsdayCase::LiquidReverseCoordinatorGone
+    );
     if object
         .get("direct_recovery_retained")
         .and_then(Value::as_bool)
@@ -2490,7 +3880,8 @@ fn recover_doomsday_reverse(
         environment,
         &mut restored,
         "completed",
-        &claim_transaction_id,
+        Some(&claim_transaction_id),
+        None,
         &invoice,
         &payment_hash,
     )?;
@@ -2521,6 +3912,363 @@ fn recover_doomsday_reverse(
             "exact_outpoint_spent":true,
             "transaction_confirmed":true,
             "lightning_paid":true,
+        }
+    }))
+}
+
+fn restored_liquid_request(
+    restored: &DoomsdayRestoredSession,
+) -> Result<LiquidBeforeFundRequest, String> {
+    restored
+        .authorized
+        .funding_request()
+        .map_err(|error| format!("restored Liquid funding request is invalid: {error}"))?
+        .liquid
+        .as_ref()
+        .map(|binding| binding.request.clone())
+        .ok_or_else(|| "restored session has no Liquid funding binding".to_owned())
+}
+
+fn recover_doomsday_liquid_submarine(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    restored: DoomsdayRestoredSession,
+    case: DoomsdayCase,
+) -> Result<Value, String> {
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid submarine recovery has no local elementsd".to_owned())?;
+    let request = restored_liquid_request(&restored)?;
+    if request.swap_type != LiquidSwapType::Submarine
+        || request.purpose != LiquidLegPurpose::RequesterBroadcast
+        || request.exit_package.mode != LiquidExitMode::Presigned
+        || request.exit_package.path != "refund"
+    {
+        return Err("restored Liquid submarine refund has another shape".to_owned());
+    }
+    let funding_transaction_id = request.exit_package.funding_transaction_id.clone();
+    let funding_output_index = request.exit_package.funding_output_index;
+    wait_for_liquid_transaction_propagation(
+        runtime,
+        liquid,
+        &funding_transaction_id,
+        "doomsday-liquid-submarine-funding",
+    )?;
+    let network = runtime
+        .block_on(liquid.rail.network_view("doomsday-liquid-submarine-height"))
+        .map_err(|error| format!("could not read Liquid recovery height: {error}"))?;
+    let current_height = u32::try_from(network.height)
+        .map_err(|_| "Liquid recovery height exceeds u32".to_owned())?;
+    if current_height < request.exit_package.timelock {
+        mine_liquid_blocks(
+            runtime,
+            liquid,
+            request.exit_package.timelock - current_height,
+            "doomsday-liquid-submarine-maturity",
+        )?;
+    }
+    let verified = runtime
+        .block_on(liquid.rail.verify_before_fund(&request))
+        .map_err(|error| format!("restored Liquid refund verification failed: {error}"))?;
+    let receipt = runtime
+        .block_on(liquid.rail.broadcast_unilateral_exit(&verified))
+        .map_err(|error| format!("could not broadcast restored Liquid refund: {error}"))?;
+    let refund_transaction_id = receipt.transaction_id;
+    let refund = parse_liquid_transaction(&decode_hex(&request.exit_package.transaction)?)
+        .map_err(|error| format!("restored Liquid refund is invalid: {error}"))?;
+    if lower_hex(&refund.transaction_id) != refund_transaction_id {
+        return Err("elementsd accepted another restored Liquid refund".to_owned());
+    }
+    wait_for_liquid_transaction_propagation(
+        runtime,
+        liquid,
+        &refund_transaction_id,
+        "doomsday-liquid-submarine-refund",
+    )?;
+    mine_chain_leg(
+        runtime,
+        environment,
+        "liquid",
+        environment.terminal_confirmations,
+        "doomsday-liquid-submarine-refund",
+    )?;
+    let funding_hex = liquid_raw_transaction(
+        runtime,
+        liquid,
+        &funding_transaction_id,
+        "doomsday-liquid-submarine-funding-proof",
+    )?;
+    let refund_hex = liquid_raw_transaction(
+        runtime,
+        liquid,
+        &refund_transaction_id,
+        "doomsday-liquid-submarine-refund-proof",
+    )?;
+    let payment_hash = restored
+        .contract
+        .get("payment_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Liquid submarine recovery has no payment hash".to_owned())?
+        .to_owned();
+    finalize_invoice_unpaid(
+        runtime,
+        &environment.peer_cln,
+        case.invoice_label(),
+        &payment_hash,
+    )?;
+    let lifecycle = liquid_lifecycle_event_ids(
+        restored.authorized.signed_records(),
+        restored
+            .offering_id
+            .as_deref()
+            .ok_or_else(|| "Liquid doomsday checkpoint has no Offering ID".to_owned())?,
+        None,
+    )?;
+    remove_funded_secret(&restored.paths, case.journey_name())?;
+    Ok(json!({
+        "liquid_case":{
+            "schema":"openagents.immortal.adversarial-liquid-case.v1",
+            "shape":"liquid-submarine",
+            "selected_provider":"provider-a",
+            "signed_lifecycle_event_ids":lifecycle,
+            "rails":{"liquid":chain_leg_process_proof(
+                "liquid",
+                &funding_transaction_id,
+                funding_output_index,
+                &funding_hex,
+                &refund_transaction_id,
+                &refund_hex,
+            )},
+            "provider_effect_operations":[],
+            "provider_status_anchors":[],
+            "provider_restart":null,
+            "liquid_terminal":{
+                "actor":"requester",
+                "path":"refund",
+                "effect_class":"liquid_spend",
+                "confirmed":true,
+            },
+            "lightning_terminal":{
+                "actor":"requester",
+                "effect_actor":null,
+                "operation":null,
+                "status_anchor":null,
+                "state":"unpaid_final",
+                "observation_authority":"requester-cln",
+                "payment_hash":payment_hash,
+            },
+            "recovery":{
+                "mode":"presigned-refund",
+                "fresh_requester_process":true,
+                "signed_before_requester_contract":true,
+                "signed_before_funding_broadcast":true,
+                "provider_effect_operations":[],
+                "refund_transaction_id":refund_transaction_id,
+            },
+        }
+    }))
+}
+
+fn recover_doomsday_liquid_reverse(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    mut restored: DoomsdayRestoredSession,
+    case: DoomsdayCase,
+) -> Result<Value, String> {
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid reverse recovery has no local elementsd".to_owned())?;
+    let request = restored_liquid_request(&restored)?;
+    if request.swap_type != LiquidSwapType::Reverse
+        || request.purpose != LiquidLegPurpose::CounterpartyLock
+        || request.exit_package.mode != LiquidExitMode::Wallet
+        || request.exit_package.path != "claim"
+        || request.exit_package.wallet_signing_handle_sha256.is_none()
+        || request.exit_package.preimage_recovery_ref.is_none()
+        || request.exit_package.wallet_signing_handle_sha256
+            == request.exit_package.preimage_recovery_ref
+    {
+        return Err("restored Liquid reverse claim has another shape".to_owned());
+    }
+    let invoice = match restored
+        .authorized
+        .funding_request()
+        .map_err(|error| format!("restored Liquid reverse request is invalid: {error}"))?
+        .action
+        .clone()
+    {
+        FundingAction::PayLightningInvoice { invoice, .. } => invoice,
+        _ => return Err("restored Liquid reverse authorized another action".to_owned()),
+    };
+    let payment_hash = restored
+        .contract
+        .get("payment_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "restored Liquid reverse has no payment hash".to_owned())?
+        .to_owned();
+    let payment = wait_for_lightning_payment_attempt(
+        runtime,
+        &environment.peer_cln,
+        &invoice,
+        &payment_hash,
+    )?;
+    if payment.status != "pending" {
+        return Err("Liquid reverse payment was not held before recovery".to_owned());
+    }
+    let mut direct_rounds = 0_u32;
+    direct_recovery_exchange(&mut restored)?;
+    direct_rounds = direct_rounds.saturating_add(1);
+    doomsday_requester_status(&mut restored, "requester_claim_pending", Map::new())?;
+    direct_recovery_exchange(&mut restored)?;
+    direct_rounds = direct_rounds.saturating_add(1);
+    runtime
+        .block_on(liquid.rail.verify_before_fund(&request))
+        .map_err(|error| format!("restored Liquid claim verification failed: {error}"))?;
+    let mut preimage = load_funded_secret(&restored.paths, case.journey_name())?;
+    let claim_path = WalletPath::new(5, false, 3)
+        .map_err(|error| format!("restored Liquid claim path is invalid: {error}"))?;
+    let (claim_transaction_id, _claim_transaction_hex) = execute_liquid_wallet_claim(
+        runtime,
+        environment,
+        &mut restored.authorized,
+        &request,
+        "destination",
+        claim_path,
+        preimage,
+        case.journey_name(),
+        "doomsday-liquid-reverse-claim",
+    )?;
+    let claim_snapshot = restored
+        .authorized
+        .persist()
+        .map_err(|error| format!("could not persist restored Liquid claim: {error}"))?;
+    store_funded_snapshot(&restored.paths, &restored.journey_name, &claim_snapshot)?;
+    preimage.fill(0);
+    doomsday_requester_status(
+        &mut restored,
+        "requester_claimed",
+        Map::from_iter([(
+            "transaction_id".to_owned(),
+            Value::String(claim_transaction_id.clone()),
+        )]),
+    )?;
+    direct_recovery_exchange(&mut restored)?;
+    direct_rounds = direct_rounds.saturating_add(1);
+    wait_for_liquid_transaction_propagation(
+        runtime,
+        liquid,
+        &claim_transaction_id,
+        "doomsday-liquid-reverse-claim",
+    )?;
+    mine_chain_leg(
+        runtime,
+        environment,
+        "liquid",
+        environment.terminal_confirmations,
+        "doomsday-liquid-reverse-claim",
+    )?;
+    wait_for_direct_provider_state(
+        &mut restored,
+        "lightning_settlement_pending",
+        &mut direct_rounds,
+    )?;
+    wait_for_direct_provider_state(&mut restored, "lightning_paid", &mut direct_rounds)?;
+    wait_for_direct_provider_state(&mut restored, "completed", &mut direct_rounds)?;
+    let terminal_payment = wait_for_lightning_payment_terminal(
+        runtime,
+        &environment.peer_cln,
+        &invoice,
+        &payment_hash,
+    )?;
+    if terminal_payment.status != "complete" {
+        return Err("Liquid reverse hold invoice did not settle".to_owned());
+    }
+    let funding_transaction_id = request.exit_package.funding_transaction_id.clone();
+    let funding_output_index = request.exit_package.funding_output_index;
+    let spending = runtime
+        .block_on(liquid.rail.spending_transaction(
+            "doomsday-liquid-reverse-spend",
+            &funding_transaction_id,
+            funding_output_index,
+        ))
+        .map_err(|error| format!("could not inspect Liquid reverse spend: {error}"))?;
+    if spending.as_deref() != Some(claim_transaction_id.as_str()) {
+        return Err("Liquid reverse funding outpoint has another terminal spend".to_owned());
+    }
+    wait_for_direct_provider_close(&mut restored, &mut direct_rounds)?;
+    let close = ingest_doomsday_direct_close(
+        runtime,
+        environment,
+        &mut restored,
+        "completed",
+        None,
+        Some(&claim_transaction_id),
+        &invoice,
+        &payment_hash,
+    )?;
+    let close_id = close.id.clone();
+    let funding_hex = liquid_raw_transaction(
+        runtime,
+        liquid,
+        &funding_transaction_id,
+        "doomsday-liquid-reverse-funding-proof",
+    )?;
+    let claim_hex = liquid_raw_transaction(
+        runtime,
+        liquid,
+        &claim_transaction_id,
+        "doomsday-liquid-reverse-claim-proof",
+    )?;
+    let lifecycle = liquid_lifecycle_event_ids(
+        restored.authorized.signed_records(),
+        restored
+            .offering_id
+            .as_deref()
+            .ok_or_else(|| "Liquid doomsday checkpoint has no Offering ID".to_owned())?,
+        Some(&close_id),
+    )?;
+    remove_funded_secret(&restored.paths, case.journey_name())?;
+    Ok(json!({
+        "liquid_case":{
+            "schema":"openagents.immortal.adversarial-liquid-case.v1",
+            "shape":"liquid-reverse",
+            "selected_provider":"provider-a",
+            "signed_lifecycle_event_ids":lifecycle,
+            "rails":{"liquid":chain_leg_process_proof(
+                "liquid",
+                &funding_transaction_id,
+                funding_output_index,
+                &funding_hex,
+                &claim_transaction_id,
+                &claim_hex,
+            )},
+            "provider_effect_operations":["liquid_reverse_fund"],
+            "provider_status_anchors":["provider_funding_broadcast"],
+            "provider_restart":null,
+            "liquid_terminal":{
+                "actor":"requester",
+                "path":"claim",
+                "effect_class":"liquid_spend",
+                "confirmed":true,
+            },
+            "lightning_terminal":{
+                "actor":"requester",
+                "effect_actor":"provider",
+                "operation":"invoice_settle",
+                "status_anchor":"lightning_paid",
+                "state":"settled",
+                "observation_authority":"requester-cln",
+                "payment_hash":payment_hash,
+            },
+            "recovery":{
+                "mode":"direct-claim-and-hold-settlement",
+                "fresh_requester_process":true,
+                "direct_provider_retained":true,
+                "claim_transaction_id":claim_transaction_id,
+                "hold_invoice_terminal_state":"settled",
+            },
         }
     }))
 }
@@ -2683,10 +4431,11 @@ fn ingest_doomsday_direct_close(
     environment: &SmokeEnvironment,
     restored: &mut DoomsdayRestoredSession,
     expected_outcome: &str,
-    bitcoin_settlement_transaction_id: &str,
+    bitcoin_settlement_transaction_id: Option<&str>,
+    liquid_settlement_transaction_id: Option<&str>,
     invoice: &str,
     payment_hash: &str,
-) -> Result<(), String> {
+) -> Result<Event, String> {
     let close = restored
         .pending_provider_close
         .take()
@@ -2702,11 +4451,12 @@ fn ingest_doomsday_direct_close(
         runtime,
         environment,
         bitcoin_settlement_txid: bitcoin_settlement_transaction_id,
-        lightning: LightningTerminalCheck::OutgoingPayment {
+        liquid_settlement_txid: liquid_settlement_transaction_id,
+        lightning: Some(LightningTerminalCheck::OutgoingPayment {
             invoice,
             payment_hash,
             expected_status: "complete",
-        },
+        }),
     };
     for leg_id in contract_leg_ids(&restored.contract)? {
         let verified = restored
@@ -2726,13 +4476,14 @@ fn ingest_doomsday_direct_close(
     }
     restored
         .authorized
-        .ingest_signed_record(close)
+        .ingest_signed_record(close.clone())
         .map_err(|error| format!("direct provider Close was rejected: {error}"))?;
     let snapshot = restored
         .authorized
         .persist()
         .map_err(|error| format!("could not persist direct provider Close: {error}"))?;
-    store_funded_snapshot(&restored.paths, &restored.journey_name, &snapshot)
+    store_funded_snapshot(&restored.paths, &restored.journey_name, &snapshot)?;
+    Ok(close)
 }
 
 fn doomsday_requester_status(
@@ -2749,28 +4500,42 @@ fn doomsday_requester_status(
         ),
         None => (0, None),
     };
-    let (event, _) = sign_request(
-        restored
-            .factory
-            .status(
-                ParticipantRole::Requester,
-                next_created_at_records(restored.authorized.signed_records())?,
-                &digest(&format!(
-                    "doomsday-requester-status:{state}:{}",
-                    restored.authorized.config().session_id
-                )),
-                &restored.order.id,
-                StatusState {
-                    sequence,
-                    previous,
-                    base_state: base_state(state)?,
-                    swp_state: state,
-                },
-                extra,
-            )
-            .map_err(|error| format!("could not build doomsday requester Status: {error}"))?,
-        &restored.requester,
-    )?;
+    let created_at = next_created_at_records(restored.authorized.signed_records())?;
+    let distinct = digest(&format!(
+        "doomsday-requester-status:{state}:{}",
+        restored.authorized.config().session_id
+    ));
+    let status = StatusState {
+        sequence,
+        previous,
+        base_state: base_state(state)?,
+        swp_state: state,
+    };
+    let request = match requester_status_provider_prerequisite_event(
+        restored.authorized.signed_records(),
+        &restored.provider_pubkey,
+        state,
+    )? {
+        Some(prerequisite) => restored.factory.status_after(
+            ParticipantRole::Requester,
+            created_at,
+            &distinct,
+            &restored.order.id,
+            status,
+            &prerequisite.id,
+            extra,
+        ),
+        None => restored.factory.status(
+            ParticipantRole::Requester,
+            created_at,
+            &distinct,
+            &restored.order.id,
+            status,
+            extra,
+        ),
+    }
+    .map_err(|error| format!("could not build doomsday requester Status: {error}"))?;
+    let (event, _) = sign_request(request, &restored.requester)?;
     restored
         .authorized
         .ingest_signed_record(event.clone())
@@ -3744,6 +5509,7 @@ impl SmokeEnvironment {
             },
         )
         .map_err(|error| format!("could not initialize smoke CLN client: {error}"))?;
+        let liquid = load_liquid_lab_environment()?;
         let terminal_confirmations =
             required_environment("IMMORTAL_PROVIDER_FUNDED_SMOKE_TERMINAL_CONFIRMATIONS")?
                 .parse::<u64>()
@@ -3759,10 +5525,56 @@ impl SmokeEnvironment {
             wallet,
             bitcoind,
             peer_cln,
+            liquid,
             terminal_confirmations,
             control,
         })
     }
+}
+
+fn load_liquid_lab_environment() -> Result<Option<LiquidLabEnvironment>, String> {
+    let host = match std::env::var("IMMORTAL_LAB_ADVERSARIAL_ELEMENTSD_HOST") {
+        Ok(host) => host,
+        Err(std::env::VarError::NotPresent) => return Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err("adversarial elementsd host is not valid Unicode".to_owned());
+        }
+    };
+    let port = required_environment("IMMORTAL_LAB_ADVERSARIAL_ELEMENTSD_PORT")?
+        .parse::<u16>()
+        .map_err(|_| "adversarial elementsd port is invalid".to_owned())?;
+    let network_id = required_environment("IMMORTAL_LAB_ADVERSARIAL_LIQUID_NETWORK_ID")?;
+    let pegged_asset = required_environment("IMMORTAL_LAB_ADVERSARIAL_LIQUID_PEGGED_ASSET")?;
+    let endpoint = BitcoindEndpoint::new(host, port)
+        .map_err(|error| format!("adversarial elementsd endpoint is invalid: {error}"))?;
+    let auth = BitcoindAuth::new(
+        required_environment("IMMORTAL_LAB_ADVERSARIAL_ELEMENTSD_RPC_USER")?,
+        required_environment("IMMORTAL_LAB_ADVERSARIAL_ELEMENTSD_RPC_PASSWORD")?,
+    )
+    .map_err(|error| format!("adversarial elementsd credentials are invalid: {error}"))?;
+    let wallet = ElementsdWalletName::new(required_environment(
+        "IMMORTAL_LAB_ADVERSARIAL_ELEMENTSD_WALLET",
+    )?)
+    .map_err(|error| format!("adversarial elementsd wallet is invalid: {error}"))?;
+    let network = LiquidNetworkId::parse(&network_id)
+        .map_err(|error| format!("adversarial Liquid network is invalid: {error}"))?;
+    let asset = LiquidAssetId::parse(&pegged_asset)
+        .map_err(|error| format!("adversarial Liquid asset is invalid: {error}"))?;
+    let elementsd = ElementsdClient::new(
+        endpoint,
+        auth,
+        BitcoindLimits::default(),
+        wallet,
+        network,
+        asset,
+    )
+    .map_err(|error| format!("could not initialize adversarial elementsd client: {error}"))?;
+    Ok(Some(LiquidLabEnvironment {
+        rail: LiquidProviderRail::new(elementsd.clone()),
+        elementsd,
+        network_id,
+        pegged_asset,
+    }))
 }
 
 fn exact_topology_health_urls(value: &str) -> Result<[String; 2], String> {
@@ -4110,10 +5922,11 @@ fn drive_cooperative_submarine(
         TerminalRailCheck {
             runtime,
             environment,
-            bitcoin_settlement_txid: &claim_txid,
-            lightning: LightningTerminalCheck::IncomingInvoice {
+            bitcoin_settlement_txid: Some(&claim_txid),
+            liquid_settlement_txid: None,
+            lightning: Some(LightningTerminalCheck::IncomingInvoice {
                 payment_hash: &invoice.payment_hash,
-            },
+            }),
         },
     )?;
     let witness = inspect_cooperative_settlement(
@@ -4385,8 +6198,9 @@ fn finish_cooperative_fallback_common(
         TerminalRailCheck {
             runtime,
             environment,
-            bitcoin_settlement_txid: &claim_txid,
-            lightning: LightningTerminalCheck::IncomingInvoice { payment_hash },
+            bitcoin_settlement_txid: Some(&claim_txid),
+            liquid_settlement_txid: None,
+            lightning: Some(LightningTerminalCheck::IncomingInvoice { payment_hash }),
         },
     )?;
     let witness = inspect_cooperative_settlement(
@@ -4587,6 +6401,76 @@ fn wait_for_adversarial_transaction_propagation(
     }
     let peer = adversarial_peer_bitcoind()?;
     wait_for_exact_transaction_on_both_nodes(runtime, [primary, &peer], transaction_id, label)
+}
+
+fn wait_for_liquid_transaction_propagation(
+    runtime: &Runtime,
+    liquid: &LiquidLabEnvironment,
+    transaction_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + JOURNEY_TIMEOUT;
+    loop {
+        match runtime.block_on(
+            liquid
+                .elementsd
+                .raw_transaction(&rpc_id(label)?, transaction_id),
+        ) {
+            Ok(raw_transaction) => {
+                let transaction = parse_liquid_transaction(&raw_transaction).map_err(|error| {
+                    format!("propagated Liquid transaction is invalid: {error}")
+                })?;
+                if lower_hex(&transaction.transaction_id) != transaction_id {
+                    return Err(
+                        "propagated Liquid transaction has another transaction ID".to_owned()
+                    );
+                }
+                return Ok(());
+            }
+            Err(ElementsdError::Rpc(BitcoindError::Rpc { code: -5 }))
+                if Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(200));
+            }
+            Err(ElementsdError::Rpc(BitcoindError::Rpc { code: -5 })) => {
+                return Err(format!(
+                    "Liquid transaction {transaction_id} did not propagate to the mining elementsd before mining"
+                ));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "mining elementsd did not receive the Liquid transaction: {error}"
+                ));
+            }
+        }
+    }
+}
+
+fn wait_for_chain_transaction_propagation(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    rail: &str,
+    transaction_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    match rail {
+        "bitcoin" => wait_for_adversarial_transaction_propagation(
+            runtime,
+            &environment.bitcoind,
+            transaction_id,
+            label,
+        ),
+        "liquid" => wait_for_liquid_transaction_propagation(
+            runtime,
+            environment
+                .liquid
+                .as_ref()
+                .ok_or_else(|| "chain propagation has no local elementsd".to_owned())?,
+            transaction_id,
+            label,
+        ),
+        _ => Err("chain propagation uses an unsupported rail".to_owned()),
+    }
 }
 
 fn cooperative_action_name(action: CooperativeSigningAction) -> &'static str {
@@ -4989,8 +6873,9 @@ fn finish_submarine(
         TerminalRailCheck {
             runtime,
             environment,
-            bitcoin_settlement_txid: &claim_txid,
-            lightning: LightningTerminalCheck::IncomingInvoice { payment_hash },
+            bitcoin_settlement_txid: Some(&claim_txid),
+            liquid_settlement_txid: None,
+            lightning: Some(LightningTerminalCheck::IncomingInvoice { payment_hash }),
         },
     )?;
     let result = json!({
@@ -5516,12 +7401,13 @@ fn continue_reverse_after_funding_effect(
             TerminalRailCheck {
                 runtime,
                 environment,
-                bitcoin_settlement_txid: &refund_txid,
-                lightning: LightningTerminalCheck::OutgoingPayment {
+                bitcoin_settlement_txid: Some(&refund_txid),
+                liquid_settlement_txid: None,
+                lightning: Some(LightningTerminalCheck::OutgoingPayment {
                     invoice: &invoice,
                     payment_hash: &payment_hash,
                     expected_status: "failed",
-                },
+                }),
             },
         )?;
         remove_funded_secret(&environment.control.paths, journey_name)?;
@@ -5746,12 +7632,13 @@ fn finish_reverse_claim(
         TerminalRailCheck {
             runtime,
             environment,
-            bitcoin_settlement_txid: &claim_txid,
-            lightning: LightningTerminalCheck::OutgoingPayment {
+            bitcoin_settlement_txid: Some(&claim_txid),
+            liquid_settlement_txid: None,
+            lightning: Some(LightningTerminalCheck::OutgoingPayment {
                 invoice: &invoice,
                 payment_hash: &payment_hash,
                 expected_status: "complete",
-            },
+            }),
         },
     )?;
     remove_funded_secret(&environment.control.paths, journey_name)?;
@@ -6004,6 +7891,192 @@ fn prepare_quote_with_terms(
     })
 }
 
+fn prepare_chain_quote(
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    input: ChainNegotiationInput,
+) -> Result<QuotedSession, String> {
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid chain journey has no local elementsd".to_owned())?;
+    let session_id = digest(&format!(
+        "funded-smoke:{}:chain:{}",
+        environment.control.run_id,
+        input.direction.name()
+    ));
+    let config = SwapClientConfig {
+        session_id: session_id.clone(),
+        requester_pubkey: environment.requester.pubkey().to_owned(),
+        provider_pubkey: provider_pubkey.to_owned(),
+        offering_address: format!("39601:{provider_pubkey}:{OFFERING_ID}"),
+        provider_route: None,
+    };
+    let factory = SwapRecordFactory::new(config.clone())
+        .map_err(|error| format!("could not initialize chain requester: {error}"))?;
+    let now = unix_now()?;
+    let mut reader = connect(&environment.relay_url)?;
+    authenticate(
+        &mut reader,
+        &environment.requester,
+        &environment.relay_url,
+        now,
+    )?;
+    subscribe(&mut reader, environment.requester.pubkey())?;
+    drain_history(&mut reader, JOURNEY_TIMEOUT)?;
+    let mut publisher = connect(&environment.relay_url)?;
+    authenticate(
+        &mut publisher,
+        &environment.requester,
+        &environment.relay_url,
+        now,
+    )?;
+    let (rfq, rfq_raw) = sign_request(
+        factory
+            .rfq(
+                now,
+                &digest(&format!("rfq:{session_id}")),
+                now.saturating_add(600),
+                funded_chain_rfq_profile(input, liquid, now),
+            )
+            .map_err(|error| format!("could not construct chain RFQ: {error}"))?,
+        &environment.requester,
+    )?;
+    let mut records = vec![rfq];
+    let mut deliveries = vec![
+        SignedRecordDelivery::from_locally_signed(rfq_raw.clone(), now)
+            .map_err(|error| format!("could not archive chain RFQ provenance: {error}"))?,
+    ];
+    publish_private(
+        &mut publisher,
+        &rfq_raw,
+        &environment.requester,
+        provider_pubkey,
+    )?;
+    let received_quote = receive_matching_private(
+        &mut reader,
+        &environment.requester,
+        &session_id,
+        JOURNEY_TIMEOUT,
+        |event| event.kind == MKT_QUOTE_KIND,
+    )
+    .map_err(|error| format!("provider chain Quote wait failed: {error}"))?;
+    let quote_observed_at = received_quote.delivery.observed_at();
+    received_quote
+        .event
+        .validate_crypto()
+        .map_err(|error| format!("chain Quote signature is invalid: {error}"))?;
+    records.push(received_quote.event);
+    deliveries.push(received_quote.delivery);
+    Ok(QuotedSession {
+        relay_url: environment.relay_url.clone(),
+        reader,
+        publisher,
+        requester: environment.requester.clone(),
+        provider_pubkey: provider_pubkey.to_owned(),
+        factory,
+        config,
+        records,
+        deliveries,
+        quote_observed_at,
+        journey_name: "chain".to_owned(),
+        control: environment.control.clone(),
+    })
+}
+
+fn prepare_liquid_quote(
+    environment: &SmokeEnvironment,
+    provider_pubkey: &str,
+    input: &LiquidNegotiationInput,
+) -> Result<QuotedSession, String> {
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid journey has no local elementsd".to_owned())?;
+    let session_id = digest(&format!(
+        "funded-smoke:{}:{}",
+        environment.control.run_id,
+        input.journey.name()
+    ));
+    let config = SwapClientConfig {
+        session_id: session_id.clone(),
+        requester_pubkey: environment.requester.pubkey().to_owned(),
+        provider_pubkey: provider_pubkey.to_owned(),
+        offering_address: format!("39601:{provider_pubkey}:{OFFERING_ID}"),
+        provider_route: None,
+    };
+    let factory = SwapRecordFactory::new(config.clone())
+        .map_err(|error| format!("could not initialize Liquid requester: {error}"))?;
+    let now = unix_now()?;
+    let mut reader = connect(&environment.relay_url)?;
+    authenticate(
+        &mut reader,
+        &environment.requester,
+        &environment.relay_url,
+        now,
+    )?;
+    subscribe(&mut reader, environment.requester.pubkey())?;
+    drain_history(&mut reader, JOURNEY_TIMEOUT)?;
+    let mut publisher = connect(&environment.relay_url)?;
+    authenticate(
+        &mut publisher,
+        &environment.requester,
+        &environment.relay_url,
+        now,
+    )?;
+    let (rfq, rfq_raw) = sign_request(
+        factory
+            .rfq(
+                now,
+                &digest(&format!("rfq:{session_id}")),
+                now.saturating_add(600),
+                funded_liquid_rfq_profile(input, liquid, now)?,
+            )
+            .map_err(|error| format!("could not construct Liquid RFQ: {error}"))?,
+        &environment.requester,
+    )?;
+    let mut records = vec![rfq];
+    let mut deliveries = vec![
+        SignedRecordDelivery::from_locally_signed(rfq_raw.clone(), now)
+            .map_err(|error| format!("could not archive Liquid RFQ provenance: {error}"))?,
+    ];
+    publish_private(
+        &mut publisher,
+        &rfq_raw,
+        &environment.requester,
+        provider_pubkey,
+    )?;
+    let received_quote = receive_matching_private(
+        &mut reader,
+        &environment.requester,
+        &session_id,
+        JOURNEY_TIMEOUT,
+        |event| event.kind == MKT_QUOTE_KIND,
+    )
+    .map_err(|error| format!("provider Liquid Quote wait failed: {error}"))?;
+    let quote_observed_at = received_quote.delivery.observed_at();
+    received_quote
+        .event
+        .validate_crypto()
+        .map_err(|error| format!("Liquid Quote signature is invalid: {error}"))?;
+    records.push(received_quote.event);
+    deliveries.push(received_quote.delivery);
+    Ok(QuotedSession {
+        relay_url: environment.relay_url.clone(),
+        reader,
+        publisher,
+        requester: environment.requester.clone(),
+        provider_pubkey: provider_pubkey.to_owned(),
+        factory,
+        config,
+        records,
+        deliveries,
+        quote_observed_at,
+        journey_name: input.journey.name().to_owned(),
+        control: environment.control.clone(),
+    })
+}
+
 fn publish_quote_request_with_terms(
     environment: &SmokeEnvironment,
     provider_pubkey: &str,
@@ -6148,6 +8221,329 @@ fn prepare_order(
     })
 }
 
+fn prepare_chain_order(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    quoted: QuotedSession,
+    input: ChainNegotiationInput,
+    preimage: [u8; 32],
+) -> Result<PreparedChainSession, String> {
+    let QuotedSession {
+        relay_url,
+        reader,
+        mut publisher,
+        requester,
+        provider_pubkey,
+        factory,
+        config,
+        mut records,
+        mut deliveries,
+        quote_observed_at,
+        journey_name,
+        control,
+    } = quoted;
+    let rfq = records
+        .iter()
+        .find(|event| event.kind == immortal_core::domain::MKT_RFQ_KIND)
+        .cloned()
+        .ok_or_else(|| "quoted chain session has no RFQ".to_owned())?;
+    let quote = records
+        .iter()
+        .find(|event| event.kind == MKT_QUOTE_KIND)
+        .cloned()
+        .ok_or_else(|| "quoted chain session has no Quote".to_owned())?;
+    let session_id = config.session_id.clone();
+    let (order, order_raw) = sign_request(
+        factory
+            .requester_order(RequesterOrderInput {
+                rfq: &rfq,
+                quote: &quote,
+                created_at: next_created_at_records(&records)?,
+                observed_at: quote_observed_at,
+                distinct: &digest(&format!("order:{session_id}")),
+                selection: None,
+            })
+            .map_err(|error| format!("could not construct chain Order: {error}"))?,
+        &requester,
+    )?;
+    records.push(order.clone());
+    let order_delivery = SignedRecordDelivery::from_locally_signed(order_raw.clone(), unix_now()?)
+        .map_err(|error| format!("could not archive chain Order provenance: {error}"))?;
+    let order_observed_at = order_delivery.observed_at();
+    deliveries.push(order_delivery);
+    publish_private(&mut publisher, &order_raw, &requester, &provider_pubkey)?;
+    let quote_terms_contract = factory
+        .requester_contract_draft(
+            &rfq,
+            &quote,
+            &order,
+            order.created_at,
+            RequesterContractLocalInputs::for_swap_type(SwapType::Chain),
+        )
+        .map_err(|error| format!("could not inspect chain Quote terms: {error}"))?;
+    let source_funding =
+        chain_source_funding(runtime, environment, &quote_terms_contract, input.direction)?;
+    let (funding_transaction, output_index) = match &source_funding {
+        ChainFundingTransaction::Bitcoin(funding) => (funding.raw_transaction.clone(), 0_u32),
+        ChainFundingTransaction::Liquid(funding) => {
+            (lower_hex(&funding.raw_transaction), funding.output_index)
+        }
+    };
+    let mut local_inputs = RequesterContractLocalInputs::for_swap_type(SwapType::Chain);
+    local_inputs.funding_resolution = Some(RequesterFundingResolution {
+        leg_id: "source".to_owned(),
+        funding_transaction_sha256: lower_hex(&sha256(&decode_hex(&funding_transaction)?)),
+        funding_transaction,
+        output_index,
+    });
+    let mut contract = factory
+        .requester_contract_draft(&rfq, &quote, &order, order.created_at, local_inputs)
+        .map_err(|error| format!("could not compose chain contract: {error}"))?;
+
+    let source_exit_path = WalletPath::new(4, false, 0)
+        .map_err(|error| format!("chain source exit path is invalid: {error}"))?;
+    let destination_exit_path = WalletPath::new(4, false, 1)
+        .map_err(|error| format!("chain destination exit path is invalid: {error}"))?;
+    let bitcoin_destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 31)
+                .map_err(|error| format!("chain Bitcoin destination path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive chain Bitcoin destination: {error}"))?;
+    let liquid_destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 32)
+                .map_err(|error| format!("chain Liquid destination path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive chain Liquid destination: {error}"))?;
+
+    let (liquid_leg, liquid_purpose, liquid_path, liquid_wallet_path) = match input.direction {
+        LiquidChainDirection::BitcoinToLiquid => (
+            "destination",
+            LiquidLegPurpose::CounterpartyLock,
+            "claim",
+            destination_exit_path,
+        ),
+        LiquidChainDirection::LiquidToBitcoin => (
+            "source",
+            LiquidLegPurpose::RequesterBroadcast,
+            "refund",
+            source_exit_path,
+        ),
+    };
+    let claim_recovery = (input.direction == LiquidChainDirection::BitcoinToLiquid)
+        .then(|| liquid_claim_recovery_refs(&control.paths, &journey_name, liquid_wallet_path))
+        .transpose()?;
+    let liquid_request = build_chain_liquid_request(
+        runtime,
+        environment,
+        &contract,
+        LiquidSwapType::Chain,
+        liquid_leg,
+        liquid_purpose,
+        liquid_wallet_path,
+        &liquid_destination.script_pubkey,
+        claim_recovery.as_ref(),
+    )?;
+    bind_liquid_exit_commitment(&mut contract, liquid_leg, liquid_path, &liquid_request)?;
+
+    let (bitcoin_leg, bitcoin_path, bitcoin_destination_script) = match input.direction {
+        LiquidChainDirection::BitcoinToLiquid => (
+            "source",
+            "refund",
+            bitcoin_destination.script_pubkey.as_slice(),
+        ),
+        LiquidChainDirection::LiquidToBitcoin => (
+            "destination",
+            "claim",
+            bitcoin_destination.script_pubkey.as_slice(),
+        ),
+    };
+    let bitcoin_exit = ExitPackage::parse(requester_exit_document(
+        &contract,
+        &order.id,
+        &quote.id,
+        bitcoin_leg,
+        bitcoin_path,
+        bitcoin_destination_script,
+    )?)
+    .map_err(|error| format!("chain Bitcoin exit package is invalid: {error}"))?;
+    let bitcoin_exit_digest = bitcoin_exit
+        .commitment_sha256()
+        .map_err(|error| format!("could not commit chain Bitcoin exit package: {error}"))?;
+    let commitments = contract
+        .get_mut("exit_package_commitments")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "chain contract has no mutable exit commitments".to_owned())?;
+    upsert_exit_commitment(
+        commitments,
+        "requester",
+        bitcoin_leg,
+        bitcoin_path,
+        "wallet_sign",
+        &bitcoin_exit_digest,
+    );
+
+    Ok(PreparedChainSession {
+        pending: PendingSession {
+            relay_url,
+            reader,
+            publisher,
+            requester,
+            provider_pubkey,
+            factory,
+            config,
+            records,
+            deliveries,
+            order,
+            order_observed_at,
+            contract,
+            exit_package_seeds: vec![bitcoin_exit],
+            requester_funding: match &source_funding {
+                ChainFundingTransaction::Bitcoin(funding) => Some(funding.clone()),
+                ChainFundingTransaction::Liquid(_) => None,
+            },
+            journey_name,
+            control,
+        },
+        source_funding,
+        liquid_request,
+        preimage,
+        destination_exit_path,
+    })
+}
+
+fn prepare_liquid_order(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    quoted: QuotedSession,
+    input: &LiquidNegotiationInput,
+    exit_wallet_path: WalletPath,
+    exit_destination_script_pubkey: &[u8],
+    claim_recovery_journey: Option<&str>,
+) -> Result<PreparedLiquidSession, String> {
+    let QuotedSession {
+        relay_url,
+        reader,
+        mut publisher,
+        requester,
+        provider_pubkey,
+        factory,
+        config,
+        mut records,
+        mut deliveries,
+        quote_observed_at,
+        journey_name,
+        control,
+    } = quoted;
+    let rfq = records
+        .iter()
+        .find(|event| event.kind == immortal_core::domain::MKT_RFQ_KIND)
+        .cloned()
+        .ok_or_else(|| "quoted Liquid session has no RFQ".to_owned())?;
+    let quote = records
+        .iter()
+        .find(|event| event.kind == MKT_QUOTE_KIND)
+        .cloned()
+        .ok_or_else(|| "quoted Liquid session has no Quote".to_owned())?;
+    let session_id = config.session_id.clone();
+    let (order, order_raw) = sign_request(
+        factory
+            .requester_order(RequesterOrderInput {
+                rfq: &rfq,
+                quote: &quote,
+                created_at: next_created_at_records(&records)?,
+                observed_at: quote_observed_at,
+                distinct: &digest(&format!("order:{session_id}")),
+                selection: None,
+            })
+            .map_err(|error| format!("could not construct Liquid Order: {error}"))?,
+        &requester,
+    )?;
+    records.push(order.clone());
+    let order_delivery = SignedRecordDelivery::from_locally_signed(order_raw.clone(), unix_now()?)
+        .map_err(|error| format!("could not archive Liquid Order provenance: {error}"))?;
+    let order_observed_at = order_delivery.observed_at();
+    deliveries.push(order_delivery);
+    publish_private(&mut publisher, &order_raw, &requester, &provider_pubkey)?;
+
+    let quote_contract = factory
+        .requester_contract_draft(
+            &rfq,
+            &quote,
+            &order,
+            order_observed_at,
+            RequesterContractLocalInputs::for_swap_type(input.journey.swap_type()),
+        )
+        .map_err(|error| format!("could not inspect Liquid Quote terms: {error}"))?;
+    let funding = match input.journey {
+        LiquidJourney::Submarine => Some(liquid_requester_funding(
+            runtime,
+            environment,
+            &quote_contract,
+        )?),
+        LiquidJourney::Reverse => None,
+    };
+    let mut local_inputs = RequesterContractLocalInputs::for_swap_type(input.journey.swap_type());
+    if let Some(funding) = &funding {
+        let funding_transaction = lower_hex(&funding.raw_transaction);
+        local_inputs.funding_resolution = Some(RequesterFundingResolution {
+            leg_id: "source".to_owned(),
+            funding_transaction_sha256: lower_hex(&sha256(&funding.raw_transaction)),
+            funding_transaction,
+            output_index: funding.output_index,
+        });
+    }
+    let mut contract = factory
+        .requester_contract_draft(&rfq, &quote, &order, order_observed_at, local_inputs)
+        .map_err(|error| format!("could not compose Liquid contract: {error}"))?;
+    let (leg_id, purpose, path) = match input.journey {
+        LiquidJourney::Submarine => ("source", LiquidLegPurpose::RequesterBroadcast, "refund"),
+        LiquidJourney::Reverse => ("destination", LiquidLegPurpose::CounterpartyLock, "claim"),
+    };
+    let claim_recovery = claim_recovery_journey
+        .map(|journey_name| {
+            liquid_claim_recovery_refs(&control.paths, journey_name, exit_wallet_path)
+        })
+        .transpose()?;
+    let liquid_request = build_chain_liquid_request(
+        runtime,
+        environment,
+        &contract,
+        input.journey.liquid_swap_type(),
+        leg_id,
+        purpose,
+        exit_wallet_path,
+        exit_destination_script_pubkey,
+        claim_recovery.as_ref(),
+    )?;
+    bind_liquid_exit_commitment(&mut contract, leg_id, path, &liquid_request)?;
+    Ok(PreparedLiquidSession {
+        pending: PendingSession {
+            relay_url,
+            reader,
+            publisher,
+            requester,
+            provider_pubkey,
+            factory,
+            config,
+            records,
+            deliveries,
+            order,
+            order_observed_at,
+            contract,
+            exit_package_seeds: Vec::new(),
+            requester_funding: None,
+            journey_name,
+            control,
+        },
+        funding,
+        liquid_request,
+    })
+}
+
 fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, String> {
     let PendingSession {
         relay_url,
@@ -6286,6 +8682,548 @@ fn finalize_negotiation(pending: PendingSession) -> Result<SessionContext, Strin
     };
     session.apply_pre_fund_injection()?;
     Ok(session)
+}
+
+fn chain_timeout_ladder(contract: &Value) -> Result<TimeoutLadder, String> {
+    let ladder = contract
+        .get("timeout_ladder")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "chain contract has no timeout ladder".to_owned())?;
+    Ok(TimeoutLadder::Chain {
+        destination_final: ladder
+            .get("destination_final")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| "chain ladder has no destination finality".to_owned())?,
+        destination_refund_time: ladder
+            .get("destination_refund_time")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "chain ladder has no destination refund time".to_owned())?,
+        source_refund_time: ladder
+            .get("source_refund_time")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "chain ladder has no source refund time".to_owned())?,
+        provider_claim_margin: ladder
+            .get("provider_claim_margin")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "chain ladder has no provider claim margin".to_owned())?,
+        both_network_reorg_margins: ladder
+            .get("both_network_reorg_margins")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "chain ladder has no reorg margins".to_owned())?,
+        both_network_broadcast_margins: ladder
+            .get("both_network_broadcast_margins")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "chain ladder has no broadcast margins".to_owned())?,
+    })
+}
+
+fn liquid_timeout_ladder(contract: &Value) -> Result<TimeoutLadder, String> {
+    serde_json::from_value(
+        contract
+            .get("timeout_ladder")
+            .cloned()
+            .ok_or_else(|| "Liquid contract has no timeout ladder".to_owned())?,
+    )
+    .map_err(|error| format!("Liquid timeout ladder is invalid: {error}"))
+}
+
+fn liquid_invoice_verification(
+    session: &SessionContext,
+    invoice: &str,
+    observed_at: u64,
+) -> Result<InvoiceVerificationInput, String> {
+    let lightning = verifier_for_leg(&session.contract, "lightning")?;
+    Ok(InvoiceVerificationInput {
+        invoice: invoice.to_owned(),
+        expected_network: required_string(lightning, "invoice_network")?.to_owned(),
+        expected_amount_msat: required_string(lightning, "invoice_amount_msat")?.to_owned(),
+        observed_at,
+        required_minimum_final_cltv_delta: canonical_u64(required_string(
+            lightning,
+            "invoice_minimum_final_cltv_delta",
+        )?)?,
+    })
+}
+
+fn observe_liquid_confirmed(
+    runtime: &Runtime,
+    liquid: &LiquidLabEnvironment,
+    request: &LiquidNodeRequest,
+    label: &str,
+) -> Result<LocalLiquidNodeObservation, String> {
+    let genesis_hash = local_liquid_genesis_hash(runtime, liquid, label)?;
+    let observation = runtime
+        .block_on(
+            liquid
+                .elementsd
+                .observe_transaction(&rpc_id(label)?, &request.transaction_id),
+        )
+        .map_err(|error| format!("could not observe exact Liquid funding: {error}"))?;
+    if observation.raw_transaction != request.raw_transaction {
+        return Err("local elementsd returned other Liquid funding bytes".to_owned());
+    }
+    Ok(LocalLiquidNodeObservation {
+        authority: LiquidNodeAuthority::LocalElementsd,
+        network_id: liquid.network_id.clone(),
+        genesis_hash,
+        pegged_asset: liquid.pegged_asset.clone(),
+        observation: LocalLiquidObservation {
+            transaction_id: request.transaction_id.clone(),
+            transaction_sha256: request.transaction_sha256.clone(),
+            confirmations: observation.confirmations,
+            mempool_accepted: true,
+            replacement_detected: false,
+            competing_spend_detected: false,
+        },
+    })
+}
+
+fn liquid_lightning_readiness(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    request: &immortal_client::mkt_swp_client::LightningReadinessRequest,
+    label: &str,
+) -> Result<LocalLightningReadiness, String> {
+    let final_cltv_delta = u32::try_from(request.minimum_final_cltv_delta)
+        .map_err(|_| "Liquid invoice final CLTV delta exceeds u32".to_owned())?;
+    let deadline = Instant::now() + LIGHTNING_READINESS_TIMEOUT;
+    let request_id = cln_id(label)?;
+    loop {
+        let info = runtime
+            .block_on(environment.peer_cln.node_info(&request_id))
+            .map_err(|error| format!("could not inspect requester CLN readiness: {error}"))?;
+        let minimum_outgoing_expiry = info
+            .block_height
+            .checked_add(final_cltv_delta)
+            .ok_or_else(|| "Liquid requester CLN expiry calculation overflowed".to_owned())?;
+        if minimum_outgoing_expiry >= request.hold_expiry_height || Instant::now() >= deadline {
+            if info.network != request.network
+                || !request.hold_invoice_required
+                || info.block_height >= request.hold_expiry_height
+                || minimum_outgoing_expiry < request.hold_expiry_height
+            {
+                return Err("requester CLN cannot satisfy Liquid hold-invoice timing".to_owned());
+            }
+            return Ok(LocalLightningReadiness {
+                invoice_sha256: request.invoice_sha256.clone(),
+                payment_hash: request.payment_hash.clone(),
+                observed_at: unix_now()?,
+                state: LightningReadinessState::Acceptable,
+            });
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
+fn authorize_liquid_submarine(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    session: &SessionContext,
+    request: &LiquidBeforeFundRequest,
+    invoice: &str,
+) -> Result<(SwapSession<FundingAuthorized>, VerifiedProviderLiquid), String> {
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid submarine authorization has no local elementsd".to_owned())?;
+    let retained = runtime
+        .block_on(liquid.rail.verify_before_fund(request))
+        .map_err(|error| format!("production Liquid rail rejected submarine funding: {error}"))?;
+    let expected_raw = request.funding.raw_transaction.clone();
+    let observed_at = unix_now()?;
+    let authorized = session
+        .verifier
+        .clone()
+        .verify_before_fund_with_liquid(
+            LiquidVerifyBeforeFundInput {
+                observed_at,
+                payment_hash: lower_hex(&decode_fixed_hex::<32>(
+                    session
+                        .contract
+                        .get("payment_hash")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "Liquid contract has no payment hash".to_owned())?,
+                    "Liquid payment hash",
+                )?),
+                bitcoin_funding: None,
+                invoice: Some(liquid_invoice_verification(session, invoice, observed_at)?),
+                timeout_ladder: liquid_timeout_ladder(&session.contract)?,
+                liquid: request.clone(),
+            },
+            |_request| {
+                Err("explicit Liquid submarine unexpectedly requested unblinding".to_owned())
+            },
+            |node_request| {
+                observe_liquid_mempool_template(
+                    runtime,
+                    liquid,
+                    node_request,
+                    "liquid-submarine-source-preflight",
+                )
+            },
+            |authorization| match &authorization.action {
+                FundingAction::BroadcastLiquid {
+                    leg_id,
+                    raw_transaction,
+                    ..
+                } if leg_id == "source" && raw_transaction == &expected_raw => Ok(()),
+                _ => Err("client authorized another Liquid submarine effect".to_owned()),
+            },
+        )
+        .map_err(|error| format!("client rejected Liquid submarine funding: {error}"))?;
+    Ok((authorized, retained))
+}
+
+fn authorize_liquid_reverse(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    session: &SessionContext,
+    request: &LiquidBeforeFundRequest,
+    invoice: &str,
+) -> Result<(SwapSession<FundingAuthorized>, VerifiedProviderLiquid), String> {
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid reverse authorization has no local elementsd".to_owned())?;
+    let retained = runtime
+        .block_on(liquid.rail.verify_before_fund(request))
+        .map_err(|error| format!("production Liquid rail rejected reverse lock: {error}"))?;
+    let observed_at = unix_now()?;
+    let authorized = session
+        .verifier
+        .clone()
+        .verify_before_fund_with_liquid_and_lightning(
+            LiquidVerifyBeforeFundInput {
+                observed_at,
+                payment_hash: session
+                    .contract
+                    .get("payment_hash")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "Liquid contract has no payment hash".to_owned())?
+                    .to_owned(),
+                bitcoin_funding: None,
+                invoice: Some(liquid_invoice_verification(session, invoice, observed_at)?),
+                timeout_ladder: liquid_timeout_ladder(&session.contract)?,
+                liquid: request.clone(),
+            },
+            |_request| Err("explicit Liquid reverse unexpectedly requested unblinding".to_owned()),
+            |node_request| {
+                observe_liquid_confirmed(
+                    runtime,
+                    liquid,
+                    node_request,
+                    "liquid-reverse-confirmed-lock",
+                )
+            },
+            |readiness| {
+                liquid_lightning_readiness(
+                    runtime,
+                    environment,
+                    readiness,
+                    "liquid-reverse-readiness",
+                )
+            },
+            |authorization| match &authorization.action {
+                FundingAction::PayLightningInvoice {
+                    leg_id,
+                    invoice: authorized_invoice,
+                    hold_invoice_required,
+                    ..
+                } if leg_id == "lightning"
+                    && authorized_invoice == invoice
+                    && *hold_invoice_required =>
+                {
+                    Ok(())
+                }
+                _ => Err("client authorized another Liquid reverse effect".to_owned()),
+            },
+        )
+        .map_err(|error| format!("client rejected Liquid reverse lock: {error}"))?;
+    Ok((authorized, retained))
+}
+
+fn chain_bitcoin_verification_input(
+    contract: &Value,
+    leg_id: &str,
+) -> Result<FundingVerificationInput, String> {
+    let verifier = verifier_for_leg(contract, leg_id)?;
+    Ok(FundingVerificationInput {
+        raw_transaction: required_string(verifier, "funding_transaction")?.to_owned(),
+        output_index: bounded_u32_member(verifier, "output_index")?,
+        expected_amount: required_string(verifier, "amount")?.to_owned(),
+        expected_script_pubkey: required_string(verifier, "script_pubkey")?.to_owned(),
+        taproot_output_key: required_string(verifier, "taproot_output_key")?.to_owned(),
+        taproot_script: match leg_id {
+            "source" => required_string(verifier, "refund_script")?.to_owned(),
+            "destination" => required_string(verifier, "claim_script")?.to_owned(),
+            _ => return Err("chain Bitcoin verifier leg is unsupported".to_owned()),
+        },
+        taproot_control_block: match leg_id {
+            "source" => required_string(verifier, "taproot_refund_control_block")?.to_owned(),
+            "destination" => required_string(verifier, "taproot_claim_control_block")?.to_owned(),
+            _ => return Err("chain Bitcoin verifier leg is unsupported".to_owned()),
+        },
+    })
+}
+
+fn observe_liquid_mempool_template(
+    runtime: &Runtime,
+    liquid: &LiquidLabEnvironment,
+    node_request: &LiquidNodeRequest,
+    label: &str,
+) -> Result<LocalLiquidNodeObservation, String> {
+    let genesis_hash = local_liquid_genesis_hash(runtime, liquid, label)?;
+    runtime
+        .block_on(
+            liquid
+                .elementsd
+                .require_mempool_acceptance(&rpc_id(label)?, &node_request.raw_transaction),
+        )
+        .map_err(|error| format!("local elementsd rejected the exact Liquid template: {error}"))?;
+    Ok(LocalLiquidNodeObservation {
+        authority: LiquidNodeAuthority::LocalElementsd,
+        network_id: liquid.network_id.clone(),
+        genesis_hash,
+        pegged_asset: liquid.pegged_asset.clone(),
+        observation: LocalLiquidObservation {
+            transaction_id: node_request.transaction_id.clone(),
+            transaction_sha256: node_request.transaction_sha256.clone(),
+            confirmations: 0,
+            mempool_accepted: true,
+            replacement_detected: false,
+            competing_spend_detected: false,
+        },
+    })
+}
+
+fn local_liquid_genesis_hash(
+    runtime: &Runtime,
+    liquid: &LiquidLabEnvironment,
+    label: &str,
+) -> Result<String, String> {
+    runtime
+        .block_on(
+            liquid
+                .elementsd
+                .genesis_hash(&rpc_id(&format!("{label}-genesis"))?),
+        )
+        .map_err(|error| format!("could not verify the local Liquid genesis hash: {error}"))
+}
+
+fn chain_bitcoin_before_fund_input(
+    session: &SessionContext,
+    leg_id: &str,
+) -> Result<VerifyBeforeFundInput, String> {
+    let funding = chain_bitcoin_verification_input(&session.contract, leg_id)?;
+    let verifier = verifier_for_leg(&session.contract, leg_id)?;
+    Ok(VerifyBeforeFundInput {
+        observed_at: unix_now()?,
+        payment_hash: session
+            .contract
+            .get("payment_hash")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "chain contract has no payment hash".to_owned())?
+            .to_owned(),
+        funding,
+        invoice: None,
+        timeout_ladder: chain_timeout_ladder(&session.contract)?,
+        minimum_confirmations: u32::try_from(canonical_u64(required_string(
+            verifier,
+            "minimum_confirmations",
+        )?)?)
+        .map_err(|_| "chain minimum confirmation count exceeds u32".to_owned())?,
+        replacement_policy: required_string(verifier, "replacement_policy")?.to_owned(),
+    })
+}
+
+fn verify_chain_source(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    session: &SessionContext,
+    liquid_request: &LiquidBeforeFundRequest,
+    direction: LiquidChainDirection,
+) -> Result<(), String> {
+    match direction {
+        LiquidChainDirection::BitcoinToLiquid => {
+            let input = chain_bitcoin_before_fund_input(session, "source")?;
+            let expected_raw = input.funding.raw_transaction.clone();
+            session
+                .verifier
+                .clone()
+                .verify_before_fund(input, |request| match &request.action {
+                    FundingAction::BroadcastBitcoin {
+                        leg_id,
+                        raw_transaction,
+                        ..
+                    } if leg_id == "source" && raw_transaction == &expected_raw => Ok(()),
+                    _ => Err("source preflight authorized another Bitcoin effect".to_owned()),
+                })
+                .map(|_| ())
+                .map_err(|error| format!("client rejected Bitcoin source preflight: {error}"))
+        }
+        LiquidChainDirection::LiquidToBitcoin => {
+            let liquid = environment
+                .liquid
+                .as_ref()
+                .ok_or_else(|| "chain source preflight has no local elementsd".to_owned())?;
+            runtime
+                .block_on(liquid.rail.verify_before_fund(liquid_request))
+                .map_err(|error| {
+                    format!("production Liquid rail rejected source preflight: {error}")
+                })?;
+            let expected_raw = liquid_request.funding.raw_transaction.clone();
+            session
+                .verifier
+                .clone()
+                .verify_before_fund_with_liquid(
+                    LiquidVerifyBeforeFundInput {
+                        observed_at: unix_now()?,
+                        payment_hash: session
+                            .contract
+                            .get("payment_hash")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| "chain contract has no payment hash".to_owned())?
+                            .to_owned(),
+                        bitcoin_funding: None,
+                        invoice: None,
+                        timeout_ladder: chain_timeout_ladder(&session.contract)?,
+                        liquid: liquid_request.clone(),
+                    },
+                    |_request: &LiquidUnblindRequest| {
+                        Err("explicit Liquid source unexpectedly requested unblinding".to_owned())
+                    },
+                    |node_request: &LiquidNodeRequest| {
+                        observe_liquid_mempool_template(
+                            runtime,
+                            liquid,
+                            node_request,
+                            "chain-liquid-source-preflight",
+                        )
+                    },
+                    |authorization| match &authorization.action {
+                        FundingAction::BroadcastLiquid {
+                            leg_id,
+                            raw_transaction,
+                            ..
+                        } if leg_id == "source" && raw_transaction == &expected_raw => Ok(()),
+                        _ => Err("source preflight authorized another Liquid effect".to_owned()),
+                    },
+                )
+                .map(|_| ())
+                .map_err(|error| format!("client rejected Liquid source preflight: {error}"))
+        }
+    }
+}
+
+fn authorize_chain_funding(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    session: &SessionContext,
+    liquid_request: &LiquidBeforeFundRequest,
+    direction: LiquidChainDirection,
+) -> Result<SwapSession<FundingAuthorized>, String> {
+    let payment_hash = session
+        .contract
+        .get("payment_hash")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "chain contract has no payment hash".to_owned())?
+        .to_owned();
+    let observed_at = unix_now()?;
+    let timeout_ladder = chain_timeout_ladder(&session.contract)?;
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "chain source authorization has no local elementsd".to_owned())?;
+    match direction {
+        LiquidChainDirection::BitcoinToLiquid => {
+            let funding = chain_bitcoin_verification_input(&session.contract, "source")?;
+            let expected_raw = funding.raw_transaction.clone();
+            session
+                .verifier
+                .clone()
+                .verify_before_fund_with_liquid(
+                    LiquidVerifyBeforeFundInput {
+                        observed_at,
+                        payment_hash,
+                        bitcoin_funding: Some(funding),
+                        invoice: None,
+                        timeout_ladder,
+                        liquid: liquid_request.clone(),
+                    },
+                    |_request: &LiquidUnblindRequest| {
+                        Err(
+                            "explicit Liquid destination unexpectedly requested unblinding"
+                                .to_owned(),
+                        )
+                    },
+                    |node_request: &LiquidNodeRequest| {
+                        observe_liquid_mempool_template(
+                            runtime,
+                            liquid,
+                            node_request,
+                            "chain-bitcoin-to-liquid-template",
+                        )
+                    },
+                    |request| match &request.action {
+                        FundingAction::BroadcastBitcoin {
+                            leg_id,
+                            raw_transaction,
+                            ..
+                        } if leg_id == "source" && raw_transaction == &expected_raw => Ok(()),
+                        _ => {
+                            Err("client authorized another BTC-to-Liquid source effect".to_owned())
+                        }
+                    },
+                )
+                .map_err(|error| format!("client rejected BTC-to-Liquid source funding: {error}"))
+        }
+        LiquidChainDirection::LiquidToBitcoin => {
+            let bitcoin_funding =
+                chain_bitcoin_verification_input(&session.contract, "destination")?;
+            runtime
+                .block_on(liquid.rail.verify_before_fund(liquid_request))
+                .map_err(|error| {
+                    format!("production Liquid rail rejected source funding: {error}")
+                })?;
+            let request = liquid_request.clone();
+            session
+                .verifier
+                .clone()
+                .verify_before_fund_with_liquid(
+                    LiquidVerifyBeforeFundInput {
+                        observed_at,
+                        payment_hash,
+                        bitcoin_funding: Some(bitcoin_funding),
+                        invoice: None,
+                        timeout_ladder,
+                        liquid: request.clone(),
+                    },
+                    |_request: &LiquidUnblindRequest| {
+                        Err("explicit Liquid source unexpectedly requested unblinding".to_owned())
+                    },
+                    |node_request: &LiquidNodeRequest| {
+                        observe_liquid_mempool_template(
+                            runtime,
+                            liquid,
+                            node_request,
+                            "chain-liquid-to-bitcoin-source",
+                        )
+                    },
+                    |authorization| match &authorization.action {
+                        FundingAction::BroadcastLiquid { leg_id, .. } if leg_id == "source" => {
+                            Ok(())
+                        }
+                        _ => {
+                            Err("client authorized another Liquid-to-Bitcoin source effect"
+                                .to_owned())
+                        }
+                    },
+                )
+                .map_err(|error| {
+                    format!("client rejected Liquid-to-Bitcoin source funding: {error}")
+                })
+        }
+    }
 }
 
 impl SessionContext {
@@ -6764,27 +9702,42 @@ impl SessionContext {
             ),
             None => (0, None),
         };
-        let (event, raw_event) = sign_request(
-            self.factory
-                .status(
-                    ParticipantRole::Requester,
-                    next_created_at(&self.verifier)?,
-                    &digest(&format!(
-                        "requester-status:{state}:{}",
-                        self.verifier.config().session_id
-                    )),
-                    &self.order.id,
-                    StatusState {
-                        sequence,
-                        previous,
-                        base_state: base_state(state)?,
-                        swp_state: state,
-                    },
-                    extra,
-                )
-                .map_err(|error| format!("could not construct requester {state}: {error}"))?,
-            &self.requester,
-        )?;
+        let created_at = next_created_at(&self.verifier)?;
+        let distinct = digest(&format!(
+            "requester-status:{state}:{}",
+            self.verifier.config().session_id
+        ));
+        let status = StatusState {
+            sequence,
+            previous,
+            base_state: base_state(state)?,
+            swp_state: state,
+        };
+        let request = match requester_status_provider_prerequisite_event(
+            self.verifier.signed_records(),
+            &self.provider_pubkey,
+            state,
+        )? {
+            Some(prerequisite) => self.factory.status_after(
+                ParticipantRole::Requester,
+                created_at,
+                &distinct,
+                &self.order.id,
+                status,
+                &prerequisite.id,
+                extra,
+            ),
+            None => self.factory.status(
+                ParticipantRole::Requester,
+                created_at,
+                &distinct,
+                &self.order.id,
+                status,
+                extra,
+            ),
+        }
+        .map_err(|error| format!("could not construct requester {state}: {error}"))?;
+        let (event, raw_event) = sign_request(request, &self.requester)?;
         let delivery = SignedRecordDelivery::from_locally_signed(raw_event.clone(), unix_now()?)
             .map_err(|error| format!("could not retain requester Status provenance: {error}"))?;
         self.ingest_synchronized(event.clone(), &format!("requester {state}"))?;
@@ -6903,10 +9856,61 @@ fn local_terminal_rail_evidence(
     check: &TerminalRailCheck<'_>,
     contract: &Value,
 ) -> Result<LocalRailEvidence, String> {
-    let references = close_evidence_references(close)?;
-    let matching = references
-        .iter()
-        .filter_map(Value::as_object)
+    let evidence = exact_close_evidence_reference(close, request)?;
+    let settlement_reference = required_string(&evidence, "reference")?;
+    let (artifact_sha256, view, external_identifier) = match request.rail.as_str() {
+        "bitcoin" => (
+            required_string(&evidence, "artifact_sha256")?.to_owned(),
+            required_string(&evidence, "view")?.to_owned(),
+            verify_local_bitcoin_terminal(request, settlement_reference, check, contract)?,
+        ),
+        "liquid" => {
+            let derived =
+                verify_local_liquid_terminal(request, settlement_reference, check, contract)?;
+            require_exact_liquid_terminal_metadata(&evidence, &derived)?;
+            (
+                derived.artifact_sha256,
+                derived.view,
+                derived.external_identifier,
+            )
+        }
+        "lightning" => (
+            required_string(&evidence, "artifact_sha256")?.to_owned(),
+            required_string(&evidence, "view")?.to_owned(),
+            verify_local_lightning_terminal(request, settlement_reference, check)?,
+        ),
+        _ => return Err("terminal evidence requested an unsupported local rail".to_owned()),
+    };
+    let producer_pubkey = required_string(&evidence, "producer_pubkey")?;
+    if producer_pubkey != close.pubkey {
+        return Err("provider Close evidence names another producer".to_owned());
+    }
+    let verifier_pubkey = match evidence.get("verifier_pubkey") {
+        Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.clone()),
+        _ => return Err("provider Close evidence has an invalid verifier key".to_owned()),
+    };
+    Ok(LocalRailEvidence {
+        artifact_sha256,
+        observed_at: evidence
+            .get("observed_at")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "provider Close evidence has no observation time".to_owned())?,
+        view,
+        settlement_reference: settlement_reference.to_owned(),
+        verifier_pubkey,
+        producer_pubkey: producer_pubkey.to_owned(),
+        external_identifier,
+    })
+}
+
+fn exact_close_evidence_reference(
+    close: &Event,
+    request: &RailObservationRequest,
+) -> Result<Map<String, Value>, String> {
+    let matching = close_evidence_references(close)?
+        .into_iter()
+        .filter_map(|evidence| evidence.as_object().cloned())
         .filter(|evidence| {
             evidence.get("rail").and_then(Value::as_str) == Some(request.rail.as_str())
                 && evidence.get("class").and_then(Value::as_str)
@@ -6922,33 +9926,7 @@ fn local_terminal_rail_evidence(
             request.rail
         ));
     };
-    let settlement_reference = required_string(evidence, "reference")?;
-    let external_identifier = match request.rail.as_str() {
-        "bitcoin" => verify_local_bitcoin_terminal(request, settlement_reference, check, contract)?,
-        "lightning" => verify_local_lightning_terminal(request, settlement_reference, check)?,
-        _ => return Err("terminal evidence requested an unsupported local rail".to_owned()),
-    };
-    let producer_pubkey = required_string(evidence, "producer_pubkey")?;
-    if producer_pubkey != close.pubkey {
-        return Err("provider Close evidence names another producer".to_owned());
-    }
-    let verifier_pubkey = match evidence.get("verifier_pubkey") {
-        Some(Value::Null) => None,
-        Some(Value::String(value)) => Some(value.clone()),
-        _ => return Err("provider Close evidence has an invalid verifier key".to_owned()),
-    };
-    Ok(LocalRailEvidence {
-        artifact_sha256: required_string(evidence, "artifact_sha256")?.to_owned(),
-        observed_at: evidence
-            .get("observed_at")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "provider Close evidence has no observation time".to_owned())?,
-        view: required_string(evidence, "view")?.to_owned(),
-        settlement_reference: settlement_reference.to_owned(),
-        verifier_pubkey,
-        producer_pubkey: producer_pubkey.to_owned(),
-        external_identifier,
-    })
+    Ok(evidence.clone())
 }
 
 fn close_evidence_references(close: &Event) -> Result<Vec<Value>, String> {
@@ -6959,6 +9937,48 @@ fn close_evidence_references(close: &Event) -> Result<Vec<Value>, String> {
         .and_then(Value::as_array)
         .cloned()
         .ok_or_else(|| "provider Close has no terminal evidence references".to_owned())
+}
+
+fn local_final_bitcoin_transaction(
+    check: &TerminalRailCheck<'_>,
+    label: &str,
+    transaction_id: &str,
+) -> Result<(Vec<u8>, Transaction), String> {
+    let transaction = check
+        .runtime
+        .block_on(
+            check
+                .environment
+                .bitcoind
+                .raw_transaction(&rpc_id(label)?, transaction_id, true),
+        )
+        .map_err(|error| format!("could not inspect terminal Bitcoin transaction: {error}"))?;
+    let transaction = transaction
+        .as_object()
+        .ok_or_else(|| "terminal Bitcoin transaction response is not an object".to_owned())?;
+    if transaction.get("txid").and_then(Value::as_str) != Some(transaction_id)
+        || transaction.get("confirmations").and_then(Value::as_u64)
+            < Some(check.environment.terminal_confirmations)
+    {
+        return Err("terminal Bitcoin transaction is not final in the local node view".to_owned());
+    }
+    let raw = decode_hex(
+        transaction
+            .get("hex")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "terminal Bitcoin response has no raw transaction".to_owned())?,
+    )?;
+    let parsed = Transaction::parse(&raw)
+        .map_err(|error| format!("terminal Bitcoin transaction is invalid: {error}"))?;
+    if lower_hex(
+        &parsed.txid().map_err(|error| {
+            format!("could not derive terminal Bitcoin transaction ID: {error}")
+        })?,
+    ) != transaction_id
+    {
+        return Err("terminal Bitcoin transaction has another transaction ID".to_owned());
+    }
+    Ok((raw, parsed))
 }
 
 fn verify_local_bitcoin_terminal(
@@ -6979,53 +9999,78 @@ fn verify_local_bitcoin_terminal(
         })?);
     let funding_vout = bounded_u32_member(verifier, "output_index")?;
     let funding_outpoint = format!("{funding_txid}:{funding_vout}");
-    match request.evidence_class.as_str() {
+    let (terminal_transaction_id, requires_spend) = match request.evidence_class.as_str() {
+        "bitcoin_output"
+            if request.reference == funding_outpoint
+                && settlement_reference == funding_outpoint =>
+        {
+            (funding_txid.as_str(), false)
+        }
         "bitcoin_spend"
             if request.reference == funding_outpoint
-                && settlement_reference == funding_outpoint => {}
-        "refund" if settlement_reference == check.bitcoin_settlement_txid => {}
+                && settlement_reference == funding_outpoint =>
+        {
+            (
+                check.bitcoin_settlement_txid.ok_or_else(|| {
+                    "terminal Bitcoin spend has no local settlement transaction".to_owned()
+                })?,
+                true,
+            )
+        }
+        "refund" => {
+            let transaction_id = check.bitcoin_settlement_txid.ok_or_else(|| {
+                "terminal Bitcoin refund has no local settlement transaction".to_owned()
+            })?;
+            if settlement_reference != transaction_id {
+                return Err(
+                    "provider Close Bitcoin reference differs from the local refund".to_owned(),
+                );
+            }
+            (transaction_id, true)
+        }
         _ => {
             return Err(
                 "provider Close Bitcoin reference differs from the locally bound settlement"
                     .to_owned(),
             );
         }
-    }
-    let transaction = check
-        .runtime
-        .block_on(check.environment.bitcoind.raw_transaction(
-            &rpc_id("terminal-bitcoin-transaction")?,
-            check.bitcoin_settlement_txid,
-            true,
-        ))
-        .map_err(|error| format!("could not inspect terminal Bitcoin transaction: {error}"))?;
-    let transaction = transaction
-        .as_object()
-        .ok_or_else(|| "terminal Bitcoin transaction response is not an object".to_owned())?;
-    if transaction.get("txid").and_then(Value::as_str) != Some(check.bitcoin_settlement_txid)
-        || transaction.get("confirmations").and_then(Value::as_u64)
-            < Some(check.environment.terminal_confirmations)
-    {
-        return Err("terminal Bitcoin transaction is not final in the local node view".to_owned());
-    }
-    let raw = decode_hex(
-        transaction
-            .get("hex")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "terminal Bitcoin response has no raw transaction".to_owned())?,
+    };
+    let (raw, parsed) = local_final_bitcoin_transaction(
+        check,
+        "terminal-bitcoin-transaction",
+        terminal_transaction_id,
     )?;
-    let parsed = Transaction::parse(&raw)
-        .map_err(|error| format!("terminal Bitcoin transaction is invalid: {error}"))?;
     let funding_txid_wire = display_txid_wire(&funding_txid)?;
-    if lower_hex(
-        &parsed.txid().map_err(|error| {
-            format!("could not derive terminal Bitcoin transaction ID: {error}")
-        })?,
-    ) != check.bitcoin_settlement_txid
-        || !parsed.inputs.iter().any(|input| {
+    if !requires_spend {
+        if raw != raw_funding {
+            return Err(
+                "terminal Bitcoin output differs from the contracted funding bytes".to_owned(),
+            );
+        }
+        let destination_settlement = check.bitcoin_settlement_txid.ok_or_else(|| {
+            "terminal Bitcoin output has no local destination settlement".to_owned()
+        })?;
+        let (_, settlement) = local_final_bitcoin_transaction(
+            check,
+            "terminal-bitcoin-output-settlement",
+            destination_settlement,
+        )?;
+        if !settlement.inputs.iter().any(|input| {
             input.previous_txid == funding_txid_wire && input.previous_output == funding_vout
-        })
-    {
+        }) {
+            return Err(
+                "terminal Bitcoin destination settlement does not spend the contract outpoint"
+                    .to_owned(),
+            );
+        }
+        return Ok(format!(
+            "bitcoind:output:{terminal_transaction_id}:settlement:{destination_settlement}:{}",
+            check.environment.terminal_confirmations
+        ));
+    }
+    if !parsed.inputs.iter().any(|input| {
+        input.previous_txid == funding_txid_wire && input.previous_output == funding_vout
+    }) {
         return Err("terminal Bitcoin transaction does not spend the contract outpoint".to_owned());
     }
     let unspent = check
@@ -7042,8 +10087,268 @@ fn verify_local_bitcoin_terminal(
     }
     Ok(format!(
         "bitcoind:{}:{}",
-        check.bitcoin_settlement_txid, check.environment.terminal_confirmations
+        terminal_transaction_id, check.environment.terminal_confirmations
     ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LiquidTerminalBinding {
+    funding_raw: Vec<u8>,
+    funding_transaction_id: String,
+    funding_output_index: u32,
+    terminal_transaction_id: String,
+    requires_spend: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DerivedLiquidTerminalEvidence {
+    artifact_sha256: String,
+    view: String,
+    external_identifier: String,
+}
+
+fn liquid_terminal_binding(
+    request: &RailObservationRequest,
+    settlement_reference: &str,
+    settlement_transaction_id: Option<&str>,
+    contract: &Value,
+) -> Result<LiquidTerminalBinding, String> {
+    let verifier = verifier_for_leg(contract, &request.leg_id)?;
+    let funding_raw = required_string(verifier, "funding_transaction")
+        .and_then(decode_hex)
+        .map_err(|error| format!("contract Liquid funding transaction is invalid: {error}"))?;
+    let funding = parse_liquid_transaction(&funding_raw)
+        .map_err(|error| format!("contract Liquid funding transaction is invalid: {error}"))?;
+    let funding_transaction_id = lower_hex(&funding.transaction_id);
+    let funding_output_index = bounded_u32_member(verifier, "output_index")?;
+    let funding_outpoint = format!("{funding_transaction_id}:{funding_output_index}");
+    if request.reference != funding_outpoint || settlement_reference != funding_outpoint {
+        return Err(
+            "provider Close Liquid reference differs from the contracted funding outpoint"
+                .to_owned(),
+        );
+    }
+    let (terminal_transaction_id, requires_spend) = match request.evidence_class.as_str() {
+        "liquid_output" => (funding_transaction_id.clone(), false),
+        "liquid_spend" => (
+            settlement_transaction_id
+                .ok_or_else(|| {
+                    "terminal Liquid spend has no local settlement transaction".to_owned()
+                })?
+                .to_owned(),
+            true,
+        ),
+        _ => return Err("terminal Liquid evidence class is unsupported".to_owned()),
+    };
+    Ok(LiquidTerminalBinding {
+        funding_raw,
+        funding_transaction_id,
+        funding_output_index,
+        terminal_transaction_id,
+        requires_spend,
+    })
+}
+
+fn local_final_liquid_transaction(
+    check: &TerminalRailCheck<'_>,
+    liquid: &LiquidLabEnvironment,
+    label: &str,
+    transaction_id: &str,
+) -> Result<(Vec<u8>, LiquidTransaction, String), String> {
+    let observation = check
+        .runtime
+        .block_on(
+            liquid
+                .elementsd
+                .observe_transaction(&rpc_id(label)?, transaction_id),
+        )
+        .map_err(|error| format!("could not inspect terminal Liquid transaction: {error}"))?;
+    if u64::from(observation.confirmations) < check.environment.terminal_confirmations {
+        return Err("terminal Liquid transaction is not final in the local node view".to_owned());
+    }
+    let parsed = parse_liquid_transaction(&observation.raw_transaction)
+        .map_err(|error| format!("terminal Liquid transaction is invalid: {error}"))?;
+    if lower_hex(&parsed.transaction_id) != transaction_id {
+        return Err("terminal Liquid transaction has another transaction ID".to_owned());
+    }
+    let block_hash = observation
+        .block_hash
+        .ok_or_else(|| "terminal Liquid transaction has no final block hash".to_owned())?;
+    Ok((observation.raw_transaction, parsed, block_hash))
+}
+
+fn liquid_terminal_artifact_and_view(
+    request: &RailObservationRequest,
+    binding: &LiquidTerminalBinding,
+    raw_transaction: &[u8],
+    block_hash: &str,
+    contract: &Value,
+) -> Result<(String, String), String> {
+    if request.evidence_class == "liquid_output" && !binding.requires_spend {
+        return Ok((lower_hex(&sha256(raw_transaction)), block_hash.to_owned()));
+    }
+    if request.evidence_class != "liquid_spend" || !binding.requires_spend {
+        return Err("terminal Liquid evidence has an unsupported local derivation".to_owned());
+    }
+    let swap_type = required_string(
+        contract
+            .as_object()
+            .ok_or_else(|| "funded contract is not an object".to_owned())?,
+        "swap_type",
+    )?;
+    let artifact = match (swap_type, request.outcome.as_str(), request.leg_id.as_str()) {
+        ("submarine", "completed", _) => json!({
+            "claim_txid":binding.terminal_transaction_id,
+        }),
+        ("reverse", "completed", _) => {
+            let payment_hash = contract
+                .get("payment_hash")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "funded reverse contract has no payment hash".to_owned())?;
+            require_lower_hex_32(payment_hash, "funded reverse payment hash")?;
+            json!({
+                "claim_txid":binding.terminal_transaction_id,
+                "payment_hash":payment_hash,
+                "state":"settled",
+            })
+        }
+        ("chain", "completed", "source") => json!({
+            "claim_txid":binding.terminal_transaction_id,
+        }),
+        _ => {
+            return Err(
+                "terminal Liquid spend has an unsupported local artifact derivation".to_owned(),
+            );
+        }
+    };
+    let view = match swap_type {
+        "submarine" => "provider Liquid claim reached reorg-safe finality",
+        "reverse" => "requester Liquid claim verified before hold settlement",
+        "chain" => "provider source claim reached reorg-safe finality",
+        _ => return Err("terminal Liquid spend has an unsupported local view".to_owned()),
+    };
+    let artifact_sha256 = provider_support::canonical_json(&artifact)
+        .map(|bytes| lower_hex(&sha256(&bytes)))
+        .map_err(|error| format!("could not derive terminal Liquid artifact: {error}"))?;
+    Ok((artifact_sha256, view.to_owned()))
+}
+
+fn require_exact_liquid_terminal_metadata(
+    evidence: &Map<String, Value>,
+    derived: &DerivedLiquidTerminalEvidence,
+) -> Result<(), String> {
+    if evidence.get("artifact_sha256").and_then(Value::as_str)
+        != Some(derived.artifact_sha256.as_str())
+    {
+        return Err(
+            "provider Close Liquid artifact differs from the local transaction proof".to_owned(),
+        );
+    }
+    if evidence.get("view").and_then(Value::as_str) != Some(derived.view.as_str()) {
+        return Err("provider Close Liquid view differs from the local node proof".to_owned());
+    }
+    Ok(())
+}
+
+fn verify_local_liquid_terminal(
+    request: &RailObservationRequest,
+    settlement_reference: &str,
+    check: &TerminalRailCheck<'_>,
+    contract: &Value,
+) -> Result<DerivedLiquidTerminalEvidence, String> {
+    let binding = liquid_terminal_binding(
+        request,
+        settlement_reference,
+        check.liquid_settlement_txid,
+        contract,
+    )?;
+    let liquid = check
+        .environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "terminal Liquid evidence has no local elementsd".to_owned())?;
+    let (raw, parsed, block_hash) = local_final_liquid_transaction(
+        check,
+        liquid,
+        "terminal-liquid-transaction",
+        &binding.terminal_transaction_id,
+    )?;
+    if !binding.requires_spend {
+        if raw != binding.funding_raw {
+            return Err(
+                "terminal Liquid output differs from the contracted funding bytes".to_owned(),
+            );
+        }
+        let destination_settlement = check.liquid_settlement_txid.ok_or_else(|| {
+            "terminal Liquid output has no local destination settlement".to_owned()
+        })?;
+        let (_, settlement, _) = local_final_liquid_transaction(
+            check,
+            liquid,
+            "terminal-liquid-output-settlement",
+            destination_settlement,
+        )?;
+        if !settlement.inputs.iter().any(|input| {
+            lower_hex(&input.previous_txid) == binding.funding_transaction_id
+                && input.previous_output == binding.funding_output_index
+        }) {
+            return Err(
+                "terminal Liquid destination settlement does not spend the contract outpoint"
+                    .to_owned(),
+            );
+        }
+        let spending = check
+            .runtime
+            .block_on(liquid.elementsd.spending_transaction(
+                "terminal-liquid-output-spender",
+                &binding.funding_transaction_id,
+                binding.funding_output_index,
+            ))
+            .map_err(|error| {
+                format!("could not inspect terminal Liquid output spender: {error}")
+            })?;
+        if spending.spending_transaction_id.as_deref() != Some(destination_settlement) {
+            return Err("local elementsd reports another Liquid destination spender".to_owned());
+        }
+        let (artifact_sha256, view) =
+            liquid_terminal_artifact_and_view(request, &binding, &raw, &block_hash, contract)?;
+        return Ok(DerivedLiquidTerminalEvidence {
+            artifact_sha256,
+            view,
+            external_identifier: format!(
+                "elementsd:output:{}:settlement:{destination_settlement}:{}",
+                binding.terminal_transaction_id, check.environment.terminal_confirmations
+            ),
+        });
+    }
+    if !parsed.inputs.iter().any(|input| {
+        lower_hex(&input.previous_txid) == binding.funding_transaction_id
+            && input.previous_output == binding.funding_output_index
+    }) {
+        return Err("terminal Liquid transaction does not spend the contract outpoint".to_owned());
+    }
+    let spending = check
+        .runtime
+        .block_on(liquid.elementsd.spending_transaction(
+            "terminal-liquid-spender",
+            &binding.funding_transaction_id,
+            binding.funding_output_index,
+        ))
+        .map_err(|error| format!("could not inspect terminal Liquid spender: {error}"))?;
+    if spending.spending_transaction_id.as_deref() != Some(binding.terminal_transaction_id.as_str())
+    {
+        return Err("local elementsd reports another Liquid funding spender".to_owned());
+    }
+    let (artifact_sha256, view) =
+        liquid_terminal_artifact_and_view(request, &binding, &raw, &block_hash, contract)?;
+    Ok(DerivedLiquidTerminalEvidence {
+        artifact_sha256,
+        view,
+        external_identifier: format!(
+            "elementsd:{}:{}",
+            binding.terminal_transaction_id, check.environment.terminal_confirmations
+        ),
+    })
 }
 
 fn verify_local_lightning_terminal(
@@ -7051,7 +10356,10 @@ fn verify_local_lightning_terminal(
     settlement_reference: &str,
     check: &TerminalRailCheck<'_>,
 ) -> Result<String, String> {
-    let (response, collection, payment_hash, expected_status, direction) = match check.lightning {
+    let lightning = check
+        .lightning
+        .ok_or_else(|| "terminal Lightning evidence has no local observation".to_owned())?;
+    let (response, collection, payment_hash, expected_status, direction) = match lightning {
         LightningTerminalCheck::IncomingInvoice { payment_hash } => (
             check
                 .runtime
@@ -7168,6 +10476,117 @@ fn funded_rfq_profile_with_terms(
     Ok(profile)
 }
 
+fn funded_chain_rfq_profile(
+    input: ChainNegotiationInput,
+    liquid: &LiquidLabEnvironment,
+    now: u64,
+) -> Value {
+    let bitcoin_asset = format!("swp:1:{NETWORK_ID}:btc:chain");
+    let liquid_asset = format!(
+        "swp:1:{}:elements:{}:liquid",
+        liquid.network_id, liquid.pegged_asset
+    );
+    let asset_pair = match input.direction {
+        LiquidChainDirection::BitcoinToLiquid => [bitcoin_asset, liquid_asset],
+        LiquidChainDirection::LiquidToBitcoin => [liquid_asset, bitcoin_asset],
+    };
+    json!({
+        "constraints":{
+            "allowed_script_modes":["taproot-musig2-script-exit"],
+            "asset_pair":asset_pair,
+            "confirmation_policy":{
+                "minimum_confirmations":"1",
+                "reorg_safety_blocks":"2",
+                "zero_confirmation":"forbidden",
+                "rbf":"reject",
+                "replacement":"reject"
+            },
+            "desired_completion_time":now.saturating_add(86_400),
+            "firm_quote_required":true,
+            "input_amount":INPUT_AMOUNT_SAT.to_string(),
+            "invoice_sha256":null,
+            "maximum_total_fee":"5000",
+            "payment_hash":lower_hex(&input.payment_hash),
+            "requester_public_keys":[
+                {
+                    "leg_id":"destination",
+                    "path":"claim",
+                    "public_key":lower_hex(&input.destination_requester_key)
+                },
+                {
+                    "leg_id":"source",
+                    "path":"refund",
+                    "public_key":lower_hex(&input.source_requester_key)
+                }
+            ],
+            "swap_type":"chain"
+        }
+    })
+}
+
+fn funded_liquid_rfq_profile(
+    input: &LiquidNegotiationInput,
+    liquid: &LiquidLabEnvironment,
+    now: u64,
+) -> Result<Value, String> {
+    let liquid_asset = format!(
+        "swp:1:{}:elements:{}:liquid",
+        liquid.network_id, liquid.pegged_asset
+    );
+    let lightning_asset = format!("swp:1:{NETWORK_ID}:btc:lightning");
+    let (asset_pair, leg_id, path, swap_type) = match input.journey {
+        LiquidJourney::Submarine => (
+            [liquid_asset, lightning_asset],
+            "source",
+            "refund",
+            "submarine",
+        ),
+        LiquidJourney::Reverse => (
+            [lightning_asset, liquid_asset],
+            "destination",
+            "claim",
+            "reverse",
+        ),
+    };
+    let mut constraints = json!({
+        "allowed_script_modes":["taproot-musig2-script-exit"],
+        "asset_pair":asset_pair,
+        "confirmation_policy":{
+            "minimum_confirmations":"1",
+            "reorg_safety_blocks":"2",
+            "zero_confirmation":"forbidden",
+            "rbf":"reject",
+            "replacement":"reject"
+        },
+        "desired_completion_time":now.saturating_add(86_400),
+        "firm_quote_required":true,
+        "input_amount":INPUT_AMOUNT_SAT.to_string(),
+        "invoice_sha256":input.invoice.as_ref().map(|invoice| lower_hex(&sha256(invoice.as_bytes()))),
+        "maximum_total_fee":"5000",
+        "payment_hash":lower_hex(&input.payment_hash),
+        "requester_public_keys":[{
+            "leg_id":leg_id,
+            "path":path,
+            "public_key":lower_hex(&input.requester_key)
+        }],
+        "swap_type":swap_type
+    });
+    if input.journey == LiquidJourney::Reverse {
+        constraints
+            .as_object_mut()
+            .ok_or_else(|| "Liquid RFQ constraints are not an object".to_owned())?
+            .remove("invoice_sha256");
+    }
+    let mut profile = json!({"constraints":constraints});
+    if let Some(invoice) = &input.invoice {
+        profile
+            .as_object_mut()
+            .ok_or_else(|| "Liquid RFQ profile is not an object".to_owned())?
+            .insert("invoice".to_owned(), Value::String(invoice.clone()));
+    }
+    Ok(profile)
+}
+
 fn bind_requester_funding(
     environment: &SmokeEnvironment,
     contract: &mut Value,
@@ -7221,6 +10640,433 @@ fn bind_requester_funding(
         .ok_or_else(|| "submarine contract has no source leg".to_owned())?;
     leg.insert("verifier_digest".to_owned(), Value::String(verifier_digest));
     Ok(funding)
+}
+
+fn chain_source_funding(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    contract: &Value,
+    direction: LiquidChainDirection,
+) -> Result<ChainFundingTransaction, String> {
+    let verifier = verifier_for_leg(contract, "source")?;
+    let script_pubkey = decode_hex(required_string(verifier, "script_pubkey")?)?;
+    let amount_sat = canonical_u64(required_string(verifier, "amount")?)?;
+    match direction {
+        LiquidChainDirection::BitcoinToLiquid => {
+            let input = fund_client_wallet(runtime, environment)?;
+            build_funding_transaction(
+                &environment.wallet,
+                std::slice::from_ref(&input),
+                &FundingRequest {
+                    destination_script_pubkey: script_pubkey,
+                    amount_sat,
+                    fee_rate_sat_per_vbyte: 2,
+                    change_path: WalletPath::new(0, true, 30).map_err(|error| {
+                        format!("chain Bitcoin change path is invalid: {error}")
+                    })?,
+                    lock_time: 0,
+                },
+            )
+            .map(ChainFundingTransaction::Bitcoin)
+            .map_err(|error| format!("could not construct chain Bitcoin source funding: {error}"))
+        }
+        LiquidChainDirection::LiquidToBitcoin => {
+            let fees = liquid_fee_schedule(contract, LiquidSwapType::Chain)?;
+            let liquid = environment
+                .liquid
+                .as_ref()
+                .ok_or_else(|| "Liquid chain source has no local elementsd".to_owned())?;
+            let capacity = runtime
+                .block_on(liquid.rail.confirmed_capacity(
+                    &rpc_id("chain-liquid-source-capacity")?,
+                    1,
+                    64,
+                ))
+                .map_err(|error| format!("could not inspect requester Liquid capacity: {error}"))?;
+            let required = amount_sat
+                .checked_add(fees.funding_fee_cap_sat)
+                .ok_or_else(|| "Liquid source capacity target overflows".to_owned())?;
+            let selected = capacity
+                .utxos
+                .into_iter()
+                .find(|output| output.amount_sat >= required)
+                .map(|output| vec![output])
+                .ok_or_else(|| {
+                    "requester elementsd wallet has no single confirmed output covering amount and derived funding fee cap".to_owned()
+                })?;
+            runtime
+                .block_on(liquid.rail.create_signed_funding(
+                    "chain-liquid-source",
+                    &selected,
+                    &script_pubkey,
+                    amount_sat,
+                    fees.sat_per_vbyte,
+                    fees.funding_fee_cap_sat,
+                ))
+                .map(ChainFundingTransaction::Liquid)
+                .map_err(|error| {
+                    format!("could not construct chain Liquid source funding: {error}")
+                })
+        }
+    }
+}
+
+fn liquid_requester_funding(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    contract: &Value,
+) -> Result<ElementsdSignedFunding, String> {
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid requester funding has no local elementsd".to_owned())?;
+    let verifier = verifier_for_leg(contract, "source")?;
+    let script_pubkey = decode_hex(required_string(verifier, "script_pubkey")?)?;
+    let amount_sat = canonical_u64(required_string(verifier, "amount")?)?;
+    let fees = liquid_fee_schedule(contract, LiquidSwapType::Submarine)?;
+    let capacity = runtime
+        .block_on(liquid.rail.confirmed_capacity(
+            &rpc_id("liquid-submarine-source-capacity")?,
+            1,
+            64,
+        ))
+        .map_err(|error| format!("could not inspect requester Liquid capacity: {error}"))?;
+    let required = amount_sat
+        .checked_add(fees.funding_fee_cap_sat)
+        .ok_or_else(|| "Liquid source capacity target overflows".to_owned())?;
+    let selected = capacity
+        .utxos
+        .into_iter()
+        .find(|output| output.amount_sat >= required)
+        .map(|output| vec![output])
+        .ok_or_else(|| {
+            "requester elementsd wallet has no single confirmed output covering amount and derived funding fee cap".to_owned()
+        })?;
+    runtime
+        .block_on(liquid.rail.create_signed_funding(
+            "liquid-submarine-source",
+            &selected,
+            &script_pubkey,
+            amount_sat,
+            fees.sat_per_vbyte,
+            fees.funding_fee_cap_sat,
+        ))
+        .map_err(|error| format!("could not construct Liquid submarine funding: {error}"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiquidFeeSchedule {
+    sat_per_vbyte: u64,
+    funding_fee_cap_sat: u64,
+    claim_fee_sat: u64,
+    refund_fee_sat: u64,
+}
+
+fn liquid_fee_schedule(
+    contract: &Value,
+    swap_type: LiquidSwapType,
+) -> Result<LiquidFeeSchedule, String> {
+    let priced_vbytes = liquid_quote_priced_vbytes(contract, swap_type)?;
+    let miner_fee_budget_sat = canonical_u64(
+        contract
+            .get("miner_fee_budget")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Liquid contract has no miner fee budget".to_owned())?,
+    )?;
+    let sat_per_vbyte = funding_feerate_from_priced_vbytes(priced_vbytes, miner_fee_budget_sat)
+        .map_err(|error| error.to_string())?;
+    let effect_fee = |vbytes: u64, label: &str| {
+        vbytes
+            .checked_mul(sat_per_vbyte)
+            .ok_or_else(|| format!("Liquid {label} fee cap overflows"))
+    };
+    Ok(LiquidFeeSchedule {
+        sat_per_vbyte,
+        funding_fee_cap_sat: effect_fee(
+            LIQUID_SINGLE_INPUT_FUNDING_VBYTES,
+            "single-input funding",
+        )?,
+        claim_fee_sat: effect_fee(LIQUID_CLAIM_VBYTES, "claim")?,
+        refund_fee_sat: effect_fee(LIQUID_REFUND_VBYTES, "refund")?,
+    })
+}
+
+fn liquid_quote_priced_vbytes(contract: &Value, swap_type: LiquidSwapType) -> Result<u64, String> {
+    match swap_type {
+        LiquidSwapType::Submarine => Ok(liquid_submarine_quote_vbytes()),
+        LiquidSwapType::Reverse => Ok(liquid_reverse_quote_vbytes()),
+        LiquidSwapType::Chain => {
+            let pair = contract
+                .get("asset_pair")
+                .and_then(Value::as_array)
+                .filter(|pair| pair.len() == 2)
+                .ok_or_else(|| "Liquid chain Contract has no ordered asset pair".to_owned())?;
+            match (
+                pair[0]
+                    .as_str()
+                    .is_some_and(|asset| asset.ends_with(":liquid")),
+                pair[1]
+                    .as_str()
+                    .is_some_and(|asset| asset.ends_with(":liquid")),
+            ) {
+                (false, true) => Ok(bitcoin_to_liquid_chain_quote_vbytes()),
+                (true, false) => Ok(liquid_to_bitcoin_chain_quote_vbytes()),
+                _ => Err("Liquid chain Contract does not contain one Liquid asset".to_owned()),
+            }
+        }
+    }
+}
+
+fn liquid_submarine_invoice_amount_sat() -> Result<u64, String> {
+    let fixture: Value = serde_json::from_str(ADVERSARIAL_FIXTURE)
+        .map_err(|error| format!("adversarial fixture is invalid: {error}"))?;
+    let profile = fixture
+        .get("lab_profile")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "adversarial fixture has no lab profile".to_owned())?;
+    let pricing = profile
+        .get("pricing")
+        .and_then(Value::as_object)
+        .filter(|pricing| {
+            pricing.get("source").and_then(Value::as_str) == Some("configured_fallback_only")
+        })
+        .ok_or_else(|| "adversarial fixture has no forced fallback pricing".to_owned())?;
+    let number = |object: &Map<String, Value>, member: &str| {
+        object
+            .get(member)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("adversarial lab pricing has no {member}"))
+    };
+    let sat_per_vbyte = number(pricing, "sat_per_vbyte")?;
+    let derived = derive_quote_with_worst_case_vbytes(
+        &PricingConfig {
+            spread_bps: number(pricing, "spread_bps")?,
+            fallback_feerate_sat_per_vb: Some(sat_per_vbyte),
+            min_swap_sat: number(pricing, "min_swap_sat")?,
+            max_swap_sat: number(pricing, "max_swap_sat")?,
+            quote_expiry_seconds: number(profile, "tiny_quote_expiry_seconds")?,
+            reservation_tier: ReservationTier::Hard,
+            lightning_routing_fee_ppm: number(pricing, "lightning_routing_fee_ppm")?,
+        },
+        &FeerateObservation::Fallback {
+            sat_per_vb: sat_per_vbyte,
+        },
+        &CapacityBounds {
+            capacity_bucket_id: "liquid-lab".to_owned(),
+            available_capacity: number(pricing, "max_swap_sat")?.to_string(),
+        },
+        &QuoteRequest {
+            swap_type: immortal_provider::pricing::SwapType::Submarine,
+            side: QuoteSide::Input,
+            amount: INPUT_AMOUNT_SAT.to_string(),
+        },
+        0,
+        liquid_submarine_quote_vbytes(),
+    )
+    .map_err(|error| format!("could not derive Liquid submarine lab Quote: {error}"))?;
+    canonical_u64(&derived.output_amount)
+}
+
+fn liquid_claim_recovery_refs(
+    paths: &LabPaths,
+    journey_name: &str,
+    wallet_path: WalletPath,
+) -> Result<LiquidClaimRecoveryRefs, String> {
+    let secret_path = paths.funded_secret(journey_name);
+    let metadata = std::fs::symlink_metadata(&secret_path).map_err(|error| {
+        format!(
+            "Liquid claim has no persisted preimage recovery record {}: {error}",
+            secret_path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() != 32 {
+        return Err(
+            "Liquid preimage recovery record is not an exact private 32-byte file".to_owned(),
+        );
+    }
+    use std::os::unix::fs::PermissionsExt;
+    if metadata.permissions().mode() & 0o777 != 0o600 {
+        return Err("Liquid preimage recovery record permissions are not 0600".to_owned());
+    }
+    let wallet_binding = format!(
+        "openagents.immortal.lab-liquid-wallet-ref.v1\0{}\0{}\0{}",
+        wallet_path.account, wallet_path.change, wallet_path.address_index
+    );
+    let preimage_binding = format!(
+        "openagents.immortal.lab-liquid-preimage-ref.v1\0{journey_name}\0{}",
+        secret_path.display()
+    );
+    Ok(LiquidClaimRecoveryRefs {
+        wallet_signing_handle_sha256: lower_hex(&sha256(wallet_binding.as_bytes())),
+        preimage_recovery_ref: lower_hex(&sha256(preimage_binding.as_bytes())),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_chain_liquid_request(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    contract: &Value,
+    swap_type: LiquidSwapType,
+    leg_id: &str,
+    purpose: LiquidLegPurpose,
+    wallet_path: WalletPath,
+    destination_script_pubkey: &[u8],
+    claim_recovery: Option<&LiquidClaimRecoveryRefs>,
+) -> Result<LiquidBeforeFundRequest, String> {
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "chain Liquid request has no local elementsd".to_owned())?;
+    let contract_object = contract
+        .as_object()
+        .ok_or_else(|| "chain contract is not an object".to_owned())?;
+    let verifier = verifier_for_leg(contract, leg_id)?;
+    let funding_transaction = required_string(verifier, "funding_transaction")?;
+    let funding_raw = decode_hex(funding_transaction)?;
+    let funding_output_index = bounded_u32_member(verifier, "output_index")?;
+    let amount_sat = canonical_u64(required_string(verifier, "amount")?)?;
+    let funding_script_pubkey = decode_hex(required_string(verifier, "script_pubkey")?)?;
+    let leg = contract_object
+        .get("legs")
+        .and_then(Value::as_array)
+        .and_then(|legs| {
+            legs.iter()
+                .find(|leg| leg.get("leg_id").and_then(Value::as_str) == Some(leg_id))
+        })
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("chain contract has no {leg_id} leg"))?;
+    let path = if leg_id == "source" {
+        "refund"
+    } else {
+        "claim"
+    };
+    let (script, control_block, timelock) = match path {
+        "claim" => (
+            decode_hex(required_string(verifier, "claim_script")?)?,
+            decode_hex(required_string(verifier, "taproot_claim_control_block")?)?,
+            0,
+        ),
+        "refund" => (
+            decode_hex(required_string(verifier, "refund_script")?)?,
+            decode_hex(required_string(verifier, "taproot_refund_control_block")?)?,
+            u32::try_from(canonical_u64(required_string(leg, "refund_lock_value")?)?)
+                .map_err(|_| "Liquid refund lock exceeds u32".to_owned())?,
+        ),
+        _ => return Err("chain Liquid exit path is unsupported".to_owned()),
+    };
+    let fees = liquid_fee_schedule(contract, swap_type)?;
+    let fee_amount_sat = match path {
+        "claim" => fees.claim_fee_sat,
+        "refund" => fees.refund_fee_sat,
+        _ => return Err("chain Liquid exit path is unsupported".to_owned()),
+    };
+    let exit_package = match (path, claim_recovery) {
+        ("claim", Some(recovery)) => runtime.block_on(liquid.rail.build_wallet_claim_exit_package(
+            &format!("chain-liquid-{leg_id}-{path}"),
+            &funding_raw,
+            funding_output_index,
+            amount_sat,
+            &funding_script_pubkey,
+            &script,
+            &control_block,
+            destination_script_pubkey,
+            fee_amount_sat,
+            &recovery.wallet_signing_handle_sha256,
+            &recovery.preimage_recovery_ref,
+        )),
+        ("refund", None) => runtime.block_on(liquid.rail.build_signed_exit_package(
+            &format!("chain-liquid-{leg_id}-{path}"),
+            &environment.wallet,
+            wallet_path,
+            &funding_raw,
+            funding_output_index,
+            amount_sat,
+            &funding_script_pubkey,
+            path,
+            &script,
+            &control_block,
+            timelock,
+            destination_script_pubkey,
+            fee_amount_sat,
+            None,
+        )),
+        ("claim", None) => {
+            return Err("Liquid claim has no persisted preimage recovery reference".to_owned());
+        }
+        ("refund", Some(_)) => {
+            return Err("Liquid refund unexpectedly has claim recovery references".to_owned());
+        }
+        _ => return Err("chain Liquid exit path is unsupported".to_owned()),
+    }
+    .map_err(|error| format!("could not build chain Liquid {path} package: {error}"))?;
+    let asset_pair = contract_object
+        .get("asset_pair")
+        .and_then(Value::as_array)
+        .filter(|pair| pair.len() == 2)
+        .ok_or_else(|| "chain contract has no ordered asset pair".to_owned())?;
+    Ok(LiquidBeforeFundRequest {
+        swap_type,
+        purpose,
+        input_asset_id: asset_pair[0]
+            .as_str()
+            .ok_or_else(|| "chain input asset is invalid".to_owned())?
+            .to_owned(),
+        output_asset_id: asset_pair[1]
+            .as_str()
+            .ok_or_else(|| "chain output asset is invalid".to_owned())?
+            .to_owned(),
+        funding: LiquidFundingVerificationInput {
+            raw_transaction: funding_transaction.to_owned(),
+            trusted_unblind_transaction: None,
+            transaction_sha256: required_string(verifier, "funding_transaction_sha256")?.to_owned(),
+            output_index: funding_output_index,
+            asset_id: required_string(leg, "asset_id")?.to_owned(),
+            amount: amount_sat.to_string(),
+            script_pubkey: lower_hex(&funding_script_pubkey),
+            taproot_internal_key: required_string(verifier, "taproot_internal_key")?.to_owned(),
+            taproot_merkle_root: Some(required_string(verifier, "taproot_merkle_root")?.to_owned()),
+            confidentiality: LiquidConfidentiality::Explicit,
+            minimum_confirmations: u32::try_from(canonical_u64(required_string(
+                verifier,
+                "minimum_confirmations",
+            )?)?)
+            .map_err(|_| "Liquid minimum confirmations exceed u32".to_owned())?,
+            replacement_policy: required_string(verifier, "replacement_policy")?.to_owned(),
+        },
+        exit_package,
+    })
+}
+
+fn bind_liquid_exit_commitment(
+    contract: &mut Value,
+    leg_id: &str,
+    path: &str,
+    request: &LiquidBeforeFundRequest,
+) -> Result<(), String> {
+    let document = serde_json::to_value(&request.exit_package)
+        .map_err(|error| format!("could not serialize Liquid exit package: {error}"))?;
+    let digest = lower_hex(&sha256(
+        &provider_support::canonical_json(&document)
+            .map_err(|error| format!("could not canonicalize Liquid exit package: {error}"))?,
+    ));
+    let commitments = contract
+        .get_mut("exit_package_commitments")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "chain contract has no mutable exit commitments".to_owned())?;
+    let package_mode = match request.exit_package.mode {
+        LiquidExitMode::Presigned => "presigned",
+        LiquidExitMode::Wallet => "wallet_sign",
+    };
+    upsert_exit_commitment(
+        commitments,
+        "requester",
+        leg_id,
+        path,
+        package_mode,
+        &digest,
+    );
+    Ok(())
 }
 
 fn bind_requester_exit_packages(
@@ -7470,11 +11316,19 @@ fn requester_exit_document(
         .ok_or_else(|| "requester exit fee consumes the funding output".to_owned())?;
     let lock_time = match path {
         "claim" => 0,
-        "refund" => u32::try_from(canonical_u64(required_string(
-            verifier,
-            "exit_lock_value",
-        )?)?)
-        .map_err(|_| "requester refund height exceeds u32".to_owned())?,
+        "refund" => u32::try_from(canonical_u64(required_string(leg, "refund_lock_value")?)?)
+            .map_err(|_| "requester refund height exceeds u32".to_owned())?,
+        _ => return Err("requester exit path is unsupported".to_owned()),
+    };
+    let (taproot_script, taproot_control_block) = match path {
+        "claim" => (
+            required_string(verifier, "claim_script")?,
+            required_string(verifier, "taproot_claim_control_block")?,
+        ),
+        "refund" => (
+            required_string(verifier, "refund_script")?,
+            required_string(verifier, "taproot_refund_control_block")?,
+        ),
         _ => return Err("requester exit path is unsupported".to_owned()),
     };
     let mut previous_txid = decode_lower_hex_32(&funding_transaction_id)?;
@@ -7546,8 +11400,8 @@ fn requester_exit_document(
             "swap_tree_sha256":required_string(verifier,"swap_tree_sha256")?,
             "quote_id":quote_id,
             "verifier_digest":verifier_sha256,
-            "taproot_script":required_string(verifier,"taproot_script")?,
-            "taproot_control_block":required_string(verifier,"taproot_control_block")?,
+            "taproot_script":taproot_script,
+            "taproot_control_block":taproot_control_block,
             "taproot_tree":verifier.get("taproot_tree").cloned().ok_or_else(|| "funded verifier has no Taproot tree".to_owned())?
         },
         "secret_commitments":{
@@ -7955,6 +11809,30 @@ fn finalize_invoice_unpaid(
     Ok(())
 }
 
+fn verify_requester_invoice_paid(
+    runtime: &Runtime,
+    cln: &ClnClient,
+    payment_hash: &str,
+) -> Result<(), String> {
+    let invoices = runtime
+        .block_on(cln.list_invoices(&cln_id("liquid-terminal-invoice")?, None))
+        .map_err(|error| format!("could not inspect Liquid terminal invoice: {error}"))?;
+    let matching = invoices
+        .get("invoices")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|invoice| {
+            invoice.get("payment_hash").and_then(Value::as_str) == Some(payment_hash)
+                && invoice.get("status").and_then(Value::as_str) == Some("paid")
+        })
+        .count();
+    if matching != 1 {
+        return Err("requester CLN did not report one exact paid Liquid invoice".to_owned());
+    }
+    Ok(())
+}
+
 fn chain_height(runtime: &Runtime, bitcoind: &BitcoindClient, label: &str) -> Result<u32, String> {
     runtime
         .block_on(bitcoind.call(&rpc_id(label)?, "getblockcount", json!([])))
@@ -8233,11 +12111,70 @@ fn mine_blocks(
     Ok(())
 }
 
+fn mine_liquid_blocks(
+    runtime: &Runtime,
+    liquid: &LiquidLabEnvironment,
+    count: u32,
+    label: &str,
+) -> Result<(), String> {
+    if count == 0 || count > 1_000 {
+        return Err("Liquid mining count is outside bounds".to_owned());
+    }
+    let address = runtime
+        .block_on(
+            liquid
+                .elementsd
+                .new_address(&rpc_id(&format!("{label}-liquid-mine-address"))?),
+        )
+        .map_err(|error| format!("could not derive Liquid mining address: {error}"))?;
+    let blocks = runtime
+        .block_on(liquid.elementsd.generate_to_address(
+            &rpc_id(&format!("{label}-liquid-mine"))?,
+            count,
+            &address,
+        ))
+        .map_err(|error| format!("could not mine Liquid blocks: {error}"))?;
+    if Some(blocks.len()) != usize::try_from(count).ok() {
+        return Err("elementsd returned another mined-block count".to_owned());
+    }
+    Ok(())
+}
+
+fn mine_chain_leg(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    rail: &str,
+    count: u64,
+    label: &str,
+) -> Result<(), String> {
+    match rail {
+        "bitcoin" => mine_blocks(runtime, &environment.bitcoind, count, label),
+        "liquid" => mine_liquid_blocks(
+            runtime,
+            environment
+                .liquid
+                .as_ref()
+                .ok_or_else(|| "chain leg has no local elementsd".to_owned())?,
+            u32::try_from(count).map_err(|_| "Liquid block count exceeds u32".to_owned())?,
+            label,
+        ),
+        _ => Err("chain leg uses an unsupported rail".to_owned()),
+    }
+}
+
 fn discover_provider(
     relay_url: &str,
     requester: &MarketSigner,
     timeout: Duration,
 ) -> Result<String, String> {
+    discover_provider_offering(relay_url, requester, timeout).map(|event| event.pubkey)
+}
+
+fn discover_provider_offering(
+    relay_url: &str,
+    requester: &MarketSigner,
+    timeout: Duration,
+) -> Result<Event, String> {
     let deadline = Instant::now() + timeout;
     loop {
         let mut relay = connect(relay_url)?;
@@ -8273,7 +12210,7 @@ fn discover_provider(
                     .map_err(|error| format!("provider Offering signature is invalid: {error}"))?;
                 validate_mkt_public_event(&event)
                     .map_err(|error| format!("provider Offering is invalid: {error}"))?;
-                return Ok(event.pubkey);
+                return Ok(event);
             }
         }
         if Instant::now() >= deadline {
@@ -8750,6 +12687,59 @@ fn record_profile(event: &Event) -> Result<Map<String, Value>, String> {
         .ok_or_else(|| "record has no MKT-SWP profile".to_owned())
 }
 
+fn exactly_one_status_by_author_and_state<'a>(
+    records: &'a [Event],
+    author: &str,
+    state: &str,
+) -> Result<&'a Event, String> {
+    let matches = records
+        .iter()
+        .filter(|record| {
+            record.kind == MKT_STATUS_KIND
+                && record.pubkey == author
+                && record_profile(record)
+                    .ok()
+                    .and_then(|profile| profile.get("swp_state").cloned())
+                    .and_then(|state| state.as_str().map(str::to_owned))
+                    .as_deref()
+                    == Some(state)
+        })
+        .collect::<Vec<_>>();
+    let [status] = matches.as_slice() else {
+        return Err(format!(
+            "requester {state} requires one exact provider prerequisite Status"
+        ));
+    };
+    Ok(status)
+}
+
+fn requester_status_provider_prerequisite(state: &str) -> Option<&'static str> {
+    match state {
+        "requester_verification_passed" => Some("lock_terms_ready"),
+        "requester_invoice_verified" => Some("hold_invoice_ready"),
+        "requester_lock_verified" => Some("provider_lock_terms_ready"),
+        "requester_claim_pending" => Some("funding_final"),
+        "requester_source_verified" => Some("source_lock_terms_ready"),
+        "requester_destination_verified" => Some("destination_lock_terms_ready"),
+        "requester_source_broadcast" => Some("source_funding_required"),
+        "requester_destination_claim_pending" => Some("destination_funding_final"),
+        "requester_source_refund_pending" => Some("provider_destination_refunded"),
+        _ => None,
+    }
+}
+
+fn requester_status_provider_prerequisite_event<'a>(
+    records: &'a [Event],
+    provider_pubkey: &str,
+    requester_state: &str,
+) -> Result<Option<&'a Event>, String> {
+    requester_status_provider_prerequisite(requester_state)
+        .map(|provider_state| {
+            exactly_one_status_by_author_and_state(records, provider_pubkey, provider_state)
+        })
+        .transpose()
+}
+
 fn next_created_at(session: &SwapSession<AwaitingVerification>) -> Result<u64, String> {
     next_created_at_records(session.signed_records())
 }
@@ -8767,11 +12757,15 @@ fn base_state(state: &str) -> Result<&'static str, String> {
     match state {
         "requester_verification_passed"
         | "requester_invoice_verified"
-        | "requester_lock_verified" => Ok("awaiting_input"),
-        "requester_funding_broadcast" => Ok("funding_observed"),
-        "lightning_payment_pending" | "requester_claim_pending" | "requester_claimed" => {
-            Ok("executing")
-        }
+        | "requester_lock_verified"
+        | "requester_source_verified"
+        | "requester_destination_verified" => Ok("awaiting_input"),
+        "requester_funding_broadcast" | "requester_source_broadcast" => Ok("funding_observed"),
+        "lightning_payment_pending"
+        | "requester_claim_pending"
+        | "requester_claimed"
+        | "requester_destination_claim_pending"
+        | "requester_destination_claimed" => Ok("executing"),
         "refund_prepared" | "refund_pending" => Ok("refund_pending"),
         "refunded" => Ok("refunded"),
         _ => Err("requester state has no smoke base-state mapping".to_owned()),
@@ -8860,6 +12854,223 @@ fn broadcast_bitcoin_once(
     Ok(transaction_id)
 }
 
+fn claim_chain_bitcoin_destination(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    contract: &Value,
+    funding_transaction_id: &str,
+    funding_output_index: u32,
+    wallet_path: WalletPath,
+    preimage: [u8; 32],
+) -> Result<(String, String), String> {
+    let terms = bitcoin_terms(contract, "destination")?;
+    let destination = environment
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 33)
+                .map_err(|error| format!("chain claim destination path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive chain claim destination: {error}"))?;
+    let destination_value_sat = terms
+        .amount_sat
+        .checked_sub(terms.miner_fee_budget_sat)
+        .filter(|amount| *amount > 0)
+        .ok_or_else(|| "chain Bitcoin claim fee consumes its principal".to_owned())?;
+    let claim = SettlementBridge::new(&environment.wallet)
+        .claim(
+            &SettlementTemplate {
+                wallet_path,
+                previous_txid_wire: display_txid_wire(funding_transaction_id)?,
+                previous_output: funding_output_index,
+                prevout_value_sat: terms.amount_sat,
+                prevout_script_pubkey: terms.script_pubkey,
+                destination_value_sat,
+                destination_script_pubkey: destination.script_pubkey.to_vec(),
+                transaction_version: 2,
+                input_sequence: 0xffff_fffe,
+                lock_time: 0,
+                taproot_script: terms.claim_script,
+                taproot_control_block: terms.claim_control_block,
+                maximum_fee_sat: terms.miner_fee_budget_sat,
+                maximum_fee_rate_sat_per_vbyte: 10_000,
+                maximum_weight: 1_600,
+                dust_relay_fee_sat_per_kilobyte: 3_000,
+            },
+            ClaimPreimage::new(preimage),
+        )
+        .map_err(|error| format!("could not construct chain Bitcoin claim: {error}"))?;
+    let transaction_hex = lower_hex(claim.broadcast_bytes());
+    let transaction_id = lower_hex(&claim.transaction_id());
+    broadcast_bitcoin_once(
+        runtime,
+        &environment.bitcoind,
+        "chain-bitcoin-destination-claim",
+        &transaction_hex,
+        &transaction_id,
+    )?;
+    Ok((transaction_id, transaction_hex))
+}
+
+fn claim_chain_liquid_destination(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    authorized: &mut SwapSession<FundingAuthorized>,
+    request: &LiquidBeforeFundRequest,
+    wallet_path: WalletPath,
+    preimage: [u8; 32],
+    journey_name: &str,
+) -> Result<(String, String), String> {
+    execute_liquid_wallet_claim(
+        runtime,
+        environment,
+        authorized,
+        request,
+        "destination",
+        wallet_path,
+        preimage,
+        journey_name,
+        "chain-liquid-destination-claim",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_liquid_wallet_claim(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    authorized: &mut SwapSession<FundingAuthorized>,
+    request: &LiquidBeforeFundRequest,
+    leg_id: &str,
+    wallet_path: WalletPath,
+    preimage: [u8; 32],
+    journey_name: &str,
+    label: &str,
+) -> Result<(String, String), String> {
+    let liquid = environment
+        .liquid
+        .as_ref()
+        .ok_or_else(|| "Liquid wallet claim has no local elementsd".to_owned())?;
+    let transaction_artifact_ref = format!("lab-private-signed-exit:{journey_name}");
+    let retained_transaction = environment
+        .control
+        .paths
+        .funded_signed_exit(journey_name)
+        .exists()
+        .then(|| load_funded_signed_exit(&environment.control.paths, journey_name))
+        .transpose()?;
+    let signed = authorized
+        .sign_liquid_exit_with(leg_id, "claim", |_| {
+            if let Some(transaction) = &retained_transaction {
+                decode_hex(transaction)
+            } else {
+                liquid
+                    .rail
+                    .complete_wallet_claim_exit(request, &environment.wallet, wallet_path, preimage)
+                    .map_err(|error| error.to_string())
+            }
+        })
+        .map_err(|error| format!("could not sign exact Liquid wallet claim: {error}"))?;
+    let ExitSigningOutcome::Signed(signed) = signed else {
+        return Err("Liquid wallet claim was already recorded before broadcast".to_owned());
+    };
+    if let Some(retained_transaction) = retained_transaction {
+        if retained_transaction != signed.transaction {
+            return Err("retained Liquid wallet claim differs from the verified exit".to_owned());
+        }
+    } else {
+        store_funded_signed_exit(
+            &environment.control.paths,
+            journey_name,
+            &signed.transaction,
+        )?;
+    }
+    let broadcast = authorized
+        .liquid_exit_broadcast_request(&signed, &transaction_artifact_ref)
+        .map_err(|error| format!("could not derive exact Liquid broadcast request: {error}"))?;
+    let transaction_id = broadcast_liquid_effect_request(
+        runtime,
+        liquid,
+        &environment.control.paths,
+        journey_name,
+        &broadcast,
+        label,
+    )?;
+    let effect = authorized
+        .record_liquid_broadcast_effect_with(&broadcast, |artifact_ref| {
+            load_liquid_broadcast_artifact(&environment.control.paths, journey_name, artifact_ref)
+        })
+        .map_err(|error| format!("could not record exact Liquid broadcast effect: {error}"))?;
+    if effect.external_identifier() != transaction_id {
+        return Err("recorded Liquid broadcast effect differs from elementsd".to_owned());
+    }
+    let transaction_hex = load_funded_signed_exit(&environment.control.paths, journey_name)?;
+    let parsed = parse_liquid_transaction(&decode_hex(&transaction_hex)?)
+        .map_err(|error| format!("signed Liquid wallet claim is invalid: {error}"))?;
+    if lower_hex(&parsed.transaction_id) != transaction_id {
+        return Err("elementsd accepted another Liquid wallet claim".to_owned());
+    }
+    Ok((transaction_id, transaction_hex))
+}
+
+fn broadcast_liquid_effect_request(
+    runtime: &Runtime,
+    liquid: &LiquidLabEnvironment,
+    paths: &LabPaths,
+    journey_name: &str,
+    request: &LiquidBroadcastRequest,
+    label: &str,
+) -> Result<String, String> {
+    let network = runtime
+        .block_on(liquid.rail.network_view(&format!("{label}-network")))
+        .map_err(|error| format!("could not verify Liquid broadcast network: {error}"))?;
+    if request.rpc_method != "sendrawtransaction"
+        || request.network_id != liquid.network_id
+        || request.network_id != network.network_id.as_str()
+        || request.genesis_hash != network.genesis_hash
+    {
+        return Err("Liquid broadcast request differs from the local elementsd network".to_owned());
+    }
+    let raw =
+        load_liquid_broadcast_artifact(paths, journey_name, &request.transaction_artifact_ref)?;
+    if lower_hex(&sha256(&raw)) != request.transaction_sha256 {
+        return Err("Liquid broadcast request differs from its transaction digest".to_owned());
+    }
+    let transaction = parse_liquid_transaction(&raw)
+        .map_err(|error| format!("Liquid broadcast transaction is invalid: {error}"))?;
+    let transaction_id = lower_hex(&transaction.transaction_id);
+    let admission = runtime
+        .block_on(liquid.elementsd.require_mempool_acceptance_or_exact_known(
+            &rpc_id(&format!("{label}-mempool"))?,
+            &rpc_id(&format!("{label}-known"))?,
+            &raw,
+        ))
+        .map_err(|error| format!("elementsd rejected exact Liquid broadcast: {error}"))?;
+    let observed = match admission {
+        ElementsdMempoolAdmission::New => runtime
+            .block_on(
+                liquid
+                    .elementsd
+                    .broadcast(&rpc_id(&format!("{label}-broadcast"))?, &raw),
+            )
+            .map_err(|error| format!("elementsd Liquid broadcast failed: {error}"))?,
+        ElementsdMempoolAdmission::ExactKnown => transaction_id.clone(),
+    };
+    if observed != transaction_id {
+        return Err("elementsd returned another Liquid transaction ID".to_owned());
+    }
+    Ok(observed)
+}
+
+fn load_liquid_broadcast_artifact(
+    paths: &LabPaths,
+    journey_name: &str,
+    artifact_ref: &str,
+) -> Result<Vec<u8>, String> {
+    if artifact_ref != format!("lab-private-signed-exit:{journey_name}") {
+        return Err("Liquid broadcast artifact reference differs from its lab journey".to_owned());
+    }
+    decode_hex(&load_funded_signed_exit(paths, journey_name)?)
+}
+
 fn require_known_bitcoin_transaction(
     runtime: &Runtime,
     bitcoind: &BitcoindClient,
@@ -8871,6 +13082,319 @@ fn require_known_bitcoin_transaction(
         .block_on(bitcoind.raw_transaction(&rpc_id(label)?, transaction_id, true))
         .map_err(|error| format!("recorded Bitcoin transaction is not observable: {error}"))?;
     verify_known_bitcoin_transaction(&value, transaction_id, raw_transaction)
+}
+
+fn bitcoin_raw_transaction(
+    runtime: &Runtime,
+    bitcoind: &BitcoindClient,
+    expected_transaction_id: &str,
+    label: &str,
+) -> Result<String, String> {
+    let raw = runtime
+        .block_on(bitcoind.raw_transaction(&rpc_id(label)?, expected_transaction_id, false))
+        .map_err(|error| format!("could not read exact Bitcoin transaction: {error}"))?
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "bitcoind raw transaction result is not hexadecimal".to_owned())?;
+    if transaction_id(&raw)? != expected_transaction_id {
+        return Err("bitcoind raw transaction has another transaction ID".to_owned());
+    }
+    Ok(raw)
+}
+
+fn liquid_raw_transaction(
+    runtime: &Runtime,
+    liquid: &LiquidLabEnvironment,
+    expected_transaction_id: &str,
+    label: &str,
+) -> Result<String, String> {
+    let raw = runtime
+        .block_on(
+            liquid
+                .elementsd
+                .raw_transaction(&rpc_id(label)?, expected_transaction_id),
+        )
+        .map_err(|error| format!("could not read exact Liquid transaction: {error}"))?;
+    let parsed = parse_liquid_transaction(&raw)
+        .map_err(|error| format!("observed Liquid transaction is invalid: {error}"))?;
+    if lower_hex(&parsed.transaction_id) != expected_transaction_id {
+        return Err("elementsd raw transaction has another transaction ID".to_owned());
+    }
+    Ok(lower_hex(&raw))
+}
+
+fn contract_leg_rail_name<'a>(contract: &'a Value, leg_id: &str) -> Result<&'a str, String> {
+    contract
+        .get("legs")
+        .and_then(Value::as_array)
+        .and_then(|legs| {
+            legs.iter()
+                .find(|leg| leg.get("leg_id").and_then(Value::as_str) == Some(leg_id))
+        })
+        .and_then(|leg| leg.get("rail"))
+        .and_then(Value::as_str)
+        .filter(|rail| matches!(*rail, "bitcoin" | "liquid"))
+        .ok_or_else(|| format!("chain {leg_id} leg has no supported rail"))
+}
+
+fn chain_terminal_settlement_ids<'a>(
+    source_rail: &str,
+    destination_rail: &str,
+    source_claim_transaction_id: &'a str,
+    destination_claim_transaction_id: &'a str,
+) -> Result<(&'a str, &'a str), String> {
+    match (source_rail, destination_rail) {
+        ("bitcoin", "liquid") => Ok((
+            source_claim_transaction_id,
+            destination_claim_transaction_id,
+        )),
+        ("liquid", "bitcoin") => Ok((
+            destination_claim_transaction_id,
+            source_claim_transaction_id,
+        )),
+        _ => Err("chain terminal settlement rails are unsupported or duplicated".to_owned()),
+    }
+}
+
+fn validate_chain_destination_template(
+    contract: &Value,
+    direction: LiquidChainDirection,
+) -> Result<(), String> {
+    let rail = contract_leg_rail_name(contract, "destination")?;
+    let expected = match direction {
+        LiquidChainDirection::BitcoinToLiquid => "liquid",
+        LiquidChainDirection::LiquidToBitcoin => "bitcoin",
+    };
+    if rail != expected {
+        return Err("chain destination rail differs from its ordered asset pair".to_owned());
+    }
+    let verifier = verifier_for_leg(contract, "destination")?;
+    let raw = decode_hex(required_string(verifier, "funding_transaction")?)?;
+    let output_index = bounded_u32_member(verifier, "output_index")?;
+    let expected_amount = canonical_u64(required_string(verifier, "amount")?)?;
+    let expected_script = decode_hex(required_string(verifier, "script_pubkey")?)?;
+    match rail {
+        "bitcoin" => {
+            let transaction = Transaction::parse(&raw).map_err(|error| {
+                format!("chain destination Bitcoin template is invalid: {error}")
+            })?;
+            let output = transaction
+                .outputs
+                .get(usize::try_from(output_index).map_err(|_| {
+                    "chain destination Bitcoin output index exceeds usize".to_owned()
+                })?)
+                .ok_or_else(|| "chain destination Bitcoin output is absent".to_owned())?;
+            if output.value_sat != expected_amount || output.script_pubkey != expected_script {
+                return Err(
+                    "chain destination Bitcoin template differs from the Contract".to_owned(),
+                );
+            }
+        }
+        "liquid" => {
+            let transaction = parse_liquid_transaction(&raw).map_err(|error| {
+                format!("chain destination Liquid template is invalid: {error}")
+            })?;
+            let output = transaction
+                .outputs
+                .get(usize::try_from(output_index).map_err(|_| {
+                    "chain destination Liquid output index exceeds usize".to_owned()
+                })?)
+                .ok_or_else(|| "chain destination Liquid output is absent".to_owned())?;
+            if output.script_pubkey != expected_script {
+                return Err("chain destination Liquid script differs from the Contract".to_owned());
+            }
+        }
+        _ => return Err("chain destination template uses another rail".to_owned()),
+    }
+    Ok(())
+}
+
+fn chain_raw_transaction(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+    rail: &str,
+    transaction_id: &str,
+    label: &str,
+) -> Result<String, String> {
+    match rail {
+        "bitcoin" => bitcoin_raw_transaction(runtime, &environment.bitcoind, transaction_id, label),
+        "liquid" => liquid_raw_transaction(
+            runtime,
+            environment
+                .liquid
+                .as_ref()
+                .ok_or_else(|| "chain proof has no local elementsd".to_owned())?,
+            transaction_id,
+            label,
+        ),
+        _ => Err("chain proof uses an unsupported rail".to_owned()),
+    }
+}
+
+fn chain_lifecycle_event_ids(
+    records: &[Event],
+    offering: &Event,
+    close: &Event,
+) -> Result<Value, String> {
+    let exactly_one = |kind: u16, author: Option<&str>, label: &str| {
+        let events = records
+            .iter()
+            .filter(|record| record.kind == kind)
+            .filter(|record| author.is_none_or(|author| record.pubkey == author))
+            .collect::<Vec<_>>();
+        let [event] = events.as_slice() else {
+            return Err(format!(
+                "chain lifecycle does not contain exactly one {label}"
+            ));
+        };
+        Ok(event.id.clone())
+    };
+    let rfq_id = exactly_one(immortal_core::domain::MKT_RFQ_KIND, None, "RFQ")?;
+    let quote_id = exactly_one(MKT_QUOTE_KIND, None, "Quote")?;
+    let order_id = exactly_one(MKT_ORDER_KIND, None, "Order")?;
+    let requester_contract_id = exactly_one(
+        MKT_SWP_SWAP_CONTRACT_KIND,
+        Some(
+            records
+                .iter()
+                .find(|record| record.kind == immortal_core::domain::MKT_RFQ_KIND)
+                .ok_or_else(|| "chain lifecycle has no RFQ author".to_owned())?
+                .pubkey
+                .as_str(),
+        ),
+        "requester Contract",
+    )?;
+    let provider_contract_id = exactly_one(
+        MKT_SWP_SWAP_CONTRACT_KIND,
+        Some(offering.pubkey.as_str()),
+        "provider Contract",
+    )?;
+    let status_ids = records
+        .iter()
+        .filter(|record| record.kind == MKT_STATUS_KIND)
+        .map(|record| Value::String(record.id.clone()))
+        .collect::<Vec<_>>();
+    if status_ids.len() < 2 {
+        return Err("chain lifecycle has no signed Status progression".to_owned());
+    }
+    Ok(json!({
+        "offering_id":offering.id,
+        "rfq_id":rfq_id,
+        "quote_id":quote_id,
+        "order_id":order_id,
+        "requester_contract_id":requester_contract_id,
+        "provider_contract_id":provider_contract_id,
+        "status_ids":status_ids,
+        "close_id":close.id,
+    }))
+}
+
+fn liquid_lifecycle_event_ids(
+    records: &[Event],
+    offering_id: &str,
+    close_id: Option<&str>,
+) -> Result<Value, String> {
+    require_lower_hex_32(offering_id, "Liquid lifecycle Offering ID")?;
+    if let Some(close_id) = close_id {
+        require_lower_hex_32(close_id, "Liquid lifecycle Close ID")?;
+    }
+    let exactly_one = |kind: u16, author: Option<&str>, label: &str| {
+        let events = records
+            .iter()
+            .filter(|record| record.kind == kind)
+            .filter(|record| author.is_none_or(|author| record.pubkey == author))
+            .collect::<Vec<_>>();
+        let [event] = events.as_slice() else {
+            return Err(format!(
+                "Liquid lifecycle does not contain exactly one {label}"
+            ));
+        };
+        Ok(event.id.clone())
+    };
+    let rfq = records
+        .iter()
+        .find(|record| record.kind == immortal_core::domain::MKT_RFQ_KIND)
+        .ok_or_else(|| "Liquid lifecycle has no RFQ".to_owned())?;
+    let status_ids = records
+        .iter()
+        .filter(|record| record.kind == MKT_STATUS_KIND)
+        .map(|record| Value::String(record.id.clone()))
+        .collect::<Vec<_>>();
+    if status_ids.is_empty() {
+        return Err("Liquid lifecycle has no signed Status".to_owned());
+    }
+    Ok(json!({
+        "offering_id":offering_id,
+        "rfq_id":rfq.id,
+        "quote_id":exactly_one(MKT_QUOTE_KIND, None, "Quote")?,
+        "order_id":exactly_one(MKT_ORDER_KIND, None, "Order")?,
+        "requester_contract_id":exactly_one(
+            MKT_SWP_SWAP_CONTRACT_KIND,
+            Some(&rfq.pubkey),
+            "requester Contract",
+        )?,
+        "provider_contract_id":exactly_one(
+            MKT_SWP_SWAP_CONTRACT_KIND,
+            records
+                .iter()
+                .find(|record| record.kind == MKT_QUOTE_KIND)
+                .map(|record| record.pubkey.as_str()),
+            "provider Contract",
+        )?,
+        "status_ids":status_ids,
+        "close_id":close_id,
+    }))
+}
+
+fn chain_leg_process_proof(
+    rail: &str,
+    funding_transaction_id: &str,
+    funding_output_index: u32,
+    funding_transaction_hex: &str,
+    exit_transaction_id: &str,
+    exit_transaction_hex: &str,
+) -> Value {
+    let node_transaction_ids = match rail {
+        "bitcoin" => json!({
+            "bitcoind-a":funding_transaction_id,
+            "bitcoind-b":funding_transaction_id,
+        }),
+        "liquid" => json!({
+            "elementsd-provider-a":funding_transaction_id,
+            "elementsd-provider-b":funding_transaction_id,
+            "elementsd-wallet":funding_transaction_id,
+        }),
+        _ => json!({}),
+    };
+    let exit_node_transaction_ids = match rail {
+        "bitcoin" => json!({
+            "bitcoind-a":exit_transaction_id,
+            "bitcoind-b":exit_transaction_id,
+        }),
+        "liquid" => json!({
+            "elementsd-provider-a":exit_transaction_id,
+            "elementsd-provider-b":exit_transaction_id,
+            "elementsd-wallet":exit_transaction_id,
+        }),
+        _ => json!({}),
+    };
+    let outpoint = format!("{funding_transaction_id}:{funding_output_index}");
+    json!({
+        "lockup":{
+            "transaction_hex":funding_transaction_hex,
+            "transaction_id":funding_transaction_id,
+            "outpoint":outpoint,
+            "node_transaction_ids":node_transaction_ids,
+            "exact_node_byte_equality":true,
+        },
+        "exit":{
+            "transaction_hex":exit_transaction_hex,
+            "transaction_id":exit_transaction_id,
+            "spends_outpoint":format!("{funding_transaction_id}:{funding_output_index}"),
+            "node_transaction_ids":exit_node_transaction_ids,
+            "exact_node_byte_equality":true,
+        }
+    })
 }
 
 fn verify_known_bitcoin_transaction(
@@ -9108,6 +13632,549 @@ mod tests {
     const CHECKPOINT_FIXTURE: &str =
         include_str!("../../../tests/fixtures/lab/funded-checkpoints-v1.json");
     const MATRIX_FIXTURE: &str = include_str!("../../../tests/fixtures/lab/funded-matrix-v1.json");
+    const LIQUID_RAIL_FIXTURE: &str =
+        include_str!("../../../tests/fixtures/nipmkt/liquid-rail-v1.json");
+    const LIQUID_RUNTIME_FIXTURE: &str =
+        include_str!("../../../tests/fixtures/provider/liquid-runtime-v1.json");
+
+    #[test]
+    fn liquid_fee_schedule_replays_every_fixture_shape_at_a_non_lab_rate() {
+        let fixture: Value =
+            serde_json::from_str(LIQUID_RUNTIME_FIXTURE).expect("Liquid runtime fixture");
+        let expected = &fixture["fee_weights"]["at_10_sat_per_vbyte"];
+        let bitcoin = format!("swp:1:{NETWORK_ID}:btc:chain");
+        let liquid = "swp:1:bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:elements:1111111111111111111111111111111111111111111111111111111111111111:liquid";
+        let cases = [
+            (
+                "liquid_submarine",
+                LiquidSwapType::Submarine,
+                json!([liquid, format!("swp:1:{NETWORK_ID}:btc:lightning")]),
+            ),
+            (
+                "liquid_reverse",
+                LiquidSwapType::Reverse,
+                json!([format!("swp:1:{NETWORK_ID}:btc:lightning"), liquid]),
+            ),
+            (
+                "btc_to_lbtc_chain",
+                LiquidSwapType::Chain,
+                json!([bitcoin, liquid]),
+            ),
+            (
+                "lbtc_to_btc_chain",
+                LiquidSwapType::Chain,
+                json!([liquid, format!("swp:1:{NETWORK_ID}:btc:chain")]),
+            ),
+        ];
+        for (name, swap_type, asset_pair) in cases {
+            let vector = &expected[name];
+            let contract = json!({
+                "asset_pair":asset_pair,
+                "miner_fee_budget":vector["quote_budget_sat"].as_u64().expect("quote budget").to_string(),
+            });
+            let fees = liquid_fee_schedule(&contract, swap_type).expect("Liquid fee schedule");
+            assert_eq!(fees.sat_per_vbyte, 10);
+            let expected_funding_fee = if vector["requester_liquid_funding_cap_sat"].is_null() {
+                None
+            } else {
+                Some(fees.funding_fee_cap_sat)
+            };
+            assert_eq!(
+                vector["requester_liquid_funding_cap_sat"].as_u64(),
+                expected_funding_fee
+            );
+            let exit_fee = match vector["requester_exit_path"].as_str() {
+                Some("claim") => fees.claim_fee_sat,
+                Some("refund") => fees.refund_fee_sat,
+                _ => panic!("fixture exit path"),
+            };
+            assert_eq!(vector["requester_exit_fee_sat"], exit_fee);
+        }
+
+        let adversarial: Value =
+            serde_json::from_str(ADVERSARIAL_FIXTURE).expect("adversarial fixture");
+        assert_eq!(
+            liquid_submarine_invoice_amount_sat().expect("fixture-pinned invoice amount"),
+            adversarial["lab_profile"]["pricing"]["liquid_submarine_invoice_amount_sat"]
+        );
+    }
+
+    fn terminal_observation_request(
+        leg_id: &str,
+        rail: &str,
+        evidence_class: &str,
+        reference: &str,
+        verifier_policy: &str,
+    ) -> RailObservationRequest {
+        RailObservationRequest {
+            session_id: "11".repeat(32),
+            order_id: "22".repeat(32),
+            leg_id: leg_id.to_owned(),
+            outcome: "completed".to_owned(),
+            rail: rail.to_owned(),
+            evidence_class: evidence_class.to_owned(),
+            reference: reference.to_owned(),
+            rung: "settled".to_owned(),
+            verifier_policy: verifier_policy.to_owned(),
+            verifier_authority_sha256: "33".repeat(32),
+            finality_state: "settled".to_owned(),
+            unfunded_destination: None,
+        }
+    }
+
+    #[test]
+    fn liquid_terminal_binding_requires_exact_output_and_spend_identity() {
+        let fixture: Value =
+            serde_json::from_str(LIQUID_RAIL_FIXTURE).expect("Liquid rail fixture");
+        let raw = fixture["parser_vectors"][0]["raw_transaction"]
+            .as_str()
+            .expect("accepted Liquid parser transaction");
+        let funding = parse_liquid_transaction(&decode_hex(raw).expect("Liquid transaction hex"))
+            .expect("Liquid funding transaction");
+        let funding_transaction_id = lower_hex(&funding.transaction_id);
+        let outpoint = format!("{funding_transaction_id}:0");
+        let contract = json!({
+            "verifier_inputs":[{
+                "leg_id":"destination",
+                "funding_transaction":raw,
+                "output_index":0,
+            }]
+        });
+        let output = terminal_observation_request(
+            "destination",
+            "liquid",
+            "liquid_output",
+            &outpoint,
+            "mkt-swp-liquid-v1",
+        );
+        let output_binding =
+            liquid_terminal_binding(&output, &outpoint, Some(&"44".repeat(32)), &contract)
+                .expect("exact Liquid output binding");
+        assert!(!output_binding.requires_spend);
+        assert_eq!(
+            output_binding.terminal_transaction_id,
+            funding_transaction_id
+        );
+
+        let spend = terminal_observation_request(
+            "destination",
+            "liquid",
+            "liquid_spend",
+            &outpoint,
+            "mkt-swp-liquid-v1",
+        );
+        let settlement = "55".repeat(32);
+        let spend_binding =
+            liquid_terminal_binding(&spend, &outpoint, Some(&settlement), &contract)
+                .expect("exact Liquid spend binding");
+        assert!(spend_binding.requires_spend);
+        assert_eq!(spend_binding.terminal_transaction_id, settlement);
+        assert!(liquid_terminal_binding(&spend, &outpoint, None, &contract).is_err());
+        assert!(
+            liquid_terminal_binding(&spend, &format!("{}:1", "66".repeat(32)), None, &contract)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn liquid_terminal_metadata_is_locally_derived_and_rejects_close_mutation() {
+        let fixture: Value =
+            serde_json::from_str(LIQUID_RAIL_FIXTURE).expect("Liquid rail fixture");
+        let raw = decode_hex(
+            fixture["parser_vectors"][0]["raw_transaction"]
+                .as_str()
+                .expect("accepted Liquid parser transaction"),
+        )
+        .expect("Liquid transaction hex");
+        let funding = parse_liquid_transaction(&raw).expect("Liquid funding transaction");
+        let funding_transaction_id = lower_hex(&funding.transaction_id);
+        let settlement_transaction_id = "55".repeat(32);
+        let spend_binding = LiquidTerminalBinding {
+            funding_raw: raw.clone(),
+            funding_transaction_id: funding_transaction_id.clone(),
+            funding_output_index: 0,
+            terminal_transaction_id: settlement_transaction_id.clone(),
+            requires_spend: true,
+        };
+        let outpoint = format!("{funding_transaction_id}:0");
+        let mut spend_request = terminal_observation_request(
+            "chain",
+            "liquid",
+            "liquid_spend",
+            &outpoint,
+            "mkt-swp-liquid-v1",
+        );
+        let submarine_contract = json!({"swap_type":"submarine"});
+        let (submarine_artifact, submarine_view) = liquid_terminal_artifact_and_view(
+            &spend_request,
+            &spend_binding,
+            &raw,
+            &"66".repeat(32),
+            &submarine_contract,
+        )
+        .expect("submarine Liquid evidence is derived");
+        let expected_submarine_artifact = provider_support::canonical_json(&json!({
+            "claim_txid":settlement_transaction_id,
+        }))
+        .map(|bytes| lower_hex(&sha256(&bytes)))
+        .expect("canonical submarine artifact");
+        assert_eq!(submarine_artifact, expected_submarine_artifact);
+        assert_eq!(
+            submarine_view,
+            "provider Liquid claim reached reorg-safe finality"
+        );
+
+        let payment_hash = "77".repeat(32);
+        let reverse_contract = json!({
+            "swap_type":"reverse",
+            "payment_hash":payment_hash,
+        });
+        let (reverse_artifact, reverse_view) = liquid_terminal_artifact_and_view(
+            &spend_request,
+            &spend_binding,
+            &raw,
+            &"66".repeat(32),
+            &reverse_contract,
+        )
+        .expect("reverse Liquid evidence is derived");
+        let expected_reverse_artifact = provider_support::canonical_json(&json!({
+            "claim_txid":settlement_transaction_id,
+            "payment_hash":payment_hash,
+            "state":"settled",
+        }))
+        .map(|bytes| lower_hex(&sha256(&bytes)))
+        .expect("canonical reverse artifact");
+        assert_eq!(reverse_artifact, expected_reverse_artifact);
+        assert_eq!(
+            reverse_view,
+            "requester Liquid claim verified before hold settlement"
+        );
+
+        spend_request.leg_id = "source".to_owned();
+        let (chain_artifact, chain_view) = liquid_terminal_artifact_and_view(
+            &spend_request,
+            &spend_binding,
+            &raw,
+            &"66".repeat(32),
+            &json!({"swap_type":"chain"}),
+        )
+        .expect("chain Liquid evidence is derived");
+        assert_eq!(chain_artifact, expected_submarine_artifact);
+        assert_eq!(
+            chain_view,
+            "provider source claim reached reorg-safe finality"
+        );
+
+        let output_binding = LiquidTerminalBinding {
+            funding_raw: raw.clone(),
+            funding_transaction_id,
+            funding_output_index: 0,
+            terminal_transaction_id: "88".repeat(32),
+            requires_spend: false,
+        };
+        let output_request = terminal_observation_request(
+            "destination",
+            "liquid",
+            "liquid_output",
+            &outpoint,
+            "mkt-swp-liquid-v1",
+        );
+        let block_hash = "99".repeat(32);
+        let (output_artifact, output_view) = liquid_terminal_artifact_and_view(
+            &output_request,
+            &output_binding,
+            &raw,
+            &block_hash,
+            &json!({"swap_type":"chain"}),
+        )
+        .expect("Liquid output evidence is derived");
+        assert_eq!(output_artifact, lower_hex(&sha256(&raw)));
+        assert_eq!(output_view, block_hash);
+
+        let derived = DerivedLiquidTerminalEvidence {
+            artifact_sha256: reverse_artifact,
+            view: reverse_view,
+            external_identifier: "elementsd:test".to_owned(),
+        };
+        let mut close_evidence = Map::from_iter([
+            (
+                "artifact_sha256".to_owned(),
+                Value::String(derived.artifact_sha256.clone()),
+            ),
+            ("view".to_owned(), Value::String(derived.view.clone())),
+        ]);
+        require_exact_liquid_terminal_metadata(&close_evidence, &derived)
+            .expect("exact locally derived Liquid metadata");
+        close_evidence.insert("artifact_sha256".to_owned(), Value::String("aa".repeat(32)));
+        assert!(require_exact_liquid_terminal_metadata(&close_evidence, &derived).is_err());
+        close_evidence.insert(
+            "artifact_sha256".to_owned(),
+            Value::String(derived.artifact_sha256.clone()),
+        );
+        close_evidence.insert(
+            "view".to_owned(),
+            Value::String("provider supplied another view".to_owned()),
+        );
+        assert!(require_exact_liquid_terminal_metadata(&close_evidence, &derived).is_err());
+    }
+
+    #[test]
+    fn terminal_close_requires_one_reference_for_each_contract_leg() {
+        let outpoint = format!("{}:0", "44".repeat(32));
+        let payment_hash = "55".repeat(32);
+        let liquid_reference = json!({
+            "artifact_sha256":"66".repeat(32),
+            "class":"liquid_spend",
+            "observed_at":1,
+            "producer_pubkey":"77".repeat(32),
+            "rail":"liquid",
+            "reference":outpoint,
+            "rung":"settled",
+            "verifier_policy":"mkt-swp-liquid-v1",
+            "verifier_pubkey":null,
+            "view":"local elementsd",
+        });
+        let lightning_reference = json!({
+            "artifact_sha256":"88".repeat(32),
+            "class":"lightning_payment",
+            "observed_at":1,
+            "producer_pubkey":"77".repeat(32),
+            "rail":"lightning",
+            "reference":payment_hash,
+            "rung":"settled",
+            "verifier_policy":"mkt-swp-lightning-v1",
+            "verifier_pubkey":null,
+            "view":"requester CLN",
+        });
+        let close = |references: Vec<Value>| Event {
+            id: "99".repeat(32),
+            pubkey: "77".repeat(32),
+            created_at: 1,
+            kind: MKT_CLOSE_KIND,
+            tags: Vec::new(),
+            content: json!({"mkt_swp":{"loss_accounting":{"evidence_refs":references}}})
+                .to_string(),
+            sig: "aa".repeat(64),
+        };
+        let liquid_request = terminal_observation_request(
+            "destination",
+            "liquid",
+            "liquid_spend",
+            &outpoint,
+            "mkt-swp-liquid-v1",
+        );
+        let lightning_request = terminal_observation_request(
+            "lightning",
+            "lightning",
+            "lightning_payment",
+            &payment_hash,
+            "mkt-swp-lightning-v1",
+        );
+        let exact = close(vec![liquid_reference.clone(), lightning_reference.clone()]);
+        exact_close_evidence_reference(&exact, &liquid_request)
+            .expect("one exact Liquid reference");
+        exact_close_evidence_reference(&exact, &lightning_request)
+            .expect("one exact Lightning reference");
+        assert!(
+            exact_close_evidence_reference(
+                &close(vec![liquid_reference.clone(), liquid_reference]),
+                &liquid_request
+            )
+            .is_err()
+        );
+        assert!(
+            exact_close_evidence_reference(&close(vec![lightning_reference]), &liquid_request)
+                .is_err()
+        );
+
+        let contract = json!({"legs":[{"leg_id":"source"},{"leg_id":"destination"}]});
+        assert_eq!(
+            contract_leg_ids(&contract).expect("two exact contract legs"),
+            vec!["source", "destination"]
+        );
+        let duplicate = json!({"legs":[{"leg_id":"source"},{"leg_id":"source"}]});
+        assert!(contract_leg_ids(&duplicate).is_err());
+    }
+
+    #[test]
+    fn chain_terminal_settlements_cover_both_rail_orientations() {
+        let source_claim = "11".repeat(32);
+        let destination_claim = "22".repeat(32);
+        let (bitcoin, liquid) =
+            chain_terminal_settlement_ids("bitcoin", "liquid", &source_claim, &destination_claim)
+                .expect("BTC to Liquid settlements");
+        assert_eq!(
+            (bitcoin, liquid),
+            (source_claim.as_str(), destination_claim.as_str())
+        );
+
+        let (bitcoin, liquid) =
+            chain_terminal_settlement_ids("liquid", "bitcoin", &source_claim, &destination_claim)
+                .expect("Liquid to BTC settlements");
+        assert_eq!(
+            (bitcoin, liquid),
+            (destination_claim.as_str(), source_claim.as_str())
+        );
+        assert!(!bitcoin.is_empty() && !liquid.is_empty());
+        assert!(
+            chain_terminal_settlement_ids("liquid", "liquid", &source_claim, &destination_claim)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn liquid_doomsday_state_uses_case_specific_journey_keys() {
+        assert_eq!(
+            liquid_doomsday_journey_name(
+                DoomsdayCase::LiquidSubmarineProviderGone,
+                "liquid_submarine"
+            ),
+            Ok("liquid_submarine_provider_gone")
+        );
+        assert_eq!(
+            liquid_doomsday_journey_name(
+                DoomsdayCase::LiquidReverseCoordinatorGone,
+                "liquid_reverse"
+            ),
+            Ok("liquid_reverse_coordinator_gone")
+        );
+        assert!(
+            liquid_doomsday_journey_name(
+                DoomsdayCase::LiquidSubmarineProviderGone,
+                "liquid_reverse"
+            )
+            .is_err()
+        );
+        assert!(
+            liquid_doomsday_journey_name(DoomsdayCase::SubmarineProviderGone, "liquid_submarine")
+                .is_err()
+        );
+        for case in [
+            DoomsdayCase::LiquidSubmarineProviderGone,
+            DoomsdayCase::LiquidReverseCoordinatorGone,
+        ] {
+            assert!(case.journey_name().len() <= 32);
+        }
+    }
+
+    #[test]
+    fn requester_statuses_enumerate_every_provider_causal_prerequisite() {
+        let expected = [
+            ("requester_verification_passed", "lock_terms_ready"),
+            ("requester_invoice_verified", "hold_invoice_ready"),
+            ("requester_lock_verified", "provider_lock_terms_ready"),
+            ("requester_claim_pending", "funding_final"),
+            ("requester_source_verified", "source_lock_terms_ready"),
+            (
+                "requester_destination_verified",
+                "destination_lock_terms_ready",
+            ),
+            ("requester_source_broadcast", "source_funding_required"),
+            (
+                "requester_destination_claim_pending",
+                "destination_funding_final",
+            ),
+            (
+                "requester_source_refund_pending",
+                "provider_destination_refunded",
+            ),
+        ];
+        for (requester_state, provider_state) in expected {
+            assert_eq!(
+                requester_status_provider_prerequisite(requester_state),
+                Some(provider_state)
+            );
+        }
+        for independent in [
+            "lightning_payment_pending",
+            "requester_funding_broadcast",
+            "requester_claimed",
+            "requester_destination_claimed",
+            "refund_prepared",
+            "refund_pending",
+            "refunded",
+        ] {
+            assert_eq!(requester_status_provider_prerequisite(independent), None);
+        }
+    }
+
+    #[test]
+    fn doomsday_and_normal_requester_publishers_share_exact_claim_prerequisite() {
+        let status = |id: &str, state: &str| Event {
+            id: id.to_owned(),
+            pubkey: "provider".to_owned(),
+            created_at: 1,
+            kind: MKT_STATUS_KIND,
+            tags: Vec::new(),
+            content: json!({"mkt_swp":{"swp_state":state}}).to_string(),
+            sig: "00".repeat(64),
+        };
+        let funding_final = status("funding-final", "funding_final");
+        assert_eq!(
+            requester_status_provider_prerequisite("requester_claim_pending"),
+            Some("funding_final")
+        );
+        assert_eq!(
+            requester_status_provider_prerequisite_event(
+                std::slice::from_ref(&funding_final),
+                "provider",
+                "requester_claim_pending"
+            )
+            .expect("exact provider prerequisite")
+            .map(|event| event.id.as_str()),
+            Some("funding-final")
+        );
+        assert!(
+            requester_status_provider_prerequisite_event(
+                &[],
+                "provider",
+                "requester_claim_pending"
+            )
+            .is_err()
+        );
+        assert!(
+            requester_status_provider_prerequisite_event(
+                &[funding_final.clone(), status("duplicate", "funding_final")],
+                "provider",
+                "requester_claim_pending"
+            )
+            .is_err()
+        );
+        assert_eq!(
+            requester_status_provider_prerequisite_event(
+                &[funding_final],
+                "provider",
+                "requester_claimed"
+            ),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn liquid_claim_requires_retained_pre_fund_authorization() {
+        let fixture: Value =
+            serde_json::from_str(ADVERSARIAL_FIXTURE).expect("adversarial fixture should parse");
+        assert_eq!(
+            fixture
+                .pointer("/evidence/liquid_case_record/liquid_exit_authorization")
+                .and_then(Value::as_str),
+            Some("retained-pre-fund-capability")
+        );
+        assert_eq!(
+            fixture
+                .pointer("/evidence/liquid_case_record/claim_finality")
+                .and_then(Value::as_str),
+            Some("contract-terminal-confirmations")
+        );
+        assert_eq!(
+            fixture.pointer("/evidence/liquid_case_record/verification_boundaries"),
+            Some(&json!({
+                "source_preflight_before":"requester_source_verified",
+                "destination_preflight_after":"destination_lock_terms_ready",
+                "combined_authorization_before":"requester_destination_verified",
+            }))
+        );
+    }
 
     #[test]
     fn relay_event_extraction_retains_exact_outer_bytes() {

@@ -4838,6 +4838,9 @@ fn validate_mkt_swp_offering(event: &Event) -> Result<(), String> {
             ("chain", "lightning") if input_network == output_network => "submarine",
             ("lightning", "chain") if input_network == output_network => "reverse",
             ("chain", "chain") if input_network != output_network => "chain",
+            ("liquid", "lightning") => "submarine",
+            ("lightning", "liquid") => "reverse",
+            ("chain", "liquid") | ("liquid", "chain") => "chain",
             _ => {
                 return Err(swp_error(
                     "swp_invalid_pair",
@@ -5065,6 +5068,9 @@ pub fn validate_mkt_swp_evidence_reference(value: &Value) -> Result<(), String> 
             | "bitcoin_transaction"
             | "bitcoin_output"
             | "bitcoin_spend"
+            | "liquid_transaction"
+            | "liquid_output"
+            | "liquid_spend"
             | "reservation"
             | "covenant_reserve"
             | "claim"
@@ -5163,6 +5169,7 @@ fn validate_swp_evidence_rail_reference(
         | "refund"
         | "reorg"
         | "replacement" => Some("bitcoin"),
+        "liquid_transaction" | "liquid_output" | "liquid_spend" => Some("liquid"),
         "reservation" => None,
         _ => None,
     };
@@ -5177,10 +5184,11 @@ fn validate_swp_evidence_rail_reference(
         | "lightning_htlc"
         | "lightning_payment"
         | "bitcoin_transaction"
+        | "liquid_transaction"
         | "claim"
         | "refund" => lower_hex_32(reference, "MKT-SWP evidence reference")
             .map_err(|detail| swp_error("swp_evidence_mismatch", detail)),
-        "bitcoin_output" | "bitcoin_spend" => {
+        "bitcoin_output" | "bitcoin_spend" | "liquid_output" | "liquid_spend" => {
             let (transaction_id, output_index) = reference.split_once(':').ok_or_else(|| {
                 swp_error(
                     "swp_evidence_mismatch",
@@ -5259,6 +5267,12 @@ fn reject_swp_secret_material(value: &Value) -> Result<(), String> {
                         | "nwc_string"
                         | "musig_secret_nonce"
                         | "signing_nonce"
+                        | "blinding_key"
+                        | "blindingkey"
+                        | "value_blinder"
+                        | "valueblinder"
+                        | "asset_blinder"
+                        | "assetblinder"
                 ) {
                     return Err(swp_error(
                         "swp_secret_material_forbidden",
@@ -5456,20 +5470,40 @@ fn validate_swp_asset_id(value: &str) -> Result<(&str, &str), String> {
             "asset ID has the wrong profile",
         ));
     };
-    let Some((network, rail)) = value.rsplit_once(":btc:") else {
+    if let Some((network, rail)) = value.rsplit_once(":btc:") {
+        validate_swp_network_id(network)?;
+        if !matches!(rail, "chain" | "lightning") {
+            return Err(swp_error(
+                "swp_invalid_asset_id",
+                "asset ID has an unknown rail",
+            ));
+        }
+        return Ok((network, rail));
+    }
+    let Some((network, liquid)) = value.split_once(":elements:") else {
         return Err(swp_error(
             "swp_invalid_asset_id",
             "asset ID has the wrong shape",
         ));
     };
-    validate_swp_network_id(network)?;
-    if !matches!(rail, "chain" | "lightning") {
+    let Some(asset) = liquid.strip_suffix(":liquid") else {
         return Err(swp_error(
             "swp_invalid_asset_id",
-            "asset ID has an unknown rail",
+            "Elements asset ID has an unknown rail",
+        ));
+    };
+    validate_swp_network_id(network)?;
+    if asset.len() != 64
+        || !asset
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err(swp_error(
+            "swp_invalid_asset_id",
+            "Elements asset ID is not lowercase 32-byte hex",
         ));
     }
-    Ok((network, rail))
+    Ok((network, "liquid"))
 }
 
 fn swp_error(code: &str, detail: impl fmt::Display) -> String {

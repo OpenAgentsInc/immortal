@@ -42,6 +42,8 @@ expected_counts = {
     "wallet_cln_nodes": 1,
     "provider_cln_nodes": 2,
     "provider_bitcoind_nodes": 2,
+    "provider_elementsd_nodes": 2,
+    "wallet_elementsd_nodes": 1,
 }
 for key, expected in expected_counts.items():
     if topology.get(key) != expected:
@@ -70,6 +72,34 @@ if lightning != {
     "cross_provider_rpc_access": False,
 }:
     raise SystemExit("provider Lightning isolation contract changed")
+liquid = topology.get("liquid", {})
+liquid_case_ids = [
+    "route-chain-btc-to-lbtc-provider-a",
+    "route-chain-btc-to-lbtc-provider-b",
+    "route-chain-lbtc-to-btc-provider-a",
+    "route-chain-lbtc-to-btc-provider-b",
+    "route-liquid-submarine-provider-a",
+    "route-liquid-submarine-provider-b",
+    "route-liquid-reverse-provider-a",
+    "route-liquid-reverse-provider-b",
+    "doomsday-liquid-submarine-provider-gone",
+    "doomsday-liquid-reverse-coordinator-gone",
+]
+if liquid != {
+    "implementation": "elementsd",
+    "network": "elementsregtest",
+    "node_count": 3,
+    "provider_nodes": 2,
+    "wallet_nodes": 1,
+    "nodes_peered": True,
+    "shared_process": False,
+    "shared_data_directory": False,
+    "shared_rpc_credentials": False,
+    "cross_provider_rpc_access": False,
+    "confidential_scope": "own-output-unblinding",
+    "enabled_only_for_cases": liquid_case_ids,
+}:
+    raise SystemExit("Liquid three-node isolation contract changed")
 
 profile = fixture.get("lab_profile", {})
 if profile != {
@@ -79,6 +109,15 @@ if profile != {
     "tiny_quote_expiry_seconds": 3,
     "tiny_hold_invoice_expiry_seconds": 30,
     "production_defaults_unchanged": True,
+    "pricing": {
+        "source": "configured_fallback_only",
+        "sat_per_vbyte": 2,
+        "spread_bps": 100,
+        "lightning_routing_fee_ppm": 2900,
+        "min_swap_sat": 10000,
+        "max_swap_sat": 1000000,
+        "liquid_submarine_invoice_amount_sat": 98110,
+    },
 }:
     raise SystemExit("regtest-only timeout profile contract changed")
 
@@ -87,6 +126,14 @@ expected_ids = {
     "route-submarine-provider-b",
     "route-reverse-provider-a",
     "route-reverse-provider-b",
+    "route-chain-btc-to-lbtc-provider-a",
+    "route-chain-btc-to-lbtc-provider-b",
+    "route-chain-lbtc-to-btc-provider-a",
+    "route-chain-lbtc-to-btc-provider-b",
+    "route-liquid-submarine-provider-a",
+    "route-liquid-submarine-provider-b",
+    "route-liquid-reverse-provider-a",
+    "route-liquid-reverse-provider-b",
     "rank-two-cancelled-without-effect",
     "relay-a-partition",
     "relay-b-partition",
@@ -111,6 +158,8 @@ expected_ids = {
     "reverse-requester-noncooperative-provider-refund",
     "doomsday-submarine-provider-gone",
     "doomsday-reverse-coordinator-gone",
+    "doomsday-liquid-submarine-provider-gone",
+    "doomsday-liquid-reverse-coordinator-gone",
     "doomsday-keyless-esplora-broadcast",
     "musig2-submarine-provider-a",
     "musig2-submarine-provider-b",
@@ -128,11 +177,170 @@ if set(case_ids) != expected_ids:
     missing = sorted(expected_ids - set(case_ids))
     extra = sorted(set(case_ids) - expected_ids)
     raise SystemExit(f"adversarial scenario closure changed: missing={missing}, extra={extra}")
-if len(case_ids) > fixture.get("execution", {}).get("maximum_cases", 0):
-    raise SystemExit("adversarial scenario count exceeds its bound")
+if fixture.get("execution", {}).get("maximum_cases") != 48:
+    raise SystemExit("adversarial scenario maximum is not 48")
+if len(case_ids) != 43:
+    raise SystemExit("adversarial scenario closure is not the exact 43-case matrix")
+if [case["id"] for case in groups["routing"] if case["id"] in liquid_case_ids] != liquid_case_ids[:8]:
+    raise SystemExit("Liquid routing cases are not the exact ordered extension")
+if [case["id"] for case in groups["doomsday"] if case["id"] in liquid_case_ids] != liquid_case_ids[8:]:
+    raise SystemExit("Liquid doomsday cases are not the exact ordered extension")
 for case in cases:
     if not isinstance(case.get("expected"), str) or not case["expected"]:
         raise SystemExit(f"scenario {case.get('id')} has no expected result")
+
+evidence = fixture.get("evidence", {})
+for view in (
+    "elementsd-provider-a",
+    "elementsd-provider-b",
+    "elementsd-wallet",
+):
+    if view not in evidence.get("independent_views", []):
+        raise SystemExit(f"Liquid evidence omits independent view {view}")
+for check in (
+    "liquid-raw-transaction-and-id",
+    "liquid-outpoint-spend-lineage",
+    "liquid-provider-restart-exact-known-replay",
+):
+    if check not in evidence.get("required_checks", []):
+        raise SystemExit(f"Liquid evidence omits required check {check}")
+def liquid_case(
+    shape,
+    selected_provider,
+    rails,
+    provider_effect_operations,
+    provider_status_anchors,
+    provider_restart_required,
+    liquid_terminal_actor,
+    liquid_terminal_path,
+    recovery,
+):
+    if shape.startswith("chain-"):
+        lightning_terminal = None
+    elif recovery == "presigned-refund":
+        lightning_terminal = {
+            "actor": "requester",
+            "effect_actor": None,
+            "operation": None,
+            "status_anchor": None,
+            "state": "unpaid_final",
+            "observation_authority": "requester-cln",
+        }
+    elif shape == "liquid-submarine":
+        lightning_terminal = {
+            "actor": "requester",
+            "effect_actor": "provider",
+            "operation": "invoice_pay",
+            "status_anchor": "lightning_paid",
+            "state": "settled",
+            "observation_authority": "requester-cln",
+        }
+    else:
+        lightning_terminal = {
+            "actor": "requester",
+            "effect_actor": "provider",
+            "operation": "invoice_settle",
+            "status_anchor": "lightning_paid",
+            "state": "settled",
+            "observation_authority": "requester-cln",
+        }
+    return {
+        "shape": shape,
+        "selected_provider": selected_provider,
+        "rails": rails,
+        "provider_effect_operations": provider_effect_operations,
+        "provider_status_anchors": provider_status_anchors,
+        "lightning_terminal": lightning_terminal,
+        "provider_restart_required": provider_restart_required,
+        "liquid_terminal_actor": liquid_terminal_actor,
+        "liquid_terminal_path": liquid_terminal_path,
+        "recovery": recovery,
+    }
+
+expected_liquid_cases = {
+    "route-chain-btc-to-lbtc-provider-a": liquid_case(
+        "chain-btc-to-lbtc", "provider-a", ["bitcoin", "liquid"],
+        ["liquid_chain_fund", "chain_claim"], ["provider_destination_broadcast"],
+        True, "requester", "claim", None,
+    ),
+    "route-chain-btc-to-lbtc-provider-b": liquid_case(
+        "chain-btc-to-lbtc", "provider-b", ["bitcoin", "liquid"],
+        ["liquid_chain_fund", "chain_claim"], ["provider_destination_broadcast"],
+        True, "requester", "claim", None,
+    ),
+    "route-chain-lbtc-to-btc-provider-a": liquid_case(
+        "chain-lbtc-to-btc", "provider-a", ["bitcoin", "liquid"],
+        ["chain_fund", "liquid_chain_claim"], ["provider_destination_broadcast"],
+        True, "provider", "claim", None,
+    ),
+    "route-chain-lbtc-to-btc-provider-b": liquid_case(
+        "chain-lbtc-to-btc", "provider-b", ["bitcoin", "liquid"],
+        ["chain_fund", "liquid_chain_claim"], ["provider_destination_broadcast"],
+        True, "provider", "claim", None,
+    ),
+    "route-liquid-submarine-provider-a": liquid_case(
+        "liquid-submarine", "provider-a", ["liquid"], ["liquid_submarine_claim"],
+        ["provider_claim_pending", "provider_claimed"], True, "provider", "claim", None,
+    ),
+    "route-liquid-submarine-provider-b": liquid_case(
+        "liquid-submarine", "provider-b", ["liquid"], ["liquid_submarine_claim"],
+        ["provider_claim_pending", "provider_claimed"], True, "provider", "claim", None,
+    ),
+    "route-liquid-reverse-provider-a": liquid_case(
+        "liquid-reverse", "provider-a", ["liquid"], ["liquid_reverse_fund"],
+        ["provider_funding_broadcast"], True, "requester", "claim", None,
+    ),
+    "route-liquid-reverse-provider-b": liquid_case(
+        "liquid-reverse", "provider-b", ["liquid"], ["liquid_reverse_fund"],
+        ["provider_funding_broadcast"], True, "requester", "claim", None,
+    ),
+    "doomsday-liquid-submarine-provider-gone": liquid_case(
+        "liquid-submarine", "provider-a", ["liquid"], [], [], False,
+        "requester", "refund", "presigned-refund",
+    ),
+    "doomsday-liquid-reverse-coordinator-gone": liquid_case(
+        "liquid-reverse", "provider-a", ["liquid"], ["liquid_reverse_fund"],
+        ["provider_funding_broadcast"], False, "requester", "claim",
+        "direct-claim-and-hold-settlement",
+    ),
+}
+if evidence.get("liquid_case_record") != {
+    "schema": "openagents.immortal.adversarial-liquid-case.v1",
+    "case_count": 10,
+    "signed_lifecycle": [
+        "offering",
+        "rfq",
+        "quote",
+        "order",
+        "requester-contract",
+        "provider-contract",
+        "status",
+        "close-or-explicit-coordinator-absent-null",
+    ],
+    "provider_signing_source": "immortal-provider-process",
+    "relay_transport": "signed-gift-wrapped-lifecycle",
+    "standalone_rail_probe": False,
+    "transaction_encoding": "lowercase-hex",
+    "exact_raw_transactions": True,
+    "exact_outpoints": True,
+    "three_node_byte_equality": True,
+    "exact_known_replay_after_restart": True,
+    "mine_after_exact_transaction_observation": True,
+    "requester_claim_pending_signer": "requester-process",
+    "requester_claim_pending_base_state": "executing",
+    "liquid_exit_authorization": "retained-pre-fund-capability",
+    "claim_finality": "contract-terminal-confirmations",
+    "verification_boundaries": {
+        "source_preflight_before": "requester_source_verified",
+        "destination_preflight_after": "destination_lock_terms_ready",
+        "combined_authorization_before": "requester_destination_verified",
+    },
+    "cases": expected_liquid_cases,
+    "custody_material": False,
+}:
+    raise SystemExit("Liquid retained-case evidence schema changed")
+if evidence.get("retained_record", {}).get("contains_raw_transactions") is not True:
+    raise SystemExit("Liquid retained records do not admit exact transaction bytes")
 
 doomsday = fixture.get("doomsday_contract", {})
 if doomsday.get("database_or_ui_reconstruction") is not False:
@@ -141,6 +349,8 @@ if doomsday.get("keyless_broadcaster_accepts_signing_material") is not False:
     raise SystemExit("keyless broadcaster accepts signing material")
 if "authenticated-direct-counterparty-channel" not in doomsday.get("retain_only", []):
     raise SystemExit("doomsday recovery has no direct authenticated channel")
+if "liquid-elements-access" not in doomsday.get("retain_only", []):
+    raise SystemExit("Liquid doomsday recovery has no explicit Elements rail access")
 requester_processes = doomsday.get("requester_processes", {})
 if requester_processes != {
     "prepare": "persist_post_contract_recovery_state_then_exit",
@@ -192,6 +402,8 @@ if doomsday.get("real_regtest_terminal_proof") != [
     raise SystemExit("doomsday terminal proof is not bound to real rails")
 
 claims = fixture.get("claims", {})
+if claims.get("liquid_chain_local_capability") is not True:
+    raise SystemExit("adversarial manifest omits bounded local Liquid chain capability")
 for forbidden in (
     "chain_swap",
     "liquid",
@@ -214,6 +426,28 @@ if ! grep -Fqx "while IFS=\$'\\t' read -r -u 3 case_id group expected provider; 
     scripts/test-lab-adversarial.sh \
   || ! grep -Fqx 'done 3<"${case_file}"' scripts/test-lab-adversarial.sh; then
   echo "test-lab-adversarial-manifest: aggregate runner does not isolate manifest input" >&2
+  exit 1
+fi
+
+for service in elements-provider-a elements-provider-b elements-wallet; do
+  if ! grep -Fq "  ${service}:" scripts/support/provider-funded/adversarial-compose.yaml; then
+    echo "test-lab-adversarial-manifest: missing ${service} process" >&2
+    exit 1
+  fi
+done
+if test "$(grep -Fc '    profiles: ["liquid"]' scripts/support/provider-funded/adversarial-compose.yaml)" -ne 3 \
+  || ! grep -Fq '    compose_prefix+=(--profile liquid)' scripts/test-lab-adversarial.sh \
+  || ! grep -Fq 'external_checkpoint=chain:provider_funding_effect_recorded' scripts/test-lab-adversarial.sh \
+  || ! grep -Fq 'IMMORTAL_PROVIDER_ELEMENTSD_WALLET=provider-a-liquid' scripts/test-lab-adversarial.sh \
+  || ! grep -Fq 'IMMORTAL_PROVIDER_ELEMENTSD_WALLET=provider-b-liquid' scripts/test-lab-adversarial.sh \
+  || ! grep -Fq 'IMMORTAL_LAB_ADVERSARIAL_ELEMENTSD_WALLET=requester-liquid' scripts/test-lab-adversarial.sh; then
+  echo "test-lab-adversarial-manifest: Liquid process dispatch is incomplete" >&2
+  exit 1
+fi
+if grep -Fq 'test-provider-liquid.sh' scripts/test-lab-adversarial.sh \
+  || grep -Eq 'IMMORTAL_LAB_[A-Z0-9_]*PROVIDER[A-Z0-9_]*(SECRET|SEED|PRIVATE)' \
+    scripts/test-lab-adversarial.sh; then
+  echo "test-lab-adversarial-manifest: Liquid lab bypasses the shipped provider signer" >&2
   exit 1
 fi
 

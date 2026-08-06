@@ -20,9 +20,10 @@
       "miner_fee_budget_sat": 800,
       "lightning_routing_fee_budget_sat": 0,
       "expected_output_amount": "1000",
-      "expected_profile_sha256": "cc81c2be328524bed50fe00fd0658385373dc659263a6908391934ce9960b7e6",
+      "expected_profile_sha256": "cf7a202cfe8eb24a305b5f9153207dffa1406721ec7973804d9aec6ad9622fb3",
       "expected_script_pubkey": "5120cd180cc038bffe02845abad2c108c9867dc1adcb62c2c22c12b53c94f9c4877b",
       "expected_output_key": "cd180cc038bffe02845abad2c108c9867dc1adcb62c2c22c12b53c94f9c4877b",
+      "expected_internal_key": "ce06d3064c39b691c81021ecd45a85ad252e6502a169ce1bd0638d73af44a4d4",
       "expected_claim_public_key": "b8c060d74e250203333457e33b160e990c06dd5c1efcb0c73139ea2b6da664cf",
       "expected_refund_public_key": "552c630b64b54bf50210c9e253d38bd4949c72e22873500f6285c2bede312a84",
       "expected_refund_height": "107"
@@ -36,9 +37,10 @@
       "miner_fee_budget_sat": 100,
       "lightning_routing_fee_budget_sat": 0,
       "expected_output_amount": "890",
-      "expected_profile_sha256": "5948f9f4c7e65a15fbb283005e77ff3c8bc56bd9d3c5eb53a47ec5ef7be650c7",
+      "expected_profile_sha256": "deeab7da69e1e124a53ea05166d5e148cb548f47b249bbe1168ea01ee350548b",
       "expected_script_pubkey": "51201f55ee864bf7c59274172bb0740064a5ece752d4ef1e30dd255ccdae62ec0305",
       "expected_output_key": "1f55ee864bf7c59274172bb0740064a5ece752d4ef1e30dd255ccdae62ec0305",
+      "expected_internal_key": "ce06d3064c39b691c81021ecd45a85ad252e6502a169ce1bd0638d73af44a4d4",
       "expected_claim_public_key": "552c630b64b54bf50210c9e253d38bd4949c72e22873500f6285c2bede312a84",
       "expected_refund_public_key": "b8c060d74e250203333457e33b160e990c06dd5c1efcb0c73139ea2b6da664cf",
       "expected_refund_height": "107"

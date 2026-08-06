@@ -1082,7 +1082,7 @@ fn mkt_grammar() -> MktGrammar {
             swap_contract_publication: "private_signed_record_nip59_only",
             contract_digest_validation: "lower_hex_shape_and_x_body_equality; rfc8785_recomputation_is_client_or_handler_scope",
             network_id_pattern: "^bip122:[0-9a-f]{32}$",
-            asset_id_pattern: "^swp:1:bip122:[0-9a-f]{32}:btc:(chain|lightning)$",
+            asset_id_pattern: "^swp:1:bip122:[0-9a-f]{32}:(btc:(chain|lightning)|elements:[0-9a-f]{64}:liquid)$",
             canonical_amount_pattern: "^(0|[1-9][0-9]*)$",
             offering_required_members: vec![
                 "swap_types",
@@ -1138,6 +1138,9 @@ fn mkt_grammar() -> MktGrammar {
                 "bitcoin_transaction",
                 "bitcoin_output",
                 "bitcoin_spend",
+                "liquid_transaction",
+                "liquid_output",
+                "liquid_spend",
                 "reservation",
                 "covenant_reserve",
                 "claim",
@@ -1148,7 +1151,7 @@ fn mkt_grammar() -> MktGrammar {
             evidence_rungs: vec![
                 "pledged", "reserved", "measured", "verified", "paid", "settled",
             ],
-            evidence_reference_validation: "class_rail_compatibility; lower_hex_payment_or_transaction_ids; bitcoin_output_and_spend_txid_vout; reservation_reorg_replacement_refs_are_bounded_opaque",
+            evidence_reference_validation: "class_rail_compatibility; lower_hex_payment_or_transaction_ids; bitcoin_or_liquid_output_and_spend_txid_vout; reservation_reorg_replacement_refs_are_bounded_opaque",
             public_receipt_outcomes: MKT_PUBLIC_RECEIPT_OUTCOMES.to_vec(),
             forbidden_custody_members: vec![
                 "seed",
@@ -1171,6 +1174,12 @@ fn mkt_grammar() -> MktGrammar {
                 "musig_secret_nonce",
                 "secretNonce",
                 "signing_nonce",
+                "blinding_key",
+                "blindingKey",
+                "value_blinder",
+                "valueBlinder",
+                "asset_blinder",
+                "assetBlinder",
             ],
             upstream_fixture_cases: 70,
             coordination: MktSwpCoordinationGrammar {

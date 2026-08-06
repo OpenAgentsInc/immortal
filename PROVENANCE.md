@@ -1173,6 +1173,62 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   starting issue #27 runtime work. Added no dependency, event kind, service,
   database, secret, workflow, or billed automation.
 
+### 2026-08-06 — Codex 5.6 Sol, M13 MKT-SWP Liquid sequencing sync
+
+- Synced the exact OpenAgents MKT-SWP chain correction at
+  `340ebc1d0401bacfbebd30495e2fb7e34f75c9ec`, requiring the signed Liquid
+  destination and local mempool preflight before Bitcoin source broadcast.
+- Recorded the corrected state and signer order for issue #27. Contract
+  exports were deliberately deferred until the adoption gates; the source
+  sync itself changed no event kind, relay behavior, dependency, custody
+  boundary, advertisement, workflow, or billed automation.
+
+### 2026-08-06 — Codex 5.6 Sol, M13 cross-domain timeout sync
+
+- Authored and pushed the MKT-SWP correction at OpenAgents commit
+  `d776a0aa08ebc5b27446f376a3f32bd89d585b88`, then synced its exact
+  `MKT-SWP.md` bytes into the pinned lane.
+- Separated Liquid chain heights from Lightning's Bitcoin CLTV height and
+  required signed, recomputable cross-domain timing assumptions and a safety
+  margin for reverse swaps. Contract exports remain deferred until the #27
+  runtime and lab gates pass. Added no dependency, kind, relay behavior,
+  custody material, advertisement, workflow, or billed automation.
+
+### 2026-08-06 — Codex 5.6 Sol, M13 Status causality sync
+
+- Authored and pushed the MKT-SWP correction at OpenAgents commit
+  `f78bb0d04cce9ff3760f37a3b3b7cfb0efe813ef`, then synced its exact
+  `MKT-SWP.md` bytes into the pinned lane.
+- Bound effect-authorizing cross-participant Status transitions to exact
+  signed prerequisite Status IDs. This removes author timestamps and record
+  presence as execution authority. Contract exports remain deferred. Added
+  no dependency, kind, relay behavior, custody material, advertisement,
+  workflow, or billed automation.
+
+### 2026-08-06 — Codex 5.6 Sol, M13 terminal refund causality sync
+
+- Authored and pushed the terminal chain-refund correction at OpenAgents
+  commit `7e9a7f13306cb5e515f7eca38eb8654ea3528bdc`, then synced its exact
+  `MKT-SWP.md` bytes into the pinned lane.
+- Required the provider terminal `refunded` Status to consume the exact
+  requester `requester_source_refunded` Status after destination funding.
+  This prevents terminal close until both funded principals have signed,
+  verified release evidence. Contract exports remain deferred. Added no
+  dependency, kind, relay behavior, custody material, advertisement,
+  workflow, or billed automation.
+
+### 2026-08-06 — Codex 5.6 Sol, M13 unfunded-destination evidence sync
+
+- Authored and pushed the chain refund evidence clarification at OpenAgents
+  commit `48db404cbb55f44ce51bf2cce4fecc056a2f8c5d`, then synced its exact
+  `MKT-SWP.md` bytes into the pinned lane.
+- Bound a source-only chain refund's destination leg to the exact released
+  reservation and verified absence of destination funding. Source-chain
+  evidence cannot be duplicated for that leg. Added fixture-backed client and
+  provider enforcement. Contract exports remain deferred. Added no dependency,
+  kind, relay behavior, custody material, advertisement, workflow, or billed
+  automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

@@ -61,6 +61,33 @@ fn mkt_swp_offering_validates_relay_observable_fields() {
     let base = event_from_fixture(&fixture["relay_observable"]["offering"]);
     assert_eq!(validate_mkt_public_event(&base), Ok(()));
 
+    let mut liquid = base.clone();
+    let mut content = serde_json::from_str::<Value>(&liquid.content).unwrap();
+    content["mkt_swp"]["networks"] = serde_json::json!([
+        "bip122:00000000000000000000000000000000",
+        "bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ]);
+    let liquid_asset = "swp:1:bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:elements:1111111111111111111111111111111111111111111111111111111111111111:liquid";
+    let chain = "swp:1:bip122:00000000000000000000000000000000:btc:chain";
+    let lightning = "swp:1:bip122:00000000000000000000000000000000:btc:lightning";
+    content["mkt_swp"]["sides"] = serde_json::json!([
+        {"input_asset_id":liquid_asset,"output_asset_id":lightning,"min":"10000","max":"1000000","fee_bps":"25"},
+        {"input_asset_id":lightning,"output_asset_id":liquid_asset,"min":"10000","max":"1000000","fee_bps":"25"},
+        {"input_asset_id":chain,"output_asset_id":liquid_asset,"min":"10000","max":"1000000","fee_bps":"25"},
+        {"input_asset_id":liquid_asset,"output_asset_id":chain,"min":"10000","max":"1000000","fee_bps":"25"}
+    ]);
+    liquid.content = serde_json::to_string(&content).unwrap();
+    assert_eq!(validate_mkt_public_event(&liquid), Ok(()));
+
+    content["mkt_swp"]["sides"][0]["input_asset_id"] =
+        Value::String("swp:1:bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:elements:L-BTC:liquid".into());
+    liquid.content = serde_json::to_string(&content).unwrap();
+    assert!(
+        validate_mkt_public_event(&liquid)
+            .unwrap_err()
+            .starts_with("swp_invalid_asset_id")
+    );
+
     for (mutation, expected_code) in fixture["relay_observable"]["offering_errors"]
         .as_array()
         .unwrap()
@@ -78,6 +105,35 @@ fn mkt_swp_offering_validates_relay_observable_fields() {
             "{mutation}: expected {expected_code}, got {error}"
         );
     }
+}
+
+#[test]
+fn mkt_swp_liquid_evidence_uses_liquid_classes_and_references() {
+    let base = serde_json::json!({
+        "class":"liquid_transaction",
+        "rung":"verified",
+        "rail":"liquid",
+        "reference":"11".repeat(32),
+        "artifact_sha256":"22".repeat(32),
+        "producer_pubkey":"33".repeat(32),
+        "verifier_pubkey":null,
+        "verifier_policy":null,
+        "observed_at":1,
+        "view":"local-elementsd"
+    });
+    assert_eq!(validate_mkt_swp_evidence_reference(&base), Ok(()));
+
+    let mut output = base.clone();
+    output["class"] = Value::String("liquid_output".into());
+    output["reference"] = Value::String(format!("{}:0", "11".repeat(32)));
+    assert_eq!(validate_mkt_swp_evidence_reference(&output), Ok(()));
+
+    output["rail"] = Value::String("bitcoin".into());
+    assert!(
+        validate_mkt_swp_evidence_reference(&output)
+            .unwrap_err()
+            .starts_with("swp_evidence_mismatch")
+    );
 }
 
 #[test]

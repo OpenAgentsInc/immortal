@@ -53,7 +53,7 @@ for group, cases in groups.items():
             raise SystemExit("adversarial scenario row is invalid")
         seen.add(case_id)
         rows.append((case_id, group, expected, provider))
-if not isinstance(maximum, int) or isinstance(maximum, bool) or not 1 <= len(rows) <= maximum <= 40:
+if not isinstance(maximum, int) or isinstance(maximum, bool) or not 1 <= len(rows) <= maximum <= 48:
     raise SystemExit("adversarial scenario count is outside its bound")
 for row in rows:
     print(*row, sep="\t")
@@ -127,7 +127,7 @@ run_case() (
   local case_id="$1" group="$2" expected="$3" selected_provider="$4"
   local private_root project_name provider_image_ref current_phase compose_ready infrastructure_proven
   local maximum_seconds case_deadline failure_reason record_path
-  local external_injection external_checkpoint external_target cooperative_signing
+  local external_injection external_checkpoint external_target cooperative_signing liquid_case
   local wallet_driver_container_name
   local -a doomsday_stopped_targets=()
   private_root="$(mktemp -d "${TMPDIR:-/tmp}/immortal-adversarial-case.XXXXXX")"
@@ -142,6 +142,7 @@ run_case() (
   external_checkpoint=""
   external_target=""
   cooperative_signing=false
+  liquid_case=false
   case "${case_id}" in
     relay-a-partition)
       external_injection=relay_loss
@@ -188,6 +189,45 @@ run_case() (
       external_checkpoint=cooperative_crash_cut:provider_public_nonce_persisted
       external_target=provider-a
       ;;
+    route-chain-btc-to-lbtc-provider-a|route-chain-lbtc-to-btc-provider-a)
+      external_injection=provider_crash
+      external_checkpoint=chain:provider_funding_effect_recorded
+      external_target=provider-a
+      liquid_case=true
+      ;;
+    route-chain-btc-to-lbtc-provider-b|route-chain-lbtc-to-btc-provider-b)
+      external_injection=provider_crash
+      external_checkpoint=chain:provider_funding_effect_recorded
+      external_target=provider-b
+      liquid_case=true
+      ;;
+    route-liquid-submarine-provider-a)
+      external_injection=provider_crash
+      external_checkpoint=liquid_submarine:provider_claim_effect_recorded
+      external_target=provider-a
+      liquid_case=true
+      ;;
+    route-liquid-submarine-provider-b)
+      external_injection=provider_crash
+      external_checkpoint=liquid_submarine:provider_claim_effect_recorded
+      external_target=provider-b
+      liquid_case=true
+      ;;
+    route-liquid-reverse-provider-a)
+      external_injection=provider_crash
+      external_checkpoint=liquid_reverse:provider_funding_effect_recorded
+      external_target=provider-a
+      liquid_case=true
+      ;;
+    route-liquid-reverse-provider-b)
+      external_injection=provider_crash
+      external_checkpoint=liquid_reverse:provider_funding_effect_recorded
+      external_target=provider-b
+      liquid_case=true
+      ;;
+    doomsday-liquid-submarine-provider-gone|doomsday-liquid-reverse-coordinator-gone)
+      liquid_case=true
+      ;;
   esac
   case "${case_id}" in
     musig2-submarine-provider-a|musig2-submarine-provider-b|musig2-abort-script-path|musig2-crash-cut-recovery)
@@ -208,6 +248,9 @@ PY
     --file "${compose_file}"
     --project-name "${project_name}"
   )
+  if test "${liquid_case}" = true; then
+    compose_prefix+=(--profile liquid)
+  fi
 
   compose() {
     IMMORTAL_ADVERSARIAL_PRIVATE_DIR="${private_root}" \
@@ -311,13 +354,13 @@ import sys
 
 label = sys.argv[1]
 path = pathlib.Path(sys.argv[2])
-encoded = path.read_bytes()[:4096] if path.exists() else b""
+encoded = path.read_bytes()[-4096:] if path.exists() else b""
 text = encoded.decode("utf-8", errors="replace")
 if re.search(r"(?i)(claim.key|macaroon|password|preimage|private.key|refund.key|seed|secret)", text):
     print(f"test-lab-adversarial: {label} diagnostic contained a custody term and was redacted")
 else:
     text = re.sub(r"\b[0-9a-f]{64}\b", "<hex64>", text)
-    lines = text.splitlines()[:12]
+    lines = text.splitlines()[-12:]
     if lines:
         print(f"test-lab-adversarial: bounded {label} diagnostic:")
         print("\n".join(lines))
@@ -337,11 +380,15 @@ import sys
 path = pathlib.Path(sys.argv[1])
 case_id = sys.argv[2]
 inspect_path = pathlib.Path(sys.argv[3]) if sys.argv[3] else None
-if case_id == "doomsday-reverse-coordinator-gone":
+if case_id in {
+    "doomsday-reverse-coordinator-gone",
+    "doomsday-liquid-reverse-coordinator-gone",
+}:
     stopped_targets = ["provider-b", "relay-a", "relay-b"]
     direct_recovery_retained = True
 elif case_id in {
     "doomsday-submarine-provider-gone",
+    "doomsday-liquid-submarine-provider-gone",
     "doomsday-keyless-esplora-broadcast",
 }:
     stopped_targets = ["provider-a", "provider-b", "relay-a", "relay-b"]
@@ -477,6 +524,51 @@ PY
     shift
     compose exec -T "${service}" lightning-cli --network=regtest \
       --lightning-dir=/root/.lightning --rpc-file=/rail-rpc/lightning-rpc "$@"
+  }
+
+  elements_cli() {
+    local node="$1" service configuration
+    shift
+    case "${node}" in
+      a)
+        service=elements-provider-a
+        configuration=/run/immortal-private/elements-provider-a.conf
+        ;;
+      b)
+        service=elements-provider-b
+        configuration=/run/immortal-private/elements-provider-b.conf
+        ;;
+      wallet)
+        service=elements-wallet
+        configuration=/run/immortal-private/elements-wallet.conf
+        ;;
+      *)
+        echo "test-lab-adversarial: unsupported Elements node ${node}" >&2
+        return 2
+        ;;
+    esac
+    compose exec -T "${service}" elements-cli -chain=elementsregtest \
+      "-conf=${configuration}" -datadir=/var/lib/elements "$@"
+  }
+
+  elements_peered() {
+    test "$(elements_cli a getconnectioncount)" -ge 2 \
+      && test "$(elements_cli b getconnectioncount)" -ge 1 \
+      && test "$(elements_cli wallet getconnectioncount)" -ge 1
+  }
+
+  elements_synced() {
+    local height_a height_b height_wallet hash_a hash_b hash_wallet
+    height_a="$(elements_cli a getblockcount)"
+    height_b="$(elements_cli b getblockcount)"
+    height_wallet="$(elements_cli wallet getblockcount)"
+    hash_a="$(elements_cli a getbestblockhash)"
+    hash_b="$(elements_cli b getbestblockhash)"
+    hash_wallet="$(elements_cli wallet getbestblockhash)"
+    test "${height_a}" = "${height_b}" \
+      && test "${height_a}" = "${height_wallet}" \
+      && test "${hash_a}" = "${hash_b}" \
+      && test "${hash_a}" = "${hash_wallet}"
   }
 
   chains_synced() {
@@ -661,15 +753,24 @@ print(hashlib.sha256((database + "\0" + wallet).encode()).hexdigest())
   }
 
   wait_for_injection_request() {
-    local request_file="$1"
+    local request_file="$1" expected_driver_process="$2"
     for _ in $(seq 1 600); do
       check_deadline
       if test -f "${request_file}"; then
         return 0
       fi
+      if ! jobs -pr | grep -Fx "${expected_driver_process}" >/dev/null; then
+        current_phase=wallet-driver-before-injection
+        failure_reason=wallet_driver_failed_before_injection
+        print_bounded_diagnostic "wallet driver before injection" \
+          "${private_root}/driver-error.log"
+        return 1
+      fi
       sleep 0.2
     done
     echo "test-lab-adversarial: ${case_id}: injection request did not arrive" >&2
+    print_bounded_diagnostic "wallet driver before injection" \
+      "${private_root}/driver-error.log"
     return 1
   }
 
@@ -828,7 +929,9 @@ PY
     local before_state_boundary after_state_boundary state_boundary_unchanged
     request_file="${private_root}/state/funded-injection.json"
     acknowledgement_file="${private_root}/state/funded-continue"
-    wait_for_injection_request "${request_file}"
+    if ! wait_for_injection_request "${request_file}" "${driver_process}"; then
+      return 1
+    fi
     request_metadata="$(python3 - "${request_file}" "${external_injection}" \
       "${external_checkpoint}" <<'PY'
 import hashlib
@@ -1074,12 +1177,20 @@ PY
 
   current_phase=credential-generation
   local bitcoin_a_user bitcoin_b_user bitcoin_a_password bitcoin_b_password
+  local elements_a_user elements_b_user elements_wallet_user
+  local elements_a_password elements_b_password elements_wallet_password
   local relay_a_password relay_b_password provider_a_password provider_b_password
   local provider_a_identity provider_b_identity provider_a_seed provider_b_seed client_seed
   bitcoin_a_user="immortal-a-$(random_hex 8)"
   bitcoin_b_user="immortal-b-$(random_hex 8)"
   bitcoin_a_password="$(random_hex 32)"
   bitcoin_b_password="$(random_hex 32)"
+  elements_a_user="immortal-elements-a-$(random_hex 8)"
+  elements_b_user="immortal-elements-b-$(random_hex 8)"
+  elements_wallet_user="immortal-elements-wallet-$(random_hex 8)"
+  elements_a_password="$(random_hex 32)"
+  elements_b_password="$(random_hex 32)"
+  elements_wallet_password="$(random_hex 32)"
   relay_a_password="$(random_hex 32)"
   relay_b_password="$(random_hex 32)"
   provider_a_password="$(random_hex 32)"
@@ -1106,6 +1217,11 @@ PY
   printf '%s\n' "${provider_a_seed}" >"${private_root}/provider-a-wallet-seed"
   printf '%s\n' "${provider_b_seed}" >"${private_root}/provider-b-wallet-seed"
   printf '%s\n' "${client_seed}" >"${private_root}/client-wallet-seed"
+  if test "${liquid_case}" = true; then
+    printf '%s\n' "${elements_a_password}" >"${private_root}/elements-provider-a-rpc-password"
+    printf '%s\n' "${elements_b_password}" >"${private_root}/elements-provider-b-rpc-password"
+    printf '%s\n' "${elements_wallet_password}" >"${private_root}/elements-wallet-rpc-password"
+  fi
 
   current_phase=configuration-generation
   cat >"${private_root}/bitcoin-a.conf" <<EOF
@@ -1140,6 +1256,37 @@ rpcport=18443
 rpcuser=${bitcoin_b_user}
 rpcpassword=${bitcoin_b_password}
 EOF
+
+  write_elements_config() {
+    local path="$1" rpc_user="$2" rpc_password="$3"
+    cat >"${path}" <<EOF
+chain=elementsregtest
+server=1
+listen=1
+txindex=1
+validatepegin=0
+persistmempool=0
+walletbroadcast=0
+initialfreecoins=2100000000000000
+fallbackfee=0.0002
+rpcuser=${rpc_user}
+rpcpassword=${rpc_password}
+[elementsregtest]
+bind=0.0.0.0:18886
+rpcbind=127.0.0.1
+rpcallowip=127.0.0.1
+rpcport=18884
+port=18886
+EOF
+  }
+  if test "${liquid_case}" = true; then
+    write_elements_config "${private_root}/elements-provider-a.conf" \
+      "${elements_a_user}" "${elements_a_password}"
+    write_elements_config "${private_root}/elements-provider-b.conf" \
+      "${elements_b_user}" "${elements_b_password}"
+    write_elements_config "${private_root}/elements-wallet.conf" \
+      "${elements_wallet_user}" "${elements_wallet_password}"
+  fi
 
   write_cln_config() {
     local path="$1" rpc_user="$2" rpc_password="$3" bind_port="$4" announce="$5" hold="$6"
@@ -1273,11 +1420,20 @@ EOF
   compose_ready=true
   compose config --quiet
   current_phase=image-build
-  compose build bitcoin-a bitcoin-b cln-provider-a cln-provider-b cln-wallet \
-    relay-a relay-b provider-a provider-b wallet-driver keyless-executor \
-    alert-sink-a alert-sink-b esplora-broadcast \
-    provider-a-egress provider-b-egress wallet-gateway \
-    >"${private_root}/build.log" 2>&1
+  local -a build_services=(
+    bitcoin-a bitcoin-b cln-provider-a cln-provider-b cln-wallet
+    relay-a relay-b provider-a provider-b wallet-driver keyless-executor
+    alert-sink-a alert-sink-b esplora-broadcast
+    provider-a-egress provider-b-egress wallet-gateway
+  )
+  if test "${liquid_case}" = true; then
+    build_services+=(elements-provider-a elements-provider-b elements-wallet)
+  fi
+  if ! compose build "${build_services[@]}" >"${private_root}/build.log" 2>&1; then
+    failure_reason=image_build_failed
+    print_bounded_diagnostic "image build" "${private_root}/build.log"
+    exit 1
+  fi
 
   current_phase=base-startup
   compose up --detach bitcoin-a bitcoin-b relay-a-postgres relay-b-postgres \
@@ -1325,13 +1481,17 @@ EOF
     echo "test-lab-adversarial: Bitcoin A exposed RPC outside its namespace" >&2
     exit 1
   fi
-
+  local liquid_network_id="" liquid_pegged_asset="" liquid_height="" liquid_best_hash=""
   current_phase=rail-startup
   compose up --detach --no-deps provider-a-egress provider-b-egress \
     >>"${private_root}/startup.log" 2>&1
   compose up --detach wallet-gateway cln-provider-a cln-provider-b cln-wallet \
     relay-a relay-b alert-sink-a alert-sink-b esplora-broadcast \
     >>"${private_root}/startup.log" 2>&1
+  if test "${liquid_case}" = true; then
+    compose up --detach elements-provider-a elements-provider-b elements-wallet \
+      >>"${private_root}/startup.log" 2>&1
+  fi
   for service in cln-provider-a cln-provider-b cln-wallet; do
     wait_for "${service}" cln_cli "${service}" getinfo
   done
@@ -1349,6 +1509,127 @@ EOF
     --fail --silent http://127.0.0.1:18081/health
   wait_for "Esplora-compatible broadcaster" compose run --rm --no-deps \
     --entrypoint /usr/bin/curl provider-a --fail --silent http://127.0.0.1:3002/healthz
+
+  if test "${liquid_case}" = true; then
+    current_phase=liquid-node-startup
+    wait_for "Elements provider A" elements_cli a getblockchaininfo
+    wait_for "Elements provider B" elements_cli b getblockchaininfo
+    wait_for "Elements wallet" elements_cli wallet getblockchaininfo
+    elements_cli a addnode bitcoin-b:18886 onetry >/dev/null
+    elements_cli a addnode wallet-gateway:18886 onetry >/dev/null
+    wait_for "three-node Elements peering" elements_peered
+    if compose exec -T elements-provider-a elements-cli -chain=elementsregtest \
+      -rpcconnect=bitcoin-b -rpcport=18884 -rpcuser=invalid -rpcpassword=invalid \
+      getblockchaininfo >"${private_root}/cross-elements-a-to-b-rpc.log" 2>&1; then
+      echo "test-lab-adversarial: Elements provider B exposed RPC outside its namespace" >&2
+      exit 1
+    fi
+    if compose exec -T elements-provider-b elements-cli -chain=elementsregtest \
+      -rpcconnect=bitcoin-a -rpcport=18884 -rpcuser=invalid -rpcpassword=invalid \
+      getblockchaininfo >"${private_root}/cross-elements-b-to-a-rpc.log" 2>&1; then
+      echo "test-lab-adversarial: Elements provider A exposed RPC outside its namespace" >&2
+      exit 1
+    fi
+
+    current_phase=liquid-wallet-funding
+    elements_cli a -named createwallet wallet_name=provider-a-liquid descriptors=true \
+      | jq -e '.name == "provider-a-liquid"' >/dev/null
+    elements_cli a -named createwallet wallet_name=initial-free-coins \
+      disable_private_keys=true blank=true descriptors=true \
+      | jq -e '.name == "initial-free-coins"' >/dev/null
+    elements_cli a -rpcwallet=initial-free-coins importdescriptors \
+      '[{"desc":"raw(51)#8lvh9jxk","timestamp":0}]' \
+      | jq -e 'length == 1 and .[0].success == true' >/dev/null
+    elements_cli b -named createwallet wallet_name=provider-b-liquid descriptors=true \
+      | jq -e '.name == "provider-b-liquid"' >/dev/null
+    elements_cli wallet -named createwallet wallet_name=requester-liquid descriptors=true \
+      | jq -e '.name == "requester-liquid"' >/dev/null
+    local liquid_miner_address liquid_provider_b_address liquid_wallet_address
+    local liquid_provider_b_seed_txid liquid_provider_b_seed_raw
+    local liquid_wallet_seed_txid liquid_wallet_seed_raw
+    local initial_outputs initial_options initial_psbt initial_final
+    liquid_miner_address="$(elements_cli a -rpcwallet=provider-a-liquid getnewaddress)"
+    initial_outputs="$(jq -nc --arg address "${liquid_miner_address}" \
+      '[{($address):1000}]')"
+    initial_options="$(jq -nc --arg address "${liquid_miner_address}" \
+      '{includeWatching:true,changeAddress:$address}')"
+    initial_psbt="$(elements_cli a -rpcwallet=initial-free-coins \
+      walletcreatefundedpsbt '[]' "${initial_outputs}" 0 "${initial_options}" true \
+      | jq -er .psbt)"
+    initial_final="$(elements_cli a finalizepsbt "${initial_psbt}")"
+    jq -e '.complete == true' <<<"${initial_final}" >/dev/null
+    elements_cli a sendrawtransaction "$(jq -er .hex <<<"${initial_final}")" >/dev/null
+    elements_cli a -rpcwallet=provider-a-liquid generatetoaddress 1 \
+      "${liquid_miner_address}" >/dev/null
+    wait_for "initial Elements chain synchronization" elements_synced
+    elements_cli a -rpcwallet=provider-a-liquid getbalances \
+      | jq -e '.mine.trusted.bitcoin > 100' >/dev/null
+    liquid_provider_b_address="$(elements_cli b -rpcwallet=provider-b-liquid getnewaddress)"
+    liquid_wallet_address="$(elements_cli wallet -rpcwallet=requester-liquid getnewaddress)"
+    liquid_provider_b_seed_txid="$(elements_cli a -rpcwallet=provider-a-liquid \
+      sendtoaddress "${liquid_provider_b_address}" 10)"
+    liquid_provider_b_seed_raw="$(elements_cli a -rpcwallet=provider-a-liquid \
+      gettransaction "${liquid_provider_b_seed_txid}" | jq -er .hex)"
+    test "$(elements_cli a sendrawtransaction "${liquid_provider_b_seed_raw}")" \
+      = "${liquid_provider_b_seed_txid}"
+    liquid_wallet_seed_txid="$(elements_cli a -rpcwallet=provider-a-liquid \
+      sendtoaddress "${liquid_wallet_address}" 10)"
+    liquid_wallet_seed_raw="$(elements_cli a -rpcwallet=provider-a-liquid \
+      gettransaction "${liquid_wallet_seed_txid}" | jq -er .hex)"
+    test "$(elements_cli a sendrawtransaction "${liquid_wallet_seed_raw}")" \
+      = "${liquid_wallet_seed_txid}"
+    elements_cli a -rpcwallet=provider-a-liquid generatetoaddress 6 \
+      "${liquid_miner_address}" >/dev/null
+    wait_for "funded Elements chain synchronization" elements_synced
+
+    current_phase=liquid-network-binding
+    local liquid_genesis liquid_genesis_b liquid_genesis_wallet
+    local liquid_pegged_asset_b liquid_pegged_asset_wallet
+    liquid_genesis="$(elements_cli a getblockhash 0)"
+    liquid_genesis_b="$(elements_cli b getblockhash 0)"
+    liquid_genesis_wallet="$(elements_cli wallet getblockhash 0)"
+    test "${liquid_genesis}" = "${liquid_genesis_b}"
+    test "${liquid_genesis}" = "${liquid_genesis_wallet}"
+    [[ "${liquid_genesis}" =~ ^[0-9a-f]{64}$ ]]
+    liquid_network_id="bip122:${liquid_genesis:0:32}"
+    liquid_pegged_asset="$(elements_cli a getsidechaininfo | jq -er '.pegged_asset | select(test("^[0-9a-f]{64}$"))')"
+    liquid_pegged_asset_b="$(elements_cli b getsidechaininfo | jq -er .pegged_asset)"
+    liquid_pegged_asset_wallet="$(elements_cli wallet getsidechaininfo | jq -er .pegged_asset)"
+    test "${liquid_pegged_asset}" = "${liquid_pegged_asset_b}"
+    test "${liquid_pegged_asset}" = "${liquid_pegged_asset_wallet}"
+    liquid_height="$(elements_cli a getblockcount)"
+    liquid_best_hash="$(elements_cli a getbestblockhash)"
+
+    cat >>"${private_root}/provider-a.env" <<EOF
+IMMORTAL_PROVIDER_LIQUID_ENABLED=true
+IMMORTAL_PROVIDER_ELEMENTSD_HOST=127.0.0.1
+IMMORTAL_PROVIDER_ELEMENTSD_PORT=18884
+IMMORTAL_PROVIDER_ELEMENTSD_RPC_USER=${elements_a_user}
+IMMORTAL_PROVIDER_ELEMENTSD_RPC_PASSWORD=${elements_a_password}
+IMMORTAL_PROVIDER_ELEMENTSD_WALLET=provider-a-liquid
+IMMORTAL_PROVIDER_LIQUID_NETWORK_ID=${liquid_network_id}
+IMMORTAL_PROVIDER_LIQUID_PEGGED_ASSET=${liquid_pegged_asset}
+EOF
+    cat >>"${private_root}/provider-b.env" <<EOF
+IMMORTAL_PROVIDER_LIQUID_ENABLED=true
+IMMORTAL_PROVIDER_ELEMENTSD_HOST=127.0.0.1
+IMMORTAL_PROVIDER_ELEMENTSD_PORT=18884
+IMMORTAL_PROVIDER_ELEMENTSD_RPC_USER=${elements_b_user}
+IMMORTAL_PROVIDER_ELEMENTSD_RPC_PASSWORD=${elements_b_password}
+IMMORTAL_PROVIDER_ELEMENTSD_WALLET=provider-b-liquid
+IMMORTAL_PROVIDER_LIQUID_NETWORK_ID=${liquid_network_id}
+IMMORTAL_PROVIDER_LIQUID_PEGGED_ASSET=${liquid_pegged_asset}
+EOF
+    cat >>"${private_root}/wallet-driver.env" <<EOF
+IMMORTAL_LAB_ADVERSARIAL_ELEMENTSD_HOST=127.0.0.1
+IMMORTAL_LAB_ADVERSARIAL_ELEMENTSD_PORT=18884
+IMMORTAL_LAB_ADVERSARIAL_ELEMENTSD_RPC_USER=${elements_wallet_user}
+IMMORTAL_LAB_ADVERSARIAL_ELEMENTSD_RPC_PASSWORD=${elements_wallet_password}
+IMMORTAL_LAB_ADVERSARIAL_ELEMENTSD_WALLET=requester-liquid
+IMMORTAL_LAB_ADVERSARIAL_LIQUID_NETWORK_ID=${liquid_network_id}
+IMMORTAL_LAB_ADVERSARIAL_LIQUID_PEGGED_ASSET=${liquid_pegged_asset}
+EOF
+  fi
 
   current_phase=rail-funding
   local service address chain_height
@@ -1459,6 +1740,44 @@ EOF
   done
   member_namespace="$(compose exec -T cln-wallet readlink /proc/1/ns/net | tr -d '\r')"
   test "${member_namespace}" = "${namespace_wallet}"
+  if test "${liquid_case}" = true; then
+    member_namespace="$(compose exec -T elements-provider-a readlink /proc/1/ns/net | tr -d '\r')"
+    test "${member_namespace}" = "${namespace_a}"
+    member_namespace="$(compose exec -T elements-provider-b readlink /proc/1/ns/net | tr -d '\r')"
+    test "${member_namespace}" = "${namespace_b}"
+    member_namespace="$(compose exec -T elements-wallet readlink /proc/1/ns/net | tr -d '\r')"
+    test "${member_namespace}" = "${namespace_wallet}"
+    local elements_a_container elements_b_container elements_wallet_container
+    elements_a_container="$(compose ps --quiet elements-provider-a)"
+    elements_b_container="$(compose ps --quiet elements-provider-b)"
+    elements_wallet_container="$(compose ps --quiet elements-wallet)"
+    docker inspect "${elements_a_container}" "${elements_b_container}" \
+      "${elements_wallet_container}" >"${private_root}/elements-inspect.json"
+    python3 - "${private_root}/elements-inspect.json" <<'PY'
+import json
+import pathlib
+import sys
+
+containers = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if len(containers) != 3 or len({container.get("Id") for container in containers}) != 3:
+    raise SystemExit("Elements topology does not contain three separate processes")
+volume_sources = []
+for container in containers:
+    mounts = {mount["Destination"]: mount for mount in container.get("Mounts", [])}
+    data = mounts.get("/var/lib/elements")
+    configuration = next(
+        (mount for destination, mount in mounts.items() if destination.startswith("/run/immortal-private/elements-")),
+        None,
+    )
+    if data is None or data.get("Type") != "volume" or data.get("RW") is not True:
+        raise SystemExit("Elements process has no separate writable data volume")
+    if configuration is None or configuration.get("RW") is not False:
+        raise SystemExit("Elements process has no read-only private configuration")
+    volume_sources.append(data.get("Name"))
+if len(set(volume_sources)) != 3 or any(not source for source in volume_sources):
+    raise SystemExit("Elements processes share a data volume")
+PY
+  fi
 
   local bitcoin_a_container bitcoin_b_container provider_a_container provider_b_container
   bitcoin_a_container="$(compose ps --quiet bitcoin-a)"
@@ -1505,14 +1824,20 @@ PY
   chain_height_final="$(bitcoin_cli a getblockcount)"
   chain_hash_final="$(bitcoin_cli a getbestblockhash)"
   running_count="$(docker ps --quiet --filter "label=com.docker.compose.project=${project_name}" | wc -l | tr -d ' ')"
-  test "${running_count}" = 19
+  if test "${liquid_case}" = true; then
+    test "${running_count}" = 22
+  else
+    test "${running_count}" = 19
+  fi
   provider_image="$(docker inspect --format '{{.Image}}' "${provider_a_container}")"
 
   current_phase=infrastructure-evidence
   python3 - "${private_root}/evidence/infrastructure.json" "${case_id}" "${group}" \
     "${namespace_a}" "${namespace_b}" "${namespace_wallet}" "${chain_height_final}" \
     "${chain_hash_final}" "${cln_a_id}" "${cln_b_id}" "${cln_wallet_id}" \
-    "${provider_a_pubkey}" "${provider_b_pubkey}" "${provider_image}" <<'PY'
+    "${provider_a_pubkey}" "${provider_b_pubkey}" "${provider_image}" \
+    "${liquid_case}" "${liquid_network_id}" "${liquid_pegged_asset}" \
+    "${liquid_height}" "${liquid_best_hash}" <<'PY'
 import json, os, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 record = {
@@ -1553,6 +1878,31 @@ record = {
     },
     "host_ports_published": False,
 }
+liquid_enabled = sys.argv[15] == "true"
+if liquid_enabled:
+    if not (
+        sys.argv[16].startswith("bip122:")
+        and len(sys.argv[16]) == 39
+        and len(sys.argv[17]) == 64
+        and len(sys.argv[19]) == 64
+    ):
+        raise SystemExit("Liquid infrastructure evidence has invalid network identifiers")
+    record["liquid"] = {
+        "implementation": "elementsd",
+        "network": "elementsregtest",
+        "node_count": 3,
+        "provider_nodes": 2,
+        "wallet_nodes": 1,
+        "separate_processes": True,
+        "separate_data_volumes": True,
+        "separate_rpc_credentials": True,
+        "cross_provider_rpc_access": False,
+        "network_id": sys.argv[16],
+        "pegged_asset": sys.argv[17],
+        "height": int(sys.argv[18]),
+        "best_block_hash": sys.argv[19],
+        "confidential_scope": "own-output-unblinding",
+    }
 encoded = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
 if len(encoded) > 8192:
     raise SystemExit("infrastructure evidence exceeds its bound")
@@ -1599,7 +1949,8 @@ if (
 PY
     current_phase=doomsday-permanent-removal
     compose stop relay-a relay-b >/dev/null
-    if test "${case_id}" = doomsday-reverse-coordinator-gone; then
+    if test "${case_id}" = doomsday-reverse-coordinator-gone \
+      || test "${case_id}" = doomsday-liquid-reverse-coordinator-gone; then
       compose stop provider-b >/dev/null
       doomsday_stopped_targets=(provider-b relay-a relay-b)
     else
@@ -1692,7 +2043,9 @@ PY
     driver_process=$!
     set -e
     if ! acknowledge_external_injection; then
-      failure_reason=external_injection_failed
+      if test "${failure_reason}" = case_failed; then
+        failure_reason=external_injection_failed
+      fi
       kill -TERM "${driver_process}" >/dev/null 2>&1 || true
       wait "${driver_process}" >/dev/null 2>&1 || true
       exit 1
@@ -1723,6 +2076,9 @@ PY
   fi
   if test "${driver_status}" -ne 0; then
     print_bounded_diagnostic "wallet driver" "${private_root}/driver-error.log"
+    compose logs --no-color provider-a provider-b \
+      >"${private_root}/provider-error.log" 2>&1 || true
+    print_bounded_diagnostic "provider" "${private_root}/provider-error.log"
     if grep -F 'immortal-lab: unknown command: adversarial-case' \
       "${private_root}/driver-error.log" >/dev/null 2>&1; then
       current_phase=runtime-command-unavailable
@@ -1737,6 +2093,36 @@ PY
     fi
     echo "test-lab-adversarial: ${case_id}: wallet driver failed" >&2
     exit "${driver_status}"
+  fi
+
+  if test "${liquid_case}" = true; then
+    current_phase=independent-chain-byte-equality
+    local leg phase expected_transaction_id expected_transaction_hex observed_transaction_hex
+    local node
+    while IFS= read -r leg; do
+      for phase in lockup exit; do
+        expected_transaction_id="$(jq -er \
+          ".proof.liquid_case.rails.${leg}.${phase}.transaction_id" \
+          "${private_root}/evidence/driver.json")"
+        expected_transaction_hex="$(jq -er \
+          ".proof.liquid_case.rails.${leg}.${phase}.transaction_hex" \
+          "${private_root}/evidence/driver.json")"
+        if test "${leg}" = bitcoin; then
+          for node in a b; do
+            observed_transaction_hex="$(bitcoin_cli "${node}" getrawtransaction \
+              "${expected_transaction_id}" false)"
+            test "${observed_transaction_hex}" = "${expected_transaction_hex}"
+          done
+        else
+          for node in a b wallet; do
+            observed_transaction_hex="$(elements_cli "${node}" getrawtransaction \
+              "${expected_transaction_id}" false)"
+            test "${observed_transaction_hex}" = "${expected_transaction_hex}"
+          done
+        fi
+      done
+    done < <(jq -er '.proof.liquid_case.rails | keys[]' \
+      "${private_root}/evidence/driver.json")
   fi
 
   if test "${case_id}" = double-reservation; then
@@ -1851,10 +2237,12 @@ fixture = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 private_root = pathlib.Path(sys.argv[2])
 infrastructure = json.loads(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
 driver_path = pathlib.Path(sys.argv[4])
-if driver_path.stat().st_size > 16384:
+case_id = sys.argv[6]
+liquid_case_contracts = fixture["evidence"]["liquid_case_record"]["cases"]
+liquid_case = case_id in liquid_case_contracts
+if driver_path.stat().st_size > (32768 if liquid_case else 16384):
     raise SystemExit("driver evidence exceeds its input bound")
 driver = json.loads(driver_path.read_text(encoding="utf-8"))
-case_id = sys.argv[6]
 expected = sys.argv[7]
 if (
     driver.get("schema") != "openagents.immortal.adversarial-case-result.v1"
@@ -1863,6 +2251,151 @@ if (
     or driver.get("passed") is not True
 ):
     raise SystemExit("wallet driver did not prove the selected manifest case")
+if liquid_case:
+    case_contract = liquid_case_contracts[case_id]
+    proof = driver.get("proof")
+    liquid = proof.get("liquid_case") if isinstance(proof, dict) else None
+    if not isinstance(liquid, dict):
+        raise SystemExit("Liquid case has no process proof")
+    required_liquid_members = {
+        "schema", "shape", "selected_provider", "signed_lifecycle_event_ids",
+        "rails", "provider_effect_operations", "provider_status_anchors",
+        "provider_restart", "liquid_terminal", "lightning_terminal", "recovery",
+    }
+    if (
+        set(liquid) != required_liquid_members
+        or liquid.get("schema") != fixture["evidence"]["liquid_case_record"]["schema"]
+        or liquid.get("shape") != case_contract["shape"]
+        or liquid.get("selected_provider") != case_contract["selected_provider"]
+        or liquid.get("provider_effect_operations") != case_contract["provider_effect_operations"]
+        or liquid.get("provider_status_anchors") != case_contract["provider_status_anchors"]
+    ):
+        raise SystemExit("Liquid proof does not bind its exact shape, provider, effects, and statuses")
+    lifecycle = liquid.get("signed_lifecycle_event_ids")
+    required_events = {
+        "offering_id", "rfq_id", "quote_id", "order_id",
+        "requester_contract_id", "provider_contract_id", "status_ids", "close_id",
+    }
+    if not isinstance(lifecycle, dict) or set(lifecycle) != required_events:
+        raise SystemExit("Liquid proof does not contain the complete signed lifecycle")
+    for name, event_id in lifecycle.items():
+        if name == "close_id" and case_contract["recovery"] == "presigned-refund":
+            if event_id is not None:
+                raise SystemExit("coordinator-absent Liquid refund invented a provider Close")
+            continue
+        if name == "status_ids":
+            if not isinstance(event_id, list) or len(event_id) < 2:
+                raise SystemExit("Liquid proof has no signed Status progression")
+            values = event_id
+        else:
+            values = [event_id]
+        if any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None for value in values):
+            raise SystemExit("Liquid proof contains an invalid signed event ID")
+    rails = liquid.get("rails")
+    if not isinstance(rails, dict) or list(rails) != case_contract["rails"]:
+        raise SystemExit("Liquid proof does not contain its exact ordered rail set")
+    expected_nodes = {
+        "bitcoin": {"bitcoind-a", "bitcoind-b"},
+        "liquid": {"elementsd-provider-a", "elementsd-provider-b", "elementsd-wallet"},
+    }
+    for leg_name, leg in rails.items():
+        if not isinstance(leg, dict) or set(leg) != {"lockup", "exit"}:
+            raise SystemExit("Liquid proof rail has another shape")
+        lockup = leg["lockup"]
+        exit_transaction = leg["exit"]
+        for phase, transaction in (("lockup", lockup), ("exit", exit_transaction)):
+            outpoint_member = "outpoint" if phase == "lockup" else "spends_outpoint"
+            required_transaction_members = {
+                "transaction_hex", "transaction_id", outpoint_member,
+                "node_transaction_ids", "exact_node_byte_equality",
+            }
+            if not isinstance(transaction, dict) or set(transaction) != required_transaction_members:
+                raise SystemExit("Liquid transaction evidence has another shape")
+            transaction_hex = transaction["transaction_hex"]
+            transaction_id = transaction["transaction_id"]
+            outpoint = transaction[outpoint_member]
+            node_transaction_ids = transaction["node_transaction_ids"]
+            if (
+                not isinstance(transaction_hex, str)
+                or not transaction_hex
+                or len(transaction_hex) % 2 != 0
+                or re.fullmatch(r"[0-9a-f]+", transaction_hex) is None
+                or not isinstance(transaction_id, str)
+                or re.fullmatch(r"[0-9a-f]{64}", transaction_id) is None
+                or not isinstance(outpoint, str)
+                or re.fullmatch(r"[0-9a-f]{64}:[0-9]+", outpoint) is None
+                or transaction.get("exact_node_byte_equality") is not True
+                or not isinstance(node_transaction_ids, dict)
+                or set(node_transaction_ids) != expected_nodes[leg_name]
+                or any(value != transaction_id for value in node_transaction_ids.values())
+            ):
+                raise SystemExit("Liquid transaction evidence is not exact across nodes")
+        if not lockup["outpoint"].startswith(lockup["transaction_id"] + ":"):
+            raise SystemExit("Liquid lockup outpoint does not bind its transaction")
+        if exit_transaction["spends_outpoint"] != lockup["outpoint"]:
+            raise SystemExit("Liquid exit does not spend the exact lockup outpoint")
+    terminal = liquid.get("liquid_terminal")
+    if terminal != {
+        "actor": case_contract["liquid_terminal_actor"],
+        "path": case_contract["liquid_terminal_path"],
+        "effect_class": "liquid_spend",
+        "confirmed": True,
+    }:
+        raise SystemExit("Liquid proof has another terminal spend actor, path, or effect class")
+    lightning = liquid.get("lightning_terminal")
+    expected_lightning = case_contract["lightning_terminal"]
+    if expected_lightning is None:
+        if lightning is not None:
+            raise SystemExit("chain-only Liquid proof invented a Lightning disposition")
+    else:
+        if not isinstance(lightning, dict) or set(lightning) != set(expected_lightning) | {"payment_hash"}:
+            raise SystemExit("Liquid proof has no exact Lightning terminal observation")
+        payment_hash = lightning.get("payment_hash")
+        if not isinstance(payment_hash, str) or re.fullmatch(r"[0-9a-f]{64}", payment_hash) is None:
+            raise SystemExit("Liquid Lightning terminal observation has an invalid payment hash")
+        observed_contract = dict(lightning)
+        observed_contract.pop("payment_hash")
+        if observed_contract != expected_lightning:
+            raise SystemExit("Liquid proof has another Lightning effect, state, or authority")
+    restart = liquid.get("provider_restart")
+    if case_contract["provider_restart_required"]:
+        if restart != {
+            "target": case_contract["selected_provider"],
+            "checkpoint_effect_operation": case_contract["provider_effect_operations"][0],
+            "checkpoint_status_state": case_contract["provider_status_anchors"][0],
+            "process_replaced": True,
+            "restored_from_postgres": True,
+            "exact_known_replay": True,
+            "duplicate_external_effects": 0,
+        }:
+            raise SystemExit("Liquid proof does not contain exact provider restart recovery")
+    elif restart is not None:
+        raise SystemExit("Liquid doomsday proof claims an unrequired provider restart")
+    recovery = liquid.get("recovery")
+    if case_contract["recovery"] is None:
+        if recovery is not None:
+            raise SystemExit("Liquid route proof contains doomsday recovery evidence")
+    elif case_contract["recovery"] == "presigned-refund":
+        if recovery != {
+            "mode": "presigned-refund",
+            "fresh_requester_process": True,
+            "signed_before_requester_contract": True,
+            "signed_before_funding_broadcast": True,
+            "provider_effect_operations": [],
+            "refund_transaction_id": rails["liquid"]["exit"]["transaction_id"],
+        }:
+            raise SystemExit("Liquid submarine doomsday does not prove its exact pre-signed refund")
+    elif case_contract["recovery"] == "direct-claim-and-hold-settlement":
+        if recovery != {
+            "mode": "direct-claim-and-hold-settlement",
+            "fresh_requester_process": True,
+            "direct_provider_retained": True,
+            "claim_transaction_id": rails["liquid"]["exit"]["transaction_id"],
+            "hold_invoice_terminal_state": "settled",
+        }:
+            raise SystemExit("Liquid reverse doomsday does not prove exact claim and hold settlement")
+    else:
+        raise SystemExit("Liquid case fixture contains another recovery requirement")
 banned = {
     "claim_key", "macaroon", "password", "preimage", "private_key",
     "raw_signed_event", "raw_transaction", "raw_wrap_event", "refund_key",
@@ -1906,8 +2439,13 @@ for name in (
     "relay-a-postgres-password", "relay-b-postgres-password",
     "provider-a-postgres-password", "provider-b-postgres-password",
     "provider-a-wallet-seed", "provider-b-wallet-seed", "client-wallet-seed",
+    "elements-provider-a-rpc-password", "elements-provider-b-rpc-password",
+    "elements-wallet-rpc-password",
 ):
-    secret = (private_root / name).read_bytes().strip()
+    secret_path = private_root / name
+    if not secret_path.exists():
+        continue
+    secret = secret_path.read_bytes().strip()
     if secret and secret in encoded:
         raise SystemExit("retained evidence contains an exact private value")
 maximum = min(32768, fixture["evidence"]["retained_record"]["maximum_bytes"])

@@ -52,6 +52,38 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     assert_eq!(descriptor.mkt.relay_profiles[4].id, "mkt-lsp");
     assert_eq!(descriptor.mkt.mkt_swp.swap_contract_kind, 39_610);
     assert_eq!(descriptor.mkt.mkt_swp.upstream_fixture_cases, 70);
+    assert!(
+        descriptor
+            .mkt
+            .mkt_swp
+            .asset_id_pattern
+            .contains("elements:[0-9a-f]{64}:liquid")
+    );
+    for evidence_class in ["liquid_transaction", "liquid_output", "liquid_spend"] {
+        assert!(
+            descriptor
+                .mkt
+                .mkt_swp
+                .evidence_classes
+                .contains(&evidence_class)
+        );
+    }
+    for custody_member in [
+        "blinding_key",
+        "blindingKey",
+        "value_blinder",
+        "valueBlinder",
+        "asset_blinder",
+        "assetBlinder",
+    ] {
+        assert!(
+            descriptor
+                .mkt
+                .mkt_swp
+                .forbidden_custody_members
+                .contains(&custody_member)
+        );
+    }
     assert_eq!(descriptor.mkt.mkt_pfi.qualification_policy_kind, 39_630);
     assert_eq!(descriptor.mkt.mkt_pfi.upstream_fixture_cases, 41);
     assert_eq!(descriptor.mkt.mkt_mint.route_contract_kind, 39_640);
@@ -143,7 +175,7 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
             .mkt
             .mkt_swp
             .evidence_reference_validation
-            .contains("bitcoin_output_and_spend_txid_vout")
+            .contains("bitcoin_or_liquid_output_and_spend_txid_vout")
     );
     assert_eq!(descriptor.mkt.enums["quote"], MKT_QUOTE_CLASSES);
     assert_eq!(descriptor.mkt.enums["reservation"], MKT_RESERVATION_CLASSES);

@@ -249,6 +249,10 @@ Explicitly out of the first funded release: Liquid (`elementsd`), Ark
 (`arkd`), EVM and Cashu rails (extension issues #20-#23), cooperative reverse
 settlement before a signed preimage-release binding, and autoswap/inventory
 strategy beyond the reservation ledger (operator policy, not daemon authority).
+This is the M12 release boundary, not a permanent product exclusion. M13 issue
+#27 adds Liquid as an off-by-default provider and client rail after the funded
+runtime and first #18 lab record are complete; the relay product and its
+dependency/custody boundary remain unchanged.
 
 ## 7. What changes where
 

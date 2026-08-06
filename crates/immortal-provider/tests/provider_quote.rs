@@ -1,8 +1,9 @@
 use immortal_client::mkt_swp_client::{MktSigningRequest, SwapClientConfig, SwapRecordFactory};
 use immortal_core::{
     domain::Event,
+    liquid::{LiquidAssetId, LiquidNetworkId, verify_liquid_control_block},
     market::MarketSigner,
-    mkt_swp_verify::{parse_bolt11, sha256},
+    mkt_swp_verify::{musig2_aggregate_key, parse_bolt11, sha256, verify_control_block},
 };
 use immortal_provider::{
     ProviderSession, ReservationConfirmation, ReservationRequest,
@@ -13,11 +14,12 @@ use immortal_provider::{
         funding_feerate_from_quote_budget,
     },
     quote::{
-        BuiltFundedQuote, FundedQuotePolicy, QuoteWalletAllocation, ReplacementPolicy,
-        build_funded_quote,
+        BuiltFundedQuote, FundedQuotePolicy, LiquidQuotePolicy, QuoteWalletAllocation,
+        ReplacementPolicy, build_funded_chain_quote, build_funded_quote,
     },
     wallet::{BitcoinNetwork, ProviderWallet, WalletPath},
 };
+use secp256k1::{PublicKey, XOnlyPublicKey};
 use serde_json::{Value, json};
 use std::{
     fs::{self, OpenOptions},
@@ -28,6 +30,468 @@ use std::{
 
 const FIXTURE: &str = include_str!("../../../tests/fixtures/provider/quote-builder-v1.json");
 static NEXT_SEED_FILE: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn liquid_chain_quote_binds_both_rails_and_the_safe_timeout_ladder() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/provider/liquid-runtime-v1.json"
+    ))
+    .expect("provider Liquid fixture");
+    let now = fixture["now"].as_u64().expect("fixture now");
+    let bitcoin_network = fixture["bitcoin_network_id"]
+        .as_str()
+        .expect("Bitcoin network");
+    let liquid_network = LiquidNetworkId::parse(
+        fixture["liquid_network_id"]
+            .as_str()
+            .expect("Liquid network"),
+    )
+    .expect("Liquid network ID");
+    let liquid_asset = LiquidAssetId::parse(
+        fixture["liquid_pegged_asset"]
+            .as_str()
+            .expect("Liquid pegged asset"),
+    )
+    .expect("Liquid pegged asset ID");
+    let bitcoin_asset = format!("swp:1:{bitcoin_network}:btc:chain");
+    let liquid_asset_id = liquid_asset.mkt_asset_id(&liquid_network);
+    let wallet = TestWallet::new(BitcoinNetwork::Mainnet);
+    let cases = [
+        (
+            bitcoin_asset.clone(),
+            liquid_asset_id.clone(),
+            "source",
+            "destination",
+        ),
+        (
+            liquid_asset_id.clone(),
+            bitcoin_asset.clone(),
+            "destination",
+            "source",
+        ),
+    ];
+
+    for (index, (source_asset, destination_asset, bitcoin_leg, liquid_leg)) in
+        cases.into_iter().enumerate()
+    {
+        let setup = Setup::new(u8::try_from(0xe1 + index).expect("session byte"));
+        let rfq = signed_chain_rfq(
+            &setup,
+            now,
+            &source_asset,
+            &destination_asset,
+            u8::try_from(0xa1 + index).expect("RFQ byte"),
+        );
+        let quote = build_funded_chain_quote(
+            &rfq,
+            &wallet.wallet,
+            wallet_allocation(),
+            &ChainTip {
+                hash: "33".repeat(32),
+                height: 850_000,
+            },
+            &ChainTip {
+                hash: "44".repeat(32),
+                height: 2_500_000,
+            },
+            liquid_policy(bitcoin_network, liquid_network.as_str(), liquid_asset),
+            now,
+        )
+        .expect("Liquid chain Quote");
+        let terms = &quote.profile["terms"];
+        assert_eq!(terms["swap_type"], "chain");
+        assert_eq!(terms["lightning_routing_fee_budget"], "0");
+        assert_eq!(terms["timeout_ladder"]["destination_final"], true);
+        let verifiers = terms["verifier_inputs"].as_array().expect("verifiers");
+        let bitcoin_verifier = verifiers
+            .iter()
+            .find(|verifier| verifier["leg_id"] == bitcoin_leg)
+            .expect("Bitcoin verifier");
+        let liquid_verifier = verifiers
+            .iter()
+            .find(|verifier| verifier["leg_id"] == liquid_leg)
+            .expect("Liquid verifier");
+        assert_eq!(bitcoin_verifier["verifier_policy"], "mkt-swp-bitcoin-v1");
+        assert_eq!(liquid_verifier["verifier_policy"], "mkt-swp-liquid-v1");
+        assert_eq!(liquid_verifier["asset_id"], liquid_asset_id);
+        assert_eq!(liquid_verifier["network_id"], liquid_network.as_str());
+        assert_eq!(liquid_verifier["confidentiality"], "explicit");
+        assert_taproot_control_blocks(&fixture, bitcoin_verifier, false);
+        assert_taproot_control_blocks(&fixture, liquid_verifier, true);
+        assert_eq!(quote.reserved_asset_id, destination_asset);
+        assert_eq!(
+            fixture["quote_cases"][index]["expected_swap_type"],
+            terms["swap_type"]
+        );
+        assert_eq!(
+            fixture["quote_cases"][index]["source_rail"],
+            terms["legs"][0]["rail"]
+        );
+        assert_eq!(
+            fixture["quote_cases"][index]["destination_rail"],
+            terms["legs"][1]["rail"]
+        );
+        let source_verifier = verifiers
+            .iter()
+            .find(|verifier| verifier["leg_id"] == "source")
+            .expect("source verifier");
+        let destination_verifier = verifiers
+            .iter()
+            .find(|verifier| verifier["leg_id"] == "destination")
+            .expect("destination verifier");
+        let refund_offset_seconds = |verifier: &Value, interval_name: &str| {
+            let tip = verifier["chain_tip_height"]
+                .as_str()
+                .and_then(|height| height.parse::<u64>().ok())
+                .expect("chain tip height");
+            let refund = verifier["taproot_tree"][1]["lock_value"]
+                .as_str()
+                .and_then(|height| height.parse::<u64>().ok())
+                .expect("refund height");
+            let interval = fixture["quote_cases"][index][interval_name]
+                .as_u64()
+                .expect("block interval");
+            refund.checked_sub(tip).expect("refund after tip") * interval
+        };
+        let source_offset = refund_offset_seconds(source_verifier, "source_block_interval_seconds");
+        let destination_offset =
+            refund_offset_seconds(destination_verifier, "destination_block_interval_seconds");
+        let ladder = &terms["timeout_ladder"];
+        assert_eq!(
+            ladder["destination_refund_time"].as_u64(),
+            now.checked_add(destination_offset)
+        );
+        assert_eq!(
+            ladder["source_refund_time"].as_u64(),
+            now.checked_add(source_offset)
+        );
+        let required_source_time = ladder["destination_refund_time"]
+            .as_u64()
+            .and_then(|time| time.checked_add(ladder["provider_claim_margin"].as_u64()?))
+            .and_then(|time| time.checked_add(ladder["both_network_reorg_margins"].as_u64()?))
+            .and_then(|time| time.checked_add(ladder["both_network_broadcast_margins"].as_u64()?))
+            .expect("safe source refund time");
+        assert!(ladder["source_refund_time"].as_u64() >= Some(required_source_time));
+        assert!(source_offset > destination_offset);
+    }
+}
+
+#[test]
+fn liquid_submarine_and_reverse_quotes_use_elements_taproot() {
+    let liquid_fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/provider/liquid-runtime-v1.json"
+    ))
+    .expect("provider Liquid fixture");
+    let quote_fixture = fixture();
+    let invoice = quote_fixture["invoice"].as_str().expect("invoice");
+    let now = quote_fixture["now"].as_u64().expect("now");
+    let liquid_network = LiquidNetworkId::parse(
+        liquid_fixture["liquid_network_id"]
+            .as_str()
+            .expect("Liquid network"),
+    )
+    .expect("Liquid network ID");
+    let liquid_asset = LiquidAssetId::parse(
+        liquid_fixture["liquid_pegged_asset"]
+            .as_str()
+            .expect("Liquid pegged asset"),
+    )
+    .expect("Liquid pegged asset ID");
+    let wallet = TestWallet::new(BitcoinNetwork::Mainnet);
+
+    for (index, case) in quote_fixture["cases"]
+        .as_array()
+        .expect("Quote cases")
+        .iter()
+        .enumerate()
+    {
+        let setup = Setup::new(u8::try_from(0xe5 + index).expect("session byte"));
+        let rfq = signed_liquid_rfq(
+            &setup,
+            case,
+            invoice,
+            now,
+            liquid_asset.mkt_asset_id(&liquid_network),
+        );
+        let mut funded_policy = policy(quote_fixture, case);
+        funded_policy.liquid = Some(LiquidQuotePolicy {
+            network_id: liquid_network.as_str(),
+            pegged_asset: liquid_asset,
+        });
+        funded_policy.cooperative_signing = true;
+        let quote = build_funded_quote(
+            &rfq,
+            invoice,
+            &wallet.wallet,
+            wallet_allocation(),
+            &chain_tip(quote_fixture),
+            funded_policy,
+            now,
+        )
+        .expect("Liquid funded Quote");
+        let terms = &quote.profile["terms"];
+        assert_eq!(terms["musig2_execution"], false);
+        let liquid_verifier = terms["verifier_inputs"]
+            .as_array()
+            .and_then(|verifiers| {
+                verifiers
+                    .iter()
+                    .find(|verifier| verifier["verifier_policy"] == "mkt-swp-liquid-v1")
+            })
+            .expect("Liquid verifier");
+        assert_eq!(
+            liquid_verifier["asset_id"],
+            liquid_asset.mkt_asset_id(&liquid_network)
+        );
+        assert_taproot_control_blocks(&liquid_fixture, liquid_verifier, true);
+        assert!(terms["legs"].as_array().is_some_and(|legs| {
+            legs.iter()
+                .any(|leg| leg["rail"] == "liquid" && leg["verifier_policy"] == "mkt-swp-liquid-v1")
+        }));
+        if case["swap_type"] == "reverse" {
+            let ladder = &terms["timeout_ladder"];
+            assert_eq!(
+                ladder["lightning_current_height"],
+                funded_policy.lightning_current_height
+            );
+            assert_eq!(ladder["height_observed_at"], now);
+            assert_eq!(ladder["height_observation_max_age_seconds"], 120);
+            assert_eq!(ladder["chain_block_interval_seconds"], 60);
+            assert_eq!(ladder["lightning_block_interval_seconds"], 600);
+            assert_eq!(ladder["cross_domain_safety_seconds"], 3_600);
+            let provider_refund_expected_at = ladder["provider_refund_expected_at"]
+                .as_u64()
+                .expect("provider refund expected time");
+            let hold_expiry_expected_at = ladder["hold_expiry_expected_at"]
+                .as_u64()
+                .expect("hold expiry expected time");
+            assert!(
+                provider_refund_expected_at
+                    + u64::from(funded_policy.lightning_settlement_blocks) * 600
+                    + 3_600
+                    < hold_expiry_expected_at
+            );
+        }
+    }
+}
+
+fn signed_chain_rfq(
+    setup: &Setup,
+    now: u64,
+    source_asset: &str,
+    destination_asset: &str,
+    request_byte: u8,
+) -> Event {
+    sign_private(
+        setup
+            .factory
+            .rfq(
+                now,
+                &format!("{request_byte:02x}").repeat(32),
+                now + 300,
+                json!({
+                    "constraints":{
+                        "allowed_script_modes":["taproot-musig2-script-exit"],
+                        "asset_pair":[source_asset,destination_asset],
+                        "confirmation_policy":{
+                            "minimum_confirmations":"1",
+                            "reorg_safety_blocks":"1",
+                            "zero_confirmation":"forbidden",
+                            "rbf":"reject",
+                            "replacement":"reject"
+                        },
+                        "desired_completion_time":now + 20_000,
+                        "firm_quote_required":true,
+                        "input_amount":"100000",
+                        "invoice_sha256":null,
+                        "maximum_total_fee":"10000",
+                        "payment_hash":"22".repeat(32),
+                        "requester_public_keys":[
+                            {"leg_id":"destination","path":"claim","public_key":setup.requester.pubkey()},
+                            {"leg_id":"source","path":"refund","public_key":setup.requester.pubkey()}
+                        ],
+                        "swap_type":"chain"
+                    }
+                }),
+            )
+            .expect("chain RFQ"),
+        &setup.requester,
+    )
+}
+
+fn signed_liquid_rfq(
+    setup: &Setup,
+    case: &Value,
+    invoice: &str,
+    now: u64,
+    liquid_asset: String,
+) -> Event {
+    let quote_fixture = fixture();
+    let swap_type = case["swap_type"].as_str().expect("swap type");
+    let lightning_asset = format!(
+        "swp:1:{}:btc:lightning",
+        quote_fixture["network_id"].as_str().expect("network ID")
+    );
+    let (asset_pair, leg_id, path) = match swap_type {
+        "submarine" => (json!([liquid_asset, lightning_asset]), "source", "refund"),
+        "reverse" => (
+            json!([lightning_asset, liquid_asset]),
+            "destination",
+            "claim",
+        ),
+        _ => panic!("unsupported Liquid test swap type"),
+    };
+    let mut constraints = json!({
+        "allowed_script_modes":["taproot-musig2-script-exit"],
+        "asset_pair":asset_pair,
+        "confirmation_policy":{
+            "minimum_confirmations":"1",
+            "reorg_safety_blocks":"1",
+            "zero_confirmation":"forbidden",
+            "rbf":"reject",
+            "replacement":"reject"
+        },
+        "desired_completion_time":now + case["desired_completion_offset"].as_u64().unwrap_or(10_000),
+        "firm_quote_required":true,
+        "input_amount":case["input_amount"],
+        "invoice_sha256":quote_fixture["invoice_sha256"],
+        "maximum_total_fee":case["maximum_total_fee"],
+        "payment_hash":quote_fixture["payment_hash"],
+        "requester_public_keys":[{
+            "leg_id":leg_id,
+            "path":path,
+            "public_key":setup.requester.pubkey()
+        }],
+        "swap_type":swap_type
+    });
+    if swap_type == "reverse" {
+        constraints
+            .as_object_mut()
+            .expect("constraints object")
+            .remove("invoice_sha256");
+    }
+    let mut profile = json!({"constraints":constraints});
+    if swap_type == "submarine" {
+        profile
+            .as_object_mut()
+            .expect("RFQ profile")
+            .insert("invoice".to_owned(), Value::String(invoice.to_owned()));
+    }
+    let request = setup
+        .factory
+        .rfq(
+            now - 1,
+            &lower_hex(&sha256(
+                format!("{}:liquid:{swap_type}", setup.config.session_id).as_bytes(),
+            )),
+            now + 300,
+            profile,
+        )
+        .expect("Liquid RFQ request");
+    sign_private(request, &setup.requester)
+}
+
+fn liquid_policy<'a>(
+    bitcoin_network: &'a str,
+    liquid_network: &'a str,
+    liquid_asset: LiquidAssetId,
+) -> FundedQuotePolicy<'a> {
+    FundedQuotePolicy {
+        network_id: bitcoin_network,
+        liquid: Some(LiquidQuotePolicy {
+            network_id: liquid_network,
+            pegged_asset: liquid_asset,
+        }),
+        cooperative_signing: false,
+        lightning_current_height: 0,
+        fee_bps: 100,
+        miner_fee_budget_sat: 2_000,
+        lightning_routing_fee_budget_sat: 0,
+        minimum_confirmations: 1,
+        reorg_safety_blocks: 1,
+        zero_confirmation: false,
+        rbf: ReplacementPolicy::Reject,
+        replacement: ReplacementPolicy::Reject,
+        quote_validity_seconds: 60,
+        funding_window_blocks: 2,
+        broadcast_safety_blocks: 1,
+        lightning_settlement_blocks: 1,
+        expected_block_seconds: 600,
+        clock_skew_seconds: 60,
+        recovery_target_blocks: 2,
+    }
+}
+
+fn assert_taproot_control_blocks(fixture: &Value, verifier: &Value, liquid: bool) {
+    assert_eq!(fixture["taproot"]["liquid_tag_domain"], "elements");
+    assert_eq!(
+        fixture["taproot"]["liquid_control_block_verifier"],
+        "verify_liquid_control_block"
+    );
+    let version_name = if liquid {
+        "liquid_leaf_version"
+    } else {
+        "bitcoin_leaf_version"
+    };
+    let expected_version = u8::from_str_radix(
+        fixture["taproot"][version_name]
+            .as_str()
+            .expect("Taproot leaf version"),
+        16,
+    )
+    .expect("hex Taproot leaf version");
+    let output_key = XOnlyPublicKey::from_byte_array(
+        decode_hex(verifier["taproot_output_key"].as_str().expect("output key"))
+            .try_into()
+            .expect("32-byte output key"),
+    )
+    .expect("valid output key");
+    let cooperative_pubkeys = verifier["cooperative_pubkeys"]
+        .as_array()
+        .filter(|keys| keys.len() == 2)
+        .expect("two cooperative public keys");
+    let expected_roles = fixture["taproot"]["cooperative_pubkey_order"]
+        .as_array()
+        .expect("cooperative key role order");
+    let mut parsed_keys = Vec::with_capacity(2);
+    for (key, role) in cooperative_pubkeys.iter().zip(expected_roles) {
+        assert_eq!(key["participant_role"], *role);
+        parsed_keys.push(
+            PublicKey::from_slice(&decode_hex(
+                key["public_key"].as_str().expect("cooperative public key"),
+            ))
+            .expect("compressed cooperative public key"),
+        );
+    }
+    let internal_key = musig2_aggregate_key(&parsed_keys).expect("aggregate cooperative key");
+    assert_eq!(
+        lower_hex(&internal_key.serialize()),
+        verifier["cooperative_internal_key"]
+    );
+    assert_eq!(
+        verifier["taproot_internal_key"],
+        verifier["cooperative_internal_key"]
+    );
+    for (script_name, control_name) in [
+        ("claim_script", "taproot_claim_control_block"),
+        ("refund_script", "taproot_refund_control_block"),
+    ] {
+        let script = decode_hex(verifier[script_name].as_str().expect("Taproot script"));
+        let control_block = decode_hex(
+            verifier[control_name]
+                .as_str()
+                .expect("Taproot control block"),
+        );
+        assert_eq!(control_block[0] & 0xfe, expected_version);
+        if liquid {
+            verify_liquid_control_block(&output_key, &script, &control_block)
+                .expect("independent Elements control-block verification");
+        } else {
+            verify_control_block(&output_key, &script, &control_block)
+                .expect("independent Bitcoin control-block verification");
+        }
+    }
+}
 
 struct Setup {
     requester: MarketSigner,
@@ -427,6 +891,7 @@ fn pricing_decision_feeds_the_exact_funded_reverse_quote_terms()
             network_id: fixture["network_id"]
                 .as_str()
                 .ok_or("Quote fixture network is missing")?,
+            liquid: None,
             cooperative_signing: false,
             lightning_current_height: u32::try_from(
                 fixture["lightning_height"]
@@ -713,6 +1178,7 @@ fn assert_positive_fixture(case: &Value, built: &BuiltFundedQuote) {
         "expected_profile_sha256":profile_digest,
         "expected_script_pubkey":verifier["script_pubkey"],
         "expected_output_key":verifier["taproot_output_key"],
+        "expected_internal_key":verifier["taproot_internal_key"],
         "expected_claim_public_key":bitcoin_leg["claim_public_key"],
         "expected_refund_public_key":bitcoin_leg["refund_public_key"],
         "expected_refund_height":bitcoin_leg["refund_lock_value"],
@@ -721,6 +1187,7 @@ fn assert_positive_fixture(case: &Value, built: &BuiltFundedQuote) {
         "expected_profile_sha256",
         "expected_script_pubkey",
         "expected_output_key",
+        "expected_internal_key",
         "expected_claim_public_key",
         "expected_refund_public_key",
         "expected_refund_height",
@@ -860,6 +1327,7 @@ fn sign_private(request: MktSigningRequest, signer: &MarketSigner) -> Event {
 fn policy<'a>(fixture: &'a Value, case: &Value) -> FundedQuotePolicy<'a> {
     FundedQuotePolicy {
         network_id: fixture["network_id"].as_str().expect("network ID"),
+        liquid: None,
         cooperative_signing: false,
         lightning_current_height: u32::try_from(
             fixture["lightning_height"]
@@ -917,4 +1385,16 @@ fn lower_hex(bytes: &[u8]) -> String {
         output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
     output
+}
+
+fn decode_hex(value: &str) -> Vec<u8> {
+    assert_eq!(value.len() % 2, 0, "hex input length");
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).expect("ASCII hex pair");
+            u8::from_str_radix(pair, 16).expect("lower hex byte")
+        })
+        .collect()
 }

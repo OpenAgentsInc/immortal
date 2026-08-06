@@ -172,8 +172,11 @@ impl BroadcastWatchPayload {
         }
         match job.job_kind.as_str() {
             "refund_broadcast" | "cooperative_broadcast" if self.claim_release.is_none() => {}
-            "claim_broadcast" if self.claim_release.is_some() => {}
-            "refund_broadcast" | "claim_broadcast" | "cooperative_broadcast" => {
+            "claim_broadcast" | "chain_source_claim_broadcast" if self.claim_release.is_some() => {}
+            "refund_broadcast"
+            | "claim_broadcast"
+            | "chain_source_claim_broadcast"
+            | "cooperative_broadcast" => {
                 return Err(WatchtowerError::InvalidPayload(
                     "claim release evidence does not match the job kind",
                 ));
@@ -835,6 +838,31 @@ mod tests {
         )?;
         assert!(payload.claim_release.is_some());
         assert!(!payload.public_value()?.to_string().contains("preimage"));
+        Ok(())
+    }
+
+    #[test]
+    fn chain_source_claim_payload_requires_release_evidence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let raw = test_transaction()?;
+        let released = BroadcastWatchPayload::released_claim(
+            raw.clone(),
+            ClaimReleaseEvidence {
+                payment_hash: "22".repeat(32),
+                settled_at: 100,
+            },
+        )?;
+        let released_job = test_watch_job("chain_source_claim_broadcast", &released)?;
+        assert_eq!(decode_job_payload(&released_job)?, released);
+
+        let unreleased = BroadcastWatchPayload::refund(raw)?;
+        let unreleased_job = test_watch_job("chain_source_claim_broadcast", &unreleased)?;
+        assert!(matches!(
+            decode_job_payload(&unreleased_job),
+            Err(WatchtowerError::InvalidPayload(
+                "claim release evidence does not match the job kind"
+            ))
+        ));
         Ok(())
     }
 

@@ -1,9 +1,12 @@
 use std::{env, fmt, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
+use immortal_core::liquid::{LiquidAssetId, LiquidNetworkId};
+
 use crate::{
     bitcoind::{BitcoindAuth, BitcoindClient, BitcoindEndpoint, BitcoindLimits},
     boltz::{BoltzConfig, BoltzConfigError},
     cln::{ClnClient, ClnEndpoint, ClnLimits},
+    elementsd::{ElementsdClient, ElementsdWalletName},
     health::{AlertEndpoint, private_or_loopback},
     lightning::{ClnLightningRail, LightningRail},
     pricing::{PricingConfig, PricingConfigError, ReservationTier},
@@ -34,6 +37,7 @@ pub enum ConfigError {
     Missing(&'static str),
     Invalid(&'static str),
     Bitcoind,
+    Elementsd,
     Cln,
     Lnd,
     Wallet,
@@ -48,6 +52,7 @@ impl fmt::Display for ConfigError {
             Self::Missing(name) => write!(formatter, "required provider setting {name} is missing"),
             Self::Invalid(name) => write!(formatter, "provider setting {name} is invalid"),
             Self::Bitcoind => formatter.write_str("bitcoind settings are invalid"),
+            Self::Elementsd => formatter.write_str("elementsd settings are invalid"),
             Self::Cln => formatter.write_str("CLN settings are invalid"),
             Self::Lnd => formatter.write_str("LND settings are invalid"),
             Self::Wallet => formatter.write_str("provider wallet settings are invalid"),
@@ -80,6 +85,7 @@ pub struct FundedProviderConfig {
     database_url: DatabaseUrl,
     pub relay_url: String,
     pub bitcoind: BitcoindClient,
+    pub elementsd: Option<ElementsdClient>,
     pub lightning: Arc<dyn LightningRail>,
     pub wallet: ProviderWallet,
     pub network: BitcoinNetwork,
@@ -91,6 +97,7 @@ pub struct FundedProviderConfig {
     pub minimum_confirmations: u32,
     pub reorg_safety_blocks: u32,
     pub pricing: PricingConfig,
+    pub lab_forces_fallback_feerate: bool,
     pub hold_invoice_expiry_seconds: u32,
     pub cooperative_signing: bool,
     pub boltz: Option<BoltzConfig>,
@@ -103,6 +110,7 @@ impl fmt::Debug for FundedProviderConfig {
             .field("database_url", &self.database_url)
             .field("relay_url", &self.relay_url)
             .field("bitcoind", &self.bitcoind)
+            .field("elementsd", &self.elementsd)
             .field("lightning", &self.lightning)
             .field("wallet", &self.wallet)
             .field("network", &self.network)
@@ -114,6 +122,10 @@ impl fmt::Debug for FundedProviderConfig {
             .field("minimum_confirmations", &self.minimum_confirmations)
             .field("reorg_safety_blocks", &self.reorg_safety_blocks)
             .field("pricing", &self.pricing)
+            .field(
+                "lab_forces_fallback_feerate",
+                &self.lab_forces_fallback_feerate,
+            )
             .field(
                 "hold_invoice_expiry_seconds",
                 &self.hold_invoice_expiry_seconds,
@@ -152,6 +164,7 @@ impl FundedProviderConfig {
             BitcoindLimits::default(),
         )
         .map_err(|_| ConfigError::Bitcoind)?;
+        let elementsd = elementsd_from_lookup(optional)?;
 
         let lightning = lightning_from_environment(lab_timeout_profile)?;
         let wallet =
@@ -196,6 +209,8 @@ impl FundedProviderConfig {
             MIN_CONFIRMATIONS..=MAX_CONFIRMATIONS,
         )?;
         let mut pricing = PricingConfig::from_env().map_err(ConfigError::Pricing)?;
+        let lab_forces_fallback_feerate =
+            lab_forces_fallback_feerate(lab_timeout_profile, &pricing)?;
         let hold_invoice_expiry_seconds = match lab_timeout_profile {
             Some(profile) => {
                 pricing.quote_expiry_seconds = profile.quote_expiry_seconds;
@@ -212,6 +227,7 @@ impl FundedProviderConfig {
             database_url: DatabaseUrl(database_url),
             relay_url,
             bitcoind,
+            elementsd,
             lightning,
             wallet,
             network,
@@ -223,6 +239,7 @@ impl FundedProviderConfig {
             minimum_confirmations,
             reorg_safety_blocks,
             pricing,
+            lab_forces_fallback_feerate,
             hold_invoice_expiry_seconds,
             cooperative_signing,
             boltz,
@@ -232,6 +249,54 @@ impl FundedProviderConfig {
     pub fn database_url(&self) -> &str {
         &self.database_url.0
     }
+}
+
+fn elementsd_from_lookup(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<Option<ElementsdClient>, ConfigError> {
+    const SETTINGS: [&str; 7] = [
+        "IMMORTAL_PROVIDER_ELEMENTSD_HOST",
+        "IMMORTAL_PROVIDER_ELEMENTSD_PORT",
+        "IMMORTAL_PROVIDER_ELEMENTSD_RPC_USER",
+        "IMMORTAL_PROVIDER_ELEMENTSD_RPC_PASSWORD",
+        "IMMORTAL_PROVIDER_ELEMENTSD_WALLET",
+        "IMMORTAL_PROVIDER_LIQUID_NETWORK_ID",
+        "IMMORTAL_PROVIDER_LIQUID_PEGGED_ASSET",
+    ];
+    let enabled = lookup("IMMORTAL_PROVIDER_LIQUID_ENABLED");
+    match enabled.as_deref() {
+        None => {
+            if SETTINGS.iter().any(|name| lookup(name).is_some()) {
+                return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_LIQUID_ENABLED"));
+            }
+            return Ok(None);
+        }
+        Some("true") => {}
+        Some(_) => return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_LIQUID_ENABLED")),
+    }
+    let required = |name: &'static str| lookup(name).ok_or(ConfigError::Missing(name));
+    let port = parse_number::<u16>(
+        "IMMORTAL_PROVIDER_ELEMENTSD_PORT",
+        &required("IMMORTAL_PROVIDER_ELEMENTSD_PORT")?,
+    )?;
+    let client = ElementsdClient::new(
+        BitcoindEndpoint::new(required("IMMORTAL_PROVIDER_ELEMENTSD_HOST")?, port)
+            .map_err(|_| ConfigError::Elementsd)?,
+        BitcoindAuth::new(
+            required("IMMORTAL_PROVIDER_ELEMENTSD_RPC_USER")?,
+            required("IMMORTAL_PROVIDER_ELEMENTSD_RPC_PASSWORD")?,
+        )
+        .map_err(|_| ConfigError::Elementsd)?,
+        BitcoindLimits::default(),
+        ElementsdWalletName::new(required("IMMORTAL_PROVIDER_ELEMENTSD_WALLET")?)
+            .map_err(|_| ConfigError::Elementsd)?,
+        LiquidNetworkId::parse(&required("IMMORTAL_PROVIDER_LIQUID_NETWORK_ID")?)
+            .map_err(|_| ConfigError::Elementsd)?,
+        LiquidAssetId::parse(&required("IMMORTAL_PROVIDER_LIQUID_PEGGED_ASSET")?)
+            .map_err(|_| ConfigError::Elementsd)?,
+    )
+    .map_err(|_| ConfigError::Elementsd)?;
+    Ok(Some(client))
 }
 
 fn cooperative_signing_from_lookup(
@@ -381,6 +446,18 @@ fn lab_timeout_profile_from_lookup(
     }))
 }
 
+fn lab_forces_fallback_feerate(
+    profile: Option<LabTimeoutProfile>,
+    pricing: &PricingConfig,
+) -> Result<bool, ConfigError> {
+    if profile.is_some() && pricing.fallback_feerate_sat_per_vb.is_none() {
+        return Err(ConfigError::Missing(
+            "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB",
+        ));
+    }
+    Ok(profile.is_some())
+}
+
 fn validate_database_url(value: &str) -> Result<(), ConfigError> {
     if value.len() > MAX_DATABASE_URL_BYTES
         || !(value.starts_with("postgres://") || value.starts_with("postgresql://"))
@@ -469,6 +546,7 @@ mod tests {
         let profile = &fixture["lab_profile"];
         assert_eq!(profile["environment"], "IMMORTAL_PROVIDER_LAB_PROFILE");
         assert_eq!(profile["value"], "regtest_adversarial");
+        assert_eq!(profile["pricing"]["source"], "configured_fallback_only");
 
         let timeout = lab_timeout_profile_from_lookup(BitcoinNetwork::Regtest, |name| {
             (name
@@ -490,6 +568,26 @@ mod tests {
             profile["tiny_hold_invoice_expiry_seconds"]
                 .as_u64()
                 .expect("hold expiry")
+        );
+        let pricing = PricingConfig::from_lookup(|name| {
+            (name == "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB").then(|| {
+                profile["pricing"]["sat_per_vbyte"]
+                    .as_u64()
+                    .expect("lab feerate")
+                    .to_string()
+            })
+        })
+        .expect("fixture fallback pricing validates");
+        assert_eq!(
+            lab_forces_fallback_feerate(Some(timeout), &pricing),
+            Ok(true)
+        );
+        let no_fallback = PricingConfig::from_lookup(|_| None).expect("default pricing");
+        assert_eq!(
+            lab_forces_fallback_feerate(Some(timeout), &no_fallback),
+            Err(ConfigError::Missing(
+                "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB"
+            ))
         );
 
         for network in [
@@ -622,5 +720,38 @@ mod tests {
                 "IMMORTAL_PROVIDER_DIRECT_RECOVERY_BIND"
             ))
         );
+    }
+
+    #[test]
+    fn liquid_configuration_is_explicit_and_complete() {
+        assert!(
+            elementsd_from_lookup(|_| None)
+                .expect("disabled Liquid config")
+                .is_none()
+        );
+        assert!(
+            elementsd_from_lookup(|name| {
+                (name == "IMMORTAL_PROVIDER_ELEMENTSD_HOST").then(|| "127.0.0.1".to_owned())
+            })
+            .is_err()
+        );
+        let configured = elementsd_from_lookup(|name| {
+            let value = match name {
+                "IMMORTAL_PROVIDER_LIQUID_ENABLED" => "true",
+                "IMMORTAL_PROVIDER_ELEMENTSD_HOST" => "127.0.0.1",
+                "IMMORTAL_PROVIDER_ELEMENTSD_PORT" => "18884",
+                "IMMORTAL_PROVIDER_ELEMENTSD_RPC_USER" => "elements-user",
+                "IMMORTAL_PROVIDER_ELEMENTSD_RPC_PASSWORD" => "elements-password",
+                "IMMORTAL_PROVIDER_ELEMENTSD_WALLET" => "provider-liquid",
+                "IMMORTAL_PROVIDER_LIQUID_NETWORK_ID" => "bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "IMMORTAL_PROVIDER_LIQUID_PEGGED_ASSET" => {
+                    "1111111111111111111111111111111111111111111111111111111111111111"
+                }
+                _ => return None,
+            };
+            Some(value.to_owned())
+        })
+        .expect("complete Liquid config");
+        assert!(configured.is_some());
     }
 }

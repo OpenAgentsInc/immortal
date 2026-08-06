@@ -8,6 +8,8 @@ pub use immortal_core::{domain, market, nip44};
 
 pub mod client;
 #[cfg(feature = "mkt-swp-verify")]
+pub mod liquid;
+#[cfg(feature = "mkt-swp-verify")]
 pub mod mkt_swp_client;
 pub mod tbdex;
 

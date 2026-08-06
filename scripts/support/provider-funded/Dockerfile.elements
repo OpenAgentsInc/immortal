@@ -1,0 +1,43 @@
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 AS fetch
+
+ARG TARGETARCH
+ARG ELEMENTS_VERSION=23.3.3
+
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+        amd64) \
+            archive_arch=x86_64; \
+            archive_sha256=90d6659a4f5d6d94bbf2321f6114e1286fbec8031cfc614b2f2319ddfcd9b3e1 \
+            ;; \
+        arm64) \
+            archive_arch=aarch64; \
+            archive_sha256=279c6cf96ca0583e93fa8531ca671ffde91694254fce4719e6f3b1d0d883dd34 \
+            ;; \
+        *) \
+            echo "unsupported Elements target architecture" >&2; \
+            exit 1 \
+            ;; \
+    esac; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates curl; \
+    archive="elements-${ELEMENTS_VERSION}-${archive_arch}-linux-gnu.tar.gz"; \
+    curl --fail --location --silent --show-error \
+        "https://github.com/ElementsProject/elements/releases/download/elements-${ELEMENTS_VERSION}/${archive}" \
+        --output "/tmp/${archive}"; \
+    printf '%s  %s\n' "${archive_sha256}" "/tmp/${archive}" | sha256sum --check --strict; \
+    tar --extract --gzip --file "/tmp/${archive}" --directory /tmp; \
+    install -D -m 0755 "/tmp/elements-${ELEMENTS_VERSION}/bin/elementsd" /out/elementsd; \
+    install -D -m 0755 "/tmp/elements-${ELEMENTS_VERSION}/bin/elements-cli" /out/elements-cli
+
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+
+ARG IMMORTAL_LAB_RUN_ID
+LABEL org.openagents.immortal.lab.component="elementsd" \
+      org.openagents.immortal.lab.run-id="${IMMORTAL_LAB_RUN_ID}" \
+      org.openagents.immortal.lab.elements-version="23.3.3"
+
+COPY --from=fetch /out/elementsd /usr/local/bin/elementsd
+COPY --from=fetch /out/elements-cli /usr/local/bin/elements-cli
+
+ENTRYPOINT ["/usr/local/bin/elementsd"]

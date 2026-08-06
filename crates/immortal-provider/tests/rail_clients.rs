@@ -5,6 +5,9 @@ mod bitcoind;
 #[path = "../src/cln.rs"]
 mod cln;
 #[allow(dead_code)]
+#[path = "../src/elementsd.rs"]
+mod elementsd;
+#[allow(dead_code)]
 #[path = "../src/lightning.rs"]
 mod lightning;
 #[cfg(feature = "lnd")]
@@ -26,6 +29,8 @@ use cln::{
     ClnClient, ClnEndpoint, ClnError, ClnLimits, ClnRequestId, IMMORTAL_REGTEST_HOLD_METHOD,
     Millisatoshi,
 };
+use elementsd::{ElementsdClient, ElementsdError, ElementsdMempoolAdmission, ElementsdWalletName};
+use immortal_core::liquid::{LiquidAssetId, LiquidNetworkId};
 use immortal_core::mkt_swp_verify::parse_bolt11;
 use lightning::{ClnLightningRail, LightningRail};
 use serde_json::{Value, json};
@@ -218,6 +223,668 @@ async fn bitcoind_refuses_non_loopback_and_oversized_responses() {
         .unwrap_err();
     assert_eq!(error, BitcoindError::Protocol("response body is too large"));
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn elementsd_binds_network_wallet_unblind_and_mempool_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nipmkt/liquid-rail-v1.json"
+    ))?;
+    let network = &fixture["network"];
+    let vector = &fixture["parser_vectors"][0];
+    assert_eq!(
+        fixture["rpc_normalization"],
+        json!({
+            "mempool_transaction_missing_confirmations":"zero",
+            "confirmed_transaction_missing_confirmations":"reject",
+            "non_numeric_confirmations":"reject",
+            "positive_confirmations_without_blockhash":"reject",
+            "zero_confirmations_with_blockhash":"reject"
+        })
+    );
+    let responses = vec![
+        http_response(
+            200,
+            &json!({
+                "result":network["genesis_hash"],
+                "error":null,
+                "id":"liquid:probe:genesis"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{"pegged_asset":network["pegged_asset"]},
+                "error":null,
+                "id":"liquid:probe:sidechain"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{"bestblockhash":"22".repeat(32),"blocks":42},
+                "error":null,
+                "id":"liquid:probe:tip"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{"hex":vector["trusted_local_unblind"],"complete":true},
+                "error":null,
+                "id":"liquid:unblind:1"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":[{"txid":"33".repeat(32),"allowed":true}],
+                "error":null,
+                "id":"liquid:mempool:1"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{
+                    "hex":vector["raw_transaction"],
+                    "confirmations":2,
+                    "blockhash":"44".repeat(32)
+                },
+                "error":null,
+                "id":"liquid:observe:transaction"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{"bestblock":"44".repeat(32)},
+                "error":null,
+                "id":"liquid:observe:unspent"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{"hex":vector["raw_transaction"]},
+                "error":null,
+                "id":"liquid:observe:mempool"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{"hex":vector["raw_transaction"],"confirmations":"0"},
+                "error":null,
+                "id":"liquid:observe:malformed"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{"hex":vector["raw_transaction"],"confirmations":2},
+                "error":null,
+                "id":"liquid:observe:missing-blockhash"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{
+                    "hex":vector["raw_transaction"],
+                    "confirmations":0,
+                    "blockhash":"77".repeat(32)
+                },
+                "error":null,
+                "id":"liquid:observe:zero-confirmed"
+            })
+            .to_string(),
+        ),
+    ];
+    let (endpoint, server) = spawn_bitcoind_sequence(responses).await;
+    let client = ElementsdClient::new(
+        endpoint,
+        BitcoindAuth::new("elements-user", "elements-password")?,
+        BitcoindLimits::default(),
+        ElementsdWalletName::new("provider-liquid")?,
+        LiquidNetworkId::parse(network["network_id"].as_str().ok_or("network ID")?)?,
+        LiquidAssetId::parse(network["pegged_asset"].as_str().ok_or("pegged asset")?)?,
+    )?;
+    let view = client.probe("liquid:probe").await?;
+    assert_eq!(view.height, 42);
+    let raw = decode_fixture_hex(
+        vector["raw_transaction"]
+            .as_str()
+            .ok_or("raw transaction")?,
+    )?;
+    let unblinded = client
+        .unblind_own_transaction(&RpcRequestId::new("liquid:unblind:1")?, &raw)
+        .await?;
+    assert_eq!(unblinded.outputs.len(), 2);
+    client
+        .require_mempool_acceptance(&RpcRequestId::new("liquid:mempool:1")?, &raw)
+        .await?;
+    let observation = client
+        .observe_output("liquid:observe", &"33".repeat(32), 0)
+        .await?;
+    assert_eq!(observation.confirmations, 2);
+    assert!(observation.unspent);
+    assert_eq!(observation.raw_transaction, raw);
+    let mempool = client
+        .observe_transaction(
+            &RpcRequestId::new("liquid:observe:mempool")?,
+            &"55".repeat(32),
+        )
+        .await?;
+    assert_eq!(mempool.confirmations, 0);
+    assert_eq!(mempool.block_hash, None);
+    assert_eq!(
+        client
+            .observe_transaction(
+                &RpcRequestId::new("liquid:observe:malformed")?,
+                &"66".repeat(32),
+            )
+            .await
+            .unwrap_err(),
+        ElementsdError::Json("transaction confirmation count is not an unsigned integer")
+    );
+    for (request_id, transaction_id) in [
+        ("liquid:observe:missing-blockhash", "77".repeat(32)),
+        ("liquid:observe:zero-confirmed", "88".repeat(32)),
+    ] {
+        assert_eq!(
+            client
+                .observe_transaction(&RpcRequestId::new(request_id)?, &transaction_id)
+                .await
+                .unwrap_err(),
+            ElementsdError::Json("transaction confirmations and block hash are inconsistent")
+        );
+    }
+
+    let requests = server.await?;
+    assert_eq!(requests.len(), 11);
+    assert!(requests[0].starts_with("POST / HTTP/1.1\r\n"));
+    assert!(requests[3].starts_with("POST /wallet/provider-liquid HTTP/1.1\r\n"));
+    assert!(requests[4].starts_with("POST / HTTP/1.1\r\n"));
+    let transaction_request: Value = serde_json::from_slice(http_body(requests[5].as_bytes()))?;
+    assert_eq!(transaction_request["method"], "getrawtransaction");
+    let output_request: Value = serde_json::from_slice(http_body(requests[6].as_bytes()))?;
+    assert_eq!(output_request["method"], "gettxout");
+    let mempool_request: Value = serde_json::from_slice(http_body(requests[7].as_bytes()))?;
+    assert_eq!(mempool_request["method"], "getrawtransaction");
+    let malformed_request: Value = serde_json::from_slice(http_body(requests[8].as_bytes()))?;
+    assert_eq!(malformed_request["method"], "getrawtransaction");
+    assert!(!format!("{client:?}").contains("elements-password"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn elementsd_accepts_only_exact_bytes_for_an_already_known_transaction()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nipmkt/liquid-rail-v1.json"
+    ))?;
+    let network = &fixture["network"];
+    let raw_hex = fixture["parser_vectors"][0]["raw_transaction"]
+        .as_str()
+        .ok_or("raw transaction")?;
+    let raw = decode_fixture_hex(raw_hex)?;
+    let responses = vec![
+        http_response(
+            200,
+            &json!({
+                "result":[{"txid":"33".repeat(32),"allowed":false,"reject-reason":"txn-already-known"}],
+                "error":null,
+                "id":"liquid:known:policy"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":raw_hex,
+                "error":null,
+                "id":"liquid:known:raw"
+            })
+            .to_string(),
+        ),
+    ];
+    let (endpoint, server) = spawn_bitcoind_sequence(responses).await;
+    let client = ElementsdClient::new(
+        endpoint,
+        BitcoindAuth::new("elements-user", "elements-password")?,
+        BitcoindLimits::default(),
+        ElementsdWalletName::new("provider-liquid")?,
+        LiquidNetworkId::parse(network["network_id"].as_str().ok_or("network ID")?)?,
+        LiquidAssetId::parse(network["pegged_asset"].as_str().ok_or("pegged asset")?)?,
+    )?;
+    let admission = client
+        .require_mempool_acceptance_or_exact_known(
+            &RpcRequestId::new("liquid:known:policy")?,
+            &RpcRequestId::new("liquid:known:raw")?,
+            &raw,
+        )
+        .await?;
+    assert_eq!(admission, ElementsdMempoolAdmission::ExactKnown);
+    let requests = server.await?;
+    assert_eq!(requests.len(), 2);
+    let known_request: Value = serde_json::from_slice(http_body(requests[1].as_bytes()))?;
+    assert_eq!(known_request["method"], "getrawtransaction");
+    Ok(())
+}
+
+#[tokio::test]
+async fn elementsd_spender_lookup_scans_mempool_and_recent_blocks_by_exact_outpoint()
+-> Result<(), Box<dyn std::error::Error>> {
+    let funding_transaction_id = "22".repeat(32);
+    let spending_transaction_id = "33".repeat(32);
+    let unrelated_transaction_id = "44".repeat(32);
+    let responses = vec![
+        http_response(
+            200,
+            &json!({
+                "result":[spending_transaction_id, unrelated_transaction_id],
+                "error":null,
+                "id":"liquid:spender:mempool"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{
+                    "txid":spending_transaction_id,
+                    "vin":[{"txid":funding_transaction_id,"vout":7}],
+                },
+                "error":null,
+                "id":"liquid:spender:mempool-0"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{
+                    "txid":unrelated_transaction_id,
+                    "vin":[{"txid":funding_transaction_id,"vout":8}],
+                },
+                "error":null,
+                "id":"liquid:spender:mempool-1"
+            })
+            .to_string(),
+        ),
+    ];
+    let (endpoint, server) = spawn_bitcoind_sequence(responses).await;
+    let client = ElementsdClient::new(
+        endpoint,
+        BitcoindAuth::new("elements-user", "elements-password")?,
+        BitcoindLimits::default(),
+        ElementsdWalletName::new("provider-liquid")?,
+        LiquidNetworkId::parse("bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?,
+        LiquidAssetId::parse(&"11".repeat(32))?,
+    )?;
+
+    let spent = client
+        .spending_transaction("liquid:spender", &funding_transaction_id, 7)
+        .await?;
+    assert_eq!(
+        spent.spending_transaction_id.as_deref(),
+        Some(spending_transaction_id.as_str())
+    );
+    assert!(
+        client
+            .spending_transaction("liquid:spender:invalid", &funding_transaction_id, 1 << 30,)
+            .await
+            .is_err()
+    );
+
+    let requests = server.await?;
+    let methods = requests
+        .iter()
+        .map(|request| {
+            serde_json::from_slice::<Value>(http_body(request.as_bytes()))
+                .map(|request| request["method"].as_str().map(str::to_owned))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        methods,
+        vec![
+            Some("getrawmempool".to_owned()),
+            Some("getrawtransaction".to_owned()),
+            Some("getrawtransaction".to_owned()),
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn elementsd_spender_lookup_finds_a_confirmed_spender_without_unsupported_rpc()
+-> Result<(), Box<dyn std::error::Error>> {
+    let funding_transaction_id = "66".repeat(32);
+    let spending_transaction_id = "77".repeat(32);
+    let tip_hash = "88".repeat(32);
+    let spending_block_hash = "99".repeat(32);
+    let responses = vec![
+        http_response(
+            200,
+            &json!({"result":[],"error":null,"id":"liquid:confirmed:mempool"}).to_string(),
+        ),
+        http_response(
+            200,
+            &json!({"result":2,"error":null,"id":"liquid:confirmed:block-count"}).to_string(),
+        ),
+        http_response(
+            200,
+            &json!({"result":tip_hash,"error":null,"id":"liquid:confirmed:block-hash-2"})
+                .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{"hash":tip_hash,"tx":[]},
+                "error":null,
+                "id":"liquid:confirmed:block-2"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":spending_block_hash,
+                "error":null,
+                "id":"liquid:confirmed:block-hash-1"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{
+                    "hash":spending_block_hash,
+                    "tx":[{
+                        "txid":spending_transaction_id,
+                        "vin":[{"txid":funding_transaction_id,"vout":3}],
+                    }],
+                },
+                "error":null,
+                "id":"liquid:confirmed:block-1"
+            })
+            .to_string(),
+        ),
+    ];
+    let (endpoint, server) = spawn_bitcoind_sequence(responses).await;
+    let client = ElementsdClient::new(
+        endpoint,
+        BitcoindAuth::new("elements-user", "elements-password")?,
+        BitcoindLimits::default(),
+        ElementsdWalletName::new("provider-liquid")?,
+        LiquidNetworkId::parse("bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?,
+        LiquidAssetId::parse(&"11".repeat(32))?,
+    )?;
+
+    let spent = client
+        .spending_transaction("liquid:confirmed", &funding_transaction_id, 3)
+        .await?;
+    assert_eq!(
+        spent.spending_transaction_id.as_deref(),
+        Some(spending_transaction_id.as_str())
+    );
+    let requests = server.await?;
+    let methods = requests
+        .iter()
+        .map(|request| {
+            serde_json::from_slice::<Value>(http_body(request.as_bytes()))
+                .map(|request| request["method"].as_str().map(str::to_owned))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        methods,
+        vec![
+            Some("getrawmempool".to_owned()),
+            Some("getblockcount".to_owned()),
+            Some("getblockhash".to_owned()),
+            Some("getblock".to_owned()),
+            Some("getblockhash".to_owned()),
+            Some("getblock".to_owned()),
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn elementsd_spender_lookup_distinguishes_unspent_from_spent_outside_the_window()
+-> Result<(), Box<dyn std::error::Error>> {
+    let funding_transaction_id = "ab".repeat(32);
+    let block_hash = "bc".repeat(32);
+    for (unspent_result, expected_error) in [
+        (json!({"bestblock":block_hash}), None),
+        (
+            Value::Null,
+            Some(ElementsdError::Json(
+                "funding output was spent outside the bounded scan window",
+            )),
+        ),
+    ] {
+        let responses = vec![
+            http_response(
+                200,
+                &json!({"result":[],"error":null,"id":"liquid:window:mempool"}).to_string(),
+            ),
+            http_response(
+                200,
+                &json!({"result":0,"error":null,"id":"liquid:window:block-count"}).to_string(),
+            ),
+            http_response(
+                200,
+                &json!({"result":block_hash,"error":null,"id":"liquid:window:block-hash-0"})
+                    .to_string(),
+            ),
+            http_response(
+                200,
+                &json!({
+                    "result":{"hash":block_hash,"tx":[]},
+                    "error":null,
+                    "id":"liquid:window:block-0"
+                })
+                .to_string(),
+            ),
+            http_response(
+                200,
+                &json!({"result":unspent_result,"error":null,"id":"liquid:window:unspent"})
+                    .to_string(),
+            ),
+        ];
+        let (endpoint, server) = spawn_bitcoind_sequence(responses).await;
+        let client = ElementsdClient::new(
+            endpoint,
+            BitcoindAuth::new("elements-user", "elements-password")?,
+            BitcoindLimits::default(),
+            ElementsdWalletName::new("provider-liquid")?,
+            LiquidNetworkId::parse("bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?,
+            LiquidAssetId::parse(&"11".repeat(32))?,
+        )?;
+
+        let result = client
+            .spending_transaction("liquid:window", &funding_transaction_id, 2)
+            .await;
+        match expected_error {
+            None => assert_eq!(result?.spending_transaction_id, None),
+            Some(expected_error) => assert_eq!(result.unwrap_err(), expected_error),
+        }
+        let requests = server.await?;
+        let methods = requests
+            .iter()
+            .map(|request| {
+                serde_json::from_slice::<Value>(http_body(request.as_bytes()))
+                    .map(|request| request["method"].as_str().map(str::to_owned))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            methods,
+            vec![
+                Some("getrawmempool".to_owned()),
+                Some("getblockcount".to_owned()),
+                Some("getblockhash".to_owned()),
+                Some("getblock".to_owned()),
+                Some("gettxout".to_owned()),
+            ]
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn elementsd_spender_lookup_rejects_multiple_exact_spenders()
+-> Result<(), Box<dyn std::error::Error>> {
+    let funding_transaction_id = "cd".repeat(32);
+    let first_spender = "de".repeat(32);
+    let second_spender = "ef".repeat(32);
+    let responses = vec![
+        http_response(
+            200,
+            &json!({
+                "result":[first_spender,second_spender],
+                "error":null,
+                "id":"liquid:conflict:mempool"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{"txid":first_spender,"vin":[{"txid":funding_transaction_id,"vout":4}]},
+                "error":null,
+                "id":"liquid:conflict:mempool-0"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":{"txid":second_spender,"vin":[{"txid":funding_transaction_id,"vout":4}]},
+                "error":null,
+                "id":"liquid:conflict:mempool-1"
+            })
+            .to_string(),
+        ),
+    ];
+    let (endpoint, server) = spawn_bitcoind_sequence(responses).await;
+    let client = ElementsdClient::new(
+        endpoint,
+        BitcoindAuth::new("elements-user", "elements-password")?,
+        BitcoindLimits::default(),
+        ElementsdWalletName::new("provider-liquid")?,
+        LiquidNetworkId::parse("bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?,
+        LiquidAssetId::parse(&"11".repeat(32))?,
+    )?;
+
+    assert_eq!(
+        client
+            .spending_transaction("liquid:conflict", &funding_transaction_id, 4)
+            .await
+            .unwrap_err(),
+        ElementsdError::Json("multiple transactions spend the requested outpoint")
+    );
+    server.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn elementsd_spender_lookup_fails_loudly_when_the_mempool_exceeds_its_bound()
+-> Result<(), Box<dyn std::error::Error>> {
+    let funding_transaction_id = "aa".repeat(32);
+    let transactions = (0..=elementsd::MAX_SPENDER_MEMPOOL_TRANSACTIONS)
+        .map(|index| format!("{index:064x}"))
+        .collect::<Vec<_>>();
+    let response = http_response(
+        200,
+        &json!({"result":transactions,"error":null,"id":"liquid:bounded:mempool"}).to_string(),
+    );
+    let (endpoint, server) = spawn_bitcoind(response).await;
+    let client = ElementsdClient::new(
+        endpoint,
+        BitcoindAuth::new("elements-user", "elements-password")?,
+        BitcoindLimits::default(),
+        ElementsdWalletName::new("provider-liquid")?,
+        LiquidNetworkId::parse("bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?,
+        LiquidAssetId::parse(&"11".repeat(32))?,
+    )?;
+
+    assert_eq!(
+        client
+            .spending_transaction("liquid:bounded", &funding_transaction_id, 0)
+            .await
+            .unwrap_err(),
+        ElementsdError::Json("mempool spender scan exceeds its bound")
+    );
+    server.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn elementsd_lab_mining_helpers_are_wallet_scoped_and_bounded()
+-> Result<(), Box<dyn std::error::Error>> {
+    let responses = vec![
+        http_response(
+            200,
+            &json!({
+                "result":"ert1qfixtureaddress",
+                "error":null,
+                "id":"liquid:mine:address"
+            })
+            .to_string(),
+        ),
+        http_response(
+            200,
+            &json!({
+                "result":["22".repeat(32),"33".repeat(32)],
+                "error":null,
+                "id":"liquid:mine:blocks"
+            })
+            .to_string(),
+        ),
+    ];
+    let (endpoint, server) = spawn_bitcoind_sequence(responses).await;
+    let client = ElementsdClient::new(
+        endpoint,
+        BitcoindAuth::new("elements-user", "elements-password")?,
+        BitcoindLimits::default(),
+        ElementsdWalletName::new("provider-liquid")?,
+        LiquidNetworkId::parse("bip122:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?,
+        LiquidAssetId::parse(&"11".repeat(32))?,
+    )?;
+    let address = client
+        .new_address(&RpcRequestId::new("liquid:mine:address")?)
+        .await?;
+    let hashes = client
+        .generate_to_address(&RpcRequestId::new("liquid:mine:blocks")?, 2, &address)
+        .await?;
+    assert_eq!(hashes, vec!["22".repeat(32), "33".repeat(32)]);
+    assert!(
+        client
+            .generate_to_address(&RpcRequestId::new("liquid:mine:invalid")?, 0, &address)
+            .await
+            .is_err()
+    );
+    let requests = server.await?;
+    assert!(requests[0].starts_with("POST /wallet/provider-liquid HTTP/1.1\r\n"));
+    let address_request: Value = serde_json::from_slice(http_body(requests[0].as_bytes()))?;
+    assert_eq!(address_request["method"], "getnewaddress");
+    let mining_request: Value = serde_json::from_slice(http_body(requests[1].as_bytes()))?;
+    assert_eq!(mining_request["method"], "generatetoaddress");
+    assert_eq!(mining_request["params"], json!([2, address]));
+    Ok(())
 }
 
 #[test]
@@ -783,6 +1450,27 @@ async fn spawn_bitcoind(response: Vec<u8>) -> (BitcoindEndpoint, JoinHandle<Stri
     )
 }
 
+async fn spawn_bitcoind_sequence(
+    responses: Vec<Vec<u8>>,
+) -> (BitcoindEndpoint, JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::with_capacity(responses.len());
+        for response in responses {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            requests.push(read_http_request(&mut stream).await);
+            stream.write_all(&response).await.unwrap();
+            stream.shutdown().await.unwrap();
+        }
+        requests
+    });
+    (
+        BitcoindEndpoint::new("127.0.0.1", address.port()).unwrap(),
+        server,
+    )
+}
+
 async fn spawn_bitcoind_delayed(
     response: Vec<u8>,
     delay: Duration,
@@ -854,6 +1542,17 @@ fn http_response(status: u16, body: &str) -> Vec<u8> {
         body.len()
     )
     .into_bytes()
+}
+
+fn decode_fixture_hex(value: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    if value.len() % 2 != 0 {
+        return Err("odd fixture hex length".into());
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for pair in value.as_bytes().chunks_exact(2) {
+        bytes.push(u8::from_str_radix(std::str::from_utf8(pair)?, 16)?);
+    }
+    Ok(bytes)
 }
 
 fn cln_client(path: &Path, limits: ClnLimits) -> ClnClient {

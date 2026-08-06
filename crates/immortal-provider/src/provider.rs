@@ -29,6 +29,8 @@ pub mod cooperative;
 ))]
 pub(crate) mod direct_recovery;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
+pub mod elementsd;
+#[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub mod funded;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub(crate) mod funded_mode;
@@ -38,6 +40,8 @@ pub mod funding;
 pub mod health;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub mod lightning;
+#[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
+pub mod liquid;
 #[cfg(all(feature = "funded", not(target_arch = "wasm32")))]
 pub mod liquidity;
 #[cfg(all(feature = "lnd", not(target_arch = "wasm32")))]

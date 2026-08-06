@@ -5,7 +5,7 @@
   "process_gate": "scripts/test-lab-adversarial.sh",
   "automation": "manual_local_only",
   "prerequisites": {
-    "issues": [9, 10, 11, 12, 13, 14, 15, 24, 25, 28, 29, 32],
+    "issues": [9, 10, 11, 12, 13, 14, 15, 24, 25, 27, 28, 29, 32],
     "provider_product": "immortal-provider",
     "wallet_product": "immortal-lab",
     "relay_product": "immortal",
@@ -23,6 +23,8 @@
     "wallet_cln_nodes": 1,
     "provider_cln_nodes": 2,
     "provider_bitcoind_nodes": 2,
+    "provider_elementsd_nodes": 2,
+    "wallet_elementsd_nodes": 1,
     "provider_relay_sets": {
       "provider-a": ["relay-a"],
       "provider-b": ["relay-b"]
@@ -41,6 +43,31 @@
       "shared_process": false,
       "shared_rpc_socket": false,
       "cross_provider_rpc_access": false
+    },
+    "liquid": {
+      "implementation": "elementsd",
+      "network": "elementsregtest",
+      "node_count": 3,
+      "provider_nodes": 2,
+      "wallet_nodes": 1,
+      "nodes_peered": true,
+      "shared_process": false,
+      "shared_data_directory": false,
+      "shared_rpc_credentials": false,
+      "cross_provider_rpc_access": false,
+      "confidential_scope": "own-output-unblinding",
+      "enabled_only_for_cases": [
+        "route-chain-btc-to-lbtc-provider-a",
+        "route-chain-btc-to-lbtc-provider-b",
+        "route-chain-lbtc-to-btc-provider-a",
+        "route-chain-lbtc-to-btc-provider-b",
+        "route-liquid-submarine-provider-a",
+        "route-liquid-submarine-provider-b",
+        "route-liquid-reverse-provider-a",
+        "route-liquid-reverse-provider-b",
+        "doomsday-liquid-submarine-provider-gone",
+        "doomsday-liquid-reverse-coordinator-gone"
+      ]
     }
   },
   "lab_profile": {
@@ -49,6 +76,15 @@
     "network_gate": "regtest_only_fail_startup_elsewhere",
     "tiny_quote_expiry_seconds": 3,
     "tiny_hold_invoice_expiry_seconds": 30,
+    "pricing": {
+      "source": "configured_fallback_only",
+      "sat_per_vbyte": 2,
+      "spread_bps": 100,
+      "lightning_routing_fee_ppm": 2900,
+      "min_swap_sat": 10000,
+      "max_swap_sat": 1000000,
+      "liquid_submarine_invoice_amount_sat": 98110
+    },
     "production_defaults_unchanged": true
   },
   "selection": {
@@ -64,6 +100,14 @@
       {"id": "route-submarine-provider-b", "expected": "completed", "provider": "provider-b"},
       {"id": "route-reverse-provider-a", "expected": "completed", "provider": "provider-a"},
       {"id": "route-reverse-provider-b", "expected": "completed", "provider": "provider-b"},
+      {"id": "route-chain-btc-to-lbtc-provider-a", "expected": "completed", "provider": "provider-a"},
+      {"id": "route-chain-btc-to-lbtc-provider-b", "expected": "completed", "provider": "provider-b"},
+      {"id": "route-chain-lbtc-to-btc-provider-a", "expected": "completed", "provider": "provider-a"},
+      {"id": "route-chain-lbtc-to-btc-provider-b", "expected": "completed", "provider": "provider-b"},
+      {"id": "route-liquid-submarine-provider-a", "expected": "completed", "provider": "provider-a"},
+      {"id": "route-liquid-submarine-provider-b", "expected": "completed", "provider": "provider-b"},
+      {"id": "route-liquid-reverse-provider-a", "expected": "completed", "provider": "provider-a"},
+      {"id": "route-liquid-reverse-provider-b", "expected": "completed", "provider": "provider-b"},
       {"id": "rank-two-cancelled-without-effect", "expected": "cancelled"}
     ],
     "failure_matrix": [
@@ -92,6 +136,8 @@
     "doomsday": [
       {"id": "doomsday-submarine-provider-gone", "expected": "refunded"},
       {"id": "doomsday-reverse-coordinator-gone", "expected": "completed_or_refunded"},
+      {"id": "doomsday-liquid-submarine-provider-gone", "expected": "refunded"},
+      {"id": "doomsday-liquid-reverse-coordinator-gone", "expected": "completed"},
       {"id": "doomsday-keyless-esplora-broadcast", "expected": "broadcast_complete_presigned_transaction"}
     ],
     "cooperative": [
@@ -122,6 +168,7 @@
       "local-node-state",
       "authenticated-direct-counterparty-channel",
       "bitcoin-and-lightning-access",
+      "liquid-elements-access",
       "keyless-esplora-compatible-broadcaster"
     ],
     "missing_signed_record_policy": "fail_closed",
@@ -173,7 +220,10 @@
       "bitcoind-b",
       "cln-provider-a",
       "cln-provider-b",
-      "cln-wallet"
+      "cln-wallet",
+      "elementsd-provider-a",
+      "elementsd-provider-b",
+      "elementsd-wallet"
     ],
     "required_checks": [
       "transaction-bytes-and-id",
@@ -183,8 +233,166 @@
       "reservation-release",
       "external-effect-idempotency",
       "watchtower-terminal-state",
+      "liquid-raw-transaction-and-id",
+      "liquid-outpoint-spend-lineage",
+      "liquid-provider-restart-exact-known-replay",
       "no-custody-material-persisted"
     ],
+    "liquid_case_record": {
+      "schema": "openagents.immortal.adversarial-liquid-case.v1",
+      "case_count": 10,
+      "signed_lifecycle": [
+        "offering",
+        "rfq",
+        "quote",
+        "order",
+        "requester-contract",
+        "provider-contract",
+        "status",
+        "close-or-explicit-coordinator-absent-null"
+      ],
+      "provider_signing_source": "immortal-provider-process",
+      "relay_transport": "signed-gift-wrapped-lifecycle",
+      "standalone_rail_probe": false,
+      "transaction_encoding": "lowercase-hex",
+      "exact_raw_transactions": true,
+      "exact_outpoints": true,
+      "three_node_byte_equality": true,
+      "exact_known_replay_after_restart": true,
+      "mine_after_exact_transaction_observation": true,
+      "requester_claim_pending_signer": "requester-process",
+      "requester_claim_pending_base_state": "executing",
+      "liquid_exit_authorization": "retained-pre-fund-capability",
+      "claim_finality": "contract-terminal-confirmations",
+      "verification_boundaries": {
+        "source_preflight_before": "requester_source_verified",
+        "destination_preflight_after": "destination_lock_terms_ready",
+        "combined_authorization_before": "requester_destination_verified"
+      },
+      "cases": {
+        "route-chain-btc-to-lbtc-provider-a": {
+          "shape": "chain-btc-to-lbtc",
+          "selected_provider": "provider-a",
+          "rails": ["bitcoin", "liquid"],
+          "provider_effect_operations": ["liquid_chain_fund", "chain_claim"],
+          "provider_status_anchors": ["provider_destination_broadcast"],
+          "lightning_terminal": null,
+          "provider_restart_required": true,
+          "liquid_terminal_actor": "requester",
+          "liquid_terminal_path": "claim",
+          "recovery": null
+        },
+        "route-chain-btc-to-lbtc-provider-b": {
+          "shape": "chain-btc-to-lbtc",
+          "selected_provider": "provider-b",
+          "rails": ["bitcoin", "liquid"],
+          "provider_effect_operations": ["liquid_chain_fund", "chain_claim"],
+          "provider_status_anchors": ["provider_destination_broadcast"],
+          "lightning_terminal": null,
+          "provider_restart_required": true,
+          "liquid_terminal_actor": "requester",
+          "liquid_terminal_path": "claim",
+          "recovery": null
+        },
+        "route-chain-lbtc-to-btc-provider-a": {
+          "shape": "chain-lbtc-to-btc",
+          "selected_provider": "provider-a",
+          "rails": ["bitcoin", "liquid"],
+          "provider_effect_operations": ["chain_fund", "liquid_chain_claim"],
+          "provider_status_anchors": ["provider_destination_broadcast"],
+          "lightning_terminal": null,
+          "provider_restart_required": true,
+          "liquid_terminal_actor": "provider",
+          "liquid_terminal_path": "claim",
+          "recovery": null
+        },
+        "route-chain-lbtc-to-btc-provider-b": {
+          "shape": "chain-lbtc-to-btc",
+          "selected_provider": "provider-b",
+          "rails": ["bitcoin", "liquid"],
+          "provider_effect_operations": ["chain_fund", "liquid_chain_claim"],
+          "provider_status_anchors": ["provider_destination_broadcast"],
+          "lightning_terminal": null,
+          "provider_restart_required": true,
+          "liquid_terminal_actor": "provider",
+          "liquid_terminal_path": "claim",
+          "recovery": null
+        },
+        "route-liquid-submarine-provider-a": {
+          "shape": "liquid-submarine",
+          "selected_provider": "provider-a",
+          "rails": ["liquid"],
+          "provider_effect_operations": ["liquid_submarine_claim"],
+          "provider_status_anchors": ["provider_claim_pending", "provider_claimed"],
+          "lightning_terminal": {"actor": "requester", "effect_actor": "provider", "operation": "invoice_pay", "status_anchor": "lightning_paid", "state": "settled", "observation_authority": "requester-cln"},
+          "provider_restart_required": true,
+          "liquid_terminal_actor": "provider",
+          "liquid_terminal_path": "claim",
+          "recovery": null
+        },
+        "route-liquid-submarine-provider-b": {
+          "shape": "liquid-submarine",
+          "selected_provider": "provider-b",
+          "rails": ["liquid"],
+          "provider_effect_operations": ["liquid_submarine_claim"],
+          "provider_status_anchors": ["provider_claim_pending", "provider_claimed"],
+          "lightning_terminal": {"actor": "requester", "effect_actor": "provider", "operation": "invoice_pay", "status_anchor": "lightning_paid", "state": "settled", "observation_authority": "requester-cln"},
+          "provider_restart_required": true,
+          "liquid_terminal_actor": "provider",
+          "liquid_terminal_path": "claim",
+          "recovery": null
+        },
+        "route-liquid-reverse-provider-a": {
+          "shape": "liquid-reverse",
+          "selected_provider": "provider-a",
+          "rails": ["liquid"],
+          "provider_effect_operations": ["liquid_reverse_fund"],
+          "provider_status_anchors": ["provider_funding_broadcast"],
+          "lightning_terminal": {"actor": "requester", "effect_actor": "provider", "operation": "invoice_settle", "status_anchor": "lightning_paid", "state": "settled", "observation_authority": "requester-cln"},
+          "provider_restart_required": true,
+          "liquid_terminal_actor": "requester",
+          "liquid_terminal_path": "claim",
+          "recovery": null
+        },
+        "route-liquid-reverse-provider-b": {
+          "shape": "liquid-reverse",
+          "selected_provider": "provider-b",
+          "rails": ["liquid"],
+          "provider_effect_operations": ["liquid_reverse_fund"],
+          "provider_status_anchors": ["provider_funding_broadcast"],
+          "lightning_terminal": {"actor": "requester", "effect_actor": "provider", "operation": "invoice_settle", "status_anchor": "lightning_paid", "state": "settled", "observation_authority": "requester-cln"},
+          "provider_restart_required": true,
+          "liquid_terminal_actor": "requester",
+          "liquid_terminal_path": "claim",
+          "recovery": null
+        },
+        "doomsday-liquid-submarine-provider-gone": {
+          "shape": "liquid-submarine",
+          "selected_provider": "provider-a",
+          "rails": ["liquid"],
+          "provider_effect_operations": [],
+          "provider_status_anchors": [],
+          "lightning_terminal": {"actor": "requester", "effect_actor": null, "operation": null, "status_anchor": null, "state": "unpaid_final", "observation_authority": "requester-cln"},
+          "provider_restart_required": false,
+          "liquid_terminal_actor": "requester",
+          "liquid_terminal_path": "refund",
+          "recovery": "presigned-refund"
+        },
+        "doomsday-liquid-reverse-coordinator-gone": {
+          "shape": "liquid-reverse",
+          "selected_provider": "provider-a",
+          "rails": ["liquid"],
+          "provider_effect_operations": ["liquid_reverse_fund"],
+          "provider_status_anchors": ["provider_funding_broadcast"],
+          "lightning_terminal": {"actor": "requester", "effect_actor": "provider", "operation": "invoice_settle", "status_anchor": "lightning_paid", "state": "settled", "observation_authority": "requester-cln"},
+          "provider_restart_required": false,
+          "liquid_terminal_actor": "requester",
+          "liquid_terminal_path": "claim",
+          "recovery": "direct-claim-and-hold-settlement"
+        }
+      },
+      "custody_material": false
+    },
     "retained_record": {
       "schema": "openagents.immortal.adversarial-lab-record.v1",
       "failure_schema": "openagents.immortal.adversarial-lab-failure.v1",
@@ -192,7 +400,7 @@
       "directory_mode": "0700",
       "file_mode": "0600",
       "maximum_bytes": 262144,
-      "contains_raw_transactions": false,
+      "contains_raw_transactions": true,
       "contains_raw_signed_events": false,
       "contains_raw_wrap_events": false,
       "contains_credentials": false,
@@ -201,7 +409,7 @@
   },
   "execution": {
     "fresh_disposable_topology_per_case": true,
-    "maximum_cases": 40,
+    "maximum_cases": 48,
     "maximum_case_runtime_seconds": 1200,
     "cleanup_requires_owned_private_root": true,
     "cleanup_requires_zero_matching_processes": true,
@@ -209,6 +417,7 @@
   },
   "claims": {
     "submarine_and_reverse_local_capability": true,
+    "liquid_chain_local_capability": true,
     "chain_swap": false,
     "liquid": false,
     "zero_confirmation": false,

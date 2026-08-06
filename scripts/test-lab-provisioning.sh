@@ -5,11 +5,13 @@ cd "$(dirname "$0")/.."
 scripts=(
   scripts/lab-bitcoind.sh
   scripts/lab-cln.sh
+  scripts/lab-elementsd.sh
   scripts/lab-extensions.sh
   scripts/lab-topology.sh
   scripts/test-lab-adversarial-manifest.sh
   scripts/test-lab-topology-quotes.sh
   scripts/test-lab-topology-funded.sh
+  scripts/test-provider-liquid.sh
   scripts/test-provider-funded.sh
 )
 manifest="tests/fixtures/lab/provisioning-v1.json"
@@ -56,6 +58,13 @@ jq -e '
   ([.extensions[].id] == ["elementsd", "arkd"]) and
   ([.extensions[].issue] == [27, 20]) and
   ([.extensions[].hook_environment] == ["IMMORTAL_LAB_ELEMENTSD_HOOK", "IMMORTAL_LAB_ARKD_HOOK"]) and
+  (.extensions[0].state == "repo-owned-process") and
+  (.extensions[0].default_hook == "scripts/lab-elementsd.sh") and
+  (.extensions[0].version == "23.3.3") and
+  (.extensions[0].image_build_source == "scripts/support/provider-funded/Dockerfile.elements") and
+  (.extensions[0].rail_gate == "scripts/test-provider-liquid.sh") and
+  (.extensions[0].host_port_allocation == "runtime-assigned-loopback") and
+  (.extensions[1].state == "hook-only") and
   .custody_boundary.manifest_contains_credentials == false and
   .custody_boundary.extension_hook_receives_credentials == false and
   .teardown.ownership_markers_required == true and
@@ -116,7 +125,27 @@ scripts/test-lab-adversarial-manifest.sh --check
 
 scripts/lab-bitcoind.sh help | grep -q 'rbf-replace'
 scripts/lab-cln.sh help | grep -q 'wallet (3)'
-scripts/lab-extensions.sh manifest elementsd | jq -e '.issue == 27 and .state == "hook-only"' >/dev/null
+scripts/lab-extensions.sh manifest elementsd | jq -e '.issue == 27 and .state == "repo-owned-process"' >/dev/null
+test -x scripts/lab-elementsd.sh
+test -x scripts/test-provider-liquid.sh
+test -f "$(jq -r '.extensions[0].image_build_source' "${manifest}")"
+grep -Fqx '    --publish "127.0.0.1::${rpc_container_port}" \' scripts/lab-elementsd.sh
+grep -Fqx 'wallet_seed_file="${extension_dir}/provider-wallet-seed"' \
+  scripts/test-provider-liquid.sh
+grep -Fqx 'printf '\''%s\n'\'' "${wallet_seed_hex}" >"${wallet_seed_file}"' \
+  scripts/test-provider-liquid.sh
+grep -Fqx 'chmod 600 "${wallet_seed_file}"' scripts/test-provider-liquid.sh
+grep -Fqx '    IMMORTAL_LIQUID_LIVE_SEED_FILE="${wallet_seed_file}" \' \
+  scripts/test-provider-liquid.sh
+if grep -F 'IMMORTAL_LIQUID_LIVE_SEED="${wallet_seed_hex}"' \
+  scripts/test-provider-liquid.sh >/dev/null; then
+  echo "test-lab-provisioning: Liquid wallet seed entered the process environment" >&2
+  exit 1
+fi
+test "$(grep -Fc 'live_test provider_liquid_live_unblinds_own_output' scripts/test-provider-liquid.sh)" -eq 1
+test "$(grep -Fc 'live_test provider_liquid_live_funds_and_broadcasts_signed_refund' scripts/test-provider-liquid.sh)" -eq 1
+grep -Fq 'gate_scope:"liquid_provider_rail_component",provider_daemon_process:false' \
+  scripts/test-provider-liquid.sh
 test -f "$(jq -r '.lightning.container_build_source' "${manifest}")"
 grep -q 'Command::TopologyQuotes' crates/immortal-lab/src/cli.rs
 grep -q 'RequesterSessionView::from_signed_records' crates/immortal-lab/src/steps.rs
@@ -385,5 +414,181 @@ IMMORTAL_LAB_DIR="${test_dir}/lab" IMMORTAL_LAB_ELEMENTSD_HOOK="${hook}" \
 IMMORTAL_LAB_DIR="${test_dir}/lab" IMMORTAL_LAB_ELEMENTSD_HOOK="${hook}" \
   scripts/lab-extensions.sh down elementsd >/dev/null
 test ! -e "${test_dir}/lab/extensions/elementsd"
+
+rollback_hook="${test_dir}/extension-rollback-hook"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'case "$1" in' \
+  'up) touch "${IMMORTAL_LAB_EXTENSION_STATE_DIR}/partial"; exit 1 ;;' \
+  'down) rm -f "${IMMORTAL_LAB_EXTENSION_STATE_DIR}/partial" ;;' \
+  '*) exit 1 ;;' \
+  'esac' >"${rollback_hook}"
+chmod 700 "${rollback_hook}"
+set +e
+IMMORTAL_LAB_DIR="${test_dir}/rollback-lab" IMMORTAL_LAB_ELEMENTSD_HOOK="${rollback_hook}" \
+  scripts/lab-extensions.sh up elementsd >"${test_dir}/rollback-output" 2>&1
+rollback_status=$?
+set -e
+test "${rollback_status}" -ne 0
+test ! -e "${test_dir}/rollback-lab/extensions/elementsd"
+grep -Fq 'partial resources were removed' "${test_dir}/rollback-output"
+
+retry_hook="${test_dir}/extension-retry-hook"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'case "$1" in' \
+  'up) touch "${IMMORTAL_LAB_EXTENSION_STATE_DIR}/partial"; exit 1 ;;' \
+  'down)' \
+  '  test -f "${IMMORTAL_LAB_EXTENSION_STATE_DIR}/allow-down"' \
+  '  rm -f "${IMMORTAL_LAB_EXTENSION_STATE_DIR}/partial" "${IMMORTAL_LAB_EXTENSION_STATE_DIR}/allow-down"' \
+  '  ;;' \
+  '*) exit 1 ;;' \
+  'esac' >"${retry_hook}"
+chmod 700 "${retry_hook}"
+set +e
+IMMORTAL_LAB_DIR="${test_dir}/retry-lab" IMMORTAL_LAB_ELEMENTSD_HOOK="${retry_hook}" \
+  scripts/lab-extensions.sh up elementsd >"${test_dir}/retry-output" 2>&1
+retry_status=$?
+set -e
+test "${retry_status}" -ne 0
+test -f "${test_dir}/retry-lab/extensions/elementsd/partial"
+test ! -f "${test_dir}/retry-lab/extensions/elementsd/active"
+grep -Fq 'retained' "${test_dir}/retry-output"
+touch "${test_dir}/retry-lab/extensions/elementsd/allow-down"
+IMMORTAL_LAB_DIR="${test_dir}/retry-lab" scripts/lab-extensions.sh down elementsd >/dev/null
+test ! -e "${test_dir}/retry-lab/extensions/elementsd"
+
+elements_mock_runtime="${test_dir}/elements-mock-runtime"
+mkdir -m 0700 "${elements_mock_runtime}"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'state="${IMMORTAL_ELEMENTSD_MOCK_STATE:?missing mock state}"' \
+  'case_name="${IMMORTAL_ELEMENTSD_MOCK_CASE:-success}"' \
+  'image="${state}/image"' \
+  'container="${state}/container"' \
+  'case "${1:-}" in' \
+  'build)' \
+  '  jq -e '\''.image_id == null and .container_id == null and .rpc_host_port == null and .p2p_host_port == null'\'' "${IMMORTAL_LAB_EXTENSION_STATE_DIR}/elementsd-process.json" >/dev/null' \
+  '  touch "${image}"' \
+  '  ;;' \
+  'image)' \
+  '  case "${2:-}" in' \
+  '  inspect)' \
+  '    if ! test -f "${image}"; then echo "No such image" >&2; exit 1; fi' \
+  '    if test "${3:-}" = --format; then' \
+  '      case "${4:-}" in' \
+  '      *".Id"*) printf '\''%s\n'\'' mock-image-id ;;' \
+  '      *"Config.Labels"*) printf '\''%s\n'\'' "${IMMORTAL_LAB_EXTENSION_RUN_ID}" ;;' \
+  '      *) exit 1 ;;' \
+  '      esac' \
+  '    else' \
+  '      printf '\''%s\n'\'' '\''[{}]'\''' \
+  '    fi' \
+  '    ;;' \
+  '  rm)' \
+  '    test -f "${image}"' \
+  '    if test "${case_name}" = image-remove-once && ! test -f "${state}/image-remove-failed"; then' \
+  '      touch "${state}/image-remove-failed"' \
+  '      exit 1' \
+  '    fi' \
+  '    rm "${image}"' \
+  '    ;;' \
+  '  *) exit 1 ;;' \
+  '  esac' \
+  '  ;;' \
+  'run)' \
+  '  test -f "${image}"' \
+  '  printf '\''%s\n'\'' "$*" | grep -F -- '\''--publish 127.0.0.1::18884'\'' >/dev/null' \
+  '  printf '\''%s\n'\'' "$*" | grep -F -- '\''--publish 127.0.0.1::18886'\'' >/dev/null' \
+  '  touch "${container}"' \
+  '  if test "${case_name}" = run-created-failure; then exit 1; fi' \
+  '  printf '\''%s\n'\'' mock-container-id' \
+  '  ;;' \
+  'container)' \
+  '  test "${2:-}" = inspect' \
+  '  if ! test -f "${container}"; then echo "No such container" >&2; exit 1; fi' \
+  '  if test "${3:-}" = --format; then' \
+  '    case "${4:-}" in' \
+  '    *".Id"*) printf '\''%s\n'\'' mock-container-id ;;' \
+  '    *"Config.Labels"*) printf '\''%s\n'\'' "${IMMORTAL_LAB_EXTENSION_RUN_ID}" ;;' \
+  '    *"State.Running"*) printf '\''%s\n'\'' true ;;' \
+  '    *) exit 1 ;;' \
+  '    esac' \
+  '  else' \
+  '    printf '\''%s\n'\'' '\''[{"NetworkSettings":{"Ports":{"18884/tcp":[{"HostIp":"127.0.0.1","HostPort":"38184"}],"18886/tcp":[{"HostIp":"127.0.0.1","HostPort":"38186"}]}}}]'\''' \
+  '  fi' \
+  '  ;;' \
+  'exec)' \
+  '  case "$*" in' \
+  '  *getblockchaininfo*) printf '\''%s\n'\'' '\''{}'\'' ;;' \
+  '  *"createwallet wallet_name=provider-liquid"*) printf '\''%s\n'\'' '\''{"name":"provider-liquid"}'\'' ;;' \
+  '  *"createwallet wallet_name=initial-free-coins"*) printf '\''%s\n'\'' '\''{"name":"initial-free-coins"}'\'' ;;' \
+  '  *importdescriptors*) printf '\''%s\n'\'' '\''[{"success":true}]'\'' ;;' \
+  '  *walletcreatefundedpsbt*) printf '\''%s\n'\'' '\''{"psbt":"mock-psbt"}'\'' ;;' \
+  '  *finalizepsbt*) printf '\''%s\n'\'' '\''{"complete":true,"hex":"00"}'\'' ;;' \
+  '  *sendrawtransaction*) printf '\''%064d\n'\'' 2 ;;' \
+  '  *getnewaddress*) printf '\''%s\n'\'' ert1qqmock ;;' \
+  '  *generatetoaddress*) printf '\''%s\n'\'' '\''[]'\'' ;;' \
+  '  *getbalances*) printf '\''%s\n'\'' '\''{"mine":{"trusted":{"bitcoin":1001}}}'\'' ;;' \
+  '  *"getblockhash 0"*) printf '\''%064d\n'\'' 0 ;;' \
+  '  *getsidechaininfo*) printf '\''{"pegged_asset":"%064d"}\n'\'' 1 ;;' \
+  '  *) exit 1 ;;' \
+  '  esac' \
+  '  ;;' \
+  'rm)' \
+  '  test "${2:-}" = --force' \
+  '  test -f "${container}"' \
+  '  rm "${container}"' \
+  '  ;;' \
+  '*) exit 1 ;;' \
+  'esac' >"${elements_mock_runtime}/docker"
+chmod 700 "${elements_mock_runtime}/docker"
+
+elements_failure_state="${test_dir}/elements-failure-state"
+mkdir -m 0700 "${elements_failure_state}"
+set +e
+PATH="${elements_mock_runtime}:${PATH}" \
+  IMMORTAL_ELEMENTSD_MOCK_STATE="${elements_failure_state}" \
+  IMMORTAL_ELEMENTSD_MOCK_CASE=run-created-failure \
+  IMMORTAL_LAB_DIR="${test_dir}/elements-failure-lab" \
+  scripts/lab-extensions.sh up elementsd >"${test_dir}/elements-failure-output" 2>&1
+elements_failure_status=$?
+set -e
+test "${elements_failure_status}" -ne 0
+test ! -e "${elements_failure_state}/container"
+test ! -e "${elements_failure_state}/image"
+test ! -e "${test_dir}/elements-failure-lab/extensions/elementsd"
+
+elements_retry_state="${test_dir}/elements-retry-state"
+mkdir -m 0700 "${elements_retry_state}"
+PATH="${elements_mock_runtime}:${PATH}" \
+  IMMORTAL_ELEMENTSD_MOCK_STATE="${elements_retry_state}" \
+  IMMORTAL_ELEMENTSD_MOCK_CASE=image-remove-once \
+  IMMORTAL_LAB_DIR="${test_dir}/elements-retry-lab" \
+  scripts/lab-extensions.sh up elementsd >/dev/null
+jq -e '.rpc_host_port == 38184 and .p2p_host_port == 38186' \
+  "${test_dir}/elements-retry-lab/extensions/elementsd/elementsd-process.json" >/dev/null
+set +e
+PATH="${elements_mock_runtime}:${PATH}" \
+  IMMORTAL_ELEMENTSD_MOCK_STATE="${elements_retry_state}" \
+  IMMORTAL_ELEMENTSD_MOCK_CASE=image-remove-once \
+  IMMORTAL_LAB_DIR="${test_dir}/elements-retry-lab" \
+  scripts/lab-extensions.sh down elementsd >"${test_dir}/elements-retry-down-output" 2>&1
+elements_retry_down_status=$?
+set -e
+test "${elements_retry_down_status}" -ne 0
+test ! -e "${elements_retry_state}/container"
+test -e "${elements_retry_state}/image"
+test -e "${test_dir}/elements-retry-lab/extensions/elementsd"
+PATH="${elements_mock_runtime}:${PATH}" \
+  IMMORTAL_ELEMENTSD_MOCK_STATE="${elements_retry_state}" \
+  IMMORTAL_ELEMENTSD_MOCK_CASE=image-remove-once \
+  IMMORTAL_LAB_DIR="${test_dir}/elements-retry-lab" \
+  scripts/lab-extensions.sh down elementsd >/dev/null
+test ! -e "${elements_retry_state}/image"
+test ! -e "${test_dir}/elements-retry-lab/extensions/elementsd"
 
 echo "test-lab-provisioning: static manifest and extension ownership checks passed"
