@@ -150,6 +150,12 @@
       "scope": "relay"
     },
     {
+      "path": "tests/fixtures/nip01/soak-plan.json",
+      "sha256": "1022303f30d0730c39db71211334f62765fc0328c8793c8a6ba164c570d3ffcb",
+      "bytes": 436,
+      "scope": "relay"
+    },
+    {
       "path": "tests/fixtures/nip09/deletion.json",
       "sha256": "2109f35195135a5bf4e8a1d8f980c72fcacab1c41c71a121d59449392e3f6046",
       "bytes": 2740,

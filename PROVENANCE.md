@@ -1088,6 +1088,18 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   changing protocol behavior, dependencies, services, databases,
   advertisements, workflows, or billed automation.
 
+### 2026-08-05 — Codex 5.6 Sol, long-run soak harness
+
+- Added a manual, dependency-free two-process soak against disposable
+  Postgres. It checks a 4,096-event cross-process notification burst,
+  sustained replacement admission, repeated WebSocket connection churn,
+  relay RSS growth, database growth per admission, dead/live tuple counts,
+  and the fixed Postgres connection bound.
+- Pinned a one-hour qualification plan and a 30-minute minimum for evidence;
+  shorter development runs require an explicit non-qualification override.
+- Added no protocol behavior, dependency, service, database, advertisement,
+  workflow, or billed automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names
