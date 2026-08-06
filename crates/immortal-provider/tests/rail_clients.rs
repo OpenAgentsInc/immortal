@@ -903,12 +903,11 @@ async fn read_cln_request(stream: &mut UnixStream) -> Value {
     serde_json::from_slice(&request).unwrap()
 }
 
-fn socket_path(name: &str) -> PathBuf {
+fn socket_path(_name: &str) -> PathBuf {
     let sequence = SOCKET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "immortal-provider-{name}-{}-{sequence}.sock",
-        std::process::id()
-    ))
+    // macOS already uses a long per-user TMPDIR, and Unix socket paths have a
+    // small fixed limit. The process and sequence keep the compact name unique.
+    std::env::temp_dir().join(format!("ip-{}-{sequence}.sock", std::process::id()))
 }
 
 fn cleanup_socket(path: &Path) {
