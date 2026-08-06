@@ -428,6 +428,10 @@ fn wire(reason: impl Into<String>) -> WireError {
 }
 
 #[cfg(test)]
+#[path = "wire_fuzz.rs"]
+mod fuzz;
+
+#[cfg(test)]
 mod tests {
     use std::{net::SocketAddr, time::Duration};
 

@@ -477,7 +477,7 @@ guarantor/underwriter and claims authority before a draft is honest.
 - [x] Formal model of the admission/replacement/deletion state machine;
       checker run in the local conformance suite; counterexamples become
       fixtures
-- [ ] Fuzzing on the wire parser and filter matcher
+- [x] Fuzzing on the wire parser and filter matcher
 - [ ] Long-run soak: memory, connection churn, Postgres bloat,
       `NOTIFY` storm behavior
 - [ ] Security pass against the AGENTS.md rules; publish the results

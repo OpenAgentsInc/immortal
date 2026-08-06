@@ -132,6 +132,12 @@
       "scope": "relay"
     },
     {
+      "path": "tests/fixtures/nip01/fuzz-corpus.json",
+      "sha256": "28ee249aa1290cb17e003cd03aa16051cf1add9f55ab682f76de20ce81fc0f6c",
+      "bytes": 2743,
+      "scope": "relay"
+    },
+    {
       "path": "tests/fixtures/nip01/gateway_messages.json",
       "sha256": "32ce48d5826c4c2575541da23f8b218323f9b2dff8871a6bbc711dae41ecddfa",
       "bytes": 495,

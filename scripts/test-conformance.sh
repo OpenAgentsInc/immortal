@@ -11,6 +11,8 @@ if cargo tree --locked -p immortal-relay --edges normal --prefix none | grep -Eq
 fi
 cargo check --locked --workspace --all-targets
 cargo test --locked -p immortal-core --test admission_state_model
+cargo test --locked -p immortal-core --test filter_fuzz
+cargo test --locked -p immortal-relay gateway::wire::fuzz::deterministic_wire_mutations_are_bounded_and_panic_free
 cargo test --locked -p immortal-core --test mkt_fixtures
 cargo test --locked -p immortal-core --test allwork_fixtures
 cargo test --locked -p immortal-core --test mkt_immutability_model

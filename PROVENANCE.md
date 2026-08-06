@@ -1075,6 +1075,19 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   manifest without adding a dependency, service, database, protocol behavior,
   advertisement, workflow, or billed automation.
 
+### 2026-08-05 — Codex 5.6 Sol, wire and filter fuzzing
+
+- Added a dependency-free deterministic mutation harness that drives 20,000
+  bounded raw inputs through the production WebSocket parser, covers every
+  client verb and eight mutation operators, and checks panic freedom plus
+  repeatable outcomes.
+- Added 20,000 generated filter/event pairs checked against an independent
+  matcher and 20,000 mutated filter JSON cases, with exact execution counts
+  pinned in the fixture corpus.
+- Added both harnesses to manual conformance and the fixture manifest without
+  changing protocol behavior, dependencies, services, databases,
+  advertisements, workflows, or billed automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names
