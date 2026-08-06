@@ -79,8 +79,8 @@
     },
     {
       "path": "tests/fixtures/lab/adversarial-v1.json",
-      "sha256": "6893084627a01d0aff3b563fafb0528ea86589fd22e68635cc6eaab431af0427",
-      "bytes": 18393,
+      "sha256": "fc7616740b1064368a6252738e00018ae45739cd4d4630846ddbcb6dc0bb8841",
+      "bytes": 18452,
       "scope": "client"
     },
     {

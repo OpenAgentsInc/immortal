@@ -341,6 +341,8 @@ if evidence.get("liquid_case_record") != {
     raise SystemExit("Liquid retained-case evidence schema changed")
 if evidence.get("retained_record", {}).get("contains_raw_transactions") is not True:
     raise SystemExit("Liquid retained records do not admit exact transaction bytes")
+if evidence.get("retained_record", {}).get("aggregate_encoding") != "utf8-json-sort-keys-compact":
+    raise SystemExit("adversarial aggregate encoding is not pinned")
 
 doomsday = fixture.get("doomsday_contract", {})
 if doomsday.get("database_or_ui_reconstruction") is not False:

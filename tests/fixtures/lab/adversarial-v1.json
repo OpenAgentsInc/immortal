@@ -397,6 +397,7 @@
       "schema": "openagents.immortal.adversarial-lab-record.v1",
       "failure_schema": "openagents.immortal.adversarial-lab-failure.v1",
       "default_path": "target/lab-evidence/adversarial-v1.json",
+      "aggregate_encoding": "utf8-json-sort-keys-compact",
       "directory_mode": "0700",
       "file_mode": "0600",
       "maximum_bytes": 262144,

@@ -43,7 +43,8 @@ for required in \
   'claim_watch_reorged_and_reconfirmed' \
   'docker volume ls --quiet --filter "label=com.docker.compose.project=${project_name}"' \
   'docker image ls --quiet --filter "label=com.docker.compose.project=${project_name}"' \
-  'maximum = min(32768, fixture["evidence"]["retained_record"]["maximum_bytes"])'; do
+  'maximum = min(32768, fixture["evidence"]["retained_record"]["maximum_bytes"])' \
+  'separators=(",", ":")'; do
   if ! grep -F -- "${required}" "${runner}" >/dev/null; then
     echo "test-adversarial-runner: runner lost required closure ${required}" >&2
     exit 1

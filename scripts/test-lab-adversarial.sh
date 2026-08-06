@@ -2495,7 +2495,9 @@ aggregate = {
     "cases": records,
     "claims": fixture["claims"],
 }
-encoded = (json.dumps(aggregate, indent=2, sort_keys=True) + "\n").encode()
+if fixture["evidence"]["retained_record"].get("aggregate_encoding") != "utf8-json-sort-keys-compact":
+    raise SystemExit("aggregate adversarial record encoding is not pinned")
+encoded = (json.dumps(aggregate, sort_keys=True, separators=(",", ":")) + "\n").encode()
 if len(encoded) > fixture["evidence"]["retained_record"]["maximum_bytes"]:
     raise SystemExit("aggregate adversarial record exceeds its bound")
 path = pathlib.Path(sys.argv[4])
