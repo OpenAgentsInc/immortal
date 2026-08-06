@@ -25,6 +25,7 @@ cache, no sync engine. Postgres does all the storage work.
 | [`insights.md`](insights.md) | The book's production insights by theme, each mapped onto Immortal. |
 | [`configuration.md`](configuration.md) | Immortal's configuration contract: environment variables only, with fail-fast validation. |
 | [`database.md`](database.md) | Postgres schema, transactional admission, migrations, the current single-owner role, and the future split-role boundary. |
+| [`import-jsonl.md`](import-jsonl.md) | Ordered signed-event JSONL export, offline import, report reconciliation, idempotent replay, and failure recovery. |
 | [`gateway.md`](gateway.md) | HTTP/WebSocket runtime, indexed subscriptions, race-free EOSE, fanout, limits, and shutdown. |
 | [`../conformance/README.md`](../conformance/README.md) | Fixture, live-Postgres, multi-process chaos, and release-load proof coverage. |
 | [`runbook-debian-vps.md`](runbook-debian-vps.md) | The canonical single-box deployment: Debian 13, apt Postgres, hardened systemd, Caddy or nginx, backups, restore, upgrade, and schema-aware rollback. |
@@ -40,9 +41,10 @@ cache, no sync engine. Postgres does all the storage work.
 1. Read the root `README.md` and `AGENTS.md` first. They are binding.
 2. Read `configuration.md` to learn the environment variables.
 3. Read `database.md` for schema migration and role choices.
-4. Read `gateway.md` for runtime and failure behavior.
-5. Pick one runbook and follow its numbered steps.
-6. Read `insights.md` when you want the reasoning behind a step.
+4. Read `import-jsonl.md` when replacing a relay with an ordered signed-event export.
+5. Read `gateway.md` for runtime and failure behavior.
+6. Pick one runbook and follow its numbered steps.
+7. Read `insights.md` when you want the reasoning behind a step.
 
 ## Invariants that apply to every runbook
 

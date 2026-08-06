@@ -49,6 +49,11 @@ IMMORTAL_TEST_DATABASE_URL="host=${socket_dir} user=${database_user} dbname=immo
   IMMORTAL_TEST_ALLOW_DESTRUCTIVE=1 \
   cargo test --locked -p immortal-relay --test multiprocess_postgres -- --nocapture
 
+createdb -h "${socket_dir}" -U "${database_user}" immortal_import_test
+IMMORTAL_TEST_DATABASE_URL="host=${socket_dir} user=${database_user} dbname=immortal_import_test" \
+  IMMORTAL_TEST_ALLOW_DESTRUCTIVE=1 \
+  cargo test --locked -p immortal-relay --test bulk_import_postgres -- --nocapture
+
 createdb -h "${socket_dir}" -U "${database_user}" immortal_load_test
 IMMORTAL_TEST_DATABASE_URL="host=${socket_dir} user=${database_user} dbname=immortal_load_test" \
   IMMORTAL_TEST_ALLOW_DESTRUCTIVE=1 \

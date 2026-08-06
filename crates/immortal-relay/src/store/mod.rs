@@ -129,6 +129,33 @@ pub enum AdmissionRejection {
     MktIdempotencyConflict,
 }
 
+impl AdmissionRejection {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::BlockedPubkey(_) => "blocked_pubkey",
+            Self::BlockedKind(_) => "blocked_kind",
+            Self::PubkeyNotAllowed => "pubkey_not_allowed",
+            Self::KindNotAllowed => "kind_not_allowed",
+            Self::NotMember => "not_member",
+            Self::ContentTooLarge { .. } => "content_too_large",
+            Self::TooManyTags { .. } => "too_many_tags",
+            Self::TimestampTooFarInFuture { .. } => "timestamp_future",
+            Self::TimestampTooOld { .. } => "timestamp_old",
+            Self::AuthEvent => "auth_event",
+            Self::Deleted => "deleted",
+            Self::Superseded => "superseded",
+            Self::GroupNotFound => "group_not_found",
+            Self::GroupUnauthorized => "group_unauthorized",
+            Self::GroupClosed => "group_closed",
+            Self::GroupAlreadyMember => "group_already_member",
+            Self::GroupUnsupportedKind => "group_unsupported_kind",
+            Self::GroupPreviousUnknown => "group_previous_unknown",
+            Self::GroupSigningUnavailable => "group_signing_unavailable",
+            Self::MktIdempotencyConflict => "mkt_idempotency_conflict",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManagementRequest {
     BanPubkey {
@@ -364,8 +391,21 @@ impl Store {
         now: u64,
         relay_signer: Option<&RelaySigner>,
     ) -> Result<AdmissionOutcome, StoreError> {
+        event.validate_nip01_structure()?;
         self.admit_inner(event, now, relay_signer, None, AdmissionMode::Legacy)
             .await
+    }
+
+    /// Replay one already-signed historical event without retroactively
+    /// imposing extension handlers that the source relay did not enforce.
+    /// NIP-01 crypto, replacement/deletion, expiration, and current operator
+    /// policy remain authoritative.
+    pub async fn admit_historical(
+        &mut self,
+        event: &Event,
+        now: u64,
+    ) -> Result<AdmissionOutcome, StoreError> {
+        self.admit_legacy(event, now, None).await
     }
 
     async fn admit_inner(
@@ -2459,28 +2499,7 @@ fn record_import_rejection(report: &mut LegacyImportReport, reason: impl Into<St
 }
 
 fn admission_rejection_code(rejection: &AdmissionRejection) -> &'static str {
-    match rejection {
-        AdmissionRejection::BlockedPubkey(_) => "blocked_pubkey",
-        AdmissionRejection::BlockedKind(_) => "blocked_kind",
-        AdmissionRejection::PubkeyNotAllowed => "pubkey_not_allowed",
-        AdmissionRejection::KindNotAllowed => "kind_not_allowed",
-        AdmissionRejection::NotMember => "not_member",
-        AdmissionRejection::ContentTooLarge { .. } => "content_too_large",
-        AdmissionRejection::TooManyTags { .. } => "too_many_tags",
-        AdmissionRejection::TimestampTooFarInFuture { .. } => "timestamp_future",
-        AdmissionRejection::TimestampTooOld { .. } => "timestamp_old",
-        AdmissionRejection::AuthEvent => "auth_event",
-        AdmissionRejection::Deleted => "deleted",
-        AdmissionRejection::Superseded => "superseded",
-        AdmissionRejection::GroupNotFound => "group_not_found",
-        AdmissionRejection::GroupUnauthorized => "group_unauthorized",
-        AdmissionRejection::GroupClosed => "group_closed",
-        AdmissionRejection::GroupAlreadyMember => "group_already_member",
-        AdmissionRejection::GroupUnsupportedKind => "group_unsupported_kind",
-        AdmissionRejection::GroupPreviousUnknown => "group_previous_unknown",
-        AdmissionRejection::GroupSigningUnavailable => "group_signing_unavailable",
-        AdmissionRejection::MktIdempotencyConflict => "mkt_idempotency_conflict",
-    }
+    rejection.code()
 }
 
 fn domain_error_code(error: &DomainError) -> String {

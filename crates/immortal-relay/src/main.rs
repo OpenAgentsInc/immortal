@@ -36,6 +36,7 @@ async fn run() -> Result<(), GatewayError> {
         }
         return match command.as_str() {
             "contract" => operations::print_contract(),
+            "import-jsonl" => operations::import_signed_events().await,
             "dev-market-seed" => operations::dev_market_seed(),
             "dev-work-seed" => operations::dev_work_seed(),
             "sign-openagents-project-events" => operations::sign_openagents_project_events(),

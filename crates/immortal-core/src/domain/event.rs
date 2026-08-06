@@ -94,13 +94,19 @@ impl Event {
     }
 
     /// Validate wire shape and lowercase fixed-width hexadecimal fields.
-    pub fn validate_structure(&self) -> Result<(), DomainError> {
+    pub fn validate_nip01_structure(&self) -> Result<(), DomainError> {
         decode_lower_hex::<32>(&self.id, "id")?;
         decode_lower_hex::<32>(&self.pubkey, "pubkey")?;
         decode_lower_hex::<64>(&self.sig, "sig")?;
         if self.tags.iter().any(|tag| tag.0.is_empty()) {
             return Err(DomainError::EmptyTag);
         }
+        Ok(())
+    }
+
+    /// Validate NIP-01 structure plus every adopted extension shape.
+    pub fn validate_structure(&self) -> Result<(), DomainError> {
+        self.validate_nip01_structure()?;
         validate_expanded_event(self)?;
         Ok(())
     }

@@ -520,7 +520,7 @@ Everything an operator needs to replace an existing production relay with
 Immortal behind the same hostname, with no client changes. Can start once
 M6 reaches the NIP-29 item; does not wait for M7 or M8.
 
-- [ ] Signed-event bulk import: JSONL in, idempotent, preserves ids and
+- [x] Signed-event bulk import: JSONL in, idempotent, preserves ids and
       signatures, replays replacement and deletion rules in `ingest_seq`
       order
 - [x] nostr-effect compatibility import: explicitly enabled, bounded prepared

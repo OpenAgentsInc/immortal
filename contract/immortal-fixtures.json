@@ -114,6 +114,12 @@
       "scope": "client"
     },
     {
+      "path": "tests/fixtures/migration/signed-event-import-v1.json",
+      "sha256": "c95b576a08a32e6bf83832d595474135205bfd957204de163cbb17c93f37effc",
+      "bytes": 2502,
+      "scope": "relay"
+    },
+    {
       "path": "tests/fixtures/nip01/admission-state-model.json",
       "sha256": "66315b9befe507f635582ef324445cc13dbdc2235bfc820f549dc0f2f8bd90b6",
       "bytes": 4027,

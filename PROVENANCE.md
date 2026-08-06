@@ -1112,6 +1112,21 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   evidence as future work. Added no protocol behavior, dependency, service,
   database, advertisement, workflow, or billed automation.
 
+### 2026-08-05 — Codex 5.6 Sol, M9 signed-event JSONL import
+
+- Added the bounded `immortal import-jsonl` operator command for strict signed
+  NIP-01 event objects in source admission order. It preserves every signed
+  field and applies cryptographic, policy, replacement, and deletion checks
+  through the historical admission lane.
+- Added fixture and disposable-Postgres coverage for the shipped command,
+  ordered replacement/deletion outcomes, expired and ephemeral events, strict
+  JSON members, partial-prefix failure semantics, and durable full-file replay
+  without new sequence allocation.
+- Documented offline operation, report reconciliation, cutover verification,
+  and the live-ephemeral notification boundary. Added no dependency, event
+  kind, service, database, secret, advertisement, workflow, or billed
+  automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

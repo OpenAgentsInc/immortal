@@ -277,6 +277,18 @@ DATABASE_URL='postgres://immortal:<YOUR_DB_PASSWORD>@127.0.0.1:5432/immortal' \
   ./target/release/immortal
 ```
 
+To replace an existing relay, stop Immortal and import a source export of one
+complete signed event per line in source admission order:
+
+```sh
+DATABASE_URL='postgres://immortal:<YOUR_DB_PASSWORD>@127.0.0.1:5432/immortal' \
+  ./target/release/immortal import-jsonl < source-events.jsonl
+```
+
+The import is strict, bounded, and safe to replay after a partial run. Reconcile
+its JSON report before cutover; see
+[`docs/deployment/import-jsonl.md`](docs/deployment/import-jsonl.md).
+
 In another terminal, verify health and NIP-11:
 
 ```sh
