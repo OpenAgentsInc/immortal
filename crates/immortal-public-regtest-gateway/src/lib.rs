@@ -24,6 +24,7 @@ use std::{
 };
 
 use immortal_core::domain::{Event, RelaySigner, Tag, parse_json_without_duplicate_members};
+use immortal_core::mkt_swp_verify::{BitcoinNetwork, parse_segwit_address};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -64,6 +65,20 @@ const MAX_AMOUNT_SAT: u64 = 1_000_000;
 const LOCK_ATTEMPTS: usize = 200;
 const SERVICE_CONTRACT_SCHEMA: &str = "openagents.immortal.public-regtest-service-contract.v1";
 const SERVICE_READINESS_SCHEMA: &str = "openagents.immortal.public-regtest-service-readiness.v1";
+const FAUCET_REQUEST_SCHEMA: &str = "openagents.immortal.public-regtest-faucet-request.v1";
+const FAUCET_QUEUE_SCHEMA: &str = "openagents.immortal.public-regtest-faucet-queue.v1";
+const FAUCET_RECEIPT_SCHEMA: &str = "openagents.immortal.public-regtest-faucet-receipt.v1";
+const FAUCET_STATUS_SCHEMA: &str = "openagents.immortal.public-regtest-faucet-status.v1";
+const FAUCET_IP_RATE_SCHEMA: &str = "openagents.immortal.public-regtest-faucet-ip-rate.v1";
+const FAUCET_ADDRESS_BUDGET_SCHEMA: &str =
+    "openagents.immortal.public-regtest-faucet-address-budget.v1";
+const MIN_FAUCET_AMOUNT_SAT: u64 = 10_000;
+const MAX_FAUCET_AMOUNT_SAT: u64 = 1_000_000;
+const FAUCET_IP_WINDOW_SECONDS: u64 = 600;
+const MAX_FAUCET_REQUESTS_PER_IP_WINDOW: u16 = 2;
+const FAUCET_ADDRESS_WINDOW_SECONDS: u64 = 86_400;
+const MAX_FAUCET_SAT_PER_ADDRESS_WINDOW: u64 = 2_000_000;
+const MAX_FAUCET_PENDING_REQUESTS: usize = 16;
 
 #[derive(Debug, Default)]
 struct GatewayMetrics {
@@ -72,6 +87,7 @@ struct GatewayMetrics {
     request_errors_total: AtomicU64,
     sessions_created_total: AtomicU64,
     receipts_replayed_total: AtomicU64,
+    faucet_requests_queued_total: AtomicU64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +121,54 @@ struct CreateSessionRequest {
     schema: String,
     requester_identity: String,
     client_nonce: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaucetRequest {
+    pub schema: String,
+    pub address: String,
+    pub amount_sat: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueuedFaucetRequest {
+    pub schema: String,
+    pub request_id: String,
+    pub address: String,
+    pub amount_sat: u64,
+    pub client_ip_digest: String,
+    pub requested_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaucetReceipt {
+    pub schema: String,
+    pub request_id: String,
+    pub txid: String,
+    pub amount_sat: u64,
+    pub address: String,
+    pub paid_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FaucetIpRateState {
+    schema: String,
+    client_ip: String,
+    window_started_at: u64,
+    requests_accepted: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FaucetAddressBudgetState {
+    schema: String,
+    address_digest: String,
+    window_started_at: u64,
+    granted_sat: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -498,6 +562,21 @@ fn route_request(
         }
         return route_operational_request(stream, request, config);
     }
+    if request.path == "/v1/public-regtest/faucet"
+        || request.path.starts_with("/v1/public-regtest/faucet/")
+    {
+        // Faucet callers are scripts and agents joining the network. Like the
+        // operational endpoints, an absent Origin is allowed for curl and a
+        // mismatched Origin is refused.
+        if request
+            .origin
+            .as_deref()
+            .is_some_and(|origin| origin != config.origin)
+        {
+            return Err(HttpError::new(403, "origin_refused"));
+        }
+        return route_faucet_request(stream, request, config);
+    }
     if request.origin.as_deref() != Some(config.origin.as_str()) {
         return Err(HttpError::new(403, "origin_refused"));
     }
@@ -724,12 +803,303 @@ fn route_operational_request(
                     "request_errors_total":config.metrics.request_errors_total.load(Ordering::Relaxed),
                     "sessions_created_total":config.metrics.sessions_created_total.load(Ordering::Relaxed),
                     "receipts_replayed_total":config.metrics.receipts_replayed_total.load(Ordering::Relaxed),
+                    "faucet_requests_queued_total":config.metrics.faucet_requests_queued_total.load(Ordering::Relaxed),
                 }),
             )?;
             Ok((None, None, "metrics_read"))
         }
         _ => Err(HttpError::new(404, "unknown_endpoint")),
     }
+}
+
+fn route_faucet_request(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+    config: &GatewayConfig,
+) -> Result<(Option<String>, Option<String>, &'static str), HttpError> {
+    match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/v1/public-regtest/faucet") => {
+            require_json(request)?;
+            let input: FaucetRequest = parse_closed_json(&request.body, "faucet request")?;
+            validate_faucet_request(&input)?;
+            let now = unix_now_http()?;
+            require_service_ready(config, now)?;
+            let mut lock = SessionLock::acquire_named(&config.root, "faucet-global")
+                .map_err(|_| HttpError::new(503, "faucet_state_busy"))?;
+            if faucet_pending_count(&config.root)
+                .map_err(|_| HttpError::new(500, "faucet_state_unavailable"))?
+                >= MAX_FAUCET_PENDING_REQUESTS
+            {
+                return Err(HttpError::new(503, "faucet_capacity_exhausted"));
+            }
+            charge_faucet_ip(&config.root, request.client_ip, now)?;
+            charge_faucet_address(&config.root, &input.address, input.amount_sat, now)?;
+            let canonical = canonical_json(
+                &serde_json::to_value(&input)
+                    .map_err(|_| HttpError::new(500, "faucet_state_unavailable"))?,
+            )
+            .map_err(|_| HttpError::new(500, "faucet_state_unavailable"))?;
+            let request_id = lower_hex(&Sha256::digest(
+                [canonical.as_bytes(), &now.to_be_bytes()[..]].concat(),
+            ));
+            let queued = QueuedFaucetRequest {
+                schema: FAUCET_QUEUE_SCHEMA.to_owned(),
+                request_id: request_id.clone(),
+                address: input.address.clone(),
+                amount_sat: input.amount_sat,
+                client_ip_digest: digest_text(&request.client_ip.to_string()),
+                requested_at: now,
+            };
+            let path = faucet_queue_path(&config.root, &request_id);
+            if let Some(existing) = load_optional_json::<QueuedFaucetRequest>(&path)
+                .map_err(|_| HttpError::new(500, "faucet_state_unavailable"))?
+            {
+                if existing != queued {
+                    return Err(HttpError::new(409, "faucet_conflict"));
+                }
+            } else {
+                write_json_create_new(&path, &queued)
+                    .map_err(|_| HttpError::new(500, "faucet_state_unavailable"))?;
+            }
+            lock.release();
+            config
+                .metrics
+                .faucet_requests_queued_total
+                .fetch_add(1, Ordering::Relaxed);
+            eprintln!(
+                "{}",
+                json!({
+                    "schema":"openagents.immortal.public-regtest-audit.v1",
+                    "event":"faucet_queued",
+                    "request_id":request_id,
+                    "address_digest":digest_text(&input.address),
+                    "amount_sat":input.amount_sat,
+                    "client_ip_digest":digest_text(&request.client_ip.to_string()),
+                })
+            );
+            write_json_response(
+                stream,
+                202,
+                &config.origin,
+                &json!({
+                    "schema":FAUCET_STATUS_SCHEMA,
+                    "request_id":request_id,
+                    "status":"queued",
+                    "status_url":format!("/v1/public-regtest/faucet/{request_id}"),
+                }),
+            )?;
+            Ok((None, None, "faucet_queued"))
+        }
+        ("GET", path) => {
+            let request_id = path
+                .strip_prefix("/v1/public-regtest/faucet/")
+                .ok_or_else(|| HttpError::new(404, "unknown_endpoint"))?;
+            validate_lower_hex_32(request_id, "faucet request ID")
+                .map_err(|_| HttpError::new(404, "faucet_request_not_found"))?;
+            if let Some(receipt) = load_faucet_receipt(&config.root, request_id)
+                .map_err(|_| HttpError::new(500, "faucet_state_unavailable"))?
+            {
+                write_json_response(
+                    stream,
+                    200,
+                    &config.origin,
+                    &json!({
+                        "schema":FAUCET_STATUS_SCHEMA,
+                        "request_id":receipt.request_id,
+                        "status":"paid",
+                        "txid":receipt.txid,
+                        "amount_sat":receipt.amount_sat,
+                        "address":receipt.address,
+                        "paid_at":receipt.paid_at,
+                    }),
+                )?;
+                return Ok((None, None, "faucet_paid_read"));
+            }
+            if let Some(queued) = load_optional_json::<QueuedFaucetRequest>(&faucet_queue_path(
+                &config.root,
+                request_id,
+            ))
+            .map_err(|_| HttpError::new(500, "faucet_state_unavailable"))?
+            {
+                if queued.schema != FAUCET_QUEUE_SCHEMA || queued.request_id != request_id {
+                    return Err(HttpError::new(500, "faucet_state_unavailable"));
+                }
+                write_json_response(
+                    stream,
+                    200,
+                    &config.origin,
+                    &json!({
+                        "schema":FAUCET_STATUS_SCHEMA,
+                        "request_id":queued.request_id,
+                        "status":"queued",
+                        "amount_sat":queued.amount_sat,
+                        "requested_at":queued.requested_at,
+                    }),
+                )?;
+                return Ok((None, None, "faucet_queued_read"));
+            }
+            Err(HttpError::new(404, "faucet_request_not_found"))
+        }
+        _ => Err(HttpError::new(404, "unknown_endpoint")),
+    }
+}
+
+fn validate_faucet_request(input: &FaucetRequest) -> Result<(), HttpError> {
+    if input.schema != FAUCET_REQUEST_SCHEMA {
+        return Err(HttpError::new(400, "invalid_faucet_request"));
+    }
+    if !(MIN_FAUCET_AMOUNT_SAT..=MAX_FAUCET_AMOUNT_SAT).contains(&input.amount_sat) {
+        return Err(HttpError::new(400, "faucet_amount_refused"));
+    }
+    validate_regtest_address(&input.address)
+        .map_err(|_| HttpError::new(400, "faucet_address_refused"))
+}
+
+/// Accept exactly one destination grammar: a lowercase, checksum-verified
+/// native SegWit regtest address. Mainnet `bc1`, testnet/signet `tb1`,
+/// uppercase, mixed-case, and legacy base58 destinations all fail closed.
+fn validate_regtest_address(address: &str) -> Result<(), String> {
+    if !address.starts_with("bcrt1") {
+        return Err("faucet destination must carry the bcrt1 regtest prefix".to_owned());
+    }
+    let parsed = parse_segwit_address(address)
+        .map_err(|_| "faucet destination is not a valid SegWit address".to_owned())?;
+    if parsed.network != BitcoinNetwork::Regtest {
+        return Err("faucet destination is not a regtest address".to_owned());
+    }
+    Ok(())
+}
+
+fn faucet_queue_dir(root: &Path) -> PathBuf {
+    root.join("faucet").join("queue")
+}
+
+fn faucet_queue_path(root: &Path, request_id: &str) -> PathBuf {
+    faucet_queue_dir(root).join(format!("{request_id}.json"))
+}
+
+fn faucet_receipt_path(root: &Path, request_id: &str) -> PathBuf {
+    root.join("faucet")
+        .join(format!("receipt-{request_id}.json"))
+}
+
+fn faucet_address_budget_path(root: &Path, address_digest: &str) -> PathBuf {
+    root.join("faucet")
+        .join("addresses")
+        .join(format!("{address_digest}.json"))
+}
+
+fn faucet_pending_count(root: &Path) -> Result<usize, String> {
+    let mut pending = 0_usize;
+    for entry in fs::read_dir(faucet_queue_dir(root))
+        .map_err(|error| format!("could not inspect faucet queue: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("could not inspect faucet entry: {error}"))?;
+        if !entry
+            .file_type()
+            .map_err(|error| format!("could not inspect faucet entry type: {error}"))?
+            .is_file()
+        {
+            return Err("faucet queue contains a non-file entry".to_owned());
+        }
+        pending = pending.saturating_add(1);
+        if pending > MAX_FAUCET_PENDING_REQUESTS {
+            return Ok(pending);
+        }
+    }
+    Ok(pending)
+}
+
+fn charge_faucet_ip(root: &Path, client_ip: IpAddr, now: u64) -> Result<(), HttpError> {
+    let key = digest_text(&client_ip.to_string());
+    let path = root.join("rates").join(format!("faucet-ip-{key}.json"));
+    let mut state = load_optional_json::<FaucetIpRateState>(&path)
+        .map_err(|_| HttpError::new(500, "rate_state_unavailable"))?
+        .unwrap_or(FaucetIpRateState {
+            schema: FAUCET_IP_RATE_SCHEMA.to_owned(),
+            client_ip: client_ip.to_string(),
+            window_started_at: now,
+            requests_accepted: 0,
+        });
+    if state.schema != FAUCET_IP_RATE_SCHEMA || state.client_ip != client_ip.to_string() {
+        return Err(HttpError::new(500, "rate_state_unavailable"));
+    }
+    if now.saturating_sub(state.window_started_at) >= FAUCET_IP_WINDOW_SECONDS {
+        state.window_started_at = now;
+        state.requests_accepted = 0;
+    }
+    if state.requests_accepted >= MAX_FAUCET_REQUESTS_PER_IP_WINDOW {
+        return Err(HttpError::retry(
+            FAUCET_IP_WINDOW_SECONDS.saturating_sub(now - state.window_started_at),
+        ));
+    }
+    state.requests_accepted += 1;
+    write_json(&path, &state).map_err(|_| HttpError::new(500, "rate_state_unavailable"))?;
+    Ok(())
+}
+
+fn charge_faucet_address(
+    root: &Path,
+    address: &str,
+    amount_sat: u64,
+    now: u64,
+) -> Result<(), HttpError> {
+    let address_digest = digest_text(address);
+    let path = faucet_address_budget_path(root, &address_digest);
+    let mut state = load_optional_json::<FaucetAddressBudgetState>(&path)
+        .map_err(|_| HttpError::new(500, "rate_state_unavailable"))?
+        .unwrap_or(FaucetAddressBudgetState {
+            schema: FAUCET_ADDRESS_BUDGET_SCHEMA.to_owned(),
+            address_digest: address_digest.clone(),
+            window_started_at: now,
+            granted_sat: 0,
+        });
+    if state.schema != FAUCET_ADDRESS_BUDGET_SCHEMA || state.address_digest != address_digest {
+        return Err(HttpError::new(500, "rate_state_unavailable"));
+    }
+    if now.saturating_sub(state.window_started_at) >= FAUCET_ADDRESS_WINDOW_SECONDS {
+        state.window_started_at = now;
+        state.granted_sat = 0;
+    }
+    let requested_total = state
+        .granted_sat
+        .checked_add(amount_sat)
+        .ok_or_else(|| HttpError::new(400, "faucet_amount_refused"))?;
+    if requested_total > MAX_FAUCET_SAT_PER_ADDRESS_WINDOW {
+        return Err(HttpError::retry(
+            FAUCET_ADDRESS_WINDOW_SECONDS.saturating_sub(now - state.window_started_at),
+        ));
+    }
+    state.granted_sat = requested_total;
+    write_json(&path, &state).map_err(|_| HttpError::new(500, "rate_state_unavailable"))?;
+    Ok(())
+}
+
+fn load_faucet_receipt(root: &Path, request_id: &str) -> Result<Option<FaucetReceipt>, String> {
+    let receipt = load_optional_json::<FaucetReceipt>(&faucet_receipt_path(root, request_id))?;
+    if let Some(receipt) = &receipt {
+        validate_faucet_receipt(receipt)?;
+        if receipt.request_id != request_id {
+            return Err("faucet receipt path binding changed".to_owned());
+        }
+    }
+    Ok(receipt)
+}
+
+fn validate_faucet_receipt(receipt: &FaucetReceipt) -> Result<(), String> {
+    if receipt.schema != FAUCET_RECEIPT_SCHEMA {
+        return Err("faucet receipt has another schema".to_owned());
+    }
+    validate_lower_hex_32(&receipt.request_id, "faucet receipt request ID")?;
+    validate_lower_hex_32(&receipt.txid, "faucet receipt txid")?;
+    if !(MIN_FAUCET_AMOUNT_SAT..=MAX_FAUCET_AMOUNT_SAT).contains(&receipt.amount_sat) {
+        return Err("faucet receipt amount is outside the closed contract".to_owned());
+    }
+    validate_regtest_address(&receipt.address)?;
+    if receipt.paid_at == 0 {
+        return Err("faucet receipt has no payment time".to_owned());
+    }
+    Ok(())
 }
 
 fn probe_state_root(root: &Path) -> Result<(), String> {
@@ -1982,7 +2352,14 @@ fn prepare_root(root: &Path) -> Result<(), String> {
     fs::create_dir_all(root).map_err(|error| format!("could not create gateway state: {error}"))?;
     fs::set_permissions(root, fs::Permissions::from_mode(0o700))
         .map_err(|error| format!("could not protect gateway state: {error}"))?;
-    for child in ["sessions", "rates", "locks"] {
+    for child in [
+        "sessions",
+        "rates",
+        "locks",
+        "faucet",
+        "faucet/queue",
+        "faucet/addresses",
+    ] {
         let path = root.join(child);
         fs::create_dir_all(&path)
             .map_err(|error| format!("could not create gateway {child}: {error}"))?;
@@ -2338,6 +2715,49 @@ fn validate_contract() -> Result<(), String> {
                         == Some("POST /v1/public-regtest/sessions/{session_id}/inputs")
                 })
             })
+        || !contract
+            .pointer("/gateway/endpoints")
+            .and_then(Value::as_array)
+            .is_some_and(|endpoints| {
+                endpoints
+                    .iter()
+                    .any(|endpoint| endpoint.as_str() == Some("POST /v1/public-regtest/faucet"))
+                    && endpoints.iter().any(|endpoint| {
+                        endpoint.as_str() == Some("GET /v1/public-regtest/faucet/{request_id}")
+                    })
+            })
+        || contract
+            .pointer("/faucet/minimum_amount_sat")
+            .and_then(Value::as_u64)
+            != Some(MIN_FAUCET_AMOUNT_SAT)
+        || contract
+            .pointer("/faucet/maximum_amount_sat")
+            .and_then(Value::as_u64)
+            != Some(MAX_FAUCET_AMOUNT_SAT)
+        || contract
+            .pointer("/faucet/maximum_requests_per_ip_window")
+            .and_then(Value::as_u64)
+            != Some(u64::from(MAX_FAUCET_REQUESTS_PER_IP_WINDOW))
+        || contract
+            .pointer("/faucet/ip_window_seconds")
+            .and_then(Value::as_u64)
+            != Some(FAUCET_IP_WINDOW_SECONDS)
+        || contract
+            .pointer("/faucet/maximum_sat_per_address_window")
+            .and_then(Value::as_u64)
+            != Some(MAX_FAUCET_SAT_PER_ADDRESS_WINDOW)
+        || contract
+            .pointer("/faucet/address_window_seconds")
+            .and_then(Value::as_u64)
+            != Some(FAUCET_ADDRESS_WINDOW_SECONDS)
+        || contract
+            .pointer("/faucet/maximum_pending_requests")
+            .and_then(Value::as_u64)
+            != u64::try_from(MAX_FAUCET_PENDING_REQUESTS).ok()
+        || contract
+            .pointer("/faucet/address_networks")
+            .and_then(Value::as_array)
+            != Some(&vec![Value::String("regtest".to_owned())])
     {
         return Err("public gateway fixture differs from executable limits".to_owned());
     }
@@ -2765,5 +3185,190 @@ mod tests {
             "maintenance"
         );
         fs::remove_dir_all(config.root).expect("remove service test root");
+    }
+
+    const REGTEST_TAPROOT_ADDRESS: &str =
+        "bcrt1pvcpgfdxvvnklep6kdyewn80pphta54nwwrex3ahrvh2uh0e9dgwsalmcu5";
+
+    fn faucet_request(address: &str, amount_sat: u64) -> FaucetRequest {
+        FaucetRequest {
+            schema: FAUCET_REQUEST_SCHEMA.to_owned(),
+            address: address.to_owned(),
+            amount_sat,
+        }
+    }
+
+    #[test]
+    fn faucet_address_validation_accepts_only_checksummed_regtest_addresses() {
+        assert!(validate_faucet_request(&faucet_request(REGTEST_TAPROOT_ADDRESS, 100_000)).is_ok());
+        // Mainnet and testnet/signet destinations are refused even when the
+        // bech32 checksum is valid.
+        assert!(
+            validate_faucet_request(&faucet_request(
+                "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+                100_000
+            ))
+            .is_err()
+        );
+        assert!(
+            validate_faucet_request(&faucet_request(
+                "tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7",
+                100_000
+            ))
+            .is_err()
+        );
+        // Uppercase, mixed case, damaged checksums, characters outside the
+        // bech32 charset, truncation, and overlong inputs all fail closed.
+        assert!(
+            validate_faucet_request(&faucet_request(
+                &REGTEST_TAPROOT_ADDRESS.to_ascii_uppercase(),
+                100_000
+            ))
+            .is_err()
+        );
+        let mut damaged = REGTEST_TAPROOT_ADDRESS.to_owned();
+        damaged.pop();
+        damaged.push('4');
+        assert!(validate_faucet_request(&faucet_request(&damaged, 100_000)).is_err());
+        assert!(
+            validate_faucet_request(&faucet_request(
+                &REGTEST_TAPROOT_ADDRESS.replace('h', "b"),
+                100_000
+            ))
+            .is_err()
+        );
+        assert!(validate_faucet_request(&faucet_request("bcrt1", 100_000)).is_err());
+        assert!(
+            validate_faucet_request(&faucet_request(
+                &format!("bcrt1{}", "q".repeat(96)),
+                100_000
+            ))
+            .is_err()
+        );
+        // Amount bounds are inclusive and closed.
+        assert!(validate_faucet_request(&faucet_request(REGTEST_TAPROOT_ADDRESS, 9_999)).is_err());
+        assert!(validate_faucet_request(&faucet_request(REGTEST_TAPROOT_ADDRESS, 10_000)).is_ok());
+        assert!(
+            validate_faucet_request(&faucet_request(REGTEST_TAPROOT_ADDRESS, 1_000_000)).is_ok()
+        );
+        assert!(
+            validate_faucet_request(&faucet_request(REGTEST_TAPROOT_ADDRESS, 1_000_001)).is_err()
+        );
+        let mut changed = faucet_request(REGTEST_TAPROOT_ADDRESS, 100_000);
+        changed.schema = "openagents.immortal.other.v1".to_owned();
+        assert!(validate_faucet_request(&changed).is_err());
+    }
+
+    #[test]
+    fn faucet_closed_json_refuses_unknown_and_duplicate_members() {
+        let unknown = format!(
+            r#"{{"schema":"{FAUCET_REQUEST_SCHEMA}","address":"{REGTEST_TAPROOT_ADDRESS}","amount_sat":100000,"extra":true}}"#
+        );
+        assert!(parse_closed_json::<FaucetRequest>(unknown.as_bytes(), "test").is_err());
+        let duplicate = format!(
+            r#"{{"schema":"{FAUCET_REQUEST_SCHEMA}","address":"{REGTEST_TAPROOT_ADDRESS}","address":"{REGTEST_TAPROOT_ADDRESS}","amount_sat":100000}}"#
+        );
+        assert!(parse_closed_json::<FaucetRequest>(duplicate.as_bytes(), "test").is_err());
+        let closed = format!(
+            r#"{{"schema":"{FAUCET_REQUEST_SCHEMA}","address":"{REGTEST_TAPROOT_ADDRESS}","amount_sat":100000}}"#
+        );
+        assert!(parse_closed_json::<FaucetRequest>(closed.as_bytes(), "test").is_ok());
+    }
+
+    #[test]
+    fn faucet_rate_windows_exhaust_and_reset() {
+        let config = service_config();
+        let root = config.root.clone();
+        let ip: IpAddr = "198.51.100.77".parse().unwrap();
+        let start = 1_000_000_u64;
+        // Per-IP window: two requests per ten minutes, third refused with a
+        // bounded retry, fresh window accepted again.
+        assert!(charge_faucet_ip(&root, ip, start).is_ok());
+        assert!(charge_faucet_ip(&root, ip, start + 1).is_ok());
+        let refused = charge_faucet_ip(&root, ip, start + 2).unwrap_err();
+        assert_eq!(refused.code, "rate_limited");
+        assert_eq!(
+            refused.retry_after_seconds,
+            Some(FAUCET_IP_WINDOW_SECONDS - 2)
+        );
+        assert!(charge_faucet_ip(&root, ip, start + FAUCET_IP_WINDOW_SECONDS).is_ok());
+        // A different IP has its own window.
+        assert!(charge_faucet_ip(&root, "198.51.100.78".parse().unwrap(), start + 2).is_ok());
+        // Per-address budget: two million satoshi per day, then refused, then
+        // reset after the window elapses.
+        assert!(charge_faucet_address(&root, REGTEST_TAPROOT_ADDRESS, 1_000_000, start).is_ok());
+        assert!(
+            charge_faucet_address(&root, REGTEST_TAPROOT_ADDRESS, 1_000_000, start + 10).is_ok()
+        );
+        let over =
+            charge_faucet_address(&root, REGTEST_TAPROOT_ADDRESS, 10_000, start + 20).unwrap_err();
+        assert_eq!(over.code, "rate_limited");
+        assert_eq!(
+            over.retry_after_seconds,
+            Some(FAUCET_ADDRESS_WINDOW_SECONDS - 20)
+        );
+        assert!(
+            charge_faucet_address(
+                &root,
+                REGTEST_TAPROOT_ADDRESS,
+                1_000_000,
+                start + FAUCET_ADDRESS_WINDOW_SECONDS
+            )
+            .is_ok()
+        );
+        fs::remove_dir_all(root).expect("remove faucet rate test root");
+    }
+
+    #[test]
+    fn faucet_queue_and_receipt_state_are_bounded_and_closed() {
+        let config = service_config();
+        let root = config.root.clone();
+        assert_eq!(faucet_pending_count(&root).unwrap(), 0);
+        for number in 0..MAX_FAUCET_PENDING_REQUESTS {
+            let request_id = format!("{number:064x}");
+            write_json_create_new(
+                &faucet_queue_path(&root, &request_id),
+                &QueuedFaucetRequest {
+                    schema: FAUCET_QUEUE_SCHEMA.to_owned(),
+                    request_id,
+                    address: REGTEST_TAPROOT_ADDRESS.to_owned(),
+                    amount_sat: 100_000,
+                    client_ip_digest: "aa".repeat(32),
+                    requested_at: 1,
+                },
+            )
+            .expect("queue entry");
+        }
+        assert_eq!(
+            faucet_pending_count(&root).unwrap(),
+            MAX_FAUCET_PENDING_REQUESTS
+        );
+        let request_id = "ab".repeat(32);
+        let receipt = FaucetReceipt {
+            schema: FAUCET_RECEIPT_SCHEMA.to_owned(),
+            request_id: request_id.clone(),
+            txid: "cd".repeat(32),
+            amount_sat: 100_000,
+            address: REGTEST_TAPROOT_ADDRESS.to_owned(),
+            paid_at: 1_000,
+        };
+        write_json_create_new(&faucet_receipt_path(&root, &request_id), &receipt).expect("receipt");
+        assert_eq!(
+            load_faucet_receipt(&root, &request_id).unwrap(),
+            Some(receipt.clone())
+        );
+        // An unknown request ID has no receipt; a receipt with a mainnet
+        // payout address or out-of-bounds amount is refused when read back.
+        assert_eq!(load_faucet_receipt(&root, &"ba".repeat(32)).unwrap(), None);
+        let mut invalid = receipt.clone();
+        invalid.address = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_owned();
+        assert!(validate_faucet_receipt(&invalid).is_err());
+        invalid = receipt.clone();
+        invalid.amount_sat = MAX_FAUCET_AMOUNT_SAT + 1;
+        assert!(validate_faucet_receipt(&invalid).is_err());
+        invalid = receipt;
+        invalid.txid = "not-hex".to_owned();
+        assert!(validate_faucet_receipt(&invalid).is_err());
+        fs::remove_dir_all(root).expect("remove faucet queue test root");
     }
 }

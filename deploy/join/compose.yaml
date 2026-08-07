@@ -1,0 +1,142 @@
+services:
+  bitcoin:
+    profiles: ["provider"]
+    build:
+      context: ../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.bitcoin
+    command: ["-conf=/run/immortal-private/bitcoin.conf", "-datadir=/var/lib/bitcoin"]
+    restart: unless-stopped
+    volumes:
+      - bitcoin-data:/var/lib/bitcoin
+      - type: bind
+        source: ${IMMORTAL_JOIN_PRIVATE_DIR:?private directory is required}/bitcoin.conf
+        target: /run/immortal-private/bitcoin.conf
+        read_only: true
+    networks:
+      - join
+
+  cln:
+    profiles: ["provider"]
+    build:
+      context: ../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.cln-hold
+    command: ["--conf=/run/immortal-private/cln.conf"]
+    environment:
+      LIGHTNINGD_NETWORK: regtest
+    depends_on:
+      - bitcoin
+    network_mode: service:bitcoin
+    restart: unless-stopped
+    volumes:
+      - cln-data:/root/.lightning
+      - cln-rpc:/rail-rpc
+      - type: bind
+        source: ${IMMORTAL_JOIN_PRIVATE_DIR:?private directory is required}/cln.conf
+        target: /run/immortal-private/cln.conf
+        read_only: true
+
+  provider-postgres:
+    profiles: ["provider"]
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: immortal_provider
+      POSTGRES_USER: immortal_provider
+      POSTGRES_PASSWORD_FILE: /run/immortal-private/provider-postgres-password
+    restart: unless-stopped
+    volumes:
+      - provider-postgres-data:/var/lib/postgresql/data
+      - type: bind
+        source: ${IMMORTAL_JOIN_PRIVATE_DIR:?private directory is required}/provider-postgres-password
+        target: /run/immortal-private/provider-postgres-password
+        read_only: true
+    networks:
+      - join
+
+  # The provider engine accepts only a loopback ws:// relay URL so its relay
+  # transport can never be pointed at an arbitrary public endpoint. This
+  # bridge listens on loopback inside the provider's network namespace and
+  # carries the connection to the one operator-declared public relay over
+  # certificate-verified TLS, rewriting only the HTTP Host header.
+  relay-egress:
+    profiles: ["provider"]
+    build:
+      context: .
+      dockerfile: Dockerfile.tls-egress
+    command:
+      - --listen
+      - 127.0.0.1:18080
+      - --upstream
+      - ${IMMORTAL_JOIN_RELAY_EGRESS:?relay egress authority is required}
+    depends_on:
+      - bitcoin
+    network_mode: service:bitcoin
+    restart: unless-stopped
+
+  provider:
+    profiles: ["provider"]
+    build:
+      context: ../..
+      dockerfile: scripts/support/provider-funded/Dockerfile.provider
+      target: provider
+    command: ["run"]
+    env_file:
+      - ${IMMORTAL_JOIN_PRIVATE_DIR:?private directory is required}/provider.env
+    depends_on:
+      - bitcoin
+      - cln
+      - provider-postgres
+      - relay-egress
+    network_mode: service:bitcoin
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: cln-rpc
+        target: /rail/cln
+        read_only: true
+      - type: bind
+        source: ${IMMORTAL_JOIN_PRIVATE_DIR:?private directory is required}/provider-wallet-seed
+        target: /run/immortal-private/provider-wallet-seed
+        read_only: true
+
+  relay-postgres:
+    profiles: ["relay"]
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    environment:
+      POSTGRES_DB: immortal_relay
+      POSTGRES_USER: immortal_relay
+      POSTGRES_PASSWORD_FILE: /run/immortal-private/relay-postgres-password
+    restart: unless-stopped
+    volumes:
+      - relay-postgres-data:/var/lib/postgresql/data
+      - type: bind
+        source: ${IMMORTAL_JOIN_PRIVATE_DIR:?private directory is required}/relay-postgres-password
+        target: /run/immortal-private/relay-postgres-password
+        read_only: true
+    networks:
+      - join
+
+  relay:
+    profiles: ["relay"]
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    env_file:
+      - ${IMMORTAL_JOIN_PRIVATE_DIR:?private directory is required}/relay.env
+    depends_on:
+      - relay-postgres
+    ports:
+      - "127.0.0.1:${IMMORTAL_JOIN_RELAY_PORT:-18080}:8080"
+    restart: unless-stopped
+    networks:
+      - join
+
+volumes:
+  bitcoin-data:
+  cln-data:
+  cln-rpc:
+  provider-postgres-data:
+  relay-postgres-data:
+
+networks:
+  join:
+    driver: bridge

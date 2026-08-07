@@ -16,9 +16,11 @@ name = "immortal-public-regtest-gateway"
 path = "src/main.rs"
 
 # Owner-approved minimal public-boundary allowlist. This product links no
-# provider, wallet, rail, database, async runtime, or client engine.
+# provider, wallet, rail, database, async runtime, or client engine. The
+# `mkt-swp-verify` feature enables the workspace-owned SegWit address parser
+# for faucet destination validation; it adds no external dependency.
 [dependencies]
-immortal-core.workspace = true
+immortal-core = { workspace = true, features = ["mkt-swp-verify"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

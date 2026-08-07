@@ -299,6 +299,10 @@ The private operator loop adds fail-closed readiness, bounded mining and
 liquidity maintenance, public-safe metrics, terminal receipt retention, and
 shared-service capacity gates. See
 [`public-regtest service qualification`](docs/conformance/public-regtest-service.md).
+The gateway also exposes a rate-limited regtest faucet, and
+`scripts/join-regtest.sh` brings a fresh machine into the sandbox as a funded
+provider or a relay with keys that never leave that machine. See
+[`docs/join-regtest.md`](docs/join-regtest.md).
 Operators should follow the
 [`immortal-provider` Debian runbook](docs/deployment/runbook-provider-debian.md)
 for its separate database, wallet file, bitcoind, selected Lightning rail, health,

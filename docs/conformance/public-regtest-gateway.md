@@ -78,6 +78,18 @@ amounts or directions conflict, and an accepted swap request permanently
 closes allocation for that session. This endpoint is not a general faucet,
 wallet, invoice, mining, or RPC API.
 
+A separate capability, `POST /v1/public-regtest/faucet`, queues one bounded
+regtest payout (10,000–1,000,000 sat) to one lowercase, checksum-verified
+`bcrt1` destination for network-join funding. Mainnet, testnet, and signet
+destinations are refused before any state is written. The gateway enforces
+two requests per IP per ten minutes, 2,000,000 sat per destination address
+per day, and a sixteen-entry pending queue, then persists only a queue
+record; the private operator loop revalidates the destination against its
+own node, pays from the miner wallet, mines one block, and writes the
+durable receipt that `GET /v1/public-regtest/faucet/{request_id}` replays.
+The public process still holds no wallet or node credential, and regtest
+coins remain valueless.
+
 The initial contract permits at most two effects and 1,000,000 sats per
 effect, with one in-flight effect per session. Sessions expire in at most one
 hour. Persistent IP and session windows return typed `rate_limited` responses

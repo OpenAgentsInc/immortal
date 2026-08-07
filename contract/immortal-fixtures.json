@@ -90,6 +90,12 @@
       "scope": "client"
     },
     {
+      "path": "tests/fixtures/lab/dynamic-public-regtest-v1.json",
+      "sha256": "95efa3cec7156b3a8ae413dc71b0dbb8df15d0999de96ce6ab44d02072db161a",
+      "bytes": 1630,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/lab/funded-checkpoints-v1.json",
       "sha256": "5de6c6fc8e3c7b414049b02f74215a28877c567c0c7eb9bcd1df2c829830ced0",
       "bytes": 3597,
@@ -111,6 +117,24 @@
       "path": "tests/fixtures/lab/provisioning-v1.json",
       "sha256": "0a8d29b2bbb5b28983991810a28e9a334076e056a721c4c0bbedc78aa0599e08",
       "bytes": 4040,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/lab/public-regtest-gateway-v1.json",
+      "sha256": "374b864ab0e8a4449200dacbe8f1c174396cedc1edbcd384c5421a0ee1f92b4d",
+      "bytes": 2882,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/lab/public-regtest-service-v1.json",
+      "sha256": "d1aa5cd171b9ba8247f5d93cdabcc762f82ac1aa15529c0ce7a6e148fed15637",
+      "bytes": 2502,
+      "scope": "client"
+    },
+    {
+      "path": "tests/fixtures/lab/public-regtest-topology-v1.json",
+      "sha256": "09d8d2abf2b94c28535877841061b6d063b85f1bb2c17c52acd8c42e75370098",
+      "bytes": 2215,
       "scope": "client"
     },
     {
@@ -187,8 +211,8 @@
     },
     {
       "path": "tests/fixtures/nip11/document.json",
-      "sha256": "74528732c66bc4bf287aad622c25772066bda40b5afdea26d14b4b070bdce34b",
-      "bytes": 728,
+      "sha256": "5c7c4a2a96472a97869e64b853d49a28a83df8a141248d4b5326c2abe8ce2305",
+      "bytes": 732,
       "scope": "relay"
     },
     {

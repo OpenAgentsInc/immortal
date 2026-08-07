@@ -65,6 +65,86 @@ mine_once() {
   echo '{"schema":"openagents.immortal.public-regtest-mining.v1","blocks":6,"reason":"admitted_effect_with_mempool"}'
 }
 
+miner_cli() {
+  "${compose[@]}" exec -T bitcoin-a bitcoin-cli \
+    -conf=/run/immortal-private/bitcoin-a.conf -datadir=/var/lib/bitcoin "$@"
+}
+
+write_faucet_receipt() {
+  local request_id="$1" txid="$2" amount_sat="$3" address="$4"
+  python3 - "${gateway_state}" "${request_id}" "${txid}" "${amount_sat}" "${address}" <<'PY'
+import json, os, pathlib, sys, time
+root = pathlib.Path(sys.argv[1])
+request_id, txid, amount_sat, address = sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5]
+value = {
+    "schema": "openagents.immortal.public-regtest-faucet-receipt.v1",
+    "request_id": request_id,
+    "txid": txid,
+    "amount_sat": amount_sat,
+    "address": address,
+    "paid_at": int(time.time()),
+}
+target = root / "faucet" / f"receipt-{request_id}.json"
+temporary = target.with_name(target.name + ".tmp")
+fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as output:
+    json.dump(value, output, sort_keys=True, separators=(",", ":")); output.write("\n")
+    output.flush(); os.fsync(output.fileno())
+os.replace(temporary, target)
+os.chmod(target, 0o600)
+PY
+}
+
+refuse_faucet_entry() {
+  local queue="$1" request_id="$2" reason="$3"
+  echo "public-regtest-operator: faucet request ${request_id} refused (${reason})" >&2
+  rm -f -- "${queue}"
+}
+
+process_faucet_queue() {
+  local queue request_id receipt address amount_sat amount_btc txid miner_address paid=0
+  shopt -s nullglob
+  for queue in "${gateway_state}"/faucet/queue/*.json; do
+    test "${paid}" -lt 4 || break
+    request_id="$(basename "${queue}" .json)"
+    [[ "${request_id}" =~ ^[0-9a-f]{64}$ ]] || continue
+    receipt="${gateway_state}/faucet/receipt-${request_id}.json"
+    # Never pay a queue entry twice: a durable receipt always wins.
+    if test -e "${receipt}"; then rm -f -- "${queue}"; continue; fi
+    if ! address="$(jq -er .address "${queue}" 2>/dev/null)" ||
+       ! amount_sat="$(jq -er .amount_sat "${queue}" 2>/dev/null)"; then
+      refuse_faucet_entry "${queue}" "${request_id}" invalid_queue_entry
+      continue
+    fi
+    if ! [[ "${address}" =~ ^bcrt1[0-9a-z]{6,85}$ ]] ||
+       ! [[ "${amount_sat}" =~ ^[0-9]+$ ]] ||
+       test "${amount_sat}" -lt 10000 || test "${amount_sat}" -gt 1000000; then
+      refuse_faucet_entry "${queue}" "${request_id}" outside_bounds
+      continue
+    fi
+    if ! miner_cli validateaddress "${address}" | jq -e '.isvalid == true' >/dev/null 2>&1; then
+      refuse_faucet_entry "${queue}" "${request_id}" invalid_address
+      continue
+    fi
+    if ! miner_cli -rpcwallet=public-regtest-miner getaddressinfo "${address}" |
+        jq -e '.ismine == false' >/dev/null 2>&1; then
+      refuse_faucet_entry "${queue}" "${request_id}" miner_owned_address
+      continue
+    fi
+    amount_btc="$(python3 -c 'import sys; print(f"{int(sys.argv[1])/100000000:.8f}")' "${amount_sat}")"
+    if ! txid="$(miner_cli -rpcwallet=public-regtest-miner sendtoaddress "${address}" "${amount_btc}")"; then
+      echo "public-regtest-operator: faucet payout failed for ${request_id}" >&2
+      continue
+    fi
+    miner_address="$(miner_cli -rpcwallet=public-regtest-miner getnewaddress)"
+    miner_cli -rpcwallet=public-regtest-miner generatetoaddress 1 "${miner_address}" >/dev/null
+    write_faucet_receipt "${request_id}" "${txid}" "${amount_sat}" "${address}"
+    rm -f -- "${queue}"
+    paid=$((paid + 1))
+  done
+  shopt -u nullglob
+}
+
 rebalance_provider() {
   local provider="$1" label invoice
   read -r local_msat remote_msat < <(lightning_balance "${provider}")
@@ -275,11 +355,12 @@ process_demo_inputs() {
 }
 
 case "${1:-}" in
-  once) write_readiness; process_demo_inputs; process_dynamic_requests; cleanup_sessions ;;
+  once) write_readiness; process_faucet_queue; process_demo_inputs; process_dynamic_requests; cleanup_sessions ;;
   status) test -f "${gateway_state}/readiness.json" || fail "readiness has not been published"; cat "${gateway_state}/readiness.json" ;;
   loop)
     while true; do
       write_readiness || true
+      process_faucet_queue || true
       process_demo_inputs || true
       process_dynamic_requests || true
       mine_once || true
@@ -302,6 +383,7 @@ case "${1:-}" in
     write_readiness ;;
   cleanup) cleanup_sessions ;;
   mine) mine_once ;;
+  faucet) process_faucet_queue ;;
   rebalance) rebalance ;;
-  *) echo "usage: scripts/public-regtest-operator.sh {once|status|loop|maintenance on|maintenance off|cleanup|mine|rebalance}" >&2; exit 2 ;;
+  *) echo "usage: scripts/public-regtest-operator.sh {once|status|loop|maintenance on|maintenance off|cleanup|mine|faucet|rebalance}" >&2; exit 2 ;;
 esac

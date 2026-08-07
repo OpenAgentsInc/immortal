@@ -12,8 +12,23 @@
       "DELETE /v1/public-regtest/sessions/{session_id}",
       "POST /v1/public-regtest/sessions/{session_id}/inputs",
       "POST /v1/public-regtest/sessions/{session_id}/requests",
-      "POST /v1/public-regtest/sessions/{session_id}/effects"
+      "POST /v1/public-regtest/sessions/{session_id}/effects",
+      "POST /v1/public-regtest/faucet",
+      "GET /v1/public-regtest/faucet/{request_id}"
     ]
+  },
+  "faucet": {
+    "minimum_amount_sat": 10000,
+    "maximum_amount_sat": 1000000,
+    "address_networks": ["regtest"],
+    "address_grammar": "lowercase checksum-verified native SegWit bcrt1 only",
+    "maximum_requests_per_ip_window": 2,
+    "ip_window_seconds": 600,
+    "maximum_sat_per_address_window": 2000000,
+    "address_window_seconds": 86400,
+    "maximum_pending_requests": 16,
+    "execution": "operator loop revalidates the destination with the private node, pays from the miner wallet, mines one block, and writes a durable receipt",
+    "public_process_pays": false
   },
   "session": {
     "capability_entropy_bits": 256,
