@@ -68,3 +68,7 @@ tokio = { workspace = true, optional = true }
 tokio-postgres = { workspace = true, optional = true, features = ["with-serde_json-1"] }
 tokio-tungstenite = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Exercises the exact shipped browser boundary in the live no-spend test only.
+immortal-client-web.workspace = true

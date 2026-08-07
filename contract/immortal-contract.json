@@ -836,7 +836,10 @@
         ],
         "fixture": "tests/fixtures/nipmkt/swp-client-engine-v1.json",
         "requester_api_artifact": "tests/fixtures/nipmkt/swp-requester-api-v2.json",
-        "requester_api_version": "openagents.mkt-swp.requester-api-fixture.v2"
+        "requester_api_version": "openagents.mkt-swp.requester-api-fixture.v2",
+        "browser_abi_artifact": "tests/fixtures/nipmkt/swp-browser-abi-v1.json",
+        "browser_abi_version": 1,
+        "browser_wasm_crate": "immortal-client-web"
       },
       "boltz_facade": {
         "mapping_revision": "openagents.mkt-swp.boltz-released-client.v2",

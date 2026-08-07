@@ -35,6 +35,8 @@ assert_direct_dependencies immortal-core \
   secp256k1 serde serde_json sha2
 assert_direct_dependencies immortal-client \
   immortal-core secp256k1 serde serde_json sha2
+assert_direct_dependencies immortal-client-web \
+  immortal-client
 assert_direct_dependencies immortal-relay \
   immortal-core secp256k1 serde serde_json sha2 tokio tokio-postgres tokio-tungstenite
 assert_direct_dependencies immortal-provider \

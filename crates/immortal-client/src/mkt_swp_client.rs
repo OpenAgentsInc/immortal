@@ -3600,7 +3600,7 @@ pub struct InvoiceVerificationInput {
     pub required_minimum_final_cltv_delta: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LightningReadinessRequest {
     pub order_id: String,
     pub leg_id: String,
@@ -3615,12 +3615,14 @@ pub struct LightningReadinessRequest {
     pub hold_expiry_height: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LightningReadinessState {
     Acceptable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalLightningReadiness {
     pub invoice_sha256: String,
     pub payment_hash: String,

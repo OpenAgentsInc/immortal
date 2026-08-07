@@ -6,6 +6,7 @@ use std::{
 };
 
 use immortal_client::{
+    browser_api,
     liquid::{
         LiquidBeforeFundRequest, LiquidConfidentiality, LiquidExitMode,
         LiquidFundingVerificationInput, LiquidLegPurpose, LiquidNodeAuthority, LiquidNodeRequest,
@@ -1481,6 +1482,43 @@ fn fixture_replay_rejects_expectation_and_nameset_drift() {
 fn submarine_fixture_enforces_verify_before_fund_and_external_signing() {
     let fixture = fixture();
     let mut session = build_session(&fixture, SwapType::Submarine, true);
+    let awaiting_snapshot = session.persist().unwrap();
+    let verification = verification_input(&fixture, SwapType::Submarine);
+    let prepared = browser_result(
+        "prepare_funding_request",
+        json!({
+            "snapshot_json_hex": lower_hex(&awaiting_snapshot),
+            "verification": verification,
+            "lightning_readiness": null
+        }),
+    );
+    let browser_authorized = browser_result(
+        "verify_before_fund",
+        json!({
+            "snapshot_json_hex": lower_hex(&awaiting_snapshot),
+            "verification": verification,
+            "lightning_readiness": null,
+            "expected_funding_request": prepared
+        }),
+    );
+    assert_eq!(browser_authorized["funding_request"], prepared);
+
+    let mut changed_request = prepared.clone();
+    changed_request["order_id"] = Value::String("00".repeat(32));
+    let changed_response = browser_response(
+        "verify_before_fund",
+        json!({
+            "snapshot_json_hex": lower_hex(&awaiting_snapshot),
+            "verification": verification,
+            "lightning_readiness": null,
+            "expected_funding_request": changed_request
+        }),
+    );
+    assert_eq!(
+        changed_response["error"]["code"],
+        "swp_funding_not_authorized"
+    );
+
     let authorization = session
         .verify_before_fund(
             verification_input(&fixture, SwapType::Submarine),
@@ -8393,6 +8431,25 @@ fn decode_hex(value: &str) -> Vec<u8> {
             high << 4 | low
         })
         .collect()
+}
+
+fn browser_response(operation: &str, input: Value) -> Value {
+    let request = serde_json::to_vec(&json!({
+        "abi_version": 1,
+        "operation": operation,
+        "input": input
+    }))
+    .unwrap();
+    serde_json::from_slice(&browser_api::dispatch(&request)).unwrap()
+}
+
+fn browser_result(operation: &str, input: Value) -> Value {
+    let response = browser_response(operation, input);
+    assert!(
+        response.get("error").is_none(),
+        "browser {operation} failed: {response}"
+    );
+    response["result"].clone()
 }
 
 fn lower_hex(bytes: &[u8]) -> String {

@@ -9,7 +9,7 @@ use std::{
 };
 
 use immortal_client::mkt_swp_client::{
-    Cancellation, ParticipantRole, SwapClientConfig, SwapContractReferences, SwapRecordFactory,
+    MktSigningRequest, ParticipantRole, SwapClientConfig, SwapRecordFactory,
 };
 use immortal_core::{
     domain::{
@@ -226,14 +226,16 @@ fn drive_flow(
     let mut publisher = connect(relay_url)?;
 
     let rfq = sign_request(
-        factory
-            .rfq(
-                now,
-                &digest(&format!("rfq:{session_id}")),
-                now.saturating_add(300),
-                fixture_profile(swap_type, 39_604, None)?,
-            )
-            .map_err(|error| format!("could not construct live RFQ: {error}"))?,
+        browser_signing_request(
+            "requester_rfq",
+            json!({
+                "config": config,
+                "created_at": now,
+                "distinct": digest(&format!("rfq:{session_id}")),
+                "expiration": now.saturating_add(300),
+                "mkt_swp": fixture_profile(swap_type, 39_604, None)?
+            }),
+        )?,
         &requester,
     )?;
     verifier
@@ -248,14 +250,18 @@ fn drive_flow(
         .ingest_signed(quote.clone())
         .map_err(|error| format!("live verifier rejected Quote: {error}"))?;
     let order = sign_request(
-        factory
-            .order(
-                quote.created_at.saturating_add(1),
-                &digest(&format!("order:{session_id}")),
-                &quote.id,
-                json!({"accepted_quote_id":quote.id}),
-            )
-            .map_err(|error| format!("could not construct live Order: {error}"))?,
+        browser_signing_request(
+            "requester_order",
+            json!({
+                "config": config,
+                "rfq": rfq,
+                "quote": quote,
+                "created_at": quote.created_at.saturating_add(1),
+                "observed_at": quote.created_at,
+                "distinct": digest(&format!("order:{session_id}")),
+                "selection": null
+            }),
+        )?,
         &requester,
     )?;
     verifier
@@ -298,19 +304,19 @@ fn drive_flow(
 
     let contract = complete_contract(swap_type, &config, &rfq, &quote, &order)?;
     let requester_contract = sign_request(
-        factory
-            .swap_contract(
-                ParticipantRole::Requester,
-                requester_status.created_at.saturating_add(1),
-                &digest(&format!("requester-contract:{session_id}")),
-                SwapContractReferences {
-                    order_id: &order.id,
-                    quote_id: &quote.id,
-                    accepted_status_id: None,
-                },
-                contract.clone(),
-            )
-            .map_err(|error| format!("could not construct requester contract: {error}"))?,
+        browser_signing_request(
+            "requester_contract",
+            json!({
+                "config": config,
+                "rfq": rfq,
+                "quote": quote,
+                "order": order,
+                "order_observed_at": order.created_at,
+                "created_at": requester_status.created_at.saturating_add(1),
+                "distinct": digest(&format!("requester-contract:{session_id}")),
+                "contract": contract
+            }),
+        )?,
         &requester,
     )?;
     verifier
@@ -330,7 +336,7 @@ fn drive_flow(
         return Err("provider countersigned different contract terms".to_owned());
     }
     verifier
-        .ingest_signed(provider_contract)
+        .ingest_signed(provider_contract.clone())
         .map_err(|error| format!("live verifier rejected provider contract: {error}"))?;
     let status = receive_matching(&mut reader, &requester, &session_id, |event| {
         event.kind == MKT_STATUS_KIND
@@ -340,21 +346,22 @@ fn drive_flow(
         .map_err(|error| format!("live verifier rejected Status: {error}"))?;
 
     let cancel_request = sign_request(
-        factory
-            .cancel(
-                ParticipantRole::Requester,
-                status.created_at.saturating_add(1),
-                &digest(&format!("cancel-request:{session_id}")),
-                &order.id,
-                Cancellation {
-                    action: "request",
-                    reason: "live_no_spend_smoke",
-                    request_id: None,
-                    accepted_id: None,
+        browser_signing_request(
+            "requester_cancel",
+            json!({
+                "config": config,
+                "created_at": status.created_at.saturating_add(1),
+                "distinct": digest(&format!("cancel-request:{session_id}")),
+                "order_id": order.id,
+                "cancellation": {
+                    "action": "request",
+                    "reason": "live_no_spend_smoke",
+                    "request_id": null,
+                    "accepted_id": null
                 },
-                json!({"disposition":"no_funding_authorized"}),
-            )
-            .map_err(|error| format!("could not construct Cancel request: {error}"))?,
+                "mkt_swp": {"disposition":"no_funding_authorized"}
+            }),
+        )?,
         &requester,
     )?;
     verifier
@@ -366,13 +373,13 @@ fn drive_flow(
         event.kind == MKT_CANCEL_KIND && tag_value(event, "action") == Some("accepted")
     })?;
     verifier
-        .ingest_signed(accepted)
+        .ingest_signed(accepted.clone())
         .map_err(|error| format!("live verifier rejected accepted Cancel: {error}"))?;
     let effective = receive_matching(&mut reader, &requester, &session_id, |event| {
         event.kind == MKT_CANCEL_KIND && tag_value(event, "action") == Some("effective")
     })?;
     verifier
-        .ingest_signed(effective)
+        .ingest_signed(effective.clone())
         .map_err(|error| format!("live verifier rejected effective Cancel: {error}"))?;
     let close = receive_matching(&mut reader, &requester, &session_id, |event| {
         event.kind == MKT_CLOSE_KIND
@@ -391,14 +398,123 @@ fn drive_flow(
         return Err("provider Close is not exact no-spend accounting".to_owned());
     }
     verifier
-        .ingest_signed(close)
+        .ingest_signed(close.clone())
         .map_err(|error| format!("live verifier rejected Close: {error}"))?;
     let snapshot = verifier
         .persist()
         .map_err(|error| format!("could not persist live verifier: {error}"))?;
     ProviderSession::restore(&snapshot)
         .map_err(|error| format!("could not restore completed live session: {error}"))?;
+
+    let records = vec![
+        rfq,
+        quote,
+        order,
+        requester_status,
+        requester_contract,
+        provider_contract,
+        status,
+        cancel_request,
+        accepted,
+        effective,
+        close.clone(),
+    ];
+    let deliveries = browser_deliveries(&records)?;
+    let created = browser_invoke(
+        "session_create",
+        json!({
+            "config": config,
+            "records": records,
+            "exit_packages": [],
+            "deliveries": deliveries
+        }),
+    )?;
+    let created_snapshot = created
+        .get("snapshot_json_hex")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "browser session create omitted snapshot".to_owned())?;
+    let restored = browser_invoke(
+        "session_restore",
+        json!({
+            "snapshot_json_hex": created_snapshot,
+            "deliveries": deliveries
+        }),
+    )?;
+    if created.get("view") != restored.get("view")
+        || restored.get("snapshot_json_hex").and_then(Value::as_str) != Some(created_snapshot)
+    {
+        return Err("browser persist/reload changed the no-spend requester session".to_owned());
+    }
+    let replay = browser_invoke(
+        "session_ingest",
+        json!({
+            "snapshot_json_hex": created_snapshot,
+            "records": [close],
+            "deliveries": deliveries
+        }),
+    )?;
+    if replay.get("ingested_records").and_then(Value::as_u64) != Some(0)
+        || replay.get("snapshot_json_hex").and_then(Value::as_str) != Some(created_snapshot)
+    {
+        return Err("browser session replay duplicated a signed record or request".to_owned());
+    }
     Ok(())
+}
+
+fn browser_signing_request(operation: &str, input: Value) -> Result<MktSigningRequest, String> {
+    serde_json::from_value(browser_invoke(operation, input)?)
+        .map_err(|error| format!("browser {operation} output is not a signing request: {error}"))
+}
+
+fn browser_invoke(operation: &str, input: Value) -> Result<Value, String> {
+    let request = serde_json::to_vec(&json!({
+        "abi_version": 1,
+        "operation": operation,
+        "input": input
+    }))
+    .map_err(|error| format!("could not encode browser {operation} request: {error}"))?;
+    if immortal_client_web::immortal_mkt_swp_browser_request_reset() != 0 {
+        return Err(format!("browser {operation} request reset failed"));
+    }
+    for byte in request {
+        if immortal_client_web::immortal_mkt_swp_browser_request_push(u32::from(byte)) != 0 {
+            return Err(format!("browser {operation} request transfer failed"));
+        }
+    }
+    if immortal_client_web::immortal_mkt_swp_browser_invoke() != 0 {
+        return Err(format!("browser {operation} invocation failed"));
+    }
+    let response_bytes = (0..immortal_client_web::immortal_mkt_swp_browser_response_len())
+        .map(|index| immortal_client_web::immortal_mkt_swp_browser_response_byte(index))
+        .map(|byte| {
+            u8::try_from(byte)
+                .map_err(|_| format!("browser {operation} response transfer ended early"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let response: Value = serde_json::from_slice(&response_bytes)
+        .map_err(|error| format!("browser {operation} response is invalid JSON: {error}"))?;
+    if let Some(error) = response.get("error") {
+        return Err(format!("browser {operation} failed: {error}"));
+    }
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| format!("browser {operation} response omitted result"))
+}
+
+fn browser_deliveries(records: &[Event]) -> Result<Vec<Value>, String> {
+    records
+        .iter()
+        .map(|record| {
+            let raw = serde_json::to_vec(record)
+                .map_err(|error| format!("could not encode browser delivery: {error}"))?;
+            Ok(json!({
+                "raw_signed_event_hex": lower_hex(&raw),
+                "observed_at": record.created_at,
+                "provenance": "direct"
+            }))
+        })
+        .collect()
 }
 
 fn fixture_profile(swap_type: &str, kind: u64, signer_role: Option<&str>) -> Result<Value, String> {

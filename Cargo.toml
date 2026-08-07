@@ -2,6 +2,7 @@
 members = [
     "crates/immortal-core",
     "crates/immortal-client",
+    "crates/immortal-client-web",
     "crates/immortal-relay",
     "crates/immortal-provider",
     "crates/immortal-lab",
@@ -29,3 +30,4 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring
 
 immortal-core = { path = "crates/immortal-core", default-features = false }
 immortal-client = { path = "crates/immortal-client" }
+immortal-client-web = { path = "crates/immortal-client-web" }

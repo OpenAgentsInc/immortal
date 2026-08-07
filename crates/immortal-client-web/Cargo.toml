@@ -1,0 +1,16 @@
+[package]
+name = "immortal-client-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded WebAssembly ABI for the Immortal MKT-SWP requester engine"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+# Owner-approved allowlist: immortal-client only.
+[dependencies]
+immortal-client.workspace = true

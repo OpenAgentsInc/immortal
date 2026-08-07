@@ -130,6 +130,54 @@ Snapshot consistency is the library proof. Durable storage and the local
 origin of that snapshot remain responsibilities of the trusted embedding
 wallet and are not presented as cryptographic attestation.
 
+## Executable browser ABI
+
+`crates/immortal-client-web` is the ordinary `wasm32-unknown-unknown` artifact
+for the production requester engine. It wraps
+`immortal_client::browser_api::dispatch`; it is not a TypeScript rewrite and
+does not use the fixture probe. The dependency-free adapter is
+`adapters/immortal-client-web/adapter.mjs`, with declarations beside it.
+
+Requests and responses use
+`openagents.immortal.mkt-swp.browser-abi.v1`. Every request carries ABI version
+1, one closed operation name, and one closed input object. The artifact accepts
+at most 2 MiB and emits at most 8 MiB. It crosses bytes through
+reset/push/invoke/length/byte exports,
+so no raw linear-memory pointer becomes an ABI contract. Its WebAssembly
+module has no imports. Metadata pins the ABI, the exact requester API v2 digest,
+and `IMMORTAL_SOURCE_REVISION` from the build; an embedding may require both
+digests and the source revision before making any operation available.
+
+The operations validate public Offerings and exact direct/local delivery
+bytes; verify externally signed records; construct RFQ, Order, requester
+Contract, Cancel, and Close signing requests; compose Contract drafts; inspect
+and digest-bind exit packages; create, ingest, persist, and restore requester
+sessions; prepare a typed funding request only after the production
+verify-before-fund checks; and cross the funding-authorized transition only
+when the host returns that exact prepared request unchanged. Preparation
+deliberately refuses the internal wallet callback after capturing the request,
+so it cannot persist or execute an authorization.
+Entropy, Nostr signing and wrapping, relay transport, durable snapshot storage,
+wallet actions, rail observations, secrets, and node credentials remain host
+capabilities. Gift-wrap decryption uses the existing callback transport API;
+the browser ABI receives its exact validated inner bytes as a delivery.
+
+The machine contract is
+`tests/fixtures/nipmkt/swp-browser-abi-v1.json`. Run the compiled-WASM gate and
+the live no-spend process gate with:
+
+```sh
+./scripts/test-client-browser-abi.sh
+IMMORTAL_PROVIDER_LIVE_RELAY_PORT=18134 ./scripts/test-dev-market-provider.sh
+```
+
+The live gate invokes the exact exported wrapper functions (compiled natively
+for the process test) and drives all three swap shapes through a real loopback
+relay and provider, including bilateral Contracts, mutual zero-spend
+cancellation, zero-loss Close, snapshot restore, and idempotent signed-record
+replay. The Node gate independently proves those same wrapper functions in the
+actual zero-import WebAssembly artifact.
+
 ## Verify before fund
 
 `SwapSession<AwaitingVerification>` is the only state produced by creation or

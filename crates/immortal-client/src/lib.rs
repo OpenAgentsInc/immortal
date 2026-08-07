@@ -8,6 +8,8 @@ pub use immortal_core::{domain, market, nip44};
 
 #[cfg(feature = "mkt-swp-verify")]
 pub mod ark;
+#[cfg(feature = "mkt-swp-verify")]
+pub mod browser_api;
 pub mod client;
 #[cfg(feature = "mkt-swp-verify")]
 pub mod liquid;

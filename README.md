@@ -49,12 +49,16 @@ The products:
   terminal Close records bound the resulting execution. That mode holds the
   operator's money and remains a different program run by a different party
   than the relay.
-- **The client engine** (library): the verify-before-fund swap engine
-  wallets embed, and the source of the generated TypeScript SDK.
+- **The client engine** (library plus WASM artifact): the verify-before-fund
+  swap engine wallets embed. `immortal-client-web` exposes the same production
+  requester engine through a bounded, pointer-free JSON ABI and a dependency-
+  free JavaScript/TypeScript adapter; it does not own signing, transport,
+  persistence, observation, or wallet execution.
 
 The virtual Cargo workspace makes those roles explicit:
 `crates/immortal-core` owns shared pure primitives,
 `crates/immortal-client` owns wallet-embedded client engines,
+`crates/immortal-client-web` owns their ordinary browser ABI artifact,
 `crates/immortal-relay` builds the existing `immortal` binary, and
 `crates/immortal-provider` owns the provider session engine, no-spend mode,
 funded rail executors, wallet boundary, provider database, and watchtower.
@@ -254,7 +258,10 @@ For local NIP-MKT development, `scripts/dev-relay.sh` starts a loopback relay
 and disposable Postgres, `scripts/dev-market-seed.sh` drives a wrapped RFQ
 through Close between two throwaway actors, and
 `scripts/test-dev-market-provider.sh` proves the separate no-spend provider
-through restart and all three swap shapes. See the
+through restart and all three swap shapes. Its requester path now uses the
+browser dispatcher and proves stable persist/reload with exact signed-record
+replay. `scripts/test-client-browser-abi.sh` compiles and invokes
+the actual `wasm32-unknown-unknown` artifact from Node. See the
 [`local development runbook`](docs/deployment/runbook-local-dev.md).
 `scripts/test-provider-funded.sh` is the separate manual regtest gate for the
 normal funded daemon: Bitcoin Core, separate product databases, a provider

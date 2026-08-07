@@ -185,6 +185,8 @@ crates/
                            [[bin]] name = "immortal" (unchanged)
   immortal-client/         swap engine; wasm target; feeds the
                            TypeScript SDK and contract fixtures
+  immortal-client-web/     pointer-free executable browser ABI over
+                           immortal-client; no host authority
   immortal-provider/       session logic (#14) + rail executors +
                            wallet + watchtower; [[bin]] immortal-provider
 ```
@@ -197,6 +199,10 @@ Invariants of the conversion:
 - `immortal-core` and `immortal-client` preserve the existing
   wasm-compatibility split (today's `cfg(not(target_arch = "wasm32"))`
   gating) so the openagents contract/SDK lane (M11) is unaffected.
+- `immortal-client-web` is a `cdylib`/`rlib` packaging boundary, not a new
+  product or service. Its only dependency is `immortal-client`; empty WASM
+  imports and byte-at-a-time bounded transfer keep raw pointers and host
+  authority outside the artifact.
 - Each crate carries its own allowlist header; the workspace
   `Cargo.toml` uses `workspace.dependencies` so versions pin once.
 - The provider gets its own `immortal-provider contract` export with the

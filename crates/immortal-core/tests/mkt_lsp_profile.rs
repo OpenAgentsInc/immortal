@@ -392,17 +392,16 @@ fn mutate_contract(event: &mut Event, mutation: &str) {
             ]));
             return;
         }
-        "firm_with_status_tag" | "null_with_status_tag" => {
-            if mutation == "firm_with_status_tag" {
-                event.tags.push(Tag::new(vec![
-                    "e".into(),
-                    "abababababababababababababababababababababababababababababababab".into(),
-                    String::new(),
-                    "status".into(),
-                ]));
-                return;
-            }
+        "firm_with_status_tag" => {
+            event.tags.push(Tag::new(vec![
+                "e".into(),
+                "abababababababababababababababababababababababababababababababab".into(),
+                String::new(),
+                "status".into(),
+            ]));
+            return;
         }
+        "null_with_status_tag" => {}
         _ => {}
     }
     let mut content = serde_json::from_str::<Value>(&event.content).unwrap();

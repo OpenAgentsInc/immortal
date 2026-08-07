@@ -340,6 +340,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "immortal-client-web"
+version = "0.0.1"
+dependencies = [
+ "immortal-client",
+]
+
+[[package]]
 name = "immortal-core"
 version = "0.0.1"
 dependencies = [
@@ -368,6 +375,7 @@ name = "immortal-provider"
 version = "0.0.1"
 dependencies = [
  "immortal-client",
+ "immortal-client-web",
  "immortal-core",
  "secp256k1",
  "serde",

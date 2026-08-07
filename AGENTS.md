@@ -13,11 +13,16 @@ Read `README.md` and `docs/MONOREPO.md` first.
    - `immortal-core`: `secp256k1`, `sha2`, `serde`, `serde_json`.
    - `immortal-client`: `secp256k1`, `sha2`, `serde`, `serde_json`, plus
      `immortal-core`.
+   - `immortal-client-web`: `immortal-client` only. It is the pointer-free,
+     bounded WASM ABI wrapper and owns no signer, transport, storage, or wallet
+     capability.
    - `immortal-relay`: `tokio`, `tokio-tungstenite`, `tokio-postgres`,
      `secp256k1`, `sha2`, `serde`, `serde_json`, plus `immortal-core`.
    - `immortal-provider`: the same seven external crates as the relay, plus
      the workspace core and client crates when its implementation needs
-     them.
+     them. Its live no-spend integration test may depend on
+     `immortal-client-web` to exercise the shipped ABI; the provider library
+     and binary must not.
 
    To add a dependency, get owner approval first and record it here.
 

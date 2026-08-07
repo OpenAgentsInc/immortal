@@ -28,6 +28,28 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-06 — Codex 5.6 Sol, executable browser requester / issue #34
+
+- Added the ordinary `immortal-client-web` zero-import WASM artifact over the
+  production MKT-SWP requester dispatcher, plus a dependency-free JavaScript/
+  TypeScript adapter. The versioned ABI pins its requester contract and build
+  source revision, bounds requests, transfers no raw pointers, and fails closed
+  on ABI, source, or contract mismatch.
+- Exposed Offering and signed-delivery validation, external-signature checks,
+  RFQ/Order/Contract/Cancel/Close construction, exit-package inspection,
+  session ingest/persist/restore, and two-phase verify-before-fund funding
+  requests whose authorization must echo the exact prepared request. The
+  host retains entropy, signing, wrapping, transport, storage, observations,
+  wallet execution, and every secret or node credential.
+- Extended the separate relay/provider smoke so the shipped dispatcher drives
+  all three no-spend swap shapes through bilateral Contracts, cancellation,
+  exact zero-loss Close, stable reload, and idempotent replay. Added no external
+  dependency, service, database, event kind, relay behavior, custody authority,
+  NIP-11 advertisement, workflow, or billed automation.
+- Normalized three existing match/iterator expressions for the Rust 1.95
+  workspace-wide `-D warnings` Clippy gate; those mechanical edits do not
+  change MKT-LSP validation or funded-provider behavior.
+
 ### 2026-08-06 — Codex 5.6 Sol, M13 zero-confirmation policy / issue #30
 
 - Added an off-by-default, direction-bounded provider policy for requester-

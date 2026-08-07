@@ -4662,13 +4662,11 @@ fn lsp_material_sweep(value: &Value, public: bool) -> Result<(), String> {
                 lsp_material_sweep(child, public)?;
             }
         }
-        Value::String(value) => {
-            if public && lsp_value_is_invoice_shaped(value) {
-                return Err(lsp_error(
-                    "mkt_lsp_custody_material_forbidden",
-                    "public record contains a Lightning invoice value",
-                ));
-            }
+        Value::String(value) if public && lsp_value_is_invoice_shaped(value) => {
+            return Err(lsp_error(
+                "mkt_lsp_custody_material_forbidden",
+                "public record contains a Lightning invoice value",
+            ));
         }
         _ => {}
     }

@@ -10055,7 +10055,7 @@ fn provider_status_chain<'a>(records: &'a [Event], author: &str) -> Result<Vec<&
     }
     let mut chain = Vec::with_capacity(by_sequence.len());
     let mut previous: Option<&Event> = None;
-    for (expected_sequence, (sequence, record)) in (0_u64..).zip(by_sequence.into_iter()) {
+    for (expected_sequence, (sequence, record)) in (0_u64..).zip(by_sequence) {
         if sequence != expected_sequence {
             return Err("provider Status chain contains a sequence gap".to_owned());
         }

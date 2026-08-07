@@ -247,6 +247,9 @@ pub struct MktSwpClientContract {
     pub fixture: &'static str,
     pub requester_api_artifact: &'static str,
     pub requester_api_version: &'static str,
+    pub browser_abi_artifact: &'static str,
+    pub browser_abi_version: u32,
+    pub browser_wasm_crate: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1266,6 +1269,9 @@ fn mkt_grammar() -> MktGrammar {
                 fixture: "tests/fixtures/nipmkt/swp-client-engine-v1.json",
                 requester_api_artifact: "tests/fixtures/nipmkt/swp-requester-api-v2.json",
                 requester_api_version: "openagents.mkt-swp.requester-api-fixture.v2",
+                browser_abi_artifact: "tests/fixtures/nipmkt/swp-browser-abi-v1.json",
+                browser_abi_version: 1,
+                browser_wasm_crate: "immortal-client-web",
             },
             boltz_facade: BoltzFacadeContract {
                 mapping_revision: BOLTZ_MAPPING_REVISION,

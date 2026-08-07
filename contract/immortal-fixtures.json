@@ -432,6 +432,12 @@
       "scope": "provider"
     },
     {
+      "path": "tests/fixtures/nipmkt/swp-browser-abi-v1.json",
+      "sha256": "2a25819d6277f7e182ff5a10c80f00c403fe61ccbc98f20e7971e527b8ac4400",
+      "bytes": 1628,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/nipmkt/swp-client-engine-v1.json",
       "sha256": "103bfc61f11cb82b1fe0d05c13b495363ea18f3bd93503300130afd10eccd8d2",
       "bytes": 15297,

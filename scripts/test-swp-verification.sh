@@ -27,3 +27,4 @@ rustc --edition=2024 --target wasm32-unknown-unknown --crate-type=cdylib \
   --extern immortal_provider=target/wasm32-unknown-unknown/release/libimmortal_provider.rlib \
   -o target/wasm32-unknown-unknown/release/mkt_swp_provider_fixture_probe.wasm
 node -e 'const fs=require("fs");const bytes=fs.readFileSync("target/wasm32-unknown-unknown/release/mkt_swp_provider_fixture_probe.wasm");const module=new WebAssembly.Module(bytes);if(WebAssembly.Module.imports(module).length!==0)throw new Error("provider fixture probe has imports");const instance=new WebAssembly.Instance(module,{});if(instance.exports.immortal_mkt_swp_provider_fixture_probe()!==0)throw new Error("provider fixture replay failed")'
+./scripts/test-client-browser-abi.sh

@@ -448,6 +448,18 @@ The #15 compatibility target is the pinned Go/web source adapted to its exact
 law or the direct-provider WebSocket boundary. A standalone
 boltz-client-style CLI is deliberately not scheduled.
 
+### Browser/demo execution follow-up (2026-08-06)
+
+These sequential packets expose the existing requester and provider engines to
+the Bazaar demo without weakening custody or presenting a fixture as a live
+network. Each packet has its own process gate.
+
+| Issue | Packet | Depends on |
+| --- | --- | --- |
+| [#34](https://github.com/OpenAgentsInc/immortal/issues/34) | **Complete:** ordinary zero-import browser WASM artifact over the production requester dispatcher, pinned ABI/requester contract/source revision, JS/TS adapter, and all-shape live no-spend acceptance with stable restore | #12, #14 |
+| [#35](https://github.com/OpenAgentsInc/immortal/issues/35) | One-command two-provider no-spend demo topology and public offering/quote feed | #34, #32 |
+| [#36](https://github.com/OpenAgentsInc/immortal/issues/36) | Loopback funded-regtest demo adapter with explicit unsafe-mode boundary | #34, #35, #25 |
+
 ## M13 — Market extension ledger (post-replacement)
 
 The issue-backed extensions that grow the market after M12's replacement
