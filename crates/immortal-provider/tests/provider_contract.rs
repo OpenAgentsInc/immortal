@@ -35,6 +35,8 @@ const LIQUID_RUNTIME_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/liquid-runtime-v1.json");
 const ZERO_CONF_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/zero-conf-v1.json");
+const ARK_RUNTIME_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/ark-runtime-v1.json");
 
 #[test]
 fn provider_contract_is_canonical_byte_stable_and_matches_export() {
@@ -100,6 +102,10 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
         (
             "tests/fixtures/provider/zero-conf-v1.json",
             ZERO_CONF_FIXTURE,
+        ),
+        (
+            "tests/fixtures/provider/ark-runtime-v1.json",
+            ARK_RUNTIME_FIXTURE,
         ),
     ] {
         let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();

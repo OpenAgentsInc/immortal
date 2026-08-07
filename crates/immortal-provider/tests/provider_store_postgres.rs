@@ -1177,6 +1177,7 @@ fn reservation(
         expected_allocation_sequence: sequence,
         expires_at: 1_000,
         utxos,
+        ark_reserve: None,
         created_at: 3,
     }
 }

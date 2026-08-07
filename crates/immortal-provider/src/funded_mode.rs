@@ -1065,6 +1065,7 @@ impl FundedMode {
                 expected_allocation_sequence: expected_sequence,
                 expires_at: request.reservation_expires_at,
                 utxos: selected_utxos.clone(),
+                ark_reserve: None,
                 created_at: now,
             };
             match self.handle.block_on(self.store.reserve(&reservation)) {
@@ -1085,6 +1086,13 @@ impl FundedMode {
                     return Err("selected chain capacity is no longer available"
                         .to_owned()
                         .into());
+                }
+                Ok(ReservationOutcome::ArkReserveUnitUnavailable(_)) => {
+                    return Err(
+                        "non-Ark reservation unexpectedly selected an Ark reserve unit"
+                            .to_owned()
+                            .into(),
+                    );
                 }
                 Err(error) => {
                     return Err(format!("capacity reservation failed: {error}").into());
@@ -2367,6 +2375,7 @@ impl FundedMode {
                 expected_allocation_sequence: expected_sequence,
                 expires_at,
                 utxos: Vec::new(),
+                ark_reserve: None,
                 created_at: now,
             };
             match self.handle.block_on(self.store.reserve(&request)) {
@@ -2382,6 +2391,12 @@ impl FundedMode {
                 Ok(ReservationOutcome::UtxoUnavailable(_)) => {
                     return Err(
                         "zero-conf risk reservation unexpectedly selected a UTXO".to_owned()
+                    );
+                }
+                Ok(ReservationOutcome::ArkReserveUnitUnavailable(_)) => {
+                    return Err(
+                        "zero-conf risk reservation unexpectedly selected an Ark reserve unit"
+                            .to_owned(),
                     );
                 }
                 Err(error) => {

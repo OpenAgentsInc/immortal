@@ -47,6 +47,9 @@ const LIQUID_RUNTIME_FIXTURE: &[u8] =
 const ZERO_CONF_FIXTURE_PATH: &str = "tests/fixtures/provider/zero-conf-v1.json";
 const ZERO_CONF_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/zero-conf-v1.json");
+const ARK_RUNTIME_FIXTURE_PATH: &str = "tests/fixtures/provider/ark-runtime-v1.json";
+const ARK_RUNTIME_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/ark-runtime-v1.json");
 pub(crate) const BOLTZ_CONFIGURATION_SCHEMA: &str = concat!(
     "openagents.mkt-swp.boltz-provider-api.config.v1\n",
     "activation=exact_fixture_digest_private_bind_and_exact_browser_origin\n",
@@ -463,8 +466,9 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 fixture_entry(DIRECT_RECOVERY_FIXTURE_PATH, DIRECT_RECOVERY_FIXTURE),
                 fixture_entry(MIGRATION_FIXTURE_PATH, MIGRATION_FIXTURE),
                 fixture_entry(LIQUID_FIXTURE_PATH, LIQUID_FIXTURE),
-                fixture_entry(LIQUID_RUNTIME_FIXTURE_PATH, LIQUID_RUNTIME_FIXTURE)
-                ,fixture_entry(ZERO_CONF_FIXTURE_PATH, ZERO_CONF_FIXTURE)
+                fixture_entry(LIQUID_RUNTIME_FIXTURE_PATH, LIQUID_RUNTIME_FIXTURE),
+                fixture_entry(ZERO_CONF_FIXTURE_PATH, ZERO_CONF_FIXTURE),
+                fixture_entry(ARK_RUNTIME_FIXTURE_PATH, ARK_RUNTIME_FIXTURE)
             ]
         },
         "relay_contract_affected":false,

@@ -1,0 +1,56 @@
+{
+  "schema": "openagents.immortal.provider-ark-runtime.v1",
+  "source": {
+    "profile": "mkt-swp",
+    "profile_version": 1,
+    "upstream_commit": "c241e324e4a195c6a1fcbb04acc54647c2fa2208"
+  },
+  "reserve_unit": {
+    "format": "ark:<protocol_family>:<operator_identity_sha256>:<vtxo_txid>:<vout>",
+    "protocol_families": ["arkade", "bark"],
+    "blocking_states": ["active", "unresolved"],
+    "release_state": "released"
+  },
+  "reservation_cases": [
+    {
+      "name": "ark-reserve-v1-first-writer",
+      "expected": "reserved"
+    },
+    {
+      "name": "ark-reserve-v1-exact-replay",
+      "expected": "replay"
+    },
+    {
+      "name": "ark-reserve-v1-other-bucket-double-use",
+      "expected": "reserve_unit_unavailable"
+    },
+    {
+      "name": "ark-reserve-v1-operator-alias-double-use",
+      "expected": "reserve_unit_unavailable"
+    },
+    {
+      "name": "ark-reserve-v1-changed-proof",
+      "expected": "conflict"
+    },
+    {
+      "name": "ark-reserve-v1-release-then-reuse",
+      "expected": "reserved"
+    },
+    {
+      "name": "ark-reserve-v1-unresolved-blocks-reuse",
+      "expected": "reserve_unit_unavailable"
+    }
+  ],
+  "custody_rejected": [
+    "seed",
+    "preimage",
+    "macaroon",
+    "claim_key",
+    "refund_key",
+    "fee_key",
+    "spend_key",
+    "vtxo_key",
+    "private_nonce",
+    "operator_token"
+  ]
+}

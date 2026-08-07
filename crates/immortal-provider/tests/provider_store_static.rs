@@ -4,6 +4,7 @@ const MIGRATION_V2: &str =
     include_str!("../../../migrations/provider/0002_boltz_invoice_binding.sql");
 const MIGRATION_V3: &str =
     include_str!("../../../migrations/provider/0003_restore_safe_public_json.sql");
+const MIGRATION_V4: &str = include_str!("../../../migrations/provider/0004_ark_reserve_unit.sql");
 const NO_SPEND: &str = include_str!("../src/no_spend.rs");
 
 #[test]
@@ -39,6 +40,9 @@ fn provider_store_schema_has_public_state_and_custody_tripwires() {
         )
     );
     assert!(MIGRATION_V3.contains("RETURN public.provider_public_json_safe(content)"));
+    assert!(MIGRATION_V4.contains("CREATE TABLE provider_ark_reserve_unit"));
+    assert!(MIGRATION_V4.contains("provider_ark_reserve_unit_blocking"));
+    assert!(MIGRATION_V4.contains("WHERE state IN ('active', 'unresolved')"));
 
     assert!(MIGRATION_V1.contains("provider_signed_event_safe"));
     assert!(MIGRATION_V1.contains("provider_public_json_safe"));

@@ -43,6 +43,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "restore_safe_public_json",
         sql: include_str!("../../../../migrations/provider/0003_restore_safe_public_json.sql"),
     },
+    Migration {
+        version: 4,
+        name: "ark_reserve_unit",
+        sql: include_str!("../../../../migrations/provider/0004_ark_reserve_unit.sql"),
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

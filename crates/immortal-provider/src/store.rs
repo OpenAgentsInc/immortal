@@ -261,6 +261,41 @@ SET state = 'unresolved', release_cause = $2,
     updated_at = GREATEST(updated_at, $3)
 WHERE reservation_id = $1 AND state = 'active'
 "#;
+const LOCK_ARK_RESERVE_UNIT_ADVISORY_SQL: &str =
+    "SELECT pg_advisory_xact_lock(hashtextextended('provider-ark-reserve:' || $1, 0))";
+const SELECT_BLOCKING_ARK_RESERVE_UNIT_SQL: &str = r#"
+SELECT reservation_id FROM provider_ark_reserve_unit
+WHERE reserve_unit = $1 AND state IN ('active', 'unresolved')
+FOR UPDATE
+"#;
+const SELECT_ARK_RESERVE_UNIT_BY_RESERVATION_SQL: &str = r#"
+SELECT reserve_unit, protocol_family, operator_identity_sha256, vtxo_txid, vout,
+       proof_sha256, state, release_cause
+FROM provider_ark_reserve_unit WHERE reservation_id = $1
+"#;
+const LOCK_ARK_RESERVE_UNIT_BY_RESERVATION_SQL: &str = r#"
+SELECT reserve_unit, protocol_family, operator_identity_sha256, vtxo_txid, vout,
+       proof_sha256, state, release_cause
+FROM provider_ark_reserve_unit WHERE reservation_id = $1 FOR UPDATE
+"#;
+const INSERT_ARK_RESERVE_UNIT_SQL: &str = r#"
+INSERT INTO provider_ark_reserve_unit
+    (reservation_id, reserve_unit, protocol_family, operator_identity_sha256,
+     vtxo_txid, vout, proof_sha256, state, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $8)
+"#;
+const RELEASE_ARK_RESERVE_UNIT_SQL: &str = r#"
+UPDATE provider_ark_reserve_unit
+SET state = 'released', release_cause = $2,
+    updated_at = GREATEST(updated_at, $3)
+WHERE reservation_id = $1 AND state = 'active'
+"#;
+const MARK_ARK_RESERVE_UNIT_UNRESOLVED_SQL: &str = r#"
+UPDATE provider_ark_reserve_unit
+SET state = 'unresolved', release_cause = $2,
+    updated_at = GREATEST(updated_at, $3)
+WHERE reservation_id = $1 AND state = 'active'
+"#;
 
 const INSERT_WATCH_SQL: &str = r#"
 INSERT INTO provider_watch_job
@@ -538,7 +573,25 @@ pub struct HardReservationRequest {
     pub expected_allocation_sequence: u64,
     pub expires_at: u64,
     pub utxos: Vec<OutPoint>,
+    pub ark_reserve: Option<ArkReserveUnit>,
     pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArkReserveUnit {
+    pub protocol_family: String,
+    pub operator_identity_sha256: String,
+    pub vtxo: OutPoint,
+    pub proof_sha256: String,
+}
+
+impl ArkReserveUnit {
+    pub fn canonical_id(&self) -> String {
+        format!(
+            "ark:{}:{}:{}:{}",
+            self.protocol_family, self.operator_identity_sha256, self.vtxo.txid, self.vtxo.vout
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -563,6 +616,7 @@ pub enum ReservationOutcome {
     InsufficientCapacity,
     AllocationSequenceMismatch { current: u64 },
     UtxoUnavailable(OutPoint),
+    ArkReserveUnitUnavailable(String),
 }
 
 #[derive(Debug, Clone)]
@@ -1400,6 +1454,9 @@ impl ProviderStore {
         sort_outpoints(&mut outpoints);
         let transaction = self.client.transaction().await?;
         lock_bucket(&transaction, &request.bucket_id).await?;
+        if let Some(ark_reserve) = &request.ark_reserve {
+            lock_ark_reserve_unit(&transaction, &ark_reserve.canonical_id()).await?;
+        }
         let existing = select_reservation(&transaction, &request.reservation_id, true).await?;
         if let Some(existing) = existing {
             let effect = transaction.prepare(LOCK_EFFECT_SQL).await?;
@@ -1407,6 +1464,7 @@ impl ProviderStore {
                 .query_opt(&effect, &[&request.effect_id])
                 .await?;
             let exact = reservation_matches(&existing, request)
+                && ark_reserve_matches(&transaction, request).await?
                 && match effect {
                     Some(row) => reserve_effect_matches(
                         &row,
@@ -1424,6 +1482,20 @@ impl ProviderStore {
                     "reservation ID is bound to another request".to_owned(),
                 ))
             };
+        }
+        if let Some(ark_reserve) = &request.ark_reserve {
+            let reserve_unit = ark_reserve.canonical_id();
+            let select = transaction
+                .prepare(SELECT_BLOCKING_ARK_RESERVE_UNIT_SQL)
+                .await?;
+            if transaction
+                .query_opt(&select, &[&reserve_unit])
+                .await?
+                .is_some()
+            {
+                transaction.commit().await?;
+                return Ok(ReservationOutcome::ArkReserveUnitUnavailable(reserve_unit));
+            }
         }
         let bucket_statement = transaction.prepare(LOCK_BUCKET_SQL).await?;
         let bucket = transaction
@@ -1514,6 +1586,28 @@ impl ProviderStore {
                 ],
             )
             .await?;
+        if let Some(ark_reserve) = &request.ark_reserve {
+            let insert = transaction.prepare(INSERT_ARK_RESERVE_UNIT_SQL).await?;
+            let reserve_unit = ark_reserve.canonical_id();
+            let vout = i32::try_from(ark_reserve.vtxo.vout).map_err(|_| {
+                ProviderStoreError::InvalidInput("Ark VTXO vout exceeds i32".to_owned())
+            })?;
+            transaction
+                .execute(
+                    &insert,
+                    &[
+                        &request.reservation_id,
+                        &reserve_unit,
+                        &ark_reserve.protocol_family,
+                        &ark_reserve.operator_identity_sha256,
+                        &ark_reserve.vtxo.txid,
+                        &vout,
+                        &ark_reserve.proof_sha256,
+                        &now,
+                    ],
+                )
+                .await?;
+        }
         let reserve_utxo = transaction.prepare(RESERVE_UTXO_SQL).await?;
         for outpoint in &outpoints {
             let vout = i32::try_from(outpoint.vout)
@@ -1637,6 +1731,7 @@ impl ProviderStore {
         transaction
             .execute(&utxos, &[&reservation_id, &now])
             .await?;
+        transition_ark_reserve_unit(&transaction, reservation_id, "released", cause, now).await?;
         transaction.commit().await?;
         Ok(StoreWriteOutcome::Stored)
     }
@@ -1691,6 +1786,8 @@ impl ProviderStore {
                 .await?,
             reservation_id,
         )?;
+        transition_ark_reserve_unit(&transaction, reservation_id, "unresolved", detail_code, now)
+            .await?;
         let alert_id =
             digest(format!("provider-reservation-unresolved\0{reservation_id}").as_bytes());
         let insert = transaction.prepare(INSERT_ALERT_SQL).await?;
@@ -2243,6 +2340,108 @@ async fn lock_bucket(
     Ok(())
 }
 
+async fn lock_ark_reserve_unit(
+    transaction: &Transaction<'_>,
+    reserve_unit: &str,
+) -> Result<(), ProviderStoreError> {
+    let statement = transaction
+        .prepare(LOCK_ARK_RESERVE_UNIT_ADVISORY_SQL)
+        .await?;
+    transaction.execute(&statement, &[&reserve_unit]).await?;
+    Ok(())
+}
+
+async fn ark_reserve_matches(
+    transaction: &Transaction<'_>,
+    request: &HardReservationRequest,
+) -> Result<bool, ProviderStoreError> {
+    let statement = transaction
+        .prepare(LOCK_ARK_RESERVE_UNIT_BY_RESERVATION_SQL)
+        .await?;
+    let stored = transaction
+        .query_opt(&statement, &[&request.reservation_id])
+        .await?;
+    let Some(requested) = &request.ark_reserve else {
+        return Ok(stored.is_none());
+    };
+    let Some(stored) = stored else {
+        return Ok(false);
+    };
+    let stored_vout = u32::try_from(stored.get::<_, i32>(4)).map_err(|_| {
+        ProviderStoreError::MigrationDrift("Ark reserve VTXO vout is outside u32".to_owned())
+    })?;
+    Ok(stored.get::<_, String>(0) == requested.canonical_id()
+        && stored.get::<_, String>(1) == requested.protocol_family
+        && stored.get::<_, String>(2) == requested.operator_identity_sha256
+        && stored.get::<_, String>(3) == requested.vtxo.txid
+        && stored_vout == requested.vtxo.vout
+        && stored.get::<_, String>(5) == requested.proof_sha256)
+}
+
+async fn transition_ark_reserve_unit(
+    transaction: &Transaction<'_>,
+    reservation_id: &str,
+    target_state: &str,
+    cause: &str,
+    now: i64,
+) -> Result<(), ProviderStoreError> {
+    let select = transaction
+        .prepare(SELECT_ARK_RESERVE_UNIT_BY_RESERVATION_SQL)
+        .await?;
+    let Some(initial) = transaction.query_opt(&select, &[&reservation_id]).await? else {
+        return Ok(());
+    };
+    let reserve_unit: String = initial.get(0);
+    lock_ark_reserve_unit(transaction, &reserve_unit).await?;
+    let lock = transaction
+        .prepare(LOCK_ARK_RESERVE_UNIT_BY_RESERVATION_SQL)
+        .await?;
+    let row = transaction
+        .query_opt(&lock, &[&reservation_id])
+        .await?
+        .ok_or_else(|| {
+            ProviderStoreError::MigrationDrift(
+                "Ark reserve unit disappeared during transition".to_owned(),
+            )
+        })?;
+    if row.get::<_, String>(0) != reserve_unit {
+        return Err(ProviderStoreError::MigrationDrift(
+            "Ark reserve unit identity changed after insertion".to_owned(),
+        ));
+    }
+    let state: String = row.get(6);
+    let release_cause: Option<String> = row.get(7);
+    if state == target_state {
+        if release_cause.as_deref() == Some(cause) {
+            return Ok(());
+        }
+        return Err(ProviderStoreError::Conflict(
+            "Ark reserve unit transition changed its cause".to_owned(),
+        ));
+    }
+    if state != "active" {
+        return Err(ProviderStoreError::Conflict(
+            "Ark reserve unit cannot change terminal state".to_owned(),
+        ));
+    }
+    let sql = match target_state {
+        "released" => RELEASE_ARK_RESERVE_UNIT_SQL,
+        "unresolved" => MARK_ARK_RESERVE_UNIT_UNRESOLVED_SQL,
+        _ => {
+            return Err(ProviderStoreError::MigrationDrift(
+                "unsupported Ark reserve unit transition".to_owned(),
+            ));
+        }
+    };
+    let update = transaction.prepare(sql).await?;
+    require_updated(
+        transaction
+            .execute(&update, &[&reservation_id, &cause, &now])
+            .await?,
+        reservation_id,
+    )
+}
+
 async fn select_reservation(
     transaction: &Transaction<'_>,
     reservation_id: &str,
@@ -2341,6 +2540,16 @@ fn reserve_public_request_with_sequence(
     outpoints: &[OutPoint],
     allocation_sequence: u64,
 ) -> Value {
+    let ark_reserve = request.ark_reserve.as_ref().map(|reserve| {
+        json!({
+            "reserve_unit":reserve.canonical_id(),
+            "protocol_family":reserve.protocol_family,
+            "operator_identity_sha256":reserve.operator_identity_sha256,
+            "vtxo_txid":reserve.vtxo.txid,
+            "vout":reserve.vtxo.vout,
+            "proof_sha256":reserve.proof_sha256
+        })
+    });
     json!({
         "reservation_id":request.reservation_id,
         "bucket_id":request.bucket_id,
@@ -2348,6 +2557,7 @@ fn reserve_public_request_with_sequence(
         "amount":request.amount.to_string(),
         "expected_allocation_sequence":allocation_sequence.to_string(),
         "expires_at":request.expires_at,
+        "ark_reserve":ark_reserve,
         "utxos":outpoints.iter().map(|outpoint| {
             json!({"txid":outpoint.txid,"vout":outpoint.vout})
         }).collect::<Vec<_>>()
@@ -2535,6 +2745,22 @@ fn validate_reservation_request(
     }
     for outpoint in outpoints {
         validate_hex(&outpoint.txid, "reservation UTXO txid")?;
+    }
+    if let Some(ark_reserve) = &request.ark_reserve {
+        if !matches!(ark_reserve.protocol_family.as_str(), "arkade" | "bark") {
+            return Err(ProviderStoreError::InvalidInput(
+                "Ark reserve protocol family must be arkade or bark".to_owned(),
+            ));
+        }
+        validate_hex(
+            &ark_reserve.operator_identity_sha256,
+            "Ark operator identity",
+        )?;
+        validate_hex(&ark_reserve.vtxo.txid, "Ark reserve VTXO txid")?;
+        validate_hex(&ark_reserve.proof_sha256, "Ark reserve proof digest")?;
+        i32::try_from(ark_reserve.vtxo.vout).map_err(|_| {
+            ProviderStoreError::InvalidInput("Ark reserve VTXO vout exceeds i32".to_owned())
+        })?;
     }
     Ok(())
 }

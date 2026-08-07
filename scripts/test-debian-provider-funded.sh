@@ -74,7 +74,8 @@ runuser -u postgres -- psql --set=ON_ERROR_STOP=1 --command \
     "CREATE ROLE immortal_provider LOGIN PASSWORD 'immortal_provider_acceptance_only';"
 runuser -u postgres -- createdb --owner=immortal_provider immortal_provider
 IMMORTAL_PROVIDER_TEST_DATABASE_URL='postgres://immortal_provider:immortal_provider_acceptance_only@127.0.0.1:5432/immortal_provider' \
-    cargo test --locked -p immortal-provider --test provider_store_postgres
+    cargo test --locked -p immortal-provider \
+        --test provider_store_postgres --test provider_ark_store_postgres
 cargo build --locked --release -p immortal-provider --bin immortal-provider
 
 useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin immortal-provider

@@ -1302,3 +1302,29 @@ safe-start delay, exact replay, witness conflict, incomplete signature,
 duplicate JSON, commitment mutation, fee-key refusal, and a condition-secret
 tripwire. This packet changes no relay or provider behavior, NIP-11
 advertisement, deployment, custody authority, or public replacement claim.
+
+## M13 MKT-SWP Ark reserve-store adoption (2026-08-07)
+
+The third issue #20 packet adopts the covenant-reserve identity as a provider
+Postgres invariant. Migration 0004 records the canonical
+`ark:<family>:<operator-identity>:<vtxo-txid>:<vout>` unit separately from
+Bitcoin UTXOs. A partial unique index permits at most one active or unresolved
+owner across capacity buckets and provider-facing operator aliases that bind
+the same public operator identity. Released history remains durable and the
+unit can be acquired again only after the owning reservation releases it.
+
+The reservation, public effect, capacity allocation, and Ark unit insert share
+one transaction and deterministic advisory lock. An exact request replays;
+changed proof bytes conflict; a competing bucket receives a typed unavailable
+outcome; and an unresolved exit keeps the unit blocked. Release and unresolved
+transitions update the reservation and Ark unit atomically. The provider
+database stores only public identity, VTXO outpoint, proof digest, and state.
+It stores no graph, exit package, witness, credential, key, nonce, seed,
+macaroon, or preimage.
+
+`tests/fixtures/provider/ark-runtime-v1.json` closes the reserve case names and
+custody tripwires, is digest-bound by the provider contract, and is replayed by
+the provider Postgres integration test. This packet does not add arkd access,
+Ark quote/execution authority, NIP-11 advertisement, deployment, or a public
+replacement claim. The provider adapter and external-process lab remain later
+#20 packets.
