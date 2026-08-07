@@ -647,6 +647,7 @@ fn requester_delivery_binds_verified_outer_wrap_and_is_mandatory() {
         WrapMaterial {
             seal_created_at: 8,
             wrap_created_at: 9,
+            rumor_identifier: [2; 32],
             seal_nonce: [3; 32],
             wrap_nonce: [4; 32],
             wrap_secret: [5; 32],

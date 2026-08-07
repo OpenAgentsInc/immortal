@@ -1188,6 +1188,7 @@ fn wrap_for_handler(
         WrapMaterial {
             seal_created_at: created_at.saturating_sub(2),
             wrap_created_at: created_at.saturating_sub(1),
+            rumor_identifier: [material_byte.wrapping_add(3); 32],
             seal_nonce: [material_byte; 32],
             wrap_nonce: [material_byte.wrapping_add(1); 32],
             wrap_secret: [material_byte.wrapping_add(2); 32],

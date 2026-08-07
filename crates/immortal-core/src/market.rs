@@ -57,6 +57,7 @@ impl MarketSigner {
 pub struct WrapMaterial {
     pub seal_created_at: u64,
     pub wrap_created_at: u64,
+    pub rumor_identifier: [u8; 32],
     pub seal_nonce: [u8; 32],
     pub wrap_nonce: [u8; 32],
     pub wrap_secret: [u8; 32],
@@ -66,6 +67,7 @@ pub struct WrapMaterial {
 pub struct ExternalWrapMaterial {
     pub seal_created_at: u64,
     pub wrap_created_at: u64,
+    pub rumor_identifier: [u8; 32],
     pub seal_nonce: [u8; 32],
     pub wrap_nonce: [u8; 32],
 }
@@ -166,6 +168,7 @@ pub fn wrap_mkt_record(
     let external_material = ExternalWrapMaterial {
         seal_created_at: material.seal_created_at,
         wrap_created_at: material.wrap_created_at,
+        rumor_identifier: material.rumor_identifier,
         seal_nonce: material.seal_nonce,
         wrap_nonce: material.wrap_nonce,
     };
@@ -242,7 +245,10 @@ where
         pubkey: sender_pubkey.to_owned(),
         created_at: inner.created_at,
         kind: inner.kind,
-        tags: vec![Tag::new(vec!["p".to_owned(), recipient.to_owned()])],
+        tags: vec![
+            Tag::new(vec!["p".to_owned(), recipient.to_owned()]),
+            Tag::new(vec!["d".to_owned(), lower_hex(&material.rumor_identifier)]),
+        ],
         content: raw.to_owned(),
     };
     rumor.id = rumor_id(&rumor)?;
@@ -344,6 +350,7 @@ where
     Decrypt: FnMut(&Nip44DecryptRequest) -> Result<String, String>,
 {
     let rumor = unwrap_rumor_with_callback(wrap, recipient_pubkey, decrypt)?;
+    require_mkt_rumor_bindings(&rumor, recipient_pubkey)?;
     validate_rumor_record(wrap, rumor, supported_profiles)
 }
 
@@ -360,6 +367,7 @@ pub fn unwrap_mkt_record_for_handler(
     if !is_mkt_private_kind(rumor.kind) {
         return Ok(None);
     }
+    require_mkt_rumor_bindings(&rumor, recipient.pubkey())?;
     validate_rumor_record(wrap, rumor, supported_profiles).map(Some)
 }
 
@@ -462,11 +470,66 @@ fn require_recipient(event: &Event, recipient: &str, layer: &str) -> Result<(), 
 }
 
 fn require_rumor_recipient(rumor: &Rumor, recipient: &str) -> Result<(), String> {
-    if rumor.tags.len() == 1 && rumor.tags[0].as_slice() == ["p".to_owned(), recipient.to_owned()] {
+    let recipients = rumor
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().first().is_some_and(|name| name == "p"))
+        .collect::<Vec<_>>();
+    if recipients.len() == 1 && recipients[0].as_slice() == ["p".to_owned(), recipient.to_owned()] {
         Ok(())
     } else {
         Err("gift wrap rumor must contain exactly one recipient tag".to_owned())
     }
+}
+
+fn require_mkt_rumor_bindings(rumor: &Rumor, recipient: &str) -> Result<(), String> {
+    if rumor.tags.len() != 2 {
+        return Err(
+            "gift wrap rumor must contain exactly one recipient tag and one identifier tag"
+                .to_owned(),
+        );
+    }
+
+    let mut found_recipient = false;
+    let mut found_identifier = false;
+    for tag in &rumor.tags {
+        match tag.as_slice() {
+            [name, value] if name == "p" && value == recipient && !found_recipient => {
+                found_recipient = true;
+            }
+            [name, value] if name == "d" && is_lower_hex_32(value) && !found_identifier => {
+                found_identifier = true;
+            }
+            [name, ..] if name == "p" => {
+                return Err("gift wrap rumor must contain exactly one recipient tag".to_owned());
+            }
+            [name, ..] if name == "d" => {
+                return Err(
+                    "gift wrap rumor must contain exactly one 32-byte lowercase-hex identifier tag"
+                        .to_owned(),
+                );
+            }
+            _ => return Err("gift wrap rumor contains an unsupported tag".to_owned()),
+        }
+    }
+
+    if !found_recipient {
+        return Err("gift wrap rumor must contain exactly one recipient tag".to_owned());
+    }
+    if !found_identifier {
+        return Err(
+            "gift wrap rumor must contain exactly one 32-byte lowercase-hex identifier tag"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn is_lower_hex_32(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn decode_hex_32(value: &str) -> Result<[u8; 32], String> {
@@ -547,6 +610,7 @@ mod tests {
             WrapMaterial {
                 seal_created_at: 8,
                 wrap_created_at: 9,
+                rumor_identifier: [6; 32],
                 seal_nonce: [3; 32],
                 wrap_nonce: [4; 32],
                 wrap_secret: [5; 32],
@@ -578,6 +642,51 @@ mod tests {
         );
         assert_eq!(delivered.sender(), sender.pubkey());
         assert_eq!(delivered.record().raw_signed_event(), raw);
+    }
+
+    #[test]
+    fn rumor_bindings_require_one_recipient_and_one_lower_hex_identifier() {
+        let recipient = "22".repeat(32);
+        let valid = |tags| Rumor {
+            id: String::new(),
+            pubkey: "11".repeat(32),
+            created_at: 1,
+            kind: MKT_RFQ_KIND,
+            tags,
+            content: String::new(),
+        };
+        let p = || Tag::new(vec!["p".into(), recipient.clone()]);
+        let d = || Tag::new(vec!["d".into(), "33".repeat(32)]);
+
+        assert!(require_mkt_rumor_bindings(&valid(vec![p(), d()]), &recipient).is_ok());
+        assert!(require_mkt_rumor_bindings(&valid(vec![d(), p()]), &recipient).is_ok());
+
+        for invalid in [
+            vec![p()],
+            vec![p(), d(), d()],
+            vec![p(), Tag::new(vec!["d".into(), "33".repeat(31)])],
+            vec![p(), Tag::new(vec!["d".into(), "AA".repeat(32)])],
+            vec![p(), Tag::new(vec!["x".into(), "33".repeat(32)])],
+        ] {
+            assert!(require_mkt_rumor_bindings(&valid(invalid), &recipient).is_err());
+        }
+    }
+
+    #[test]
+    fn independent_delivery_material_produces_distinct_rumor_identifiers() {
+        let recipient = "22".repeat(32);
+        let tags = |rumor_identifier: [u8; 32]| {
+            vec![
+                Tag::new(vec!["p".into(), recipient.clone()]),
+                Tag::new(vec!["d".into(), lower_hex(&rumor_identifier)]),
+            ]
+        };
+        let counterparty = tags([6; 32]);
+        let sender_recovery = tags([7; 32]);
+
+        assert_eq!(counterparty[1].as_slice(), ["d", &"06".repeat(32)]);
+        assert_eq!(sender_recovery[1].as_slice(), ["d", &"07".repeat(32)]);
+        assert_ne!(counterparty[1], sender_recovery[1]);
     }
 
     #[test]
@@ -618,6 +727,7 @@ mod tests {
             ExternalWrapMaterial {
                 seal_created_at: 8,
                 wrap_created_at: 9,
+                rumor_identifier: [6; 32],
                 seal_nonce: [3; 32],
                 wrap_nonce: [4; 32],
             },

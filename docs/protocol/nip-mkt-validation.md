@@ -58,12 +58,19 @@ created by an older release or legacy import.
 The no-server client library implements bounded NIP-44 v2 and NIP-59
 wrap/unwrap primitives. A private MKT record is validated and signed first;
 the rumor carries those exact signed bytes and binds the inner author, kind,
-timestamp, and recipient. Unwrapping verifies the outer signature, seal
-signature, rumor ID, layer-to-layer signer/recipient agreement, and the exact
-inner signature before applying the caller's explicit profile registry.
-Applications create independent outer material for the counterparty and the
-sender's recovery copy. The committed NIP-44 vector and NIP-MKT client
-transport fixture are part of the exported SDK conformance manifest.
+timestamp, recipient, and a per-delivery identifier. Its only tags are one
+exact `p` recipient and one exact `d` identifier containing 32 lowercase-hex
+bytes. The identifier is derived from the delivery's independently random
+wrap material and is therefore distinct for the counterparty and
+sender-recovery copies; because it is an ordinary rumor tag, the rumor ID
+commits to it.
+Missing, duplicate, malformed, or additional rumor tags fail closed.
+Unwrapping verifies the outer signature, seal signature, rumor ID,
+layer-to-layer signer/recipient agreement, and the exact inner signature before
+applying the caller's explicit profile registry. Applications create
+independent outer material for the counterparty and the sender's recovery
+copy. The committed NIP-44 vector and NIP-MKT client transport fixture are part
+of the exported SDK conformance manifest.
 
 The public gateway refuses bare `39604-39610`, `39620`, `39640`, and `39650`
 publication with the stable reason

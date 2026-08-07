@@ -1203,6 +1203,7 @@ fn random_wrap_material() -> Result<WrapMaterial, String> {
     Ok(WrapMaterial {
         seal_created_at: now.saturating_sub(u64::from(random_32()?[0]) * 10),
         wrap_created_at: now.saturating_sub(u64::from(random_32()?[0]) * 10),
+        rumor_identifier: random_32()?,
         seal_nonce: random_32()?,
         wrap_nonce: random_32()?,
         wrap_secret: random_secret()?,

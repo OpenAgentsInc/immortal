@@ -110,6 +110,7 @@ fn handler_unwraps_and_parses_provider_signed_covenant_reservation() {
         WrapMaterial {
             seal_created_at: 98,
             wrap_created_at: 99,
+            rumor_identifier: [2; 32],
             seal_nonce: [3; 32],
             wrap_nonce: [4; 32],
             wrap_secret: [5; 32],
@@ -183,6 +184,7 @@ fn firm_quote_cannot_disable_reservation() {
         WrapMaterial {
             seal_created_at: 398,
             wrap_created_at: 399,
+            rumor_identifier: [33; 32],
             seal_nonce: [34; 32],
             wrap_nonce: [35; 32],
             wrap_secret: [36; 32],
@@ -259,6 +261,7 @@ fn public_transaction_hook_checks_bytes_without_retaining_them() {
         WrapMaterial {
             seal_created_at: 198,
             wrap_created_at: 199,
+            rumor_identifier: [13; 32],
             seal_nonce: [14; 32],
             wrap_nonce: [15; 32],
             wrap_secret: [16; 32],
@@ -327,6 +330,7 @@ fn custody_material_is_rejected_before_the_storage_boundary() {
         WrapMaterial {
             seal_created_at: 298,
             wrap_created_at: 299,
+            rumor_identifier: [23; 32],
             seal_nonce: [24; 32],
             wrap_nonce: [25; 32],
             wrap_secret: [26; 32],

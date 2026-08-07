@@ -1,20 +1,23 @@
 {
-  "contract_version": 1,
+  "contract_version": 2,
   "scope": "transport_neutral_client",
   "transport": {
     "encryption": "nip44-v2",
     "wrapping": "nip59",
     "outer_kind": 1059,
     "seal_kind": 13,
+    "rumor_tags": ["p", "d"],
+    "rumor_identifier": "32-byte-lowercase-hex",
     "copies": ["counterparty", "sender_recovery"]
   },
   "deterministic_round_trip": {
     "inner_event_id": "fd9fe89e28891f7ac6f0b51101a2c5bbeb991e3d7af507435425988e7814de69",
-    "outer_event_id": "70e5a057d61d4f453a62d926d84a4783f7c7c3f489a24fcd6b640b56b2725ee4",
+    "outer_event_id": "9bdf7195e3185d86fb4e638e70f6f8f55ad0feda3bcc7ee259867f153b513f77",
+    "rumor_identifier": "0606060606060606060606060606060606060606060606060606060606060606",
     "expected": "exact_signed_inner_bytes"
   },
   "external_callback_round_trip": {
-    "outer_event_id": "70e5a057d61d4f453a62d926d84a4783f7c7c3f489a24fcd6b640b56b2725ee4",
+    "outer_event_id": "9bdf7195e3185d86fb4e638e70f6f8f55ad0feda3bcc7ee259867f153b513f77",
     "secret_export_required": false,
     "operations": ["sign", "nip44_encrypt", "nip44_decrypt"]
   },

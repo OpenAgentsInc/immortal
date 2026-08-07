@@ -367,8 +367,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/client-transport.json",
-      "sha256": "e9e670c132bc753d3bb2c0e17b55bba47f82e1f46e157c2d8809d4a37aba5cf2",
-      "bytes": 866,
+      "sha256": "45c0c73a37110fcf43e5ad74c4f838abe479828240e3d5e8fbbbc1497054e4d0",
+      "bytes": 1037,
       "scope": "client"
     },
     {
