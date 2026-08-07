@@ -159,7 +159,10 @@ API. The private `public-regtest-dynamic-worker-once` command consumes the
 request through the ordinary two-provider RFQ/Quote/Order/Contract path,
 cancels the unselected reservation, waits for exact browser effect admission,
 and publishes requester-verified Bitcoin and Lightning references separately
-from provider Status. Destination semantics are qualified in
+from provider Status. A worker failure moves the public journey to the
+terminal `failed` stage, retires the private request, and exposes only a
+bounded `swp_public_*` phase code; the underlying diagnostic remains private.
+Destination semantics are qualified in
 [`dynamic-public-regtest.md`](dynamic-public-regtest.md).
 Shared-service bounds and host fault gates are qualified separately in
 [`public-regtest-service.md`](public-regtest-service.md); remote TLS/browser

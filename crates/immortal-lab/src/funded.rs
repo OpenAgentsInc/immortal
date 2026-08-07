@@ -1225,14 +1225,40 @@ pub fn run_public_dynamic_worker_once() -> Result<Value, String> {
             &provider_pubkeys,
             validated.request.input_amount_sat,
             Some(&validated),
-        )?,
+        )
+        .map_err(|error| format!("swp_public_submarine_execution_failed: {error}")),
         DynamicSwapType::Reverse => run_dynamic_reverse_topology(
             &runtime,
             &environments,
             &provider_pubkeys,
             validated.request.input_amount_sat,
             Some(&validated),
-        )?,
+        )
+        .map_err(|error| format!("swp_public_reverse_execution_failed: {error}")),
+    };
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            let error_code = public_worker_error_code(&error);
+            immortal_public_regtest_gateway::record_journey(
+                &sandbox_session_id,
+                &PublicJourney {
+                    schema: "openagents.immortal.public-regtest-journey.v1".to_owned(),
+                    request_id: view.request_id.clone(),
+                    stage: "failed".to_owned(),
+                    quote_provider_pubkeys: provider_pubkeys,
+                    selected_provider_pubkey: None,
+                    unselected_provider_pubkey: None,
+                    unselected_released: false,
+                    provider_status: None,
+                    requester_evidence: vec![],
+                    error_code: Some(error_code),
+                    updated_at: unix_now()?,
+                },
+            )?;
+            immortal_public_regtest_gateway::retire_dynamic_request(&sandbox_session_id)?;
+            return Err(error);
+        }
     };
     let selected = result
         .pointer("/selection/provider_pubkey")
@@ -1294,6 +1320,16 @@ pub fn run_public_dynamic_worker_once() -> Result<Value, String> {
         "request":view,
         "journey":result,
     }))
+}
+
+fn public_worker_error_code(error: &str) -> String {
+    error
+        .split(|character: char| {
+            !character.is_ascii_lowercase() && !character.is_ascii_digit() && character != '_'
+        })
+        .find(|part| part.starts_with("swp_"))
+        .unwrap_or("swp_public_worker_failed")
+        .to_owned()
 }
 
 /// Allocate one session-bound destination for a browser visitor who does not
@@ -1485,7 +1521,8 @@ fn run_dynamic_submarine_topology(
             input,
             amount,
             validated.request.maximum_total_fee_sat,
-        )?;
+        )
+        .map_err(|error| format!("swp_public_submarine_quote_lane_{index}_failed: {error}"))?;
         require_dynamic_destination_commitment(&quoted, &validated.destination_commitment_sha256)?;
         candidates.push(funded_topology_candidate(index, quoted)?);
     }
@@ -1508,7 +1545,8 @@ fn run_dynamic_submarine_topology(
         unselected.quoted,
         unselected_input,
     )?)?;
-    let cancellation = cancel_unselected_funded_session(unselected_session, &unselected_quote)?;
+    let cancellation = cancel_unselected_funded_session(unselected_session, &unselected_quote)
+        .map_err(|error| format!("swp_public_submarine_release_failed: {error}"))?;
     eprintln!("immortal-lab: dynamic submarine released the unselected reservation");
 
     let selected_index = selected.environment_index;
@@ -1528,14 +1566,20 @@ fn run_dynamic_submarine_topology(
         &environments[selected_index],
         selected.quoted,
         selected_input,
-    )?)?;
-    session.wait_provider_state("accepted")?;
-    session.wait_provider_state("lock_terms_ready")?;
+    )?)
+    .map_err(|error| format!("swp_public_submarine_selection_failed: {error}"))?;
+    session
+        .wait_provider_state("accepted")
+        .map_err(|error| format!("swp_public_submarine_acceptance_failed: {error}"))?;
+    session
+        .wait_provider_state("lock_terms_ready")
+        .map_err(|error| format!("swp_public_submarine_terms_failed: {error}"))?;
     let funding = session
         .requester_funding
         .take()
         .ok_or_else(|| "dynamic submarine has no funding transaction".to_owned())?;
-    let authorized = verify_submarine_before_fund(&session, invoice, &funding)?;
+    let authorized = verify_submarine_before_fund(&session, invoice, &funding)
+        .map_err(|error| format!("swp_public_submarine_authorization_failed: {error}"))?;
     session.set_authorized_verifier(authorized)?;
     let terminal = continue_submarine(
         runtime,
@@ -1545,7 +1589,8 @@ fn run_dynamic_submarine_topology(
         &funding.raw_transaction,
         Some(&funding.txid),
         payment_hash,
-    )?;
+    )
+    .map_err(|error| format!("swp_public_submarine_settlement_failed: {error}"))?;
     Ok(json!({
         "swap_type":"submarine",
         "request":validated.public_view(),
@@ -1625,7 +1670,8 @@ fn run_dynamic_reverse_topology(
             input,
             amount,
             validated.request.maximum_total_fee_sat,
-        )?;
+        )
+        .map_err(|error| format!("swp_public_reverse_quote_lane_{index}_failed: {error}"))?;
         require_dynamic_destination_commitment(&quoted, &validated.destination_commitment_sha256)?;
         candidates.push(funded_topology_candidate(index, quoted)?);
     }
@@ -1648,7 +1694,8 @@ fn run_dynamic_reverse_topology(
         unselected.quoted,
         unselected_input,
     )?)?;
-    let cancellation = cancel_unselected_funded_session(unselected_session, &unselected_quote)?;
+    let cancellation = cancel_unselected_funded_session(unselected_session, &unselected_quote)
+        .map_err(|error| format!("swp_public_reverse_release_failed: {error}"))?;
     eprintln!("immortal-lab: dynamic reverse released the unselected reservation");
 
     let selected_index = selected.environment_index;
@@ -1669,9 +1716,14 @@ fn run_dynamic_reverse_topology(
         &environments[selected_index],
         selected.quoted,
         selected_input,
-    )?)?;
-    session.wait_provider_state("accepted")?;
-    let invoice_status = session.wait_provider_state("hold_invoice_ready")?;
+    )?)
+    .map_err(|error| format!("swp_public_reverse_selection_failed: {error}"))?;
+    session
+        .wait_provider_state("accepted")
+        .map_err(|error| format!("swp_public_reverse_acceptance_failed: {error}"))?;
+    let invoice_status = session
+        .wait_provider_state("hold_invoice_ready")
+        .map_err(|error| format!("swp_public_reverse_invoice_failed: {error}"))?;
     let invoice = record_profile(&invoice_status)?
         .get("invoice")
         .and_then(Value::as_str)
@@ -1683,7 +1735,8 @@ fn run_dynamic_reverse_topology(
         return Err("dynamic reverse invoice amount differs from the request".to_owned());
     }
     let authorized =
-        verify_reverse_before_fund(runtime, &environments[selected_index], &session, &invoice)?;
+        verify_reverse_before_fund(runtime, &environments[selected_index], &session, &invoice)
+            .map_err(|error| format!("swp_public_reverse_authorization_failed: {error}"))?;
     session.set_authorized_verifier(authorized)?;
     let destination_terms = bitcoin_terms(&session.contract, "destination")?;
     let destination_amount_sat = destination_terms
@@ -1703,7 +1756,8 @@ fn run_dynamic_reverse_topology(
         invoice,
         claim_path,
         destination_script.to_vec(),
-    )?;
+    )
+    .map_err(|error| format!("swp_public_reverse_settlement_failed: {error}"))?;
     verify_dynamic_claim_destination(
         runtime,
         &environments[selected_index].bitcoind,
@@ -1713,7 +1767,8 @@ fn run_dynamic_reverse_topology(
             .ok_or_else(|| "dynamic reverse terminal result has no claim transaction".to_owned())?,
         destination_script,
         destination_amount_sat,
-    )?;
+    )
+    .map_err(|error| format!("swp_public_reverse_destination_failed: {error}"))?;
     Ok(json!({
         "swap_type":"reverse",
         "request":validated.public_view(),
@@ -14903,6 +14958,24 @@ mod tests {
             name.bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
         }));
+    }
+
+    #[test]
+    fn public_worker_failure_projection_keeps_only_a_typed_safe_code() {
+        assert_eq!(
+            public_worker_error_code(
+                "swp_public_reverse_settlement_failed: private diagnostic follows"
+            ),
+            "swp_public_reverse_settlement_failed"
+        );
+        assert_eq!(
+            public_worker_error_code("an unclassified private failure"),
+            "swp_public_worker_failed"
+        );
+        assert_eq!(
+            public_worker_error_code("swp_public_reverse_quote_lane_1_failed: private"),
+            "swp_public_reverse_quote_lane_1_failed"
+        );
     }
 
     #[test]
