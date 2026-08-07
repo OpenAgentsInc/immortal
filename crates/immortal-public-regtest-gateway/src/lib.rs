@@ -39,6 +39,9 @@ const RESPONSE_SCHEMA: &str = "openagents.immortal.public-regtest-session-respon
 const AUTHORIZATION_SCHEMA: &str = "openagents.immortal.public-regtest-authorization.v1";
 const EFFECT_SCHEMA: &str = "openagents.immortal.public-regtest-effect.v1";
 const RECEIPT_SCHEMA: &str = "openagents.immortal.public-regtest-effect-receipt.v1";
+const DYNAMIC_SUBMISSION_SCHEMA: &str = "openagents.immortal.public-regtest-dynamic-submission.v1";
+const DYNAMIC_VIEW_SCHEMA: &str = "openagents.immortal.dynamic-public-regtest-request.v1";
+const JOURNEY_SCHEMA: &str = "openagents.immortal.public-regtest-journey.v1";
 const ERROR_SCHEMA: &str = "openagents.immortal.public-regtest-error.v1";
 const REGTEST_NETWORK: &str = "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4";
 const MANIFEST_EVENT_KIND: u16 = 27_236;
@@ -117,6 +120,64 @@ struct StoredSession {
     request_window_started_at: u64,
     request_count: u16,
     authorizations: Vec<PublicAuthorization>,
+    #[serde(default)]
+    dynamic_request: Option<PublicDynamicRequestView>,
+    #[serde(default)]
+    requester_engine_identity: Option<String>,
+    #[serde(default)]
+    journey: Option<PublicJourney>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DynamicRequestSubmission {
+    schema: String,
+    sandbox_session_id: String,
+    request: Value,
+}
+
+/// Redacted, signed projection of a private dynamic request. The destination
+/// itself never enters a manifest or HTTP response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicDynamicRequestView {
+    pub schema: String,
+    pub request_id: String,
+    pub network: String,
+    pub swap_type: String,
+    pub input_amount_sat: u64,
+    pub maximum_total_fee_sat: u64,
+    pub destination_kind: String,
+    pub destination_commitment_sha256: String,
+    pub destination_amount_sat: Option<u64>,
+    pub payment_hash: Option<String>,
+    pub expires_at: u64,
+}
+
+/// Public-safe, monotonic worker projection. Provider claims remain distinct
+/// from requester-admitted rail evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicJourney {
+    pub schema: String,
+    pub request_id: String,
+    pub stage: String,
+    pub quote_provider_pubkeys: Vec<String>,
+    pub selected_provider_pubkey: Option<String>,
+    pub unselected_provider_pubkey: Option<String>,
+    pub unselected_released: bool,
+    pub provider_status: Option<String>,
+    pub requester_evidence: Vec<PublicRailEvidence>,
+    pub error_code: Option<String>,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicRailEvidence {
+    pub rail: String,
+    pub reference: String,
+    pub state: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +221,7 @@ struct SessionManifest {
     origin: String,
     sandbox_session_id: String,
     requester_identity: String,
+    requester_engine_identity: Option<String>,
     issued_at: u64,
     expires_at: u64,
     revoked: bool,
@@ -169,6 +231,8 @@ struct SessionManifest {
     providers: Vec<String>,
     quotas: ManifestQuotas,
     allowed_operations: Vec<String>,
+    dynamic_request: Option<PublicDynamicRequestView>,
+    journey: Option<PublicJourney>,
     effects: Vec<ManifestEffect>,
 }
 
@@ -522,6 +586,42 @@ fn route_request(
                 thread::sleep(Duration::from_millis(25));
             }
         }
+        ("POST", "/requests") => {
+            require_json(request)?;
+            let submission: DynamicRequestSubmission =
+                parse_closed_json(&request.body, "dynamic request submission")?;
+            validate_dynamic_submission(session_id, &submission)?;
+            let path = dynamic_request_path(&config.root, session_id);
+            if session.dynamic_request.is_some() && !path.exists() {
+                return Err(HttpError::new(409, "dynamic_request_terminal"));
+            }
+            if let Some(existing) = load_optional_json::<DynamicRequestSubmission>(&path)
+                .map_err(|_| HttpError::new(500, "dynamic_request_unavailable"))?
+            {
+                if existing != submission {
+                    return Err(HttpError::new(409, "dynamic_request_conflict"));
+                }
+            } else {
+                write_json_create_new(&path, &submission)
+                    .map_err(|_| HttpError::new(500, "dynamic_request_unavailable"))?;
+            }
+            lock.release();
+            write_json_response(
+                stream,
+                202,
+                &config.origin,
+                &json!({
+                    "schema":DYNAMIC_SUBMISSION_SCHEMA,
+                    "sandbox_session_id":session_id,
+                    "accepted":true,
+                }),
+            )?;
+            Ok((
+                Some(session_id.to_owned()),
+                None,
+                "dynamic_request_accepted",
+            ))
+        }
         _ => Err(HttpError::new(404, "unknown_endpoint")),
     }
 }
@@ -708,6 +808,9 @@ fn create_session(
         request_window_started_at: now,
         request_count: 0,
         authorizations: Vec::new(),
+        dynamic_request: None,
+        requester_engine_identity: None,
+        journey: None,
     };
     store_session_create_new(&config.root, &session)
         .map_err(|_| HttpError::new(500, "session_state_unavailable"))?;
@@ -741,7 +844,11 @@ pub fn bind_authorization(
     if session.revoked_at.is_some() || now >= session.expires_at {
         return Err("public regtest session cannot accept a new effect".to_owned());
     }
-    if session.requester_identity != requester_pubkey {
+    let expected_requester = session
+        .requester_engine_identity
+        .as_deref()
+        .unwrap_or(&session.requester_identity);
+    if expected_requester != requester_pubkey {
         return Err("public regtest requester identity differs from the engine signer".to_owned());
     }
     let candidate = PublicAuthorization {
@@ -876,6 +983,200 @@ pub fn record_receipt(
     Ok(public)
 }
 
+/// Load the one capability-bound private request for the sandbox worker. The
+/// caller is the fixed local worker process; this is deliberately not an HTTP
+/// read endpoint.
+pub fn claim_dynamic_request(sandbox_session_id: &str) -> Result<Option<Value>, String> {
+    validate_lower_hex_32(sandbox_session_id, "sandbox session ID")?;
+    let root = state_root()?;
+    let submission = load_optional_json::<DynamicRequestSubmission>(&dynamic_request_path(
+        &root,
+        sandbox_session_id,
+    ))?;
+    let Some(submission) = submission else {
+        return Ok(None);
+    };
+    if submission.schema != DYNAMIC_SUBMISSION_SCHEMA
+        || submission.sandbox_session_id != sandbox_session_id
+    {
+        return Err("private dynamic request changed its session binding".to_owned());
+    }
+    Ok(Some(submission.request))
+}
+
+/// Publish the semantic validator's redacted request projection. This is the
+/// only request material copied into the signed public manifest.
+pub fn record_dynamic_request_view(
+    sandbox_session_id: &str,
+    requester_engine_identity: &str,
+    view: &PublicDynamicRequestView,
+) -> Result<(), String> {
+    validate_lower_hex_32(sandbox_session_id, "sandbox session ID")?;
+    validate_lower_hex_32(requester_engine_identity, "requester engine identity")?;
+    validate_dynamic_view(view)?;
+    let root = state_root()?;
+    let mut lock = SessionLock::acquire(&root, sandbox_session_id)?;
+    let mut session = load_session(&root, sandbox_session_id)?
+        .ok_or_else(|| "public regtest session does not exist".to_owned())?;
+    if session
+        .dynamic_request
+        .as_ref()
+        .is_some_and(|current| current != view)
+    {
+        return Err("public dynamic request conflicts with durable replay".to_owned());
+    }
+    if session
+        .requester_engine_identity
+        .as_deref()
+        .is_some_and(|current| current != requester_engine_identity)
+    {
+        return Err("public requester engine identity conflicts with durable replay".to_owned());
+    }
+    session.dynamic_request = Some(view.clone());
+    session.requester_engine_identity = Some(requester_engine_identity.to_owned());
+    store_session(&root, &session)?;
+    lock.release();
+    Ok(())
+}
+
+/// Publish a monotonic, public-safe journey update from the private worker.
+pub fn record_journey(sandbox_session_id: &str, journey: &PublicJourney) -> Result<(), String> {
+    validate_lower_hex_32(sandbox_session_id, "sandbox session ID")?;
+    validate_public_journey(journey)?;
+    let root = state_root()?;
+    let mut lock = SessionLock::acquire(&root, sandbox_session_id)?;
+    let mut session = load_session(&root, sandbox_session_id)?
+        .ok_or_else(|| "public regtest session does not exist".to_owned())?;
+    let view = session
+        .dynamic_request
+        .as_ref()
+        .ok_or_else(|| "public journey has no validated dynamic request".to_owned())?;
+    if journey.request_id != view.request_id {
+        return Err("public journey changed the dynamic request ID".to_owned());
+    }
+    if let Some(current) = &session.journey {
+        if journey_rank(&journey.stage)? < journey_rank(&current.stage)? {
+            return Err("public journey cannot move backward".to_owned());
+        }
+        if journey.updated_at < current.updated_at {
+            return Err("public journey timestamp cannot move backward".to_owned());
+        }
+    }
+    session.journey = Some(journey.clone());
+    store_session(&root, &session)?;
+    lock.release();
+    Ok(())
+}
+
+/// Delete the private destination/invoice after a terminal public projection
+/// is durable. The redacted commitment remains signed in the manifest.
+pub fn retire_dynamic_request(sandbox_session_id: &str) -> Result<(), String> {
+    validate_lower_hex_32(sandbox_session_id, "sandbox session ID")?;
+    let root = state_root()?;
+    let mut lock = SessionLock::acquire(&root, sandbox_session_id)?;
+    let session = load_session(&root, sandbox_session_id)?
+        .ok_or_else(|| "public regtest session does not exist".to_owned())?;
+    if !session.journey.as_ref().is_some_and(|journey| {
+        matches!(
+            journey.stage.as_str(),
+            "completed" | "failed" | "recoverable"
+        )
+    }) {
+        return Err("private dynamic request cannot retire before terminal state".to_owned());
+    }
+    let path = dynamic_request_path(&root, sandbox_session_id);
+    if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|error| format!("could not retire private dynamic request: {error}"))?;
+    }
+    lock.release();
+    Ok(())
+}
+
+fn validate_dynamic_submission(
+    session_id: &str,
+    submission: &DynamicRequestSubmission,
+) -> Result<(), HttpError> {
+    if submission.schema != DYNAMIC_SUBMISSION_SCHEMA
+        || submission.sandbox_session_id != session_id
+        || !submission.request.is_object()
+    {
+        return Err(HttpError::new(400, "dynamic_request_refused"));
+    }
+    let encoded = serde_json::to_vec(&submission.request)
+        .map_err(|_| HttpError::new(400, "dynamic_request_refused"))?;
+    if encoded.is_empty() || encoded.len() > MAX_REQUEST_BYTES {
+        return Err(HttpError::new(413, "dynamic_request_too_large"));
+    }
+    Ok(())
+}
+
+fn validate_dynamic_view(view: &PublicDynamicRequestView) -> Result<(), String> {
+    if view.schema != DYNAMIC_VIEW_SCHEMA
+        || view.network != REGTEST_NETWORK
+        || !matches!(view.swap_type.as_str(), "reverse" | "submarine")
+        || !matches!(
+            view.destination_kind.as_str(),
+            "bitcoin_address" | "bolt11_invoice"
+        )
+        || view.input_amount_sat < 10_000
+        || view.input_amount_sat > MAX_AMOUNT_SAT
+        || view.maximum_total_fee_sat == 0
+        || view.maximum_total_fee_sat >= view.input_amount_sat
+    {
+        return Err("public dynamic request view is outside the closed contract".to_owned());
+    }
+    validate_lower_hex_32(&view.request_id, "dynamic request ID")?;
+    validate_lower_hex_32(
+        &view.destination_commitment_sha256,
+        "destination commitment",
+    )?;
+    if let Some(payment_hash) = &view.payment_hash {
+        validate_lower_hex_32(payment_hash, "payment hash")?;
+    }
+    reject_custody_material(&serde_json::to_value(view).map_err(|error| error.to_string())?)
+}
+
+fn validate_public_journey(journey: &PublicJourney) -> Result<(), String> {
+    if journey.schema != JOURNEY_SCHEMA || journey.quote_provider_pubkeys.len() > 8 {
+        return Err("public journey is outside the closed contract".to_owned());
+    }
+    validate_lower_hex_32(&journey.request_id, "journey request ID")?;
+    journey_rank(&journey.stage)?;
+    for provider in journey
+        .quote_provider_pubkeys
+        .iter()
+        .chain(journey.selected_provider_pubkey.iter())
+        .chain(journey.unselected_provider_pubkey.iter())
+    {
+        validate_lower_hex_32(provider, "journey provider")?;
+    }
+    if journey.requester_evidence.len() > 4 {
+        return Err("public journey has too much rail evidence".to_owned());
+    }
+    for evidence in &journey.requester_evidence {
+        if !matches!(evidence.rail.as_str(), "bitcoin" | "lightning")
+            || !matches!(evidence.state.as_str(), "admitted" | "verified")
+        {
+            return Err("public journey rail evidence is invalid".to_owned());
+        }
+        validate_lower_hex_32(&evidence.reference, "rail evidence reference")?;
+    }
+    reject_custody_material(&serde_json::to_value(journey).map_err(|error| error.to_string())?)
+}
+
+fn journey_rank(stage: &str) -> Result<u8, String> {
+    match stage {
+        "accepted" => Ok(0),
+        "quotes_verified" => Ok(1),
+        "provider_selected" => Ok(2),
+        "effect_authorized" => Ok(3),
+        "effect_admitted" => Ok(4),
+        "completed" | "recoverable" | "failed" => Ok(5),
+        _ => Err("public journey stage is unsupported".to_owned()),
+    }
+}
+
 pub fn run_fixture_worker_once() -> Result<Value, String> {
     if std::env::var("IMMORTAL_PUBLIC_REGTEST_FIXTURE_WORKER").as_deref() != Ok("1") {
         return Err("fixture worker requires its explicit regtest-only gate".to_owned());
@@ -1002,6 +1303,7 @@ fn signed_manifest(
         origin: session.origin.clone(),
         sandbox_session_id: session.sandbox_session_id.clone(),
         requester_identity: session.requester_identity.clone(),
+        requester_engine_identity: session.requester_engine_identity.clone(),
         issued_at: session.issued_at,
         expires_at: session.expires_at,
         revoked: session.revoked_at.is_some(),
@@ -1016,9 +1318,12 @@ fn signed_manifest(
             maximum_requests: MAX_REQUESTS_PER_SESSION,
         },
         allowed_operations: vec![
+            "submit_dynamic_request".to_owned(),
             "broadcast_bitcoin_funding".to_owned(),
             "pay_lightning_invoice".to_owned(),
         ],
+        dynamic_request: session.dynamic_request.clone(),
+        journey: session.journey.clone(),
         effects,
     };
     let manifest_value = serde_json::to_value(&manifest).map_err(|error| error.to_string())?;
@@ -1349,6 +1654,7 @@ fn write_bytes_response(
     let reason = match status {
         200 => "OK",
         201 => "Created",
+        202 => "Accepted",
         204 => "No Content",
         400 => "Bad Request",
         401 => "Unauthorized",
@@ -1407,6 +1713,10 @@ fn parse_session_path(path: &str) -> Option<(&str, &str)> {
     if let Some(session) = remainder.strip_suffix("/effects") {
         validate_lower_hex_32(session, "path session").ok()?;
         return Some((session, "/effects"));
+    }
+    if let Some(session) = remainder.strip_suffix("/requests") {
+        validate_lower_hex_32(session, "path session").ok()?;
+        return Some((session, "/requests"));
     }
     validate_lower_hex_32(remainder, "path session").ok()?;
     Some((remainder, ""))
@@ -1637,6 +1947,10 @@ fn receipt_path(root: &Path, session_id: &str, effect_id: &str) -> PathBuf {
     session_dir(root, session_id).join(format!("receipt-{effect_id}.json"))
 }
 
+fn dynamic_request_path(root: &Path, session_id: &str) -> PathBuf {
+    session_dir(root, session_id).join("private-dynamic-request.json")
+}
+
 fn load_session(root: &Path, session_id: &str) -> Result<Option<StoredSession>, String> {
     let value = load_optional_json::<StoredSession>(&session_path(root, session_id))?;
     if let Some(session) = &value {
@@ -1813,6 +2127,19 @@ fn validate_contract() -> Result<(), String> {
             .pointer("/session/maximum_amount_sat")
             .and_then(Value::as_u64)
             != Some(MAX_AMOUNT_SAT)
+        || contract
+            .pointer("/claims/dynamic_inputs")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || !contract
+            .pointer("/gateway/endpoints")
+            .and_then(Value::as_array)
+            .is_some_and(|endpoints| {
+                endpoints.iter().any(|endpoint| {
+                    endpoint.as_str()
+                        == Some("POST /v1/public-regtest/sessions/{session_id}/requests")
+                })
+            })
     {
         return Err("public gateway fixture differs from executable limits".to_owned());
     }
@@ -2006,6 +2333,53 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_projection_is_closed_public_safe_and_monotonic() {
+        let view = PublicDynamicRequestView {
+            schema: DYNAMIC_VIEW_SCHEMA.to_owned(),
+            request_id: "11".repeat(32),
+            network: REGTEST_NETWORK.to_owned(),
+            swap_type: "reverse".to_owned(),
+            input_amount_sat: 100_000,
+            maximum_total_fee_sat: 5_000,
+            destination_kind: "bitcoin_address".to_owned(),
+            destination_commitment_sha256: "22".repeat(32),
+            destination_amount_sat: None,
+            payment_hash: None,
+            expires_at: 100,
+        };
+        validate_dynamic_view(&view).expect("redacted dynamic view");
+        let journey = PublicJourney {
+            schema: JOURNEY_SCHEMA.to_owned(),
+            request_id: view.request_id,
+            stage: "completed".to_owned(),
+            quote_provider_pubkeys: vec!["33".repeat(32), "44".repeat(32)],
+            selected_provider_pubkey: Some("33".repeat(32)),
+            unselected_provider_pubkey: Some("44".repeat(32)),
+            unselected_released: true,
+            provider_status: Some("completed_unverified_claim".to_owned()),
+            requester_evidence: vec![
+                PublicRailEvidence {
+                    rail: "bitcoin".to_owned(),
+                    reference: "55".repeat(32),
+                    state: "verified".to_owned(),
+                },
+                PublicRailEvidence {
+                    rail: "lightning".to_owned(),
+                    reference: "66".repeat(32),
+                    state: "verified".to_owned(),
+                },
+            ],
+            error_code: None,
+            updated_at: 99,
+        };
+        validate_public_journey(&journey).expect("public terminal journey");
+        assert!(journey_rank("completed").unwrap() > journey_rank("accepted").unwrap());
+        let mut changed = journey;
+        changed.requester_evidence[0].rail = "wallet_rpc".to_owned();
+        assert!(validate_public_journey(&changed).is_err());
+    }
+
+    #[test]
     fn capability_is_session_ip_expiry_and_revocation_bound() {
         let capability = "aa".repeat(32);
         let mut session = StoredSession {
@@ -2021,6 +2395,9 @@ mod tests {
             request_window_started_at: 10,
             request_count: 0,
             authorizations: vec![],
+            dynamic_request: None,
+            requester_engine_identity: None,
+            journey: None,
         };
         let ip = "198.51.100.10".parse().unwrap();
         assert!(authorize_session(&mut session, &capability, ip, 19).is_ok());
@@ -2075,6 +2452,9 @@ mod tests {
             request_window_started_at: 10,
             request_count: 0,
             authorizations: vec![],
+            dynamic_request: None,
+            requester_engine_identity: None,
+            journey: None,
         };
         let signed = signed_manifest(&config, &session).expect("signed manifest");
         signed

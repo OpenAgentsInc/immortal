@@ -120,6 +120,12 @@ services:
   wallet-driver:
     profiles: ["acceptance"]
     restart: "no"
+    environment:
+      IMMORTAL_PUBLIC_REGTEST_GATEWAY_STATE_DIR: /gateway
+    volumes:
+      - type: bind
+        source: ${IMMORTAL_PUBLIC_REGTEST_GATEWAY_STATE_DIR:?gateway state is required}
+        target: /gateway
 
   keyless-executor:
     profiles: ["acceptance"]

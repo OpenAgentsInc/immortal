@@ -86,6 +86,12 @@ Install and review the templates in `deploy/public-regtest/`: copy
 `gateway.env.example`, replace every placeholder, install the gateway binary,
 then install both `.service` units. The operator account has Docker authority
 and is therefore custody-adjacent; the gateway account deliberately does not.
+The loop notices one fixed `private-dynamic-request.json` at a time and runs
+`public-regtest-dynamic-worker-once` inside the private wallet-driver network
+with a session-specific state directory. The gateway cannot launch this
+worker, read its wallet/rail mounts, or select a destination. A terminal
+worker projection deletes the private address/invoice handoff while retaining
+only its signed commitment and public-safe two-rail evidence.
 
 Probe `/healthz` for liveness and `/readyz` for admission. Alert when
 readiness is false/stale, free disk approaches 1 GiB, either Lightning side

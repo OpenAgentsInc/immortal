@@ -10,6 +10,7 @@
       "POST /v1/public-regtest/sessions",
       "GET /v1/public-regtest/sessions/{session_id}",
       "DELETE /v1/public-regtest/sessions/{session_id}",
+      "POST /v1/public-regtest/sessions/{session_id}/requests",
       "POST /v1/public-regtest/sessions/{session_id}/effects"
     ]
   },
@@ -21,15 +22,16 @@
     "maximum_concurrent_effects": 1,
     "maximum_requests": 64,
     "maximum_amount_sat": 1000000,
-    "allowed_methods": ["broadcast_bitcoin_funding", "pay_lightning_invoice"],
-    "bindings": ["origin", "client_ip", "sandbox_session_id", "requester_identity", "provider_pubkey", "engine_session_id", "order_id", "effect_id", "idempotency_digest", "network", "method", "amount_sat"]
+    "allowed_methods": ["submit_dynamic_request", "broadcast_bitcoin_funding", "pay_lightning_invoice"],
+    "bindings": ["origin", "client_ip", "sandbox_session_id", "requester_identity", "requester_engine_identity", "provider_pubkey", "engine_session_id", "order_id", "effect_id", "idempotency_digest", "network", "method", "amount_sat"]
   },
   "separation": {
     "public_process_has_rail_credentials": false,
     "public_process_has_wallet_seed": false,
     "public_process_has_rpc_method_parameter": false,
     "private_worker_verifies_complete_engine_authorization": true,
-    "handoff": "mode-0600 fixed-path admission and receipt records"
+    "handoff": "mode-0600 fixed-path private request, admission, public projection, and receipt records",
+    "private_dynamic_request_retention": "deleted after a terminal public projection is durable"
   },
   "replay": {
     "exact": "byte-identical durable receipt",
@@ -40,7 +42,7 @@
     "public_regtest_only": true,
     "mainnet": false,
     "general_wallet_api": false,
-    "dynamic_inputs": false,
+    "dynamic_inputs": true,
     "production_value": false
   }
 }

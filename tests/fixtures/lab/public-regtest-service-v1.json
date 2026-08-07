@@ -67,6 +67,7 @@
     "POST /v1/public-regtest/sessions",
     "GET /v1/public-regtest/sessions/{session_id}",
     "DELETE /v1/public-regtest/sessions/{session_id}",
+    "POST /v1/public-regtest/sessions/{session_id}/requests",
     "POST /v1/public-regtest/sessions/{session_id}/effects"
   ],
   "acceptance_receipt_schema": "openagents.immortal.public-regtest-acceptance.v1",

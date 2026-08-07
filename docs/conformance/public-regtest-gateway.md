@@ -20,14 +20,19 @@ no bitcoind, Lightning, shell, database-query, destination-host, filesystem-
 path, or arbitrary RPC HTTP operation. Its writable mount contains only:
 
 - bounded session metadata and SHA-256 capability digests;
+- one mode-0600 private dynamic request pending semantic validation, deleted
+  immediately after a terminal public projection is durable;
 - redacted effect authorizations emitted by the private requester worker;
 - exact admitted redacted requests and public-safe effect receipts;
 - bounded IP/session quota state, operator readiness, public-safe counters,
   and atomic lock directories.
 
 The signing key is a separate mode-0600 read-only file. Wallet seeds, raw
-transactions, invoices, preimages, node credentials, and rail endpoints are
-not mounted or serialized. The funded worker still compares the admitted
+transactions, preimages, node credentials, and rail endpoints are not mounted
+or serialized. A submitted address or invoice is never logged, returned,
+signed, or copied into the public manifest; it exists only in the fixed private
+handoff until the funded worker validates and retires it. The funded worker
+still compares the admitted
 redacted request with its complete in-memory `FundingAuthorizationRequest`
 before the existing wallet/rail code runs.
 
@@ -41,13 +46,20 @@ manifest bound to:
 - the exact Origin, client IP policy, sandbox session, requester identity,
   expiry, regtest network, source revision, requester-contract digest, and
   browser ABI version;
+- the private worker's distinct requester-engine identity after semantic
+  request admission, so an effect signed by either a visitor identity or a
+  different sandbox worker fails closed;
 - the configured and authorization-observed provider set;
 - fixed request/effect/amount quotas and the two allowed effect methods;
 - each authorized engine session, Order, provider, effect ID, complete
   idempotency digest, method, amount, and durable receipt state.
 
 Authenticated `GET` reads that state. Authenticated `DELETE` revokes the
-session. `POST .../effects` accepts only the exact authorization already
+session. `POST .../requests` accepts one bounded, capability/session-bound
+dynamic request with exact idempotent replay; a changed replay conflicts. The
+private worker validates network, encoding, amount, expiry, invoice features,
+and destination commitment before publishing only the redacted view.
+`POST .../effects` accepts only the exact authorization already
 written by the private worker. A changed sandbox/engine session, Order,
 provider, network, amount, method, effect ID, or digest fails before worker
 dispatch.
@@ -108,6 +120,7 @@ scripts/test-public-regtest-gateway.sh
 
 The process gate creates a real gateway process, validates its signed
 manifest/capability contract, proves the raw capability is absent from disk,
+proves exact dynamic-request replay and changed-request refusal,
 replaces the gateway between admission and receipt, returns exact receipt
 bytes under concurrent replay, and refuses foreign origins, foreign IPs,
 changed providers, duplicate JSON, revocation replay, and custody-bearing
@@ -115,8 +128,12 @@ public output. Unit tests cover expiry, invalid methods/networks, unknown
 members, and cryptographic manifest verification.
 
 This is public regtest authorization infrastructure, not a mainnet wallet
-API. Dynamic destinations and two-Quote production negotiation are qualified
-separately in [`dynamic-public-regtest.md`](dynamic-public-regtest.md).
+API. The private `public-regtest-dynamic-worker-once` command consumes the
+request through the ordinary two-provider RFQ/Quote/Order/Contract path,
+cancels the unselected reservation, waits for exact browser effect admission,
+and publishes requester-verified Bitcoin and Lightning references separately
+from provider Status. Destination semantics are qualified in
+[`dynamic-public-regtest.md`](dynamic-public-regtest.md).
 Shared-service bounds and host fault gates are qualified separately in
 [`public-regtest-service.md`](public-regtest-service.md); remote TLS/browser
 acceptance is emitted by the deployed Bazaar packet.

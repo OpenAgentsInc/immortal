@@ -82,6 +82,9 @@ use crate::state::{
     store_funded_journey_checkpoint, store_funded_secret, store_funded_signed_exit,
     store_funded_snapshot,
 };
+use immortal_public_regtest_gateway::{
+    PublicDynamicRequestView as GatewayDynamicRequestView, PublicJourney, PublicRailEvidence,
+};
 
 const OFFERING_ID: &str = "immortal-funded-btc-lightning";
 const INPUT_AMOUNT_SAT: u64 = 100_000;
@@ -1120,11 +1123,12 @@ pub fn run_dynamic_funded_topology() -> Result<Value, String> {
     }
     eprintln!("immortal-lab: dynamic topology starting submarine request");
     let submarine =
-        run_dynamic_submarine_topology(&runtime, &environments, &provider_pubkeys, amount)?;
+        run_dynamic_submarine_topology(&runtime, &environments, &provider_pubkeys, amount, None)?;
     eprintln!("immortal-lab: dynamic submarine terminal evidence admitted");
     wait_dynamic_provider_height_sync(&runtime, &environments[0])?;
     eprintln!("immortal-lab: dynamic provider Lightning heights synchronized");
-    let reverse = run_dynamic_reverse_topology(&runtime, &environments, &provider_pubkeys, amount)?;
+    let reverse =
+        run_dynamic_reverse_topology(&runtime, &environments, &provider_pubkeys, amount, None)?;
     eprintln!("immortal-lab: dynamic reverse terminal evidence admitted");
     for environment in &environments {
         verify_health(&environment.health_url)?;
@@ -1139,6 +1143,152 @@ pub fn run_dynamic_funded_topology() -> Result<Value, String> {
     provider_support::reject_custody_material(&result)
         .map_err(|error| format!("dynamic topology result contains custody material: {error}"))?;
     Ok(result)
+}
+
+/// Consume and execute one capability-bound public request. The gateway has
+/// no rail credentials; this fixed private worker runs the existing funded
+/// requester path and publishes only redacted, requester-admitted evidence.
+pub fn run_public_dynamic_worker_once() -> Result<Value, String> {
+    dynamic::fixture_contract().map_err(|error| error.to_string())?;
+    let sandbox_session_id = required_environment("IMMORTAL_PUBLIC_REGTEST_SESSION_ID")?;
+    let request = immortal_public_regtest_gateway::claim_dynamic_request(&sandbox_session_id)?
+        .ok_or_else(|| "public regtest session has no dynamic request".to_owned())?;
+    let request_bytes = serde_json::to_vec(&request)
+        .map_err(|error| format!("could not encode claimed dynamic request: {error}"))?;
+    let validated = dynamic::validate_request(&request_bytes, unix_now()?)
+        .map_err(|error| error.to_string())?;
+    let view = validated.public_view();
+    let gateway_view = GatewayDynamicRequestView {
+        schema: view.schema.to_owned(),
+        request_id: view.request_id.clone(),
+        network: view.network.to_owned(),
+        swap_type: match view.swap_type {
+            DynamicSwapType::Reverse => "reverse",
+            DynamicSwapType::Submarine => "submarine",
+        }
+        .to_owned(),
+        input_amount_sat: view.input_amount_sat,
+        maximum_total_fee_sat: view.maximum_total_fee_sat,
+        destination_kind: view.destination_kind.to_owned(),
+        destination_commitment_sha256: view.destination_commitment_sha256.clone(),
+        destination_amount_sat: view.destination_amount_sat,
+        payment_hash: view.payment_hash.clone(),
+        expires_at: view.expires_at,
+    };
+    let runtime =
+        Runtime::new().map_err(|error| format!("could not start lab runtime: {error}"))?;
+    let environments = SmokeEnvironment::load_topology()?;
+    immortal_public_regtest_gateway::record_dynamic_request_view(
+        &sandbox_session_id,
+        environments[0].requester.pubkey(),
+        &gateway_view,
+    )?;
+    immortal_public_regtest_gateway::record_journey(
+        &sandbox_session_id,
+        &PublicJourney {
+            schema: "openagents.immortal.public-regtest-journey.v1".to_owned(),
+            request_id: view.request_id.clone(),
+            stage: "accepted".to_owned(),
+            quote_provider_pubkeys: vec![],
+            selected_provider_pubkey: None,
+            unselected_provider_pubkey: None,
+            unselected_released: false,
+            provider_status: None,
+            requester_evidence: vec![],
+            error_code: None,
+            updated_at: unix_now()?,
+        },
+    )?;
+    let provider_pubkeys = environments
+        .iter()
+        .map(|environment| {
+            verify_health(&environment.health_url)?;
+            discover_provider(
+                &environment.relay_url,
+                &environment.requester,
+                JOURNEY_TIMEOUT,
+            )
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if provider_pubkeys.len() != 2 || provider_pubkeys[0] == provider_pubkeys[1] {
+        return Err("public dynamic worker did not discover two distinct providers".to_owned());
+    }
+    let result = match validated.request.swap_type {
+        DynamicSwapType::Submarine => run_dynamic_submarine_topology(
+            &runtime,
+            &environments,
+            &provider_pubkeys,
+            validated.request.input_amount_sat,
+            Some(&validated),
+        )?,
+        DynamicSwapType::Reverse => run_dynamic_reverse_topology(
+            &runtime,
+            &environments,
+            &provider_pubkeys,
+            validated.request.input_amount_sat,
+            Some(&validated),
+        )?,
+    };
+    let selected = result
+        .pointer("/selection/provider_pubkey")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "public dynamic result has no selected provider".to_owned())?
+        .to_owned();
+    let unselected = provider_pubkeys
+        .iter()
+        .find(|provider| **provider != selected)
+        .ok_or_else(|| "public dynamic result has no unselected provider".to_owned())?
+        .to_owned();
+    let terminal = result
+        .get("terminal")
+        .ok_or_else(|| "public dynamic result has no terminal evidence".to_owned())?;
+    let mut evidence = Vec::new();
+    if let Some(reference) = terminal
+        .get("claim_txid")
+        .and_then(Value::as_str)
+        .or_else(|| terminal.get("lockup_txid").and_then(Value::as_str))
+    {
+        evidence.push(PublicRailEvidence {
+            rail: "bitcoin".to_owned(),
+            reference: reference.to_owned(),
+            state: "verified".to_owned(),
+        });
+    }
+    if let Some(reference) = terminal.get("payment_hash").and_then(Value::as_str) {
+        evidence.push(PublicRailEvidence {
+            rail: "lightning".to_owned(),
+            reference: reference.to_owned(),
+            state: "verified".to_owned(),
+        });
+    }
+    if evidence.len() != 2 {
+        return Err("public dynamic terminal result lacks two-rail evidence".to_owned());
+    }
+    immortal_public_regtest_gateway::record_journey(
+        &sandbox_session_id,
+        &PublicJourney {
+            schema: "openagents.immortal.public-regtest-journey.v1".to_owned(),
+            request_id: view.request_id.clone(),
+            stage: "completed".to_owned(),
+            quote_provider_pubkeys: provider_pubkeys.clone(),
+            selected_provider_pubkey: Some(selected),
+            unselected_provider_pubkey: Some(unselected),
+            unselected_released: true,
+            provider_status: Some("completed_unverified_claim".to_owned()),
+            requester_evidence: evidence,
+            error_code: None,
+            updated_at: unix_now()?,
+        },
+    )?;
+    immortal_public_regtest_gateway::retire_dynamic_request(&sandbox_session_id)?;
+    provider_support::reject_custody_material(&result)
+        .map_err(|error| format!("public dynamic result contains custody material: {error}"))?;
+    Ok(json!({
+        "schema":"openagents.immortal.public-regtest-worker-result.v1",
+        "sandbox_session_id":sandbox_session_id,
+        "request":view,
+        "journey":result,
+    }))
 }
 
 fn wait_dynamic_provider_height_sync(
@@ -1183,41 +1333,53 @@ fn run_dynamic_submarine_topology(
     environments: &[SmokeEnvironment],
     provider_pubkeys: &[String],
     amount: u64,
+    supplied: Option<&dynamic::ValidatedDynamicRequest>,
 ) -> Result<Value, String> {
     let expected = dynamic_quote(SwapType::Submarine, amount)?;
     let output_amount = canonical_u64(&expected.output_amount)?;
-    let invoice = runtime
-        .block_on(
-            environments[0].peer_cln.invoice(
-                &cln_id("dynamic-topology-submarine-invoice")?,
-                Millisatoshi::from_satoshis(output_amount)
-                    .map_err(|error| format!("dynamic invoice amount is invalid: {error}"))?,
-                "immortal-dynamic-topology-submarine",
-                "Immortal dynamic public regtest submarine",
-                86_400,
-            ),
-        )
-        .map_err(|error| format!("could not create dynamic submarine invoice: {error}"))?;
-    let now = unix_now()?;
-    let validated = validate_dynamic_request(DynamicRequest {
-        schema: dynamic::SCHEMA.to_owned(),
-        request_id: digest("dynamic-topology-submarine-request"),
-        network: dynamic::NETWORK.to_owned(),
-        swap_type: DynamicSwapType::Submarine,
-        input_amount_sat: amount,
-        maximum_total_fee_sat: 5_000,
-        created_at: now,
-        expires_at: now + 300,
-        destination: DynamicDestination::Bolt11Invoice {
-            value: invoice.bolt11.clone(),
-        },
-    })?;
+    let generated;
+    let validated = if let Some(validated) = supplied {
+        validated
+    } else {
+        let invoice = runtime
+            .block_on(
+                environments[0].peer_cln.invoice(
+                    &cln_id("dynamic-topology-submarine-invoice")?,
+                    Millisatoshi::from_satoshis(output_amount)
+                        .map_err(|error| format!("dynamic invoice amount is invalid: {error}"))?,
+                    "immortal-dynamic-topology-submarine",
+                    "Immortal dynamic public regtest submarine",
+                    86_400,
+                ),
+            )
+            .map_err(|error| format!("could not create dynamic submarine invoice: {error}"))?;
+        let now = unix_now()?;
+        generated = validate_dynamic_request(DynamicRequest {
+            schema: dynamic::SCHEMA.to_owned(),
+            request_id: digest("dynamic-topology-submarine-request"),
+            network: dynamic::NETWORK.to_owned(),
+            swap_type: DynamicSwapType::Submarine,
+            input_amount_sat: amount,
+            maximum_total_fee_sat: 5_000,
+            created_at: now,
+            expires_at: now + 300,
+            destination: DynamicDestination::Bolt11Invoice {
+                value: invoice.bolt11,
+            },
+        })?;
+        &generated
+    };
+    let invoice = validated
+        .invoice
+        .as_deref()
+        .ok_or_else(|| "dynamic submarine request has no invoice".to_owned())?;
+    let payment_hash = validated
+        .payment_hash
+        .as_deref()
+        .ok_or_else(|| "dynamic submarine request has no payment hash".to_owned())?;
     validated
         .require_destination_amount(output_amount)
         .map_err(|error| error.to_string())?;
-    if validated.payment_hash.as_deref() != Some(invoice.payment_hash.as_str()) {
-        return Err("dynamic invoice differs from the derived Quote output".to_owned());
-    }
     let client_input = fund_client_wallet(runtime, &environments[0])?;
     let requester_key = environments[0]
         .wallet
@@ -1244,8 +1406,8 @@ fn run_dynamic_submarine_topology(
         let input = NegotiationInput {
             journey_name,
             swap_type: "submarine",
-            payment_hash: &invoice.payment_hash,
-            invoice: Some(&invoice.bolt11),
+            payment_hash,
+            invoice: Some(invoice),
             requester_key,
             requester_funding_input: Some(&client_input),
             exit_destination_script_pubkey: &exit_destination.script_pubkey,
@@ -1256,7 +1418,7 @@ fn run_dynamic_submarine_topology(
             &provider_pubkeys[index],
             input,
             amount,
-            5_000,
+            validated.request.maximum_total_fee_sat,
         )?;
         require_dynamic_destination_commitment(&quoted, &validated.destination_commitment_sha256)?;
         candidates.push(funded_topology_candidate(index, quoted)?);
@@ -1271,8 +1433,8 @@ fn run_dynamic_submarine_topology(
             "dynamic_submarine_b"
         },
         swap_type: "submarine",
-        payment_hash: &invoice.payment_hash,
-        invoice: Some(&invoice.bolt11),
+        payment_hash,
+        invoice: Some(invoice),
         requester_key,
         requester_funding_input: Some(&client_input),
         exit_destination_script_pubkey: &exit_destination.script_pubkey,
@@ -1297,8 +1459,8 @@ fn run_dynamic_submarine_topology(
             "dynamic_submarine_b"
         },
         swap_type: "submarine",
-        payment_hash: &invoice.payment_hash,
-        invoice: Some(&invoice.bolt11),
+        payment_hash,
+        invoice: Some(invoice),
         requester_key,
         requester_funding_input: Some(&client_input),
         exit_destination_script_pubkey: &exit_destination.script_pubkey,
@@ -1315,7 +1477,7 @@ fn run_dynamic_submarine_topology(
         .requester_funding
         .take()
         .ok_or_else(|| "dynamic submarine has no funding transaction".to_owned())?;
-    let authorized = verify_submarine_before_fund(&session, &invoice.bolt11, &funding)?;
+    let authorized = verify_submarine_before_fund(&session, invoice, &funding)?;
     session.set_authorized_verifier(authorized)?;
     let terminal = continue_submarine(
         runtime,
@@ -1324,7 +1486,7 @@ fn run_dynamic_submarine_topology(
         amount,
         &funding.raw_transaction,
         Some(&funding.txid),
-        &invoice.payment_hash,
+        payment_hash,
     )?;
     Ok(json!({
         "swap_type":"submarine",
@@ -1342,34 +1504,41 @@ fn run_dynamic_reverse_topology(
     environments: &[SmokeEnvironment],
     provider_pubkeys: &[String],
     amount: u64,
+    supplied: Option<&dynamic::ValidatedDynamicRequest>,
 ) -> Result<Value, String> {
     let expected = dynamic_quote(SwapType::Reverse, amount)?;
     let output_amount = canonical_u64(&expected.output_amount)?;
-    let destination = environments[0]
-        .wallet
-        .derive_address(
-            WalletPath::new(0, true, 31)
-                .map_err(|error| format!("dynamic destination path is invalid: {error}"))?,
-        )
-        .map_err(|error| format!("could not derive dynamic destination: {error}"))?;
-    let now = unix_now()?;
-    let validated = validate_dynamic_request(DynamicRequest {
-        schema: dynamic::SCHEMA.to_owned(),
-        request_id: digest("dynamic-topology-reverse-request"),
-        network: dynamic::NETWORK.to_owned(),
-        swap_type: DynamicSwapType::Reverse,
-        input_amount_sat: amount,
-        maximum_total_fee_sat: 5_000,
-        created_at: now,
-        expires_at: now + 300,
-        destination: DynamicDestination::BitcoinAddress {
-            value: destination.address.clone(),
-        },
-    })?;
-    if validated.destination_script_pubkey.as_deref() != Some(destination.script_pubkey.as_slice())
-    {
-        return Err("dynamic address parser changed the entered destination".to_owned());
-    }
+    let generated;
+    let validated = if let Some(validated) = supplied {
+        validated
+    } else {
+        let destination = environments[0]
+            .wallet
+            .derive_address(
+                WalletPath::new(0, true, 31)
+                    .map_err(|error| format!("dynamic destination path is invalid: {error}"))?,
+            )
+            .map_err(|error| format!("could not derive dynamic destination: {error}"))?;
+        let now = unix_now()?;
+        generated = validate_dynamic_request(DynamicRequest {
+            schema: dynamic::SCHEMA.to_owned(),
+            request_id: digest("dynamic-topology-reverse-request"),
+            network: dynamic::NETWORK.to_owned(),
+            swap_type: DynamicSwapType::Reverse,
+            input_amount_sat: amount,
+            maximum_total_fee_sat: 5_000,
+            created_at: now,
+            expires_at: now + 300,
+            destination: DynamicDestination::BitcoinAddress {
+                value: destination.address,
+            },
+        })?;
+        &generated
+    };
+    let destination_script = validated
+        .destination_script_pubkey
+        .as_deref()
+        .ok_or_else(|| "dynamic reverse request has no destination script".to_owned())?;
     let preimage = random_32()?;
     let payment_hash = lower_hex(&sha256(&preimage));
     store_funded_secret(&environments[0].control.paths, "dynamic_reverse", &preimage)?;
@@ -1394,7 +1563,7 @@ fn run_dynamic_reverse_topology(
             invoice: None,
             requester_key,
             requester_funding_input: None,
-            exit_destination_script_pubkey: &destination.script_pubkey,
+            exit_destination_script_pubkey: destination_script,
             presign_submarine_refund: false,
         };
         let quoted = prepare_quote_with_terms(
@@ -1402,7 +1571,7 @@ fn run_dynamic_reverse_topology(
             &provider_pubkeys[index],
             input,
             amount,
-            5_000,
+            validated.request.maximum_total_fee_sat,
         )?;
         require_dynamic_destination_commitment(&quoted, &validated.destination_commitment_sha256)?;
         candidates.push(funded_topology_candidate(index, quoted)?);
@@ -1421,7 +1590,7 @@ fn run_dynamic_reverse_topology(
         invoice: None,
         requester_key,
         requester_funding_input: None,
-        exit_destination_script_pubkey: &destination.script_pubkey,
+        exit_destination_script_pubkey: destination_script,
         presign_submarine_refund: false,
     };
     let unselected_quote = unselected.quote;
@@ -1447,7 +1616,7 @@ fn run_dynamic_reverse_topology(
         invoice: None,
         requester_key,
         requester_funding_input: None,
-        exit_destination_script_pubkey: &destination.script_pubkey,
+        exit_destination_script_pubkey: destination_script,
         presign_submarine_refund: false,
     };
     let mut session = finalize_negotiation(prepare_order(
@@ -1487,7 +1656,7 @@ fn run_dynamic_reverse_topology(
         payment_hash,
         invoice,
         claim_path,
-        destination.script_pubkey.to_vec(),
+        destination_script.to_vec(),
     )?;
     verify_dynamic_claim_destination(
         runtime,
@@ -1496,7 +1665,7 @@ fn run_dynamic_reverse_topology(
             .get("claim_txid")
             .and_then(Value::as_str)
             .ok_or_else(|| "dynamic reverse terminal result has no claim transaction".to_owned())?,
-        &destination.script_pubkey,
+        destination_script,
         destination_amount_sat,
     )?;
     Ok(json!({
@@ -1594,7 +1763,7 @@ fn verify_dynamic_claim_destination(
     runtime: &Runtime,
     bitcoind: &BitcoindClient,
     transaction_id: &str,
-    script_pubkey: &[u8; 34],
+    script_pubkey: &[u8],
     amount_sat: u64,
 ) -> Result<(), String> {
     let response = runtime

@@ -176,6 +176,33 @@ if grep -R -F "${capability}" "${gateway_state}" >/dev/null 2>&1; then
   exit 1
 fi
 
+dynamic_request="${private_root}/dynamic-request.json"
+dynamic_destination="lnbcrt-private-destination-never-public"
+jq -cn --arg session "${session_id}" --arg destination "${dynamic_destination}" '{
+  schema:"openagents.immortal.public-regtest-dynamic-submission.v1",
+  sandbox_session_id:$session,
+  request:{schema:"openagents.immortal.dynamic-public-regtest-request.v1",destination:$destination}
+}' >"${dynamic_request}"
+for attempt in 1 2; do
+  test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --header "Origin: ${origin}" \
+    --header "X-Immortal-Client-IP: ${client_ip}" \
+    --header "Authorization: ImmortalRegtest ${capability}" \
+    --header 'Content-Type: application/json' \
+    --data-binary "@${dynamic_request}" \
+    "${url}/v1/public-regtest/sessions/${session_id}/requests")" = 202
+done
+test -s "${gateway_state}/sessions/${session_id}/private-dynamic-request.json"
+changed_dynamic="${private_root}/changed-dynamic-request.json"
+jq '.request.destination = "changed"' "${dynamic_request}" >"${changed_dynamic}"
+test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --header "Origin: ${origin}" \
+  --header "X-Immortal-Client-IP: ${client_ip}" \
+  --header "Authorization: ImmortalRegtest ${capability}" \
+  --header 'Content-Type: application/json' \
+  --data-binary "@${changed_dynamic}" \
+  "${url}/v1/public-regtest/sessions/${session_id}/requests")" = 409
+
 effect_id="$(printf '33%.0s' $(seq 1 32))"
 engine_session="$(printf '11%.0s' $(seq 1 32))"
 order_id="$(printf '22%.0s' $(seq 1 32))"
@@ -202,8 +229,14 @@ curl --fail --silent --show-error \
   --header "X-Immortal-Client-IP: ${client_ip}" \
   --header "Authorization: ImmortalRegtest ${capability}" \
   "${url}/v1/public-regtest/sessions/${session_id}" >"${manifest}"
+if grep -F "${dynamic_destination}" "${manifest}" >/dev/null; then
+  echo "test-public-regtest-gateway: private dynamic destination reached signed manifest" >&2
+  exit 1
+fi
 jq -e --arg provider "${provider}" --arg effect "${effect_id}" '
   .manifest.revoked == false and
+  .manifest.dynamic_request == null and
+  .manifest.journey == null and
   (.manifest.providers | index($provider)) != null and
   .manifest.effects == [{
     provider_pubkey:$provider,

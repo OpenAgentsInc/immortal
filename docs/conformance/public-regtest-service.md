@@ -32,6 +32,13 @@ bounded readiness record. It mines at most six blocks in one pass, and only
 when an admitted public effect exists and the private regtest mempool is not
 empty. Miner RPC is never public.
 
+The same loop launches at most one worker per pending capability-bound
+dynamic request. Workers run asynchronously so the controller can continue
+mining, use a session-specific requester state directory, and retain a PID
+lock that is recovered after operator replacement. The worker executes the
+ordinary two-provider protocol path; the loop neither rewrites the request
+nor receives a generic wallet/RPC method.
+
 Each Lightning node must retain at least 250,000,000 msat on both sides and
 the aggregate capacity bound is 10,000,000,000 msat. Depletion first makes
 readiness false. With no active session or outstanding effect, the controller

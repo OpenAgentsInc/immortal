@@ -97,8 +97,11 @@ pub struct BrowserSession<'a> {
 }
 
 pub fn enabled_for(journey: &str) -> bool {
-    std::env::var("IMMORTAL_LAB_BROWSER_DEMO_MODE").as_deref() == Ok("1")
-        && matches!(journey, "submarine" | "reverse")
+    (std::env::var("IMMORTAL_LAB_BROWSER_DEMO_MODE").as_deref() == Ok("1")
+        || std::env::var_os("IMMORTAL_PUBLIC_REGTEST_SESSION_ID").is_some())
+        && (matches!(journey, "submarine" | "reverse")
+            || journey.starts_with("dynamic_submarine_")
+            || journey.starts_with("dynamic_reverse_"))
 }
 
 pub fn await_engine_effect(
@@ -126,7 +129,7 @@ pub fn await_engine_effect(
     let effect = BrowserEffectRequest {
         schema: EFFECT_SCHEMA.to_owned(),
         network: REGTEST_NETWORK.to_owned(),
-        journey: session.journey.to_owned(),
+        journey: session.swap_type.to_owned(),
         session_id: request.session_id.clone(),
         order_id: request.order_id.clone(),
         effect_id: request.action.effect_id().to_owned(),

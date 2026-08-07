@@ -69,6 +69,7 @@ fn execute(command: Command) -> Result<(), Exit> {
         Command::BrowserDemoAdapter => emit(browser_demo::run_server()),
         Command::PublicRegtestGateway => emit(public_regtest_gateway::run_server()),
         Command::PublicRegtestWorkerOnce => emit(public_regtest_gateway::run_fixture_worker_once()),
+        Command::PublicRegtestDynamicWorkerOnce => emit(funded::run_public_dynamic_worker_once()),
         Command::PublicRegtestBindFixture => {
             emit(public_regtest_gateway::bind_fixture_authorization())
         }

@@ -11,6 +11,7 @@ fail() { echo "public-regtest-operator: $*" >&2; exit 1; }
 
 case "${state_dir}" in /*) ;; *) fail "IMMORTAL_PUBLIC_REGTEST_STATE_DIR must be absolute" ;; esac
 case "${gateway_state}" in /*) ;; *) fail "gateway state directory must be absolute" ;; esac
+export IMMORTAL_PUBLIC_REGTEST_GATEWAY_STATE_DIR="${gateway_state}"
 test -f "${state_dir}/ownership.json" || fail "owned topology state is not initialized"
 for command_name in docker jq python3; do
   command -v "${command_name}" >/dev/null 2>&1 || fail "${command_name} is required"
@@ -195,12 +196,50 @@ print(json.dumps({"schema":"openagents.immortal.public-regtest-cleanup.v1","remo
 PY
 }
 
+process_dynamic_requests() {
+  local request session_id worker_lock session_state owner_pid
+  shopt -s nullglob
+  for request in "${gateway_state}"/sessions/*/private-dynamic-request.json; do
+    session_id="$(basename "$(dirname "${request}")")"
+    [[ "${session_id}" =~ ^[0-9a-f]{64}$ ]] || continue
+    session_state="${gateway_state}/sessions/${session_id}/session.json"
+    test -f "${session_state}" || continue
+    jq -e '.revoked_at == null and (.journey.stage // "") != "completed"' \
+      "${session_state}" >/dev/null 2>&1 || continue
+    worker_lock="${gateway_state}/sessions/${session_id}/dynamic-worker.lock"
+    if test -d "${worker_lock}"; then
+      owner_pid="$(cat "${worker_lock}/pid" 2>/dev/null || true)"
+      if [[ "${owner_pid}" =~ ^[0-9]+$ ]] && kill -0 "${owner_pid}" 2>/dev/null; then
+        continue
+      fi
+      rm -f -- "${worker_lock}/pid"
+      rmdir "${worker_lock}" 2>/dev/null || continue
+    fi
+    if ! mkdir "${worker_lock}" 2>/dev/null; then continue; fi
+    install -d -m 0700 "${state_dir}/state/public-sessions/${session_id}"
+    (
+      printf '%s\n' "${BASHPID}" >"${worker_lock}/pid"
+      if ! "${compose[@]}" --profile acceptance run --rm \
+        -e "IMMORTAL_PUBLIC_REGTEST_SESSION_ID=${session_id}" \
+        -e "IMMORTAL_LAB_STATE_DIR=/state/public-sessions/${session_id}" \
+        wallet-driver public-regtest-dynamic-worker-once; then
+        echo "public-regtest-operator: dynamic worker failed for ${session_id}" >&2
+      fi
+      rm -f -- "${worker_lock}/pid"
+      rmdir "${worker_lock}" 2>/dev/null || true
+    ) &
+    break
+  done
+  shopt -u nullglob
+}
+
 case "${1:-}" in
-  once) write_readiness; cleanup_sessions ;;
+  once) write_readiness; process_dynamic_requests; cleanup_sessions ;;
   status) test -f "${gateway_state}/readiness.json" || fail "readiness has not been published"; cat "${gateway_state}/readiness.json" ;;
   loop)
     while true; do
       write_readiness || true
+      process_dynamic_requests || true
       mine_once || true
       cleanup_sessions || true
       if jq -e '

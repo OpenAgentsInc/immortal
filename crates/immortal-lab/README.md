@@ -29,6 +29,7 @@ primitives) against a loopback dev relay — the same wire
 | `public-regtest-gateway` | Starts the distinct capability-scoped public-regtest boundary behind an operator TLS proxy. |
 | `public-regtest-bind-fixture` | Privately binds one closed redacted engine authorization under an explicit fixture gate. |
 | `public-regtest-worker-once` | Privately proves one admitted effect/receipt handoff without adding a public rail method. |
+| `public-regtest-dynamic-worker-once` | Consumes one capability-bound request, runs the ordinary two-provider funded path, and publishes only redacted terminal evidence. |
 | `status` | Prints the persisted state (identity pubkey, discovery summary, sessions and their steps). |
 | `run --to <step>` | Runs the no-spend preflight through `verify`, or funded submarine → reverse claim → reverse refund journeys through the selected funded step. |
 
