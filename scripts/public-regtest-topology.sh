@@ -245,8 +245,10 @@ for name in sys.argv[1:]:
         rewritten.append(replacement)
     if file_changed:
         changed = True
+        metadata = path.stat()
         temporary = path.with_name(path.name + ".pricing-next")
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchown(descriptor, metadata.st_uid, metadata.st_gid)
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
             output.write("\n".join(rewritten) + "\n")
             output.flush()

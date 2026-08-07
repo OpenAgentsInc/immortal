@@ -106,6 +106,7 @@ grep -Fq 'sendtoaddress "${address}" 0.1' "${runner}"
 grep -A12 'if test -f "${manifest}"' "${runner}" | grep -Fq 'bootstrap'
 grep -A7 'provider-a|provider-b)' "${runner}" | grep -Fq 'sleep 1'
 grep -Fq 'reconcile_public_provider_pricing' "${runner}"
+grep -Fq 'os.fchown(descriptor, metadata.st_uid, metadata.st_gid)' "${runner}"
 
 rendered="$(
   IMMORTAL_PUBLIC_REGTEST_STATE_DIR="${state_dir}" \
