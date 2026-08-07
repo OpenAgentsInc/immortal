@@ -23,6 +23,7 @@ enum FundedError {
     Runtime,
     Database(String),
     Bitcoind(String),
+    Arkd(String),
     Elementsd(String),
     Lightning(String),
     Wallet(String),
@@ -41,6 +42,7 @@ impl fmt::Display for FundedError {
             Self::Runtime => formatter.write_str("provider async runtime could not start"),
             Self::Database(error) => write!(formatter, "provider database startup failed: {error}"),
             Self::Bitcoind(error) => write!(formatter, "provider bitcoind startup failed: {error}"),
+            Self::Arkd(error) => write!(formatter, "provider arkd startup failed: {error}"),
             Self::Elementsd(error) => {
                 write!(formatter, "provider elementsd startup failed: {error}")
             }
@@ -95,6 +97,11 @@ async fn run_async() -> Result<(), FundedError> {
         .map_err(|error| FundedError::Configuration(error.to_string()))?;
     let signer = signer_from_environment().map_err(FundedError::Configuration)?;
     verify_bitcoind(&config).await?;
+    if let Some(arkd) = &config.arkd {
+        arkd.info()
+            .await
+            .map_err(|error| FundedError::Arkd(error.to_string()))?;
+    }
     if let Some(elementsd) = &config.elementsd {
         elementsd
             .startup_probe("provider-startup:liquid")

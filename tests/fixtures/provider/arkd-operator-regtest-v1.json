@@ -1,0 +1,35 @@
+{
+  "schema": "openagents.immortal.arkd-operator.v1",
+  "source_commit": "8b34e352859595cc03ba22ffa35088ab88b87fd9",
+  "descriptor": {
+    "network_id": "bip122:0f9188f13cb7b2c9e5c30f844f792506",
+    "protocol_family": "arkade",
+    "protocol_version": "arkade-regtest-v1",
+    "operator_keys": {
+      "signer_pubkey": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "forfeit_pubkey": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "server_pubkey": null
+    },
+    "operator_policy_sha256": "a9fbbe27f95ce751e83e513f9e9b6c876f57f01f83e09ba6dd8c23db9fe27ea2"
+  },
+  "policy": {
+    "network_id": "bip122:0f9188f13cb7b2c9e5c30f844f792506",
+    "protocol_family": "arkade",
+    "protocol_version": "arkade-regtest-v1",
+    "minimum_vtxo_amount": "1",
+    "maximum_vtxo_amount": "10000000",
+    "maximum_input_vtxos": 32,
+    "maximum_graph_transactions": 64,
+    "maximum_parent_edges": 32,
+    "maximum_graph_bytes": 262144,
+    "maximum_transaction_weight": 400000,
+    "expiry_domain": "block_height",
+    "minimum_expiry_delta": "20",
+    "unilateral_exit_domain": "blocks",
+    "unilateral_exit_delay": "10",
+    "checkpoint_script_sha256": "ea35731c029cf1820f8f1fc75b932c9904c7d69c8a98e11dff74d0e746733a90",
+    "fee_rule_sha256": "c36381a16e0189605c6923701f6e4cc1b6c00bbc989e084cdf9e60a2fd96a36c"
+  },
+  "operator_identity_sha256": "2d66cea26a24fc3f91b81559d83b9ddd456a71947e27249a389eb216f66fb4f9",
+  "operator_policy_sha256": "a9fbbe27f95ce751e83e513f9e9b6c876f57f01f83e09ba6dd8c23db9fe27ea2"
+}

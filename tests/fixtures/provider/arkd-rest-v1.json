@@ -1,0 +1,152 @@
+{
+  "schema": "openagents.immortal.provider-arkd-rest.v1",
+  "source": {
+    "repository": "https://github.com/arkade-os/arkd",
+    "commit": "8b34e352859595cc03ba22ffa35088ab88b87fd9",
+    "service_proto": "api-spec/protobuf/ark/v1/service.proto",
+    "indexer_proto": "api-spec/protobuf/ark/v1/indexer.proto"
+  },
+  "profile": {
+    "network": "regtest",
+    "network_id": "bip122:0f9188f13cb7b2c9e5c30f844f792506",
+    "protocol_family": "arkade",
+    "endpoint_transport": "grpc_plaintext_regtest",
+    "loopback_only": true,
+    "macaroons": false,
+    "redirects": false
+  },
+  "limits": {
+    "resolved_addresses": 8,
+    "header_bytes": 16384,
+    "request_bytes": 1048576,
+    "response_bytes": 4194304,
+    "vtxos": 32,
+    "checkpoint_transactions": 64,
+    "transaction_bytes": 1000000
+  },
+  "operator": {
+    "descriptor": {
+      "network_id": "bip122:0f9188f13cb7b2c9e5c30f844f792506",
+      "protocol_family": "arkade",
+      "protocol_version": "arkade-regtest-v1",
+      "operator_keys": {
+        "signer_pubkey": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "forfeit_pubkey": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "server_pubkey": null
+      },
+      "operator_policy_sha256": "a9fbbe27f95ce751e83e513f9e9b6c876f57f01f83e09ba6dd8c23db9fe27ea2"
+    },
+    "policy": {
+      "network_id": "bip122:0f9188f13cb7b2c9e5c30f844f792506",
+      "protocol_family": "arkade",
+      "protocol_version": "arkade-regtest-v1",
+      "minimum_vtxo_amount": "1",
+      "maximum_vtxo_amount": "10000000",
+      "maximum_input_vtxos": 32,
+      "maximum_graph_transactions": 64,
+      "maximum_parent_edges": 32,
+      "maximum_graph_bytes": 262144,
+      "maximum_transaction_weight": 400000,
+      "expiry_domain": "block_height",
+      "minimum_expiry_delta": "20",
+      "unilateral_exit_domain": "blocks",
+      "unilateral_exit_delay": "10",
+      "checkpoint_script_sha256": "ea35731c029cf1820f8f1fc75b932c9904c7d69c8a98e11dff74d0e746733a90",
+      "fee_rule_sha256": "c36381a16e0189605c6923701f6e4cc1b6c00bbc989e084cdf9e60a2fd96a36c"
+    },
+    "operator_identity_sha256": "2d66cea26a24fc3f91b81559d83b9ddd456a71947e27249a389eb216f66fb4f9",
+    "operator_policy_sha256": "a9fbbe27f95ce751e83e513f9e9b6c876f57f01f83e09ba6dd8c23db9fe27ea2",
+    "signer_pubkey": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+    "forfeit_pubkey": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+    "checkpoint_tapscript_sha256": "ea35731c029cf1820f8f1fc75b932c9904c7d69c8a98e11dff74d0e746733a90",
+    "vtxo_min_amount": 1,
+    "vtxo_max_amount": 10000000,
+    "unilateral_exit_delay": 10,
+    "max_tx_weight": 400000
+  },
+  "calls": [
+    {
+      "name": "arkd-rest-v1-info",
+      "request": {"method": "GET", "path": "/v1/info", "body": null},
+      "response": {
+        "version": "0.8.0",
+        "signerPubkey": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "forfeitPubkey": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "forfeitAddress": "bcrt1pfixture",
+        "checkpointTapscript": "204d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766ac",
+        "network": "regtest",
+        "sessionDuration": 10,
+        "unilateralExitDelay": 10,
+        "boardingExitDelay": 30,
+        "utxoMinAmount": 1,
+        "utxoMaxAmount": 10000000,
+        "vtxoMinAmount": 1,
+        "vtxoMaxAmount": 10000000,
+        "dust": 330,
+        "fees": {"intentFee": {"offchainInput": "0", "offchainOutput": "0", "onchainInput": "0", "onchainOutput": "0"}, "txFeeRate": "2"},
+        "deprecatedSigners": [],
+        "serviceStatus": {"wallet": "ready"},
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "maxTxWeight": 400000,
+        "maxOpReturnOutputs": 1
+      }
+    },
+    {
+      "name": "arkd-rest-v1-vtxo-observation",
+      "request": {"method": "GET", "path": "/v1/indexer/vtxos?outpoints=395559425d103f3c76d13a85f3443d56c853fd5ac6c5291a1a4178c4d7289196%3A0&page.size=1&page.index=0", "body": null},
+      "response": {
+        "vtxos": [{
+          "outpoint": {"txid": "395559425d103f3c76d13a85f3443d56c853fd5ac6c5291a1a4178c4d7289196", "vout": 0},
+          "createdAt": 1700000000,
+          "expiresAt": 500,
+          "amount": 100000,
+          "script": "51204d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+          "isPreconfirmed": false,
+          "isSwept": false,
+          "isUnrolled": false,
+          "isSpent": false,
+          "spentBy": "",
+          "commitmentTxids": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+          "settledBy": "",
+          "arkTxid": "395559425d103f3c76d13a85f3443d56c853fd5ac6c5291a1a4178c4d7289196",
+          "assets": [],
+          "depth": 1
+        }],
+        "page": {"current": 0, "next": 0, "total": 1}
+      }
+    },
+    {
+      "name": "arkd-rest-v1-submit",
+      "request": {
+        "method": "POST",
+        "path": "/v1/tx/submit",
+        "body": {
+          "signedArkTx": "02000000000101aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000ffffffff02a086010000000000225120a59934408e9c1e7d1e06932683d749ea4c613143b6b5dc5c922082c31adf912610270000000000002251204d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076601403edc2f0dbed09ee01c4fba67320fddb0e43371e5ba8b86670d974f32370fc78eac1c3974206afae6a112bcc546a8d910305a75e5865a4b8353b1495c41cc186d00000000",
+          "checkpointTxs": []
+        }
+      },
+      "response": {
+        "arkTxid": "395559425d103f3c76d13a85f3443d56c853fd5ac6c5291a1a4178c4d7289196",
+        "finalArkTx": "02000000000101aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000ffffffff02a086010000000000225120a59934408e9c1e7d1e06932683d749ea4c613143b6b5dc5c922082c31adf912610270000000000002251204d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076601403edc2f0dbed09ee01c4fba67320fddb0e43371e5ba8b86670d974f32370fc78eac1c3974206afae6a112bcc546a8d910305a75e5865a4b8353b1495c41cc186d00000000",
+        "signedCheckpointTxs": []
+      }
+    },
+    {
+      "name": "arkd-rest-v1-finalize",
+      "request": {
+        "method": "POST",
+        "path": "/v1/tx/finalize",
+        "body": {"arkTxid": "395559425d103f3c76d13a85f3443d56c853fd5ac6c5291a1a4178c4d7289196", "finalCheckpointTxs": []}
+      },
+      "response": {}
+    }
+  ],
+  "negative_cases": [
+    {"name": "arkd-rest-v1-non-loopback", "expected": "arkd_non_loopback_endpoint"},
+    {"name": "arkd-rest-v1-redirect", "expected": "arkd_http_redirect"},
+    {"name": "arkd-rest-v1-duplicate-json", "expected": "arkd_duplicate_json"},
+    {"name": "arkd-rest-v1-operator-key-change", "expected": "swp_ark_operator_mismatch"},
+    {"name": "arkd-rest-v1-vtxo-state-change", "expected": "swp_ark_vtxo_invalid"},
+    {"name": "arkd-rest-v1-submit-txid-change", "expected": "swp_external_effect_conflict"}
+  ]
+}

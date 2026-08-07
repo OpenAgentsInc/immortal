@@ -175,6 +175,10 @@ The funded process connects only to a `ws://` relay whose resolved and
 connected peer is loopback, a loopback bitcoind JSON-RPC endpoint, and one
 selected Lightning rail. An explicitly enabled Liquid rail adds a loopback
 `elementsd` JSON-RPC endpoint and a provider-owned Elements wallet. The
+fixture-gated Ark adapter may connect to a loopback `arkd` REST mapping only
+under the regtest adversarial profile. It verifies the live public operator
+policy at startup; Ark session execution remains disabled until its separate
+runtime packet. The
 default `cln` rail uses an absolute Unix socket and keeps the seven-dependency
 build free of a TLS stack. The optional `lnd` feature adds the owner-approved
 rustls chain and speaks bounded REST over TLS to a loopback LND endpoint whose
@@ -224,6 +228,11 @@ transaction commitments and locally verified evidence.
 | `IMMORTAL_PROVIDER_ELEMENTSD_WALLET` | unset | Required when Liquid is enabled. Bounded provider-owned wallet name used only for its own output unblinding, inventory, construction, and broadcast. |
 | `IMMORTAL_PROVIDER_LIQUID_NETWORK_ID` | unset | Required when Liquid is enabled. Exact `bip122:<32-lower-hex>` identifier derived from the configured Elements genesis block. |
 | `IMMORTAL_PROVIDER_LIQUID_PEGGED_ASSET` | unset | Required when Liquid is enabled. Exact 64-lower-hex display-order `pegged_asset` returned by that node. V1 admits no other Elements asset. |
+| `IMMORTAL_PROVIDER_ARKD_ENABLED` | unset | The sole admitted value is `true`. It is rejected unless `IMMORTAL_PROVIDER_BITCOIN_NETWORK=regtest` and `IMMORTAL_PROVIDER_LAB_PROFILE=regtest_adversarial`; absence disables Ark and rejects stray arkd settings. |
+| `IMMORTAL_PROVIDER_ARKD_HOST` | unset | Required when arkd is enabled. Host that resolves and connects only to loopback. |
+| `IMMORTAL_PROVIDER_ARKD_PORT` | unset | Required when arkd is enabled. Plaintext REST-mapping port, 1–65,535. |
+| `IMMORTAL_PROVIDER_ARKD_OPERATOR_FILE` | unset | Required when arkd is enabled. Absolute path to a nonsymlink regular public operator document with the exact pinned source revision, descriptor, policy, identity digest, and policy digest. It contains no credential or key material. |
+| `IMMORTAL_PROVIDER_ARKD_CONFORMANCE_SHA256` | unset | Required when arkd is enabled. Exact digest exported at `.rails.arkd.conformance_sha256`; a stale or different corpus fails startup. |
 | `IMMORTAL_PROVIDER_COOPERATIVE_SIGNING` | unset | Production opt-in for BIP-327 cooperative key-path settlement on submarine swaps. The sole value is `true`; absence keeps script-path settlement as the default. The unilateral script-path exit remains mandatory. Do not set this together with `IMMORTAL_PROVIDER_LAB_COOPERATIVE_SIGNING`. |
 | `IMMORTAL_PROVIDER_ZERO_CONF_SUBMARINE` | unset | The sole admitted value is `true`. It permits bounded zero-confirmation admission only when the requester funds the Bitcoin source leg of a submarine swap. |
 | `IMMORTAL_PROVIDER_ZERO_CONF_CHAIN` | unset | The sole admitted value is `true`. It permits bounded zero-confirmation admission only for a requester-funded Bitcoin source leg in a chain swap. Liquid source legs, reverse swaps, and provider-funded destinations remain confirmation-gated. |

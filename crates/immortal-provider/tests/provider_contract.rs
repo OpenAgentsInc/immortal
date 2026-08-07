@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use immortal_provider::contract::{
-    ProviderContractError, provider_contract_bytes, provider_contract_sha256,
-    provider_contract_value, validate_provider_contract,
+    ProviderContractError, arkd_provider_conformance_sha256, provider_contract_bytes,
+    provider_contract_sha256, provider_contract_value, validate_provider_contract,
 };
 use immortal_provider::elementsd::ELEMENTSD_PRODUCTION_RUNTIME_METHODS;
 use serde_json::{Value, json};
@@ -37,6 +37,10 @@ const ZERO_CONF_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/zero-conf-v1.json");
 const ARK_RUNTIME_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/ark-runtime-v1.json");
+const ARKD_REST_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/arkd-rest-v1.json");
+const ARKD_OPERATOR_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/arkd-operator-regtest-v1.json");
 
 #[test]
 fn provider_contract_is_canonical_byte_stable_and_matches_export() {
@@ -107,6 +111,14 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
             "tests/fixtures/provider/ark-runtime-v1.json",
             ARK_RUNTIME_FIXTURE,
         ),
+        (
+            "tests/fixtures/provider/arkd-rest-v1.json",
+            ARKD_REST_FIXTURE,
+        ),
+        (
+            "tests/fixtures/provider/arkd-operator-regtest-v1.json",
+            ARKD_OPERATOR_FIXTURE,
+        ),
     ] {
         let entry = entries.iter().find(|entry| entry["path"] == path).unwrap();
         assert_eq!(entry["bytes"], bytes.len());
@@ -139,6 +151,16 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
     assert_eq!(
         contract["rails"]["elementsd"]["runtime_methods"],
         json!(ELEMENTSD_PRODUCTION_RUNTIME_METHODS)
+    );
+    assert_eq!(
+        contract["rails"]["arkd"]["available_in"],
+        "regtest_lab_only"
+    );
+    assert_eq!(contract["rails"]["arkd"]["session_execution_wired"], false);
+    assert_eq!(contract["rails"]["arkd"]["nip11_advertised"], false);
+    assert_eq!(
+        contract["rails"]["arkd"]["conformance_sha256"],
+        arkd_provider_conformance_sha256()
     );
 }
 
@@ -386,6 +408,33 @@ fn provider_contract_distinguishes_required_and_optional_environment() {
             variable["required_when"],
             json!({
                 "environment":"IMMORTAL_PROVIDER_LIQUID_ENABLED",
+                "equals":"true",
+                "or_selector_absent":false,
+            })
+        );
+    }
+    let arkd_enabled = variables
+        .iter()
+        .find(|variable| variable["name"] == "IMMORTAL_PROVIDER_ARKD_ENABLED")
+        .expect("arkd selector environment contract");
+    assert_eq!(arkd_enabled["choices"], json!(["true"]));
+    assert_eq!(arkd_enabled["defaulted"], false);
+    assert_eq!(arkd_enabled["required_network"], "regtest");
+    assert_eq!(arkd_enabled["required_lab_profile"], "regtest_adversarial");
+    for name in [
+        "IMMORTAL_PROVIDER_ARKD_HOST",
+        "IMMORTAL_PROVIDER_ARKD_PORT",
+        "IMMORTAL_PROVIDER_ARKD_OPERATOR_FILE",
+        "IMMORTAL_PROVIDER_ARKD_CONFORMANCE_SHA256",
+    ] {
+        let variable = variables
+            .iter()
+            .find(|variable| variable["name"] == name)
+            .expect("conditional arkd environment contract");
+        assert_eq!(
+            variable["required_when"],
+            json!({
+                "environment":"IMMORTAL_PROVIDER_ARKD_ENABLED",
                 "equals":"true",
                 "or_selector_absent":false,
             })

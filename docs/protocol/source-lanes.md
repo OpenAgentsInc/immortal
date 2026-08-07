@@ -1328,3 +1328,29 @@ the provider Postgres integration test. This packet does not add arkd access,
 Ark quote/execution authority, NIP-11 advertisement, deployment, or a public
 replacement claim. The provider adapter and external-process lab remain later
 #20 packets.
+
+## M13 MKT-SWP Ark provider-adapter adoption (2026-08-07)
+
+The fourth issue #20 packet binds the pinned Arkade `arkd` revision
+`8b34e352859595cc03ba22ffa35088ab88b87fd9` to a dependency-free provider
+transport seam. `immortal-provider` speaks the revision's REST mappings for
+`GetInfo`, exact-outpoint `GetVtxos`, `SubmitTx`, and `FinalizeTx` over bounded
+HTTP/1.1. DNS results and the connected peer must all be loopback, redirects
+and credential headers are forbidden, duplicate JSON members and ambiguous
+HTTP framing fail closed, and returned transaction identifiers are recomputed
+from the exact transaction bytes.
+
+Activation is off by default and requires the exact compiled adapter digest,
+the `regtest_adversarial` lab profile, Bitcoin regtest, and an absolute
+nonsymlink public operator document. The document is closed over the source
+revision, descriptor, policy, and both recomputed digests. Before opening the
+provider database, the daemon compares live signer and forfeit keys,
+checkpoint tapscript hash, VTXO bounds, unilateral exit delay, network, and
+maximum transaction weight with that pinned policy.
+
+`tests/fixtures/provider/arkd-rest-v1.json` and
+`tests/fixtures/provider/arkd-operator-regtest-v1.json` are digest-bound by
+the provider contract. This packet adds no dependency, credential, database
+state, session execution, NIP-11 advertisement, deployment claim, or public
+replacement claim. The funded Ark actor and external-process
+permanent-operator-removal lab remain later #20 packets.

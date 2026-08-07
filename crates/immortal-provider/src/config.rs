@@ -3,9 +3,11 @@ use std::{env, fmt, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use immortal_core::liquid::{LiquidAssetId, LiquidNetworkId};
 
 use crate::{
+    arkd::{ArkdClient, ArkdEndpoint, ArkdExpectedOperator, ArkdLimits},
     bitcoind::{BitcoindAuth, BitcoindClient, BitcoindEndpoint, BitcoindLimits},
     boltz::{BoltzConfig, BoltzConfigError},
     cln::{ClnClient, ClnEndpoint, ClnLimits},
+    contract::arkd_provider_conformance_sha256,
     elementsd::{ElementsdClient, ElementsdWalletName},
     health::{AlertEndpoint, private_or_loopback},
     lightning::{ClnLightningRail, LightningRail},
@@ -38,6 +40,7 @@ pub enum ConfigError {
     Missing(&'static str),
     Invalid(&'static str),
     Bitcoind,
+    Arkd,
     Elementsd,
     Cln,
     Lnd,
@@ -53,6 +56,7 @@ impl fmt::Display for ConfigError {
             Self::Missing(name) => write!(formatter, "required provider setting {name} is missing"),
             Self::Invalid(name) => write!(formatter, "provider setting {name} is invalid"),
             Self::Bitcoind => formatter.write_str("bitcoind settings are invalid"),
+            Self::Arkd => formatter.write_str("arkd settings are invalid"),
             Self::Elementsd => formatter.write_str("elementsd settings are invalid"),
             Self::Cln => formatter.write_str("CLN settings are invalid"),
             Self::Lnd => formatter.write_str("LND settings are invalid"),
@@ -86,6 +90,7 @@ pub struct FundedProviderConfig {
     database_url: DatabaseUrl,
     pub relay_url: String,
     pub bitcoind: BitcoindClient,
+    pub arkd: Option<ArkdClient>,
     pub elementsd: Option<ElementsdClient>,
     pub lightning: Arc<dyn LightningRail>,
     pub wallet: ProviderWallet,
@@ -120,6 +125,7 @@ impl fmt::Debug for FundedProviderConfig {
             .field("database_url", &self.database_url)
             .field("relay_url", &self.relay_url)
             .field("bitcoind", &self.bitcoind)
+            .field("arkd", &self.arkd)
             .field("elementsd", &self.elementsd)
             .field("lightning", &self.lightning)
             .field("wallet", &self.wallet)
@@ -177,6 +183,7 @@ impl FundedProviderConfig {
         )
         .map_err(|_| ConfigError::Bitcoind)?;
         let elementsd = elementsd_from_lookup(optional)?;
+        let arkd = arkd_from_lookup(network, lab_timeout_profile, optional)?;
 
         let lightning = lightning_from_environment(lab_timeout_profile)?;
         let wallet =
@@ -239,6 +246,7 @@ impl FundedProviderConfig {
             database_url: DatabaseUrl(database_url),
             relay_url,
             bitcoind,
+            arkd,
             elementsd,
             lightning,
             wallet,
@@ -262,6 +270,55 @@ impl FundedProviderConfig {
     pub fn database_url(&self) -> &str {
         &self.database_url.0
     }
+}
+
+fn arkd_from_lookup(
+    network: BitcoinNetwork,
+    profile: Option<LabTimeoutProfile>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<Option<ArkdClient>, ConfigError> {
+    const SETTINGS: [&str; 4] = [
+        "IMMORTAL_PROVIDER_ARKD_HOST",
+        "IMMORTAL_PROVIDER_ARKD_PORT",
+        "IMMORTAL_PROVIDER_ARKD_OPERATOR_FILE",
+        "IMMORTAL_PROVIDER_ARKD_CONFORMANCE_SHA256",
+    ];
+    match lookup("IMMORTAL_PROVIDER_ARKD_ENABLED").as_deref() {
+        None => {
+            if SETTINGS.iter().any(|name| lookup(name).is_some()) {
+                return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_ARKD_ENABLED"));
+            }
+            return Ok(None);
+        }
+        Some("true") => {}
+        Some(_) => return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_ARKD_ENABLED")),
+    }
+    if network != BitcoinNetwork::Regtest || profile.is_none() {
+        return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_ARKD_ENABLED"));
+    }
+    let required = |name: &'static str| lookup(name).ok_or(ConfigError::Missing(name));
+    let conformance = required("IMMORTAL_PROVIDER_ARKD_CONFORMANCE_SHA256")?;
+    if conformance != arkd_provider_conformance_sha256() {
+        return Err(ConfigError::Invalid(
+            "IMMORTAL_PROVIDER_ARKD_CONFORMANCE_SHA256",
+        ));
+    }
+    let port = parse_number::<u16>(
+        "IMMORTAL_PROVIDER_ARKD_PORT",
+        &required("IMMORTAL_PROVIDER_ARKD_PORT")?,
+    )?;
+    let expected = ArkdExpectedOperator::load_document(&PathBuf::from(required(
+        "IMMORTAL_PROVIDER_ARKD_OPERATOR_FILE",
+    )?))
+    .map_err(|_| ConfigError::Arkd)?;
+    let client = ArkdClient::new(
+        ArkdEndpoint::plaintext_regtest(required("IMMORTAL_PROVIDER_ARKD_HOST")?, port)
+            .map_err(|_| ConfigError::Arkd)?,
+        expected,
+        ArkdLimits::default(),
+    )
+    .map_err(|_| ConfigError::Arkd)?;
+    Ok(Some(client))
 }
 
 fn zero_conf_from_lookup(
@@ -825,6 +882,66 @@ mod tests {
         })
         .expect("complete Liquid config");
         assert!(configured.is_some());
+    }
+
+    #[test]
+    fn arkd_configuration_is_digest_gated_and_regtest_lab_only() {
+        assert!(
+            arkd_from_lookup(BitcoinNetwork::Regtest, None, |_| None)
+                .expect("disabled arkd configuration")
+                .is_none()
+        );
+        assert!(matches!(
+            arkd_from_lookup(BitcoinNetwork::Regtest, None, |name| {
+                (name == "IMMORTAL_PROVIDER_ARKD_HOST").then(|| "127.0.0.1".to_owned())
+            }),
+            Err(ConfigError::Invalid("IMMORTAL_PROVIDER_ARKD_ENABLED"))
+        ));
+        let profile = lab_timeout_profile_from_lookup(BitcoinNetwork::Regtest, |name| {
+            (name == "IMMORTAL_PROVIDER_LAB_PROFILE").then(|| "regtest_adversarial".to_owned())
+        })
+        .expect("regtest lab profile");
+        let operator_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/provider/arkd-operator-regtest-v1.json")
+            .canonicalize()
+            .expect("operator fixture path")
+            .to_string_lossy()
+            .into_owned();
+        let conformance = arkd_provider_conformance_sha256();
+        let lookup = |name: &str| {
+            let value = match name {
+                "IMMORTAL_PROVIDER_ARKD_ENABLED" => "true".to_owned(),
+                "IMMORTAL_PROVIDER_ARKD_HOST" => "127.0.0.1".to_owned(),
+                "IMMORTAL_PROVIDER_ARKD_PORT" => "17070".to_owned(),
+                "IMMORTAL_PROVIDER_ARKD_OPERATOR_FILE" => operator_path.clone(),
+                "IMMORTAL_PROVIDER_ARKD_CONFORMANCE_SHA256" => conformance.clone(),
+                _ => return None,
+            };
+            Some(value)
+        };
+        let configured = arkd_from_lookup(BitcoinNetwork::Regtest, profile, lookup)
+            .expect("complete arkd configuration")
+            .expect("enabled arkd client");
+        assert_eq!(
+            configured.operator_identity_sha256(),
+            "2d66cea26a24fc3f91b81559d83b9ddd456a71947e27249a389eb216f66fb4f9"
+        );
+        assert!(matches!(
+            arkd_from_lookup(BitcoinNetwork::Mainnet, profile, lookup),
+            Err(ConfigError::Invalid("IMMORTAL_PROVIDER_ARKD_ENABLED"))
+        ));
+        assert!(matches!(
+            arkd_from_lookup(BitcoinNetwork::Regtest, profile, |name| {
+                if name == "IMMORTAL_PROVIDER_ARKD_CONFORMANCE_SHA256" {
+                    Some("00".repeat(32))
+                } else {
+                    lookup(name)
+                }
+            }),
+            Err(ConfigError::Invalid(
+                "IMMORTAL_PROVIDER_ARKD_CONFORMANCE_SHA256"
+            ))
+        ));
     }
 
     #[test]

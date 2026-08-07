@@ -50,6 +50,12 @@ const ZERO_CONF_FIXTURE: &[u8] =
 const ARK_RUNTIME_FIXTURE_PATH: &str = "tests/fixtures/provider/ark-runtime-v1.json";
 const ARK_RUNTIME_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/ark-runtime-v1.json");
+const ARKD_REST_FIXTURE_PATH: &str = "tests/fixtures/provider/arkd-rest-v1.json";
+const ARKD_REST_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/arkd-rest-v1.json");
+const ARKD_OPERATOR_FIXTURE_PATH: &str = "tests/fixtures/provider/arkd-operator-regtest-v1.json";
+const ARKD_OPERATOR_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/arkd-operator-regtest-v1.json");
 pub(crate) const BOLTZ_CONFIGURATION_SCHEMA: &str = concat!(
     "openagents.mkt-swp.boltz-provider-api.config.v1\n",
     "activation=exact_fixture_digest_private_bind_and_exact_browser_origin\n",
@@ -68,6 +74,26 @@ pub fn boltz_provider_conformance_sha256() -> String {
     digest.update(BOLTZ_API_FIXTURE);
     digest.update(b"\0");
     digest.update(BOLTZ_CONFIGURATION_SCHEMA.as_bytes());
+    lower_hex(&digest.finalize())
+}
+pub(crate) const ARKD_CONFIGURATION_SCHEMA: &str = concat!(
+    "openagents.mkt-swp.arkd-provider-adapter.config.v1\n",
+    "activation=exact_fixture_digest_regtest_adversarial_profile\n",
+    "transport=bounded_loopback_http_1_1_rest\n",
+    "operator=closed_public_document_and_live_info_match\n",
+    "credentials=forbidden\n",
+    "session_execution=disabled\n",
+    "nip11_advertisement=never\n",
+);
+
+pub fn arkd_provider_conformance_sha256() -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"openagents.mkt-swp.arkd-provider-adapter.conformance.v1\0");
+    digest.update(ARKD_REST_FIXTURE);
+    digest.update(b"\0");
+    digest.update(ARKD_OPERATOR_FIXTURE);
+    digest.update(b"\0");
+    digest.update(ARKD_CONFIGURATION_SCHEMA.as_bytes());
     lower_hex(&digest.finalize())
 }
 const NIP_MANIFEST: &str = include_str!("../../../nips/manifest.json");
@@ -123,7 +149,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 "custody_bearing":true,
                 "rail_access":true,
                 "prerequisites":["postgres","bitcoind","configured_lightning_rail"],
-                "optional_prerequisites":["elementsd"]
+                "optional_prerequisites":["elementsd","arkd_regtest_lab"]
             },
             "no_spend":{
                 "custody_bearing":false,
@@ -238,6 +264,34 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                     "unsynchronized_action":"defer_quote",
                     "network_mismatch_action":"fail_closed"
                 }
+            },
+            "arkd":{
+                "enabled_by_default":false,
+                "enabled_by":"IMMORTAL_PROVIDER_ARKD_ENABLED=true",
+                "available_in":"regtest_lab_only",
+                "source_revision":"8b34e352859595cc03ba22ffa35088ab88b87fd9",
+                "conformance_sha256":arkd_provider_conformance_sha256(),
+                "transport":"bounded_http_1_1_rest",
+                "network_scope":"resolved_and_connected_loopback_only",
+                "endpoint_transport":"grpc_plaintext_regtest",
+                "authentication":"none_in_owned_lab_namespace",
+                "operator_document":"absolute_regular_non_symlink_public_file",
+                "startup_probe":"exact_live_info_match_before_database_open",
+                "redirects":false,
+                "one_request_per_connection":true,
+                "operator_binding":[
+                    "network",
+                    "signer_pubkey",
+                    "forfeit_pubkey",
+                    "checkpoint_tapscript_sha256",
+                    "vtxo_amount_bounds",
+                    "unilateral_exit_delay",
+                    "maximum_transaction_weight"
+                ],
+                "runtime_methods":["get_info","get_vtxos","submit_tx","finalize_tx"],
+                "get_info_is_verification_authority":false,
+                "session_execution_wired":false,
+                "nip11_advertised":false
             }
         },
         "execution":{
@@ -445,7 +499,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
         "v1_exclusions":[
             "zmq",
             "outbound_https_price_feeds",
-            "ark",
+            "ark_session_execution",
             "evm",
             "cashu",
             "autoswap_inventory_strategy"
@@ -468,7 +522,9 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 fixture_entry(LIQUID_FIXTURE_PATH, LIQUID_FIXTURE),
                 fixture_entry(LIQUID_RUNTIME_FIXTURE_PATH, LIQUID_RUNTIME_FIXTURE),
                 fixture_entry(ZERO_CONF_FIXTURE_PATH, ZERO_CONF_FIXTURE),
-                fixture_entry(ARK_RUNTIME_FIXTURE_PATH, ARK_RUNTIME_FIXTURE)
+                fixture_entry(ARK_RUNTIME_FIXTURE_PATH, ARK_RUNTIME_FIXTURE),
+                fixture_entry(ARKD_REST_FIXTURE_PATH, ARKD_REST_FIXTURE),
+                fixture_entry(ARKD_OPERATOR_FIXTURE_PATH, ARKD_OPERATOR_FIXTURE)
             ]
         },
         "relay_contract_affected":false,
@@ -495,6 +551,15 @@ fn limits_contract() -> Value {
             "snapshot_bytes":crate::session::MAX_PROVIDER_SNAPSHOT_BYTES
         },
         "rail_rpc":{
+            "arkd":{
+                "resolved_addresses":8,
+                "header_bytes":16 * 1024,
+                "request_bytes":1024 * 1024,
+                "response_bytes":4 * 1024 * 1024,
+                "vtxos":32,
+                "checkpoint_transactions":64,
+                "transaction_bytes":1_000_000
+            },
             "bitcoind":{
                 "header_bytes":crate::bitcoind::DEFAULT_MAX_HEADER_BYTES,
                 "request_bytes":crate::bitcoind::DEFAULT_MAX_REQUEST_BYTES,
@@ -1149,6 +1214,40 @@ fn environment_contract() -> Value {
             Some("lowercase_hex"),
             false
         )),
+        arkd_selector_environment(),
+        conditional_arkd_environment(optional_env_string(
+            "IMMORTAL_PROVIDER_ARKD_HOST",
+            &["funded"],
+            1,
+            253,
+            false,
+            Some("loopback_host"),
+            false
+        )),
+        conditional_arkd_environment(optional_env_integer_without_default(
+            "IMMORTAL_PROVIDER_ARKD_PORT",
+            &["funded"],
+            1,
+            65535
+        )),
+        conditional_arkd_environment(optional_env_string(
+            "IMMORTAL_PROVIDER_ARKD_OPERATOR_FILE",
+            &["funded"],
+            1,
+            4096,
+            false,
+            Some("absolute_regular_non_symlink_public_file"),
+            false
+        )),
+        conditional_arkd_environment(optional_env_string(
+            "IMMORTAL_PROVIDER_ARKD_CONFORMANCE_SHA256",
+            &["funded"],
+            64,
+            64,
+            false,
+            Some("exact_compiled_lowercase_sha256"),
+            false
+        )),
         lightning_selector_environment(),
         conditional_lightning_environment(
             optional_env_string(
@@ -1464,6 +1563,18 @@ fn liquid_selector_environment() -> Value {
     )
 }
 
+fn arkd_selector_environment() -> Value {
+    let mut value = optional_environment(
+        env_choice("IMMORTAL_PROVIDER_ARKD_ENABLED", &["funded"], &["true"]),
+        &["funded"],
+        false,
+    );
+    value["required_network"] = Value::String("regtest".to_owned());
+    value["required_lab_profile"] = Value::String("regtest_adversarial".to_owned());
+    value["enabled_by_default"] = Value::Bool(false);
+    value
+}
+
 fn lab_profile_environment() -> Value {
     let mut value = optional_environment(
         env_choice(
@@ -1529,6 +1640,15 @@ fn conditional_lightning_environment(
 fn conditional_liquid_environment(mut value: Value) -> Value {
     value["required_when"] = json!({
         "environment":"IMMORTAL_PROVIDER_LIQUID_ENABLED",
+        "equals":"true",
+        "or_selector_absent":false,
+    });
+    value
+}
+
+fn conditional_arkd_environment(mut value: Value) -> Value {
+    value["required_when"] = json!({
+        "environment":"IMMORTAL_PROVIDER_ARKD_ENABLED",
         "equals":"true",
         "or_selector_absent":false,
     });
@@ -1655,6 +1775,14 @@ fn valid_conditional_environment_contract(name: &str, variable: &Map<String, Val
             | "IMMORTAL_PROVIDER_LIQUID_PEGGED_ASSET"
     ) {
         Some(("IMMORTAL_PROVIDER_LIQUID_ENABLED", "true", false))
+    } else if matches!(
+        name,
+        "IMMORTAL_PROVIDER_ARKD_HOST"
+            | "IMMORTAL_PROVIDER_ARKD_PORT"
+            | "IMMORTAL_PROVIDER_ARKD_OPERATOR_FILE"
+            | "IMMORTAL_PROVIDER_ARKD_CONFORMANCE_SHA256"
+    ) {
+        Some(("IMMORTAL_PROVIDER_ARKD_ENABLED", "true", false))
     } else {
         None
     };
