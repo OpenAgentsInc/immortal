@@ -211,6 +211,14 @@
       "expected_watch_completion_reason": "claim_settled"
     },
     {
+      "name": "provider-v1-bitcoin-watch-evidence-class",
+      "runtime_assertion": "bitcoin_watch_evidence_class",
+      "job_kinds": ["claim_broadcast", "refund_broadcast"],
+      "expected_class": "bitcoin_spend",
+      "reference": "spent_outpoint",
+      "forbidden_classes": ["claim", "refund"]
+    },
+    {
       "name": "provider-v1-hard-reservation-overallocation-disposition",
       "requested_input_within_total_rail_capacity": true,
       "active_hard_reservations_reduce_available_capacity_below_request": true,

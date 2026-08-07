@@ -3661,6 +3661,61 @@ mod tests {
             public_claim_transaction_id(&records).expect("public claim transaction"),
             transaction_id
         );
+        assert_eq!(
+            project_status(&"a".repeat(64), &records).expect("completed status projection")["status"],
+            "transaction.claimed"
+        );
+    }
+
+    #[test]
+    fn pending_claim_projection_requires_chain_spend_evidence() {
+        let mut records = session_records_fixture("submarine");
+        for (index, state) in [
+            "accepted",
+            "lock_terms_ready",
+            "funding_observed",
+            "funding_final",
+            "lightning_payment_pending",
+            "lightning_paid",
+            "provider_claim_pending",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut extra = match state {
+                "funding_observed" => evidence_extra("submarine", "measured", "bitcoin_output"),
+                "funding_final" => evidence_extra("submarine", "verified", "bitcoin_output"),
+                "lightning_paid" => evidence_extra("submarine", "settled", "lightning_payment"),
+                "provider_claim_pending" => {
+                    evidence_extra("submarine", "measured", "bitcoin_spend")
+                }
+                _ => Map::new(),
+            };
+            if state == "provider_claim_pending" {
+                extra.insert("transaction_id".to_owned(), Value::String("f".repeat(64)));
+            }
+            append_status(
+                &mut records,
+                ParticipantRole::Provider,
+                u64::try_from(index).expect("pending-claim state index"),
+                state,
+                extra,
+            );
+        }
+        project_status(&"a".repeat(64), &records)
+            .expect("measured Bitcoin spend is valid pending-claim evidence");
+
+        let pending = records.last_mut().expect("pending-claim Status");
+        let mut content: Value =
+            serde_json::from_str(&pending.content).expect("pending-claim content");
+        content["mkt_swp"]["evidence"]["class"] = Value::String("claim".to_owned());
+        *pending = fixture_signer(ParticipantRole::Provider).sign(
+            pending.created_at,
+            pending.kind,
+            pending.tags.clone(),
+            serde_json::to_string(&content).expect("mutated pending-claim content"),
+        );
+        assert!(project_status(&"a".repeat(64), &records).is_err());
     }
 
     #[test]

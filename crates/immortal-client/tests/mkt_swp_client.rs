@@ -101,7 +101,7 @@ fn fixture_manifest_is_complete_and_unique() {
     {
         let replay =
             immortal_client::mkt_swp_client::fixture_replay::replay_embedded_manifest().unwrap();
-        assert_eq!(replay.cases, 64);
+        assert_eq!(replay.cases, 65);
         assert_eq!(replay.custody_tripwires, 23);
         immortal_client::mkt_swp_client::fixture_replay::replay_requester_api_fixture().unwrap();
     }
@@ -129,10 +129,11 @@ fn fixture_manifest_is_complete_and_unique() {
             assert!(names.insert(name), "duplicate client case {name}");
         }
     }
-    assert_eq!(names.len(), 64);
+    assert_eq!(names.len(), 65);
     assert!(names.contains("swp-v1-negative-payment-hash-mismatch"));
     assert!(names.contains("swp-v1-negative-signed-status-base-state-mismatch"));
     assert!(names.contains("swp-v1-rail-evidence-orphan-crash-restore"));
+    assert!(names.contains("swp-v1-reverse-refund-bitcoin-spend-evidence"));
     assert!(names.contains("swp-v1-lightning-disposition-orphan-crash-restore"));
     assert!(names.contains("swp-v1-negative-loss-vanished-principal"));
     assert!(names.contains("swp-v1-negative-loss-unknown-input-disputed"));

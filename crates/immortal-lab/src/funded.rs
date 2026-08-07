@@ -9988,7 +9988,10 @@ impl SessionContext {
                                 .tag_values("outcome")
                                 .eq(std::iter::once(expected_outcome))
                     },
-                )?;
+                )
+                .map_err(|error| {
+                    format!("provider {expected_outcome} Close wait failed: {error}")
+                })?;
                 (received.event, Some(received.delivery))
             }
         };
@@ -10370,17 +10373,6 @@ fn verify_local_bitcoin_terminal(
                 })?,
                 true,
             )
-        }
-        "refund" => {
-            let transaction_id = check.bitcoin_settlement_txid.ok_or_else(|| {
-                "terminal Bitcoin refund has no local settlement transaction".to_owned()
-            })?;
-            if settlement_reference != transaction_id {
-                return Err(
-                    "provider Close Bitcoin reference differs from the local refund".to_owned(),
-                );
-            }
-            (transaction_id, true)
         }
         _ => {
             return Err(
@@ -14292,6 +14284,18 @@ mod tests {
     fn terminal_close_requires_one_reference_for_each_contract_leg() {
         let outpoint = format!("{}:0", "44".repeat(32));
         let payment_hash = "55".repeat(32);
+        let bitcoin_reference = json!({
+            "artifact_sha256":"33".repeat(32),
+            "class":"bitcoin_spend",
+            "observed_at":1,
+            "producer_pubkey":"77".repeat(32),
+            "rail":"bitcoin",
+            "reference":outpoint,
+            "rung":"settled",
+            "verifier_policy":"mkt-swp-bitcoin-v1",
+            "verifier_pubkey":null,
+            "view":"local bitcoind",
+        });
         let liquid_reference = json!({
             "artifact_sha256":"66".repeat(32),
             "class":"liquid_spend",
@@ -14340,11 +14344,25 @@ mod tests {
             &payment_hash,
             "mkt-swp-lightning-v1",
         );
+        let bitcoin_request = terminal_observation_request(
+            "destination",
+            "bitcoin",
+            "bitcoin_spend",
+            &outpoint,
+            "mkt-swp-bitcoin-v1",
+        );
         let exact = close(vec![liquid_reference.clone(), lightning_reference.clone()]);
         exact_close_evidence_reference(&exact, &liquid_request)
             .expect("one exact Liquid reference");
         exact_close_evidence_reference(&exact, &lightning_request)
             .expect("one exact Lightning reference");
+        exact_close_evidence_reference(&close(vec![bitcoin_reference.clone()]), &bitcoin_request)
+            .expect("one exact Bitcoin spend reference");
+        let mut legacy_refund = bitcoin_reference;
+        legacy_refund["class"] = Value::String("refund".to_owned());
+        assert!(
+            exact_close_evidence_reference(&close(vec![legacy_refund]), &bitcoin_request).is_err()
+        );
         assert!(
             exact_close_evidence_reference(
                 &close(vec![liquid_reference.clone(), liquid_reference]),

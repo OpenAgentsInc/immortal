@@ -4403,7 +4403,7 @@ impl FundedMode {
             false,
         ) == ReverseSpendDecision::ProviderRefund
         {
-            let evidence = watch_evidence(session, &refund_job, "refund", "measured", created_at)?;
+            let evidence = watch_evidence(session, &refund_job, "measured", created_at)?;
             return Self::next_status_with_evidence(
                 session,
                 created_at,
@@ -4441,8 +4441,7 @@ impl FundedMode {
                 false,
             );
             if initial_decision == ReverseSpendDecision::ProviderRefund {
-                let evidence =
-                    watch_evidence(session, &refund_job, "refund", "measured", created_at)?;
+                let evidence = watch_evidence(session, &refund_job, "measured", created_at)?;
                 return Self::next_status_with_evidence(
                     session,
                     created_at,
@@ -4518,7 +4517,7 @@ impl FundedMode {
         if tip.height < u64::from(terms.refund_height) {
             return Ok(None);
         }
-        let evidence = watch_evidence(session, &refund_job, "refund", "reserved", created_at)?;
+        let evidence = watch_evidence(session, &refund_job, "reserved", created_at)?;
         Self::next_status_with_evidence(
             session,
             created_at,
@@ -6905,7 +6904,7 @@ impl ProviderMode for FundedMode {
                     .map(Some);
                 }
                 let job = self.submarine_claim_watch(&session.config().session_id)?;
-                let evidence = watch_evidence(session, &job, "claim", "measured", created_at)?;
+                let evidence = watch_evidence(session, &job, "measured", created_at)?;
                 Self::next_status_with_evidence(
                     session,
                     created_at,
@@ -6939,7 +6938,7 @@ impl ProviderMode for FundedMode {
                 } else {
                     return Ok(None);
                 };
-                let evidence = watch_evidence(session, &job, "claim", "measured", created_at)?;
+                let evidence = watch_evidence(session, &job, "measured", created_at)?;
                 Self::next_status_with_evidence(
                     session,
                     created_at,
@@ -7014,8 +7013,7 @@ impl ProviderMode for FundedMode {
                 {
                     return Ok(None);
                 }
-                let evidence =
-                    watch_evidence(session, &job, "bitcoin_spend", "settled", created_at)?;
+                let evidence = watch_evidence(session, &job, "settled", created_at)?;
                 Self::next_status_with_evidence(
                     session,
                     created_at,
@@ -7367,7 +7365,7 @@ impl ProviderMode for FundedMode {
                 if !matches!(job.state.as_str(), "broadcast" | "confirmed") {
                     return Ok(None);
                 }
-                let evidence = watch_evidence(session, &job, "refund", "measured", created_at)?;
+                let evidence = watch_evidence(session, &job, "measured", created_at)?;
                 Self::next_status_with_evidence(
                     session,
                     created_at,
@@ -7443,7 +7441,7 @@ impl ProviderMode for FundedMode {
                 {
                     return Ok(None);
                 }
-                let evidence = watch_evidence(session, &job, "refund", "settled", created_at)?;
+                let evidence = watch_evidence(session, &job, "settled", created_at)?;
                 Self::next_status_with_evidence(
                     session,
                     created_at,
@@ -8172,16 +8170,7 @@ fn terminal_evidence_expectations(
         ]),
         ("reverse", "refunded") => Ok([
             expectation("invoice_cancelled", "lightning", "invoice", "verified"),
-            expectation(
-                "provider_refunded",
-                chain.0,
-                if chain_rail == "bitcoin" {
-                    "refund"
-                } else {
-                    chain.1
-                },
-                "settled",
-            ),
+            expectation("provider_refunded", chain.0, chain.1, "settled"),
         ]),
         _ => Err("provider Close has no funded-v1 evidence mapping".to_owned()),
     }
@@ -9399,25 +9388,14 @@ fn lightning_evidence(
 fn watch_evidence(
     session: &ProviderSession,
     job: &WatchJob,
-    class: &str,
     rung: &str,
     observed_at: u64,
 ) -> Result<Value, String> {
     let payload: BroadcastWatchPayload = serde_json::from_value(job.public_payload.clone())
         .map_err(|_| "watch payload is not a broadcast payload".to_owned())?;
-    let reference = if class == "bitcoin_spend" {
-        let spent = payload
-            .inputs
-            .first()
-            .ok_or_else(|| "Bitcoin spend watch has no input outpoint".to_owned())?;
-        bitcoin_spend_reference(&spent.txid, spent.vout)?
-    } else {
-        job.replacement_txid
-            .as_deref()
-            .or(job.broadcast_txid.as_deref())
-            .unwrap_or(&payload.expected_txid)
-            .to_owned()
-    };
+    let class = bitcoin_watch_evidence_class(&job.job_kind)?;
+    let reference = bitcoin_watch_evidence_reference(&payload)?;
+
     Ok(json!({
         "artifact_sha256":job.request_sha256,
         "class":class,
@@ -9430,6 +9408,21 @@ fn watch_evidence(
         "verifier_pubkey":null,
         "view":format!("watch:{}", job.state),
     }))
+}
+
+fn bitcoin_watch_evidence_reference(payload: &BroadcastWatchPayload) -> Result<String, String> {
+    let spent = payload
+        .inputs
+        .first()
+        .ok_or_else(|| "Bitcoin spend watch has no input outpoint".to_owned())?;
+    bitcoin_spend_reference(&spent.txid, spent.vout)
+}
+
+fn bitcoin_watch_evidence_class(job_kind: &str) -> Result<&'static str, String> {
+    match job_kind {
+        "claim_broadcast" | "refund_broadcast" => Ok("bitcoin_spend"),
+        _ => Err("watch evidence is not a Bitcoin settlement spend".to_owned()),
+    }
 }
 
 fn matching_hold_invoice<'a>(response: &'a Value, payment_hash: &str) -> Result<&'a Value, String> {
@@ -10277,14 +10270,15 @@ mod tests {
         ChainRailKind, ChainTerms, CooperativeProviderStep, CooperativeTranscriptPresence,
         HoldStateDecision, LIQUID_CLAIM_VBYTES, LIQUID_REFUND_VBYTES,
         LIQUID_SINGLE_INPUT_FUNDING_VBYTES, ReverseInvoiceCancellationAction, base_state,
-        bind_reverse_funding_profile, bitcoin_spend_reference, canonical_json,
-        chain_destination_handoff_extra, chain_observation_from_response,
-        chain_terminal_evidence_expectations, contract_pricing_swap_type,
-        cooperative_provider_step, decode_hex, derive_quote_with_capacity_disposition,
-        execute_before_exclusive_deadline, extract_hold_invoice, finalized_from_signed_message,
-        funded_cancel_pre_effect, funded_offering, funding_pricing_swap_type, hold_state_decision,
-        latest_status_state, liquid_funding_fee_sat, lower_hex, priced_vbytes_for_rails,
-        quote_feerate, recover_liquid_reverse_refund_before_claim, require_chain_finality,
+        bind_reverse_funding_profile, bitcoin_spend_reference, bitcoin_watch_evidence_class,
+        bitcoin_watch_evidence_reference, canonical_json, chain_destination_handoff_extra,
+        chain_observation_from_response, chain_terminal_evidence_expectations,
+        contract_pricing_swap_type, cooperative_provider_step, decode_hex,
+        derive_quote_with_capacity_disposition, execute_before_exclusive_deadline,
+        extract_hold_invoice, finalized_from_signed_message, funded_cancel_pre_effect,
+        funded_offering, funding_pricing_swap_type, hold_state_decision, latest_status_state,
+        liquid_funding_fee_sat, lower_hex, priced_vbytes_for_rails, quote_feerate,
+        recover_liquid_reverse_refund_before_claim, require_chain_finality,
         required_chain_confirmations, reverse_invoice_cancellation_action, reverse_spend_decision,
         settlement_destination_path, sha256, status_transaction_id, status_transaction_reference,
         terminal_evidence_expectations, unfunded_destination_reservation_evidence_value,
@@ -10292,6 +10286,7 @@ mod tests {
         validate_liquid_chain_observation, validate_liquid_funding_inputs,
         validate_zero_conf_mempool_entry, worst_case_redeem_vbytes, zero_conf_risk_session_id,
     };
+    use crate::watchtower::{BroadcastWatchPayload, WatchedOutPoint};
 
     const RUNTIME_FIXTURE: &[u8] =
         include_bytes!("../../../tests/fixtures/provider/provider-runtime-v1.json");
@@ -11181,7 +11176,7 @@ mod tests {
             .expect("refund funded path has evidence expectations");
         assert_eq!(refunded[0].class, "invoice");
         assert_eq!(refunded[0].rung, "verified");
-        assert_eq!(refunded[1].class, "refund");
+        assert_eq!(refunded[1].class, "bitcoin_spend");
         assert_eq!(refunded[1].rung, "settled");
 
         let chain_contract = json!({
@@ -11517,6 +11512,48 @@ mod tests {
         assert_eq!(
             decision.refund_watch_completion_reason(),
             Some(fixture_string(&case, "expected_watch_completion_reason"))
+        );
+    }
+
+    #[test]
+    fn provider_runtime_fixture_pins_bitcoin_watch_evidence_to_the_spent_outpoint() {
+        let case = runtime_fixture_case("provider-v1-bitcoin-watch-evidence-class");
+        assert_eq!(case["runtime_assertion"], "bitcoin_watch_evidence_class");
+        assert_eq!(case["reference"], "spent_outpoint");
+        let expected_class = fixture_string(&case, "expected_class");
+        for job_kind in case["job_kinds"]
+            .as_array()
+            .expect("watch evidence fixture must name job kinds")
+        {
+            assert_eq!(
+                bitcoin_watch_evidence_class(
+                    job_kind
+                        .as_str()
+                        .expect("watch evidence job kind must be a string")
+                ),
+                Ok(expected_class)
+            );
+        }
+        for forbidden in case["forbidden_classes"]
+            .as_array()
+            .expect("watch evidence fixture must name forbidden classes")
+        {
+            assert_ne!(forbidden.as_str(), Some(expected_class));
+        }
+        assert!(bitcoin_watch_evidence_class("chain_observation").is_err());
+        let payload = BroadcastWatchPayload {
+            schema: "openagents.immortal.provider-watch.v1".to_owned(),
+            raw_transaction: String::new(),
+            expected_txid: "22".repeat(32),
+            inputs: vec![WatchedOutPoint {
+                txid: "11".repeat(32),
+                vout: 7,
+            }],
+            claim_release: None,
+        };
+        assert_eq!(
+            bitcoin_watch_evidence_reference(&payload),
+            Ok(format!("{}:7", "11".repeat(32)))
         );
     }
 

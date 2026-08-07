@@ -316,6 +316,11 @@
       "result": "restored"
     },
     {
+      "name": "swp-v1-reverse-refund-bitcoin-spend-evidence",
+      "operation": "reverse_refund_bitcoin_spend_evidence",
+      "result": "bitcoin_spend"
+    },
+    {
       "name": "swp-v1-lightning-disposition-orphan-crash-restore",
       "operation": "lightning_disposition_orphan_restore",
       "result": "restored"

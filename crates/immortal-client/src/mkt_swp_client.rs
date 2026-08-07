@@ -11526,15 +11526,8 @@ fn validate_bound_close_evidence(
         })?;
         validate_evidence_authority(verifier_authority, rail, verifier_policy)?;
         let verifier_authority_sha256 = lower_hex(&sha256(&canonical_json(verifier_authority)?));
-        let (evidence_class, source_reference, rung, finality_state) = terminal_evidence_identity(
-            contract,
-            order_id,
-            payment_hash,
-            leg_id,
-            rail,
-            outcome,
-            records,
-        )?;
+        let (evidence_class, source_reference, rung, finality_state) =
+            terminal_evidence_identity(contract, payment_hash, leg_id, rail, outcome, records)?;
         let effect_id = effect_id(order_id, &format!("terminal_evidence_{outcome}"), leg_id)?;
         let mut matches = Vec::new();
         for index in [leg_index] {
@@ -11682,7 +11675,6 @@ fn rail_observation_request(
     let verifier_authority_sha256 = lower_hex(&sha256(&canonical_json(authority)?));
     let (evidence_class, reference, rung, finality_state) = terminal_evidence_identity(
         contract,
-        &bound.order.id,
         &bound.payment_hash,
         leg_id,
         rail,
@@ -11717,7 +11709,6 @@ fn rail_observation_request(
 
 fn terminal_evidence_identity(
     contract: &Map<String, Value>,
-    order_id: &str,
     payment_hash: &str,
     leg_id: &str,
     rail: &str,
@@ -11792,8 +11783,8 @@ fn terminal_evidence_identity(
             ))
         }
         ("bitcoin", "refunded") => Ok((
-            "refund".to_owned(),
-            effect_id(order_id, "chain_refund", leg_id)?,
+            "bitcoin_spend".to_owned(),
+            funding_outpoint(verifier_for_leg(contract, leg_id)?, rail)?,
             "settled".to_owned(),
             "refunded_final".to_owned(),
         )),
@@ -17294,7 +17285,7 @@ pub mod fixture_replay {
         "lifecycle",
     ];
     const CASE_NAMESET_SHA256: &str =
-        "57f771cf8e39d61ae1f8a33f979307914010264cd9ec35cfed7b0ae609dedffa";
+        "449b124d9c9d5460d094afa091182b1d580608dfad7ebc61a36e4c173a49737e";
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct ReplaySummary {
@@ -19481,6 +19472,61 @@ pub mod fixture_replay {
                 )
                 .map_err(|error| format!("orphan rail restore: {error}"))?;
                 Ok(CaseOutcome::Result("restored"))
+            }
+            "reverse_refund_bitcoin_spend_evidence" => {
+                let manifest: Value = serde_json::from_str(MANIFEST)
+                    .map_err(|error| format!("client-engine fixture JSON: {error}"))?;
+                let deterministic = manifest
+                    .get("deterministic_session")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| {
+                        "client-engine fixture has no deterministic session".to_owned()
+                    })?;
+                let funding_transaction = fixture_string(deterministic, "funding_transaction")?;
+                let output_index = deterministic
+                    .get("funding_output_index")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| {
+                        "client-engine fixture funding output index is invalid".to_owned()
+                    })?;
+                let contract = json!({
+                    "swap_type":"reverse",
+                    "verifier_inputs":[{
+                        "funding_transaction":funding_transaction,
+                        "leg_id":"destination",
+                        "output_index":output_index,
+                    }],
+                });
+                let contract = contract
+                    .as_object()
+                    .ok_or_else(|| "fixture reverse contract is not an object".to_owned())?;
+                let verifier =
+                    verifier_for_leg(contract, "destination").map_err(|error| error.to_string())?;
+                let expected_reference =
+                    funding_outpoint(verifier, "bitcoin").map_err(|error| error.to_string())?;
+                let identity = terminal_evidence_identity(
+                    contract,
+                    fixture_string(deterministic, "payment_hash")?,
+                    "destination",
+                    "bitcoin",
+                    "refunded",
+                    &[],
+                )
+                .map_err(|error| error.to_string())?;
+                if identity
+                    != (
+                        "bitcoin_spend".to_owned(),
+                        expected_reference,
+                        "settled".to_owned(),
+                        "refunded_final".to_owned(),
+                    )
+                {
+                    return Err(
+                        "reverse refund terminal evidence is not a settled Bitcoin spend"
+                            .to_owned(),
+                    );
+                }
+                Ok(CaseOutcome::Result("bitcoin_spend"))
             }
             "lightning_disposition_orphan_restore" => {
                 let (session, input) = load_fixture_session("flows", "reverse")?;
