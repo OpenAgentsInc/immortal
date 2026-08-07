@@ -22,6 +22,12 @@ bytes for submarine, or the exact executed scriptPubKey for reverse. Signed
 Quote, Order, and bilateral Contract causality makes later mutation a new,
 unauthorized session.
 
+Public visitors who do not operate a regtest wallet may first request a
+single-use demo input through the capability gateway. The generated address or
+invoice is then processed by this unchanged strict request contract, so the
+convenience allocator does not bypass network, amount, expiry, destination, or
+input-to-effect binding.
+
 The OpenAgents browser package remains the host-side UI precheck. Immortal
 independently parses and verifies the signed execution inputs in Rust because
 a TypeScript-only validator cannot be funding authority. No new browser ABI

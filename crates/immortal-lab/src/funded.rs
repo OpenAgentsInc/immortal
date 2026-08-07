@@ -83,7 +83,8 @@ use crate::state::{
     store_funded_snapshot,
 };
 use immortal_public_regtest_gateway::{
-    PublicDynamicRequestView as GatewayDynamicRequestView, PublicJourney, PublicRailEvidence,
+    DemoInputResponse, PublicDynamicRequestView as GatewayDynamicRequestView, PublicJourney,
+    PublicRailEvidence,
 };
 
 const OFFERING_ID: &str = "immortal-funded-btc-lightning";
@@ -1289,6 +1290,70 @@ pub fn run_public_dynamic_worker_once() -> Result<Value, String> {
         "request":view,
         "journey":result,
     }))
+}
+
+/// Allocate one session-bound destination for a browser visitor who does not
+/// operate a regtest wallet. The private worker retains the corresponding rail
+/// authority; the gateway receives only the public address or invoice.
+pub fn run_public_demo_input_once() -> Result<Value, String> {
+    let sandbox_session_id = required_environment("IMMORTAL_PUBLIC_REGTEST_SESSION_ID")?;
+    let request = immortal_public_regtest_gateway::claim_demo_input_request(&sandbox_session_id)?
+        .ok_or_else(|| "public regtest session has no demo input request".to_owned())?;
+    let runtime =
+        Runtime::new().map_err(|error| format!("could not start lab runtime: {error}"))?;
+    let environments = SmokeEnvironment::load_topology()?;
+    let swap_type = match request.swap_type.as_str() {
+        "submarine" => SwapType::Submarine,
+        "reverse" => SwapType::Reverse,
+        _ => return Err("public demo input has another swap type".to_owned()),
+    };
+    let quote = dynamic_quote(swap_type, request.amount_sat)?;
+    let output_amount = canonical_u64(&quote.output_amount)?;
+    let now = unix_now()?;
+    let expires_at = now.saturating_add(600);
+    let destination = match swap_type {
+        SwapType::Submarine => {
+            let label = format!("public-demo-{}", &sandbox_session_id[..32]);
+            runtime
+                .block_on(
+                    environments[0].peer_cln.invoice(
+                        &cln_id(&format!("demo-input-{sandbox_session_id}"))?,
+                        Millisatoshi::from_satoshis(output_amount)
+                            .map_err(|error| format!("demo invoice amount is invalid: {error}"))?,
+                        &label,
+                        "Immortal public regtest demo",
+                        600,
+                    ),
+                )
+                .map_err(|error| format!("could not create public demo invoice: {error}"))?
+                .bolt11
+        }
+        SwapType::Reverse => {
+            let digest = sha256(sandbox_session_id.as_bytes());
+            let index = 1_000
+                + (u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) % 1_000_000);
+            environments[0]
+                .wallet
+                .derive_address(
+                    WalletPath::new(0, true, index)
+                        .map_err(|error| format!("demo destination path is invalid: {error}"))?,
+                )
+                .map_err(|error| format!("could not derive public demo destination: {error}"))?
+                .address
+        }
+        _ => return Err("public demo input swap type is unsupported".to_owned()),
+    };
+    let response = DemoInputResponse {
+        schema: "openagents.immortal.public-regtest-demo-input.v1".to_owned(),
+        sandbox_session_id,
+        swap_type: request.swap_type,
+        amount_sat: request.amount_sat,
+        destination,
+        expires_at,
+    };
+    immortal_public_regtest_gateway::record_demo_input_response(&response)?;
+    Ok(serde_json::to_value(response)
+        .map_err(|error| format!("could not encode public demo input: {error}"))?)
 }
 
 fn wait_dynamic_provider_height_sync(

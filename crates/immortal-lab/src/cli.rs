@@ -39,6 +39,8 @@ COMMANDS:
                         Consume one admitted effect in the private fixture worker
     public-regtest-dynamic-worker-once
                         Execute one capability-bound dynamic request privately
+    public-regtest-demo-input-once
+                        Allocate one capability-bound demo destination privately
     public-regtest-bind-fixture
                         Bind one closed fixture authorization from the private side
     status              Print persisted lab state
@@ -155,6 +157,7 @@ pub enum Command {
     PublicRegtestGateway,
     PublicRegtestWorkerOnce,
     PublicRegtestDynamicWorkerOnce,
+    PublicRegtestDemoInputOnce,
     PublicRegtestBindFixture,
     Status,
     Run { to: Step },
@@ -202,6 +205,7 @@ pub fn parse(arguments: &[String]) -> Result<Command, String> {
         "public-regtest-gateway" => Command::PublicRegtestGateway,
         "public-regtest-worker-once" => Command::PublicRegtestWorkerOnce,
         "public-regtest-dynamic-worker-once" => Command::PublicRegtestDynamicWorkerOnce,
+        "public-regtest-demo-input-once" => Command::PublicRegtestDemoInputOnce,
         "public-regtest-bind-fixture" => Command::PublicRegtestBindFixture,
         "status" => Command::Status,
         "run" => {
@@ -278,6 +282,10 @@ mod tests {
         assert_eq!(
             parse(&args(&["public-regtest-dynamic-worker-once"])),
             Ok(Command::PublicRegtestDynamicWorkerOnce)
+        );
+        assert_eq!(
+            parse(&args(&["public-regtest-demo-input-once"])),
+            Ok(Command::PublicRegtestDemoInputOnce)
         );
         assert_eq!(
             parse(&args(&["public-regtest-bind-fixture"])),

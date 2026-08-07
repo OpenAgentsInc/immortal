@@ -241,12 +241,36 @@ process_dynamic_requests() {
   shopt -u nullglob
 }
 
+process_demo_inputs() {
+  local request session_id worker_lock response
+  shopt -s nullglob
+  for request in "${gateway_state}"/sessions/*/demo-input-request.json; do
+    session_id="$(basename "$(dirname "${request}")")"
+    [[ "${session_id}" =~ ^[0-9a-f]{64}$ ]] || continue
+    response="${gateway_state}/sessions/${session_id}/demo-input-response.json"
+    test ! -e "${response}" || continue
+    worker_lock="${gateway_state}/sessions/${session_id}/demo-input-worker.lock"
+    if ! mkdir "${worker_lock}" 2>/dev/null; then continue; fi
+    install -d -m 0700 "${state_dir}/state/public-sessions/${session_id}"
+    if ! "${compose[@]}" --profile acceptance run --rm \
+      -e "IMMORTAL_PUBLIC_REGTEST_SESSION_ID=${session_id}" \
+      -e "IMMORTAL_LAB_STATE_DIR=/state/public-sessions/${session_id}" \
+      wallet-driver public-regtest-demo-input-once; then
+      echo "public-regtest-operator: demo input worker failed for ${session_id}" >&2
+    fi
+    rmdir "${worker_lock}" 2>/dev/null || true
+    break
+  done
+  shopt -u nullglob
+}
+
 case "${1:-}" in
-  once) write_readiness; process_dynamic_requests; cleanup_sessions ;;
+  once) write_readiness; process_demo_inputs; process_dynamic_requests; cleanup_sessions ;;
   status) test -f "${gateway_state}/readiness.json" || fail "readiness has not been published"; cat "${gateway_state}/readiness.json" ;;
   loop)
     while true; do
       write_readiness || true
+      process_demo_inputs || true
       process_dynamic_requests || true
       mine_once || true
       cleanup_sessions || true

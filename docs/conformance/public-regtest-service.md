@@ -39,6 +39,11 @@ lock that is recovered after operator replacement. The worker executes the
 ordinary two-provider protocol path; the loop neither rewrites the request
 nor receives a generic wallet/RPC method.
 
+The same loop watches capability-owned `demo-input-request.json` records. It
+runs the fixed wallet-driver allocation command inside the private acceptance
+network, writes one mode-0600 response, and never grants the gateway a Docker
+socket, CLN RPC, Bitcoin RPC, wallet seed, or arbitrary method surface.
+
 Each Lightning node must retain at least 250,000,000 msat on both sides and
 the aggregate capacity bound is 10,000,000,000 msat. Depletion first makes
 readiness false. With no active session or outstanding effect, the controller

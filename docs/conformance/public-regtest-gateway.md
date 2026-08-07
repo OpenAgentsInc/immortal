@@ -64,9 +64,20 @@ written by the private worker. A changed sandbox/engine session, Order,
 provider, network, amount, method, effect ID, or digest fails before worker
 dispatch.
 
+`POST .../inputs` is the public-demo convenience boundary. It accepts only a
+session-bound `reverse|submarine` plus an amount inside the existing funded
+range. A private requester-rail worker allocates one deterministic `bcrt1`
+destination or one amount-bearing, ten-minute `lnbcrt` invoice and returns it
+only to the authenticated browser request. The public gateway still has no
+wallet or node credential. Exact retries return the same allocation; changed
+amounts or directions conflict, and an accepted swap request permanently
+closes allocation for that session. This endpoint is not a general faucet,
+wallet, invoice, mining, or RPC API.
+
 The initial contract permits at most two effects and 1,000,000 sats per
-effect, with one in-flight effect per session. Sessions expire in at most one hour. Persistent IP and session
-windows return typed `rate_limited` responses with retry guidance. Other
+effect, with one in-flight effect per session. Sessions expire in at most one
+hour. Persistent IP and session windows return typed `rate_limited` responses
+with retry guidance. Other
 typed terminal/refusal codes distinguish origin, IP, capability, expiry,
 revocation, conflict, framing, bound, timeout, and unavailable-state errors.
 
