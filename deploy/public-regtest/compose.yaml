@@ -120,6 +120,11 @@ services:
   wallet-driver:
     profiles: ["acceptance"]
     restart: "no"
+    # The operator supplies the host state-owner UID:GID with `compose run
+    # --user`. Group 0 is supplemental only so the process can reach the
+    # root-group-owned, mode-0660 CLN Unix socket; it does not run as root.
+    group_add:
+      - "0"
     environment:
       IMMORTAL_PUBLIC_REGTEST_GATEWAY_STATE_DIR: /gateway
     volumes:

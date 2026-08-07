@@ -228,6 +228,7 @@ process_dynamic_requests() {
     (
       printf '%s\n' "${BASHPID}" >"${worker_lock}/pid"
       if ! "${compose[@]}" --profile acceptance run --rm \
+        --user "$(id -u):$(id -g)" \
         -e "IMMORTAL_PUBLIC_REGTEST_SESSION_ID=${session_id}" \
         -e "IMMORTAL_LAB_STATE_DIR=/state/public-sessions/${session_id}" \
         wallet-driver public-regtest-dynamic-worker-once; then
@@ -253,6 +254,7 @@ process_demo_inputs() {
     if ! mkdir "${worker_lock}" 2>/dev/null; then continue; fi
     install -d -m 0700 "${state_dir}/state/public-sessions/${session_id}"
     if ! "${compose[@]}" --profile acceptance run --rm \
+      --user "$(id -u):$(id -g)" \
       -e "IMMORTAL_PUBLIC_REGTEST_SESSION_ID=${session_id}" \
       -e "IMMORTAL_LAB_STATE_DIR=/state/public-sessions/${session_id}" \
       wallet-driver public-regtest-demo-input-once; then

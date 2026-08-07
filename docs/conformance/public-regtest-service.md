@@ -43,6 +43,9 @@ The same loop watches capability-owned `demo-input-request.json` records. It
 runs the fixed wallet-driver allocation command inside the private acceptance
 network, writes one mode-0600 response, and never grants the gateway a Docker
 socket, CLN RPC, Bitcoin RPC, wallet seed, or arbitrary method surface.
+The worker runs as the host state owner's UID:GID. Its only supplemental group
+is the CLN container socket group, so files remain readable by the separate
+gateway process without granting that public process Docker or rail authority.
 
 Each Lightning node must retain at least 250,000,000 msat on both sides and
 the aggregate capacity bound is 10,000,000,000 msat. Depletion first makes
