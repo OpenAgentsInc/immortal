@@ -128,7 +128,7 @@ runuser -u postgres -- createdb immortal_provider_restore_test
 runuser -u postgres -- pg_restore --dbname=immortal_provider_restore_test "${provider_backup}"
 test "$(runuser -u postgres -- psql --tuples-only --no-align \
     --dbname=immortal_provider_restore_test \
-    --command='SELECT count(*) FROM provider_schema_migrations;')" = 3
+    --command='SELECT count(*) FROM provider_schema_migrations;')" = 4
 runuser -u postgres -- dropdb immortal_provider_restore_test
 
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -211,7 +211,7 @@ record = {
         "systemd_verified": True,
         "systemd_prerequisite_units": "acceptance-only stubs; funded smoke proves live bitcoind and CLN processes",
         "relay_unit_required": False,
-        "database_migrations_restored": 3,
+        "database_migrations_restored": 4,
         "backup_digest_verified": True,
         "backup_restore_passed": True,
         "custody_backup_included": False,
