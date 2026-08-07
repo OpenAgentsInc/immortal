@@ -22,7 +22,8 @@ path, or arbitrary RPC HTTP operation. Its writable mount contains only:
 - bounded session metadata and SHA-256 capability digests;
 - redacted effect authorizations emitted by the private requester worker;
 - exact admitted redacted requests and public-safe effect receipts;
-- bounded IP/session quota state and atomic lock directories.
+- bounded IP/session quota state, operator readiness, public-safe counters,
+  and atomic lock directories.
 
 The signing key is a separate mode-0600 read-only file. Wallet seeds, raw
 transactions, invoices, preimages, node credentials, and rail endpoints are
@@ -72,7 +73,10 @@ removes only validated stale lock directories left by a dead process.
 Abandoned/expired sessions cannot authorize new effects. Their already-
 admitted effects remain visible to the private worker so it can report the
 truthful rail outcome rather than pretending revocation undid an external
-effect. Retention and automated cleanup policy are qualified in issue #44.
+effect. The shared-service controller retains receipt-bearing terminal state
+for seven days, empty expired state for one day, and deletes it only when
+every admission has a receipt. See
+[`public-regtest-service.md`](public-regtest-service.md).
 
 ## Configuration
 
@@ -113,4 +117,6 @@ members, and cryptographic manifest verification.
 This is public regtest authorization infrastructure, not a mainnet wallet
 API. Dynamic destinations and two-Quote production negotiation are qualified
 separately in [`dynamic-public-regtest.md`](dynamic-public-regtest.md).
-Shared-service load and remote TLS acceptance remain issue #44.
+Shared-service bounds and host fault gates are qualified separately in
+[`public-regtest-service.md`](public-regtest-service.md); remote TLS/browser
+acceptance is emitted by the deployed Bazaar packet.

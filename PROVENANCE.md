@@ -1325,6 +1325,18 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   Added no dependency, event kind, mainnet authority, public node/RPC method,
   workflow, or billed automation.
 
+### 2026-08-07 — Codex 5.6 Sol, public-regtest shared service
+
+- Added the issue #44 fail-closed controller contract and gateway enforcement:
+  fresh exact-revision readiness, independent durable capacity recount,
+  bounded concurrent connections/sessions/value, maintenance, public-safe
+  health/readiness/metrics, and five-active/50-sequential qualification.
+- Added private admitted-effect mining, Lightning balance monitoring and idle
+  rebalancing, terminal-only seven-day cleanup, restart/backup/rotation/
+  incident guidance, and an explicit handoff to Bazaar for remote browser
+  acceptance. Added no dependency, protocol kind, mainnet authority, public
+  miner/RPC surface, workflow, or billed automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

@@ -13,27 +13,30 @@ volumes retain chain, Lightning, and database state. Generated credentials,
 provider identities, wallet seeds, and the requester seed live only in one
 operator-selected directory with mode `0700`; files use mode `0600`.
 
-Only two plain relay ports are published, both on numeric IPv4 loopback. Put a
-TLS reverse proxy on the host and publish only the corresponding `wss://`
-authorities. Bitcoin RPC/P2P, Lightning RPC/P2P, Postgres, provider health,
+The two plain relay ports and capability gateway bind numeric IPv4 loopback.
+Put a TLS reverse proxy on the host and publish only the corresponding `wss://`
+and `https://` authorities. Bitcoin RPC/P2P, Lightning RPC/P2P, Postgres, provider health,
 plugin, miner, and wallet control traffic stay on the private Compose network.
-The capability gateway is a separate process and contract. Dynamic session
-execution is qualified by #43, but it is intentionally not auto-started by
-this topology until the shared-service qualification packet (#44) lands. Follow
+The capability gateway is a separate least-authority process and contract.
+Dynamic session execution is qualified by #43. Follow
 [`public-regtest-gateway.md`](../conformance/public-regtest-gateway.md) for its
 closed configuration and process gate; never substitute the local adapter.
+The private controller is specified by
+[`public-regtest-service.md`](../conformance/public-regtest-service.md).
 
 ## Prerequisites
 
 - a clean Immortal checkout at the revision to deploy;
 - Docker Engine with Compose v2, `git`, `jq`, and Python 3;
 - an absolute private state path outside the checkout;
-- two distinct DNS names with TLS certificates terminating on this host.
+- three distinct DNS names with TLS certificates terminating on this host.
 
 Review `deploy/public-regtest/Caddyfile.example`, replace its example names,
 and ensure the host firewall exposes only TCP 443 (and the operator's SSH
 policy). Do not expose ports `18080` or `18081`; Caddy reaches them on
-loopback.
+loopback. The gateway site must overwrite `X-Immortal-Client-IP`; appending or
+trusting a browser-supplied value breaks capability binding. Configure the
+gateway's exact Origin to the Bazaar HTTPS origin; no wildcard alias is valid.
 
 ## Start
 
@@ -64,6 +67,32 @@ Readiness fails closed unless both Bitcoin nodes are peered at the same tip,
 both relays and providers are healthy, all three Lightning nodes are synced
 with two normal channels, no provider alert exists, and provider public keys
 are available. `public-ready.json` contains no credentials or raw effects.
+
+## Gateway and controller
+
+Run the gateway under a dedicated unprivileged account with only its state
+directory writable and its mode-`0600` signing key readable. Configure the
+exact environment in the gateway contract, then run the private controller as
+a second supervised unit:
+
+```sh
+sudo -u immortal-regtest env \
+  IMMORTAL_PUBLIC_REGTEST_STATE_DIR=/var/lib/immortal-public-regtest \
+  IMMORTAL_PUBLIC_REGTEST_GATEWAY_STATE_DIR=/var/lib/immortal-public-regtest/gateway \
+  scripts/public-regtest-operator.sh loop
+```
+
+Install and review the templates in `deploy/public-regtest/`: copy
+`gateway.env.example`, replace every placeholder, install the gateway binary,
+then install both `.service` units. The operator account has Docker authority
+and is therefore custody-adjacent; the gateway account deliberately does not.
+
+Probe `/healthz` for liveness and `/readyz` for admission. Alert when
+readiness is false/stale, free disk approaches 1 GiB, either Lightning side
+approaches 250,000,000 msat, provider alerts appear, outstanding value
+approaches 5,000,000 sats, or error counters rise. `maintenance on`
+immediately stops new sessions. `mine` and `rebalance` are private manual
+fallbacks; the loop applies the same bounded policies.
 
 ## Restart and host recovery
 
@@ -115,6 +144,18 @@ For rollback, stop the new revision and restore the matching code plus backup
 as one unit. Never run an older binary against databases already migrated by a
 newer incompatible revision.
 
+Rotate the gateway signing key only in maintenance mode: drain or expire all
+sessions, stop gateway/controller, back up, replace the protected key, restart,
+and verify a new signed manifest externally. Rotating provider identities,
+wallet seeds, database passwords, Bitcoin RPC credentials, or Lightning
+material creates a new sandbox generation; never edit those live.
+
+For an incident, enable maintenance, preserve logs/readiness/receipt state and
+provider evidence, stop public TLS, and identify the fault before restoring a
+matching backup. Never delete an admission without its receipt. If custody
+material may have escaped, destroy the generation, rotate every credential,
+rebuild regtest state, and publish a new manifest.
+
 ## Stop and destructive reset
 
 `down` preserves all state. Permanent removal requires the exact confirmation
@@ -134,6 +175,7 @@ Run the deterministic contract/config gate with:
 
 ```sh
 scripts/test-public-regtest-topology.sh
+scripts/test-public-regtest-service.sh
 ```
 
 For a deployment acceptance, additionally prove cold start, warm `up`, one

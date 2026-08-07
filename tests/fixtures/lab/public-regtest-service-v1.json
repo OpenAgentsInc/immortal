@@ -1,0 +1,81 @@
+{
+  "schema": "openagents.immortal.public-regtest-service-contract.v1",
+  "network": "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4",
+  "concurrency": {
+    "minimum_simultaneous_browser_sessions": 5,
+    "qualification_sequential_funded_sessions": 50,
+    "maximum_active_sessions": 16,
+    "maximum_connections": 32,
+    "maximum_outstanding_sat": 5000000,
+    "maximum_session_amount_sat": 1000000,
+    "maximum_session_lifetime_seconds": 3600,
+    "maximum_effects_per_session": 2,
+    "maximum_effects_per_minute": 32
+  },
+  "operator": {
+    "readiness_schema": "openagents.immortal.public-regtest-service-readiness.v1",
+    "readiness_maximum_age_seconds": 30,
+    "maintenance_file": "maintenance",
+    "mining": {
+      "public_rpc": false,
+      "maximum_blocks_per_pass": 6,
+      "requires_admitted_effect": true,
+      "requires_nonempty_mempool_or_deadline": true
+    },
+    "lightning": {
+      "minimum_local_balance_msat": 250000000,
+      "minimum_remote_balance_msat": 250000000,
+      "maximum_total_channel_msat": 10000000000,
+      "accept_quotes_when_depleted": false
+    },
+    "storage": {
+      "minimum_free_bytes": 1073741824,
+      "receipt_retention_seconds": 604800,
+      "expired_session_retention_seconds": 86400
+    }
+  },
+  "readiness_failures": [
+    "maintenance",
+    "disk_pressure",
+    "receipt_store_unwritable",
+    "stale_chain_tip",
+    "chain_divergence",
+    "lightning_depleted",
+    "provider_unready",
+    "relay_unready",
+    "unresolved_watch_jobs",
+    "leaked_reservations",
+    "outstanding_exposure_exceeded"
+  ],
+  "fault_targets": [
+    "gateway",
+    "relay-a",
+    "relay-b",
+    "provider-a",
+    "provider-b",
+    "bitcoin-a",
+    "bitcoin-b",
+    "cln-provider-a",
+    "cln-provider-b",
+    "cln-wallet",
+    "host"
+  ],
+  "public_endpoints": [
+    "GET /healthz",
+    "GET /readyz",
+    "GET /metrics",
+    "POST /v1/public-regtest/sessions",
+    "GET /v1/public-regtest/sessions/{session_id}",
+    "DELETE /v1/public-regtest/sessions/{session_id}",
+    "POST /v1/public-regtest/sessions/{session_id}/effects"
+  ],
+  "acceptance_receipt_schema": "openagents.immortal.public-regtest-acceptance.v1",
+  "claims": {
+    "regtest_only": true,
+    "single_operator": true,
+    "independent_operators": false,
+    "mainnet": false,
+    "production_sla": false,
+    "public_miner_or_rpc": false
+  }
+}

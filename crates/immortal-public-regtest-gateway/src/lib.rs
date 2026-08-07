@@ -15,6 +15,10 @@ use std::{
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -25,6 +29,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const CONTRACT: &str = include_str!("../../../tests/fixtures/lab/public-regtest-gateway-v1.json");
+const SERVICE_CONTRACT: &str =
+    include_str!("../../../tests/fixtures/lab/public-regtest-service-v1.json");
 const CONTRACT_SCHEMA: &str = "openagents.immortal.public-regtest-gateway-contract.v1";
 const CREATE_SCHEMA: &str = "openagents.immortal.public-regtest-session-create.v1";
 const SESSION_SCHEMA: &str = "openagents.immortal.public-regtest-session.v1";
@@ -42,9 +48,26 @@ const MAX_EFFECTS_PER_SESSION: u16 = 2;
 const MAX_CONCURRENT_EFFECTS_PER_SESSION: u16 = 1;
 const MAX_REQUESTS_PER_SESSION: u16 = 64;
 const MAX_SESSIONS_PER_IP_WINDOW: u16 = 8;
+const MAX_EFFECTS_PER_WINDOW: u16 = 32;
+const MAX_ACTIVE_SESSIONS: usize = 16;
+const MAX_CONNECTIONS: usize = 32;
+const MAX_RETAINED_SESSION_DIRS: usize = 1_024;
+const MAX_OUTSTANDING_SAT: u64 = 5_000_000;
+const READINESS_MAXIMUM_AGE_SECONDS: u64 = 30;
 const RATE_WINDOW_SECONDS: u64 = 60;
 const MAX_AMOUNT_SAT: u64 = 1_000_000;
 const LOCK_ATTEMPTS: usize = 200;
+const SERVICE_CONTRACT_SCHEMA: &str = "openagents.immortal.public-regtest-service-contract.v1";
+const SERVICE_READINESS_SCHEMA: &str = "openagents.immortal.public-regtest-service-readiness.v1";
+
+#[derive(Debug, Default)]
+struct GatewayMetrics {
+    active_connections: AtomicUsize,
+    requests_total: AtomicU64,
+    request_errors_total: AtomicU64,
+    sessions_created_total: AtomicU64,
+    receipts_replayed_total: AtomicU64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -197,6 +220,30 @@ struct IpRateState {
     sessions_created: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EffectRateState {
+    schema: String,
+    window_started_at: u64,
+    effects_authorized: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServiceReadiness {
+    schema: String,
+    ready: bool,
+    checked_at: u64,
+    revision: String,
+    failures: Vec<String>,
+    active_sessions: u64,
+    outstanding_sat: u64,
+    provider_pubkeys: Vec<String>,
+    lightning_node_ids: Vec<String>,
+    bitcoin_height: u64,
+    receipt_store_writable: bool,
+}
+
 #[derive(Clone)]
 struct GatewayConfig {
     root: PathBuf,
@@ -208,6 +255,7 @@ struct GatewayConfig {
     source_revision: String,
     requester_contract_digest: String,
     provider_set: Vec<String>,
+    metrics: Arc<GatewayMetrics>,
 }
 
 #[derive(Debug)]
@@ -248,7 +296,8 @@ impl HttpError {
 
 pub fn run_server() -> Result<Value, String> {
     validate_contract()?;
-    let config = GatewayConfig::from_env()?;
+    validate_service_contract()?;
+    let config = Arc::new(GatewayConfig::from_env()?);
     prepare_root(&config.root)?;
     let listener = TcpListener::bind(config.bind)
         .map_err(|error| format!("could not bind public regtest gateway: {error}"))?;
@@ -264,12 +313,40 @@ pub fn run_server() -> Result<Value, String> {
     );
     for incoming in listener.incoming() {
         let mut stream = incoming.map_err(|error| format!("gateway accept failed: {error}"))?;
+        let active = config
+            .metrics
+            .active_connections
+            .fetch_add(1, Ordering::AcqRel)
+            + 1;
+        if active > MAX_CONNECTIONS {
+            config
+                .metrics
+                .active_connections
+                .fetch_sub(1, Ordering::AcqRel);
+            let _ = write_error(
+                &mut stream,
+                &config.origin,
+                HttpError::new(503, "connection_capacity_exhausted"),
+            );
+            continue;
+        }
         let peer = stream
             .peer_addr()
             .map_err(|error| format!("gateway could not identify peer: {error}"))?;
-        if let Err(error) = handle_connection(&mut stream, peer, &config) {
-            let _ = write_error(&mut stream, &config.origin, error);
-        }
+        let thread_config = Arc::clone(&config);
+        thread::spawn(move || {
+            if let Err(error) = handle_connection(&mut stream, peer, &thread_config) {
+                thread_config
+                    .metrics
+                    .request_errors_total
+                    .fetch_add(1, Ordering::Relaxed);
+                let _ = write_error(&mut stream, &thread_config.origin, error);
+            }
+            thread_config
+                .metrics
+                .active_connections
+                .fetch_sub(1, Ordering::AcqRel);
+        });
     }
     Ok(json!({"schema":"openagents.immortal.public-regtest-gateway.v1","stopped":true}))
 }
@@ -279,6 +356,10 @@ fn handle_connection(
     peer: SocketAddr,
     config: &GatewayConfig,
 ) -> Result<(), HttpError> {
+    config
+        .metrics
+        .requests_total
+        .fetch_add(1, Ordering::Relaxed);
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|_| HttpError::new(500, "internal_error"))?;
@@ -319,6 +400,18 @@ fn route_request(
     request: &HttpRequest,
     config: &GatewayConfig,
 ) -> Result<(Option<String>, Option<String>, &'static str), HttpError> {
+    if request.method == "GET"
+        && matches!(request.path.as_str(), "/healthz" | "/readyz" | "/metrics")
+    {
+        if request
+            .origin
+            .as_deref()
+            .is_some_and(|origin| origin != config.origin)
+        {
+            return Err(HttpError::new(403, "origin_refused"));
+        }
+        return route_operational_request(stream, request, config);
+    }
     if request.origin.as_deref() != Some(config.origin.as_str()) {
         return Err(HttpError::new(403, "origin_refused"));
     }
@@ -335,6 +428,10 @@ fn route_request(
         require_json(request)?;
         let input: CreateSessionRequest = parse_closed_json(&request.body, "session create")?;
         let response = create_session(config, request.client_ip, input)?;
+        config
+            .metrics
+            .sessions_created_total
+            .fetch_add(1, Ordering::Relaxed);
         let session_id = response.signed_manifest.manifest.sandbox_session_id.clone();
         write_serialized_response(stream, 201, &config.origin, &response)?;
         return Ok((Some(session_id), None, "session_created"));
@@ -383,6 +480,10 @@ fn route_request(
             if let Some(receipt) = load_receipt(&config.root, session_id, &effect_id)
                 .map_err(|_| HttpError::new(500, "receipt_unavailable"))?
             {
+                config
+                    .metrics
+                    .receipts_replayed_total
+                    .fetch_add(1, Ordering::Relaxed);
                 lock.release();
                 write_serialized_response(stream, 200, &config.origin, &receipt)?;
                 return Ok((
@@ -425,6 +526,150 @@ fn route_request(
     }
 }
 
+fn route_operational_request(
+    stream: &mut TcpStream,
+    request: &HttpRequest,
+    config: &GatewayConfig,
+) -> Result<(Option<String>, Option<String>, &'static str), HttpError> {
+    match request.path.as_str() {
+        "/healthz" => {
+            probe_state_root(&config.root)
+                .map_err(|_| HttpError::new(503, "receipt_store_unwritable"))?;
+            write_json_response(
+                stream,
+                200,
+                &config.origin,
+                &json!({"schema":"openagents.immortal.public-regtest-health.v1","status":"live"}),
+            )?;
+            Ok((None, None, "health_live"))
+        }
+        "/readyz" => {
+            let readiness = require_service_ready(config, unix_now_http()?)?;
+            write_serialized_response(stream, 200, &config.origin, &readiness)?;
+            Ok((None, None, "service_ready"))
+        }
+        "/metrics" => {
+            let now = unix_now_http()?;
+            let (active_sessions, outstanding_sat) = service_counts(&config.root, now)
+                .map_err(|_| HttpError::new(503, "service_state_unavailable"))?;
+            write_json_response(
+                stream,
+                200,
+                &config.origin,
+                &json!({
+                    "schema":"openagents.immortal.public-regtest-metrics.v1",
+                    "active_connections":config.metrics.active_connections.load(Ordering::Relaxed),
+                    "active_sessions":active_sessions,
+                    "outstanding_sat":outstanding_sat,
+                    "requests_total":config.metrics.requests_total.load(Ordering::Relaxed),
+                    "request_errors_total":config.metrics.request_errors_total.load(Ordering::Relaxed),
+                    "sessions_created_total":config.metrics.sessions_created_total.load(Ordering::Relaxed),
+                    "receipts_replayed_total":config.metrics.receipts_replayed_total.load(Ordering::Relaxed),
+                }),
+            )?;
+            Ok((None, None, "metrics_read"))
+        }
+        _ => Err(HttpError::new(404, "unknown_endpoint")),
+    }
+}
+
+fn probe_state_root(root: &Path) -> Result<(), String> {
+    let probe = root
+        .join("locks")
+        .join(format!("health-{}", lower_hex(&random_32()?)));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&probe)
+        .map_err(|error| format!("could not write receipt-store probe: {error}"))?;
+    file.write_all(b"ready\n")
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("could not sync receipt-store probe: {error}"))?;
+    fs::remove_file(&probe)
+        .map_err(|error| format!("could not remove receipt-store probe: {error}"))
+}
+
+fn require_service_ready(config: &GatewayConfig, now: u64) -> Result<ServiceReadiness, HttpError> {
+    if config.root.join("maintenance").exists() {
+        return Err(HttpError::new(503, "maintenance"));
+    }
+    let readiness = load_optional_json::<ServiceReadiness>(&config.root.join("readiness.json"))
+        .map_err(|_| HttpError::new(503, "readiness_unavailable"))?
+        .ok_or_else(|| HttpError::new(503, "readiness_unavailable"))?;
+    if readiness.schema != SERVICE_READINESS_SCHEMA
+        || !readiness.ready
+        || !readiness.failures.is_empty()
+        || readiness.checked_at > now.saturating_add(5)
+        || now.saturating_sub(readiness.checked_at) > READINESS_MAXIMUM_AGE_SECONDS
+        || readiness.revision != config.source_revision
+        || readiness.provider_pubkeys != config.provider_set
+        || readiness.lightning_node_ids.len() != 3
+        || readiness.lightning_node_ids.iter().any(|id| {
+            id.len() != 66
+                || !(id.starts_with("02") || id.starts_with("03"))
+                || !id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        || readiness.bitcoin_height == 0
+        || !readiness.receipt_store_writable
+    {
+        return Err(HttpError::new(503, "service_unready"));
+    }
+    let (active_sessions, outstanding_sat) = service_counts(&config.root, now)
+        .map_err(|_| HttpError::new(503, "service_state_unavailable"))?;
+    if active_sessions > MAX_ACTIVE_SESSIONS
+        || outstanding_sat > MAX_OUTSTANDING_SAT
+        || readiness.active_sessions > u64::try_from(MAX_ACTIVE_SESSIONS).unwrap_or(u64::MAX)
+        || readiness.outstanding_sat > MAX_OUTSTANDING_SAT
+    {
+        return Err(HttpError::new(503, "service_capacity_unavailable"));
+    }
+    Ok(readiness)
+}
+
+fn service_counts(root: &Path, now: u64) -> Result<(usize, u64), String> {
+    let mut active = 0_usize;
+    let mut outstanding = 0_u64;
+    let mut retained = 0_usize;
+    for entry in fs::read_dir(root.join("sessions"))
+        .map_err(|error| format!("could not inspect public sessions: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("could not inspect public session: {error}"))?;
+        if !entry
+            .file_type()
+            .map_err(|error| format!("could not inspect public session type: {error}"))?
+            .is_dir()
+        {
+            return Err("public session root contains a non-directory".to_owned());
+        }
+        retained = retained.saturating_add(1);
+        if retained > MAX_RETAINED_SESSION_DIRS {
+            return Err("public retained-session bound exceeded".to_owned());
+        }
+        let session_id = entry
+            .file_name()
+            .to_str()
+            .ok_or_else(|| "public session name is not UTF-8".to_owned())?
+            .to_owned();
+        validate_lower_hex_32(&session_id, "retained session")?;
+        let session = load_session(root, &session_id)?
+            .ok_or_else(|| "public session directory has no state".to_owned())?;
+        if session.revoked_at.is_none() && now < session.expires_at {
+            active = active.saturating_add(1);
+            for authorization in &session.authorizations {
+                if load_receipt(root, &session_id, &authorization.effect.effect_id)?.is_none() {
+                    outstanding = outstanding
+                        .checked_add(authorization.effect.amount_sat)
+                        .ok_or_else(|| "public outstanding exposure overflowed".to_owned())?;
+                }
+            }
+        }
+    }
+    Ok((active, outstanding))
+}
+
 fn create_session(
     config: &GatewayConfig,
     client_ip: IpAddr,
@@ -432,6 +677,14 @@ fn create_session(
 ) -> Result<CreateSessionResponse, HttpError> {
     validate_create(&input)?;
     let now = unix_now_http()?;
+    require_service_ready(config, now)?;
+    let mut global = SessionLock::acquire_named(&config.root, "global-sessions")
+        .map_err(|_| HttpError::new(503, "service_state_busy"))?;
+    let (active, _) = service_counts(&config.root, now)
+        .map_err(|_| HttpError::new(503, "service_state_unavailable"))?;
+    if active >= MAX_ACTIVE_SESSIONS {
+        return Err(HttpError::new(503, "session_capacity_exhausted"));
+    }
     charge_ip(config, client_ip, now)?;
     let capability = lower_hex(&random_32().map_err(|_| HttpError::new(500, "entropy_failed"))?);
     let sandbox_session_id = lower_hex(&Sha256::digest(
@@ -458,6 +711,7 @@ fn create_session(
     };
     store_session_create_new(&config.root, &session)
         .map_err(|_| HttpError::new(500, "session_state_unavailable"))?;
+    global.release();
     let signed_manifest = signed_manifest(config, &session)
         .map_err(|_| HttpError::new(500, "manifest_unavailable"))?;
     Ok(CreateSessionResponse {
@@ -479,9 +733,14 @@ pub fn bind_authorization(
     validate_browser_effect(effect)?;
     let root = state_root()?;
     prepare_root(&root)?;
+    let mut global = SessionLock::acquire_named(&root, "global-exposure")?;
     let mut lock = SessionLock::acquire(&root, sandbox_session_id)?;
     let mut session = load_session(&root, sandbox_session_id)?
         .ok_or_else(|| "public regtest session does not exist".to_owned())?;
+    let now = unix_now()?;
+    if session.revoked_at.is_some() || now >= session.expires_at {
+        return Err("public regtest session cannot accept a new effect".to_owned());
+    }
     if session.requester_identity != requester_pubkey {
         return Err("public regtest requester identity differs from the engine signer".to_owned());
     }
@@ -505,9 +764,18 @@ pub fn bind_authorization(
     if session.authorizations.len() >= usize::from(MAX_EFFECTS_PER_SESSION) {
         return Err("public regtest session effect quota is exhausted".to_owned());
     }
+    let (_, outstanding) = service_counts(&root, now)?;
+    if outstanding
+        .checked_add(effect.amount_sat)
+        .is_none_or(|total| total > MAX_OUTSTANDING_SAT)
+    {
+        return Err("public regtest outstanding exposure is exhausted".to_owned());
+    }
+    charge_effect_rate(&root, now)?;
     session.authorizations.push(candidate);
     store_session(&root, &session)?;
     lock.release();
+    global.release();
     Ok(())
 }
 
@@ -912,6 +1180,27 @@ fn charge_ip(config: &GatewayConfig, client_ip: IpAddr, now: u64) -> Result<(), 
     Ok(())
 }
 
+fn charge_effect_rate(root: &Path, now: u64) -> Result<(), String> {
+    let path = root.join("effect-rate.json");
+    let mut state = load_optional_json::<EffectRateState>(&path)?.unwrap_or(EffectRateState {
+        schema: "openagents.immortal.public-regtest-effect-rate.v1".to_owned(),
+        window_started_at: now,
+        effects_authorized: 0,
+    });
+    if state.schema != "openagents.immortal.public-regtest-effect-rate.v1" {
+        return Err("public regtest effect-rate schema changed".to_owned());
+    }
+    if now.saturating_sub(state.window_started_at) >= RATE_WINDOW_SECONDS {
+        state.window_started_at = now;
+        state.effects_authorized = 0;
+    }
+    if state.effects_authorized >= MAX_EFFECTS_PER_WINDOW {
+        return Err("public regtest global effect rate is exhausted".to_owned());
+    }
+    state.effects_authorized += 1;
+    write_json(&path, &state)
+}
+
 fn read_http_request(stream: &mut TcpStream, peer: SocketAddr) -> Result<HttpRequest, HttpError> {
     let bytes = read_bounded_request(stream)?;
     let split =
@@ -1185,6 +1474,7 @@ impl GatewayConfig {
             source_revision,
             requester_contract_digest,
             provider_set,
+            metrics: Arc::new(GatewayMetrics::default()),
         })
     }
 }
@@ -1529,6 +1819,37 @@ fn validate_contract() -> Result<(), String> {
     Ok(())
 }
 
+fn validate_service_contract() -> Result<(), String> {
+    let contract: Value = serde_json::from_str(SERVICE_CONTRACT)
+        .map_err(|error| format!("public service contract is invalid: {error}"))?;
+    if contract.get("schema").and_then(Value::as_str) != Some(SERVICE_CONTRACT_SCHEMA)
+        || contract.get("network").and_then(Value::as_str) != Some(REGTEST_NETWORK)
+        || contract
+            .pointer("/concurrency/maximum_active_sessions")
+            .and_then(Value::as_u64)
+            != u64::try_from(MAX_ACTIVE_SESSIONS).ok()
+        || contract
+            .pointer("/concurrency/maximum_connections")
+            .and_then(Value::as_u64)
+            != u64::try_from(MAX_CONNECTIONS).ok()
+        || contract
+            .pointer("/concurrency/maximum_outstanding_sat")
+            .and_then(Value::as_u64)
+            != Some(MAX_OUTSTANDING_SAT)
+        || contract
+            .pointer("/concurrency/maximum_effects_per_minute")
+            .and_then(Value::as_u64)
+            != Some(u64::from(MAX_EFFECTS_PER_WINDOW))
+        || contract
+            .pointer("/operator/readiness_maximum_age_seconds")
+            .and_then(Value::as_u64)
+            != Some(READINESS_MAXIMUM_AGE_SECONDS)
+    {
+        return Err("public service fixture differs from executable limits".to_owned());
+    }
+    Ok(())
+}
+
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
@@ -1601,6 +1922,50 @@ fn reject_custody_material(value: &Value) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn service_config() -> GatewayConfig {
+        let root = std::env::temp_dir().join(format!(
+            "immortal-public-regtest-service-test-{}",
+            lower_hex(&random_32().expect("test entropy"))
+        ));
+        prepare_root(&root).expect("prepare service root");
+        GatewayConfig {
+            root,
+            bind: "127.0.0.1:19337".parse().unwrap(),
+            origin: "https://demo.example".to_owned(),
+            signer: RelaySigner::from_secret_hex(&"01".repeat(32)).unwrap(),
+            lifetime_seconds: 300,
+            effect_timeout: Duration::from_secs(1),
+            source_revision: "ab".repeat(20),
+            requester_contract_digest: "cd".repeat(32),
+            provider_set: vec!["ef".repeat(32)],
+            metrics: Arc::new(GatewayMetrics::default()),
+        }
+    }
+
+    fn publish_test_readiness(config: &GatewayConfig, checked_at: u64) {
+        write_json(
+            &config.root.join("readiness.json"),
+            &ServiceReadiness {
+                schema: SERVICE_READINESS_SCHEMA.to_owned(),
+                ready: true,
+                checked_at,
+                revision: config.source_revision.clone(),
+                failures: vec![],
+                active_sessions: 0,
+                outstanding_sat: 0,
+                provider_pubkeys: config.provider_set.clone(),
+                lightning_node_ids: vec![
+                    "02".repeat(33),
+                    "03".repeat(33),
+                    format!("02{}", "44".repeat(32)),
+                ],
+                bitcoin_height: 101,
+                receipt_store_writable: true,
+            },
+        )
+        .expect("write readiness");
+    }
+
     fn effect() -> GatewayEffectRequest {
         GatewayEffectRequest {
             schema: "openagents.immortal.browser-demo-effect.v1".to_owned(),
@@ -1618,6 +1983,7 @@ mod tests {
     #[test]
     fn contract_origin_and_effect_bounds_are_closed() {
         validate_contract().expect("contract");
+        validate_service_contract().expect("service contract");
         assert!(validate_https_origin("https://demo.example").is_ok());
         assert!(validate_https_origin("http://demo.example").is_err());
         assert!(validate_https_origin("https://user@demo.example").is_err());
@@ -1694,6 +2060,7 @@ mod tests {
             source_revision: "ab".repeat(20),
             requester_contract_digest: "cd".repeat(32),
             provider_set: vec!["ef".repeat(32)],
+            metrics: Arc::new(GatewayMetrics::default()),
         };
         let session = StoredSession {
             schema: SESSION_SCHEMA.to_owned(),
@@ -1718,5 +2085,72 @@ mod tests {
             serde_json::from_str(&signed.signature_event.content).expect("manifest content");
         assert_eq!(decoded, signed.manifest);
         fs::remove_dir_all(root).expect("remove owned test root");
+    }
+
+    #[test]
+    fn readiness_fails_closed_and_service_sustains_qualification_counts() {
+        let config = service_config();
+        let now = unix_now().expect("clock");
+        assert_eq!(
+            require_service_ready(&config, now).unwrap_err().code,
+            "readiness_unavailable"
+        );
+        publish_test_readiness(&config, now.saturating_sub(31));
+        assert_eq!(
+            require_service_ready(&config, now).unwrap_err().code,
+            "service_unready"
+        );
+        publish_test_readiness(&config, now);
+        require_service_ready(&config, now).expect("fresh readiness");
+
+        let mut active = Vec::new();
+        for number in 1..=5_u8 {
+            active.push(
+                create_session(
+                    &config,
+                    format!("198.51.100.{number}").parse().unwrap(),
+                    CreateSessionRequest {
+                        schema: CREATE_SCHEMA.to_owned(),
+                        requester_identity: "11".repeat(32),
+                        client_nonce: format!("{number:064x}"),
+                    },
+                )
+                .expect("simultaneous active session"),
+            );
+        }
+        assert_eq!(service_counts(&config.root, now).unwrap().0, 5);
+        for response in active {
+            let id = response.signed_manifest.manifest.sandbox_session_id;
+            let mut state = load_session(&config.root, &id).unwrap().unwrap();
+            state.revoked_at = Some(now);
+            store_session(&config.root, &state).unwrap();
+        }
+
+        for number in 0..50_u8 {
+            let response = create_session(
+                &config,
+                format!("203.0.113.{}", number.saturating_add(1))
+                    .parse()
+                    .unwrap(),
+                CreateSessionRequest {
+                    schema: CREATE_SCHEMA.to_owned(),
+                    requester_identity: "22".repeat(32),
+                    client_nonce: format!("{:064x}", u16::from(number) + 100),
+                },
+            )
+            .expect("sequential qualification session");
+            let id = response.signed_manifest.manifest.sandbox_session_id;
+            let mut state = load_session(&config.root, &id).unwrap().unwrap();
+            state.revoked_at = Some(now);
+            store_session(&config.root, &state).unwrap();
+        }
+        assert_eq!(service_counts(&config.root, now).unwrap(), (0, 0));
+
+        write_json(&config.root.join("maintenance"), &json!({"enabled":true})).unwrap();
+        assert_eq!(
+            require_service_ready(&config, now).unwrap_err().code,
+            "maintenance"
+        );
+        fs::remove_dir_all(config.root).expect("remove service test root");
     }
 }

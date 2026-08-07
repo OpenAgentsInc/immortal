@@ -1,0 +1,26 @@
+[Unit]
+Description=Immortal public regtest private operator controller
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=immortal-regtest
+Group=immortal-regtest
+SupplementaryGroups=docker
+WorkingDirectory=/opt/immortal-public-regtest/current
+Environment=IMMORTAL_PUBLIC_REGTEST_STATE_DIR=/var/lib/immortal-public-regtest
+Environment=IMMORTAL_PUBLIC_REGTEST_GATEWAY_STATE_DIR=/var/lib/immortal-public-regtest/gateway
+ExecStart=/opt/immortal-public-regtest/current/scripts/public-regtest-operator.sh loop
+Restart=always
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/immortal-public-regtest
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

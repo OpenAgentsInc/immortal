@@ -38,6 +38,33 @@ printf '01%.0s' $(seq 1 32) >"${signing_key}"
 printf '\n' >>"${signing_key}"
 chmod 0600 "${signing_key}"
 
+write_readiness() {
+  jq -cn \
+    --arg revision "${revision}" \
+    --arg provider "${provider}" \
+    --argjson checked_at "$(date +%s)" \
+    '{
+      schema:"openagents.immortal.public-regtest-service-readiness.v1",
+      ready:true,
+      checked_at:$checked_at,
+      revision:$revision,
+      failures:[],
+      active_sessions:0,
+      outstanding_sat:0,
+      provider_pubkeys:[$provider],
+      lightning_node_ids:[
+        "021111111111111111111111111111111111111111111111111111111111111111",
+        "022222222222222222222222222222222222222222222222222222222222222222",
+        "023333333333333333333333333333333333333333333333333333333333333333"
+      ],
+      bitcoin_height:101,
+      receipt_store_writable:true
+    }' >"${gateway_state}/readiness.json"
+  chmod 0600 "${gateway_state}/readiness.json"
+}
+
+write_readiness
+
 cargo build --locked --quiet \
   -p immortal-lab \
   -p immortal-public-regtest-gateway
@@ -65,6 +92,7 @@ gateway_env=(
 )
 
 start_gateway() {
+  write_readiness
   "${gateway_env[@]}" target/debug/immortal-public-regtest-gateway \
     >>"${gateway_log}" 2>&1 &
   gateway_process=$!
@@ -93,6 +121,17 @@ stop_gateway() {
 
 start_gateway
 
+test "$(curl --silent --output "${private_root}/health.json" --write-out '%{http_code}' \
+  --header "X-Immortal-Client-IP: ${client_ip}" "${url}/healthz")" = 200
+test "$(curl --silent --output "${private_root}/ready.json" --write-out '%{http_code}' \
+  --header "X-Immortal-Client-IP: ${client_ip}" "${url}/readyz")" = 200
+jq -e '.schema == "openagents.immortal.public-regtest-service-readiness.v1" and .ready == true' \
+  "${private_root}/ready.json" >/dev/null
+test "$(curl --silent --output "${private_root}/metrics.json" --write-out '%{http_code}' \
+  --header "X-Immortal-Client-IP: ${client_ip}" "${url}/metrics")" = 200
+jq -e '.schema == "openagents.immortal.public-regtest-metrics.v1" and .active_sessions == 0' \
+  "${private_root}/metrics.json" >/dev/null
+
 create_request="${private_root}/create.json"
 create_response="${private_root}/create-response.json"
 jq -cn \
@@ -100,6 +139,22 @@ jq -cn \
   --arg nonce "$(printf '88%.0s' $(seq 1 32))" \
   '{schema:"openagents.immortal.public-regtest-session-create.v1",requester_identity:$requester,client_nonce:$nonce}' \
   >"${create_request}"
+
+jq '.checked_at = 1' "${gateway_state}/readiness.json" >"${gateway_state}/readiness-stale.json"
+mv "${gateway_state}/readiness-stale.json" "${gateway_state}/readiness.json"
+test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --header "Origin: ${origin}" --header "X-Immortal-Client-IP: ${client_ip}" \
+  --header 'Content-Type: application/json' --data-binary "@${create_request}" \
+  "${url}/v1/public-regtest/sessions")" = 503
+write_readiness
+touch "${gateway_state}/maintenance"
+test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --header "Origin: ${origin}" --header "X-Immortal-Client-IP: ${client_ip}" \
+  --header 'Content-Type: application/json' --data-binary "@${create_request}" \
+  "${url}/v1/public-regtest/sessions")" = 503
+rm "${gateway_state}/maintenance"
+write_readiness
+
 status="$(curl --silent --show-error --output "${create_response}" --write-out '%{http_code}' \
   --header "Origin: ${origin}" \
   --header "X-Immortal-Client-IP: ${client_ip}" \

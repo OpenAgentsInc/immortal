@@ -475,7 +475,7 @@ repository fixture alone.
 | [#41](https://github.com/OpenAgentsInc/immortal/issues/41) | **Complete:** persistent multi-node public regtest topology, private generated state, public-safe readiness, restart/backup/owned reset contract | #18, #36 |
 | [#42](https://github.com/OpenAgentsInc/immortal/issues/42) | **Complete:** bounded public capability gateway, signed sessions, private worker handoff, exact durable effect replay | #41 |
 | [#43](https://github.com/OpenAgentsInc/immortal/issues/43) | **Complete:** bounded dynamic reverse/submarine inputs, signed destination commitments, two funded Quotes, deterministic selection, zero-effect loser release, real destination settlement, and requester-admitted terminal proof | #42 |
-| [#44](https://github.com/OpenAgentsInc/immortal/issues/44) | Public deployment operations, observability, backup/restore and acceptance record | #41, #42, #43 |
+| [#44](https://github.com/OpenAgentsInc/immortal/issues/44) | **Complete at the Immortal service boundary:** fail-closed operator readiness, session/connection/value bounds, private mining and Lightning maintenance, public-safe observability, terminal cleanup, runbook, and five-active/50-sequential host qualification; remote browser acceptance is emitted with Bazaar deployment | #41, #42, #43 |
 
 ## M13 — Market extension ledger (post-replacement)
 

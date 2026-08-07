@@ -2,10 +2,12 @@
 # the example domains. Plain application ports remain bound to 127.0.0.1.
 relay-a.regtest.example.com {
 	reverse_proxy 127.0.0.1:18080
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
 }
 
 relay-b.regtest.example.com {
 	reverse_proxy 127.0.0.1:18081
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
 }
 
 # The gateway itself validates the browser Origin. Caddy must overwrite, not
@@ -13,5 +15,11 @@ relay-b.regtest.example.com {
 gateway.regtest.example.com {
 	reverse_proxy 127.0.0.1:19337 {
 		header_up X-Immortal-Client-IP {remote_host}
+	}
+	header {
+		Cache-Control "no-store"
+		Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
 	}
 }

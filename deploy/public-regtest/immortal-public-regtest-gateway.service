@@ -1,0 +1,27 @@
+[Unit]
+Description=Immortal public regtest capability gateway
+After=network-online.target immortal-public-regtest-operator.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=immortal-regtest-gateway
+Group=immortal-regtest-gateway
+EnvironmentFile=/etc/immortal-public-regtest/gateway.env
+ExecStart=/usr/local/bin/immortal-public-regtest-gateway
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/immortal-public-regtest/gateway-signing-key
+ReadWritePaths=/var/lib/immortal-public-regtest/gateway
+RestrictAddressFamilies=AF_INET
+RestrictNamespaces=true
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
