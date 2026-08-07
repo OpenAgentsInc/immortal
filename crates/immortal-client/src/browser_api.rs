@@ -483,9 +483,6 @@ fn session_create(input: SessionCreateInput) -> Result<Value, ApiError> {
         packages,
     )
     .map_err(ApiError::from)?;
-    session
-        .validate_negotiated_terms()
-        .map_err(ApiError::from)?;
     session_result(session.persist().map_err(ApiError::from)?, input.deliveries)
 }
 
@@ -501,9 +498,6 @@ fn session_ingest(input: SessionIngestInput) -> Result<Value, ApiError> {
                 .map_err(ApiError::from)?,
         );
     }
-    session
-        .validate_negotiated_terms()
-        .map_err(ApiError::from)?;
     let snapshot = session.persist().map_err(ApiError::from)?;
     let mut result = session_result(snapshot, input.deliveries)?;
     result
@@ -522,9 +516,6 @@ fn session_restore(input: SessionRestoreInput) -> Result<Value, ApiError> {
     let snapshot = decode_hex(&input.snapshot_json_hex, "snapshot JSON")?;
     let session =
         SwapSession::<AwaitingVerification>::restore(&snapshot).map_err(ApiError::from)?;
-    session
-        .validate_negotiated_terms()
-        .map_err(ApiError::from)?;
     session_result(session.persist().map_err(ApiError::from)?, input.deliveries)
 }
 
@@ -689,6 +680,66 @@ fn encode_hex(bytes: impl AsRef<[u8]>) -> String {
 mod tests {
     use super::*;
 
+    fn call(operation: &str, input: Value) -> Value {
+        serde_json::from_slice(&dispatch(
+            &serde_json::to_vec(&json!({
+                "abi_version": ABI_VERSION,
+                "operation": operation,
+                "input": input,
+            }))
+            .expect("request JSON"),
+        ))
+        .expect("response JSON")
+    }
+
+    fn reverse_fixture() -> (Value, Value, Value, Value, Value) {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json"
+        ))
+        .expect("full-session fixture");
+        let snapshot = fixture
+            .pointer("/flows/reverse/snapshot")
+            .and_then(Value::as_object)
+            .expect("reverse snapshot");
+        let records = snapshot
+            .get("signed_records")
+            .and_then(Value::as_array)
+            .expect("reverse records");
+        let record = |kind| {
+            records
+                .iter()
+                .find(|record| record.get("kind").and_then(Value::as_u64) == Some(kind))
+                .cloned()
+                .expect("record kind")
+        };
+        (
+            snapshot.get("config").cloned().expect("reverse config"),
+            record(39_604),
+            record(39_605),
+            record(39_606),
+            fixture
+                .pointer("/flows/reverse/verification")
+                .cloned()
+                .expect("reverse verification"),
+        )
+    }
+
+    fn delivery(record: &Value, requester_pubkey: &str) -> Value {
+        json!({
+            "raw_signed_event_hex": encode_hex(
+                serde_json::to_vec(record).expect("signed record JSON")
+            ),
+            "observed_at": 500,
+            "provenance": if record.get("pubkey").and_then(Value::as_str)
+                == Some(requester_pubkey)
+            {
+                "locally_signed"
+            } else {
+                "direct"
+            },
+        })
+    }
+
     #[test]
     fn version_mismatch_is_typed_and_fail_closed() {
         let response: Value = serde_json::from_slice(&dispatch(
@@ -721,5 +772,124 @@ mod tests {
                 .map(Vec::len),
             Some(OPERATIONS.len())
         );
+    }
+
+    #[test]
+    fn browser_sessions_create_ingest_and_restore_progressive_prefixes() {
+        let (config, rfq, quote, order, verification) = reverse_fixture();
+        let requester = config
+            .get("requester_pubkey")
+            .and_then(Value::as_str)
+            .expect("requester public key");
+        let rfq_delivery = delivery(&rfq, requester);
+        let quote_delivery = delivery(&quote, requester);
+        let order_delivery = delivery(&order, requester);
+
+        let quote_created = call(
+            "session_create",
+            json!({
+                "config": config,
+                "records": [rfq, quote],
+                "exit_packages": [],
+                "deliveries": [rfq_delivery, quote_delivery],
+            }),
+        );
+        assert_eq!(
+            quote_created
+                .pointer("/result/view/verification/state")
+                .and_then(Value::as_str),
+            Some("quote_verified"),
+            "Quote-stage create failed: {quote_created}"
+        );
+        let quote_snapshot = quote_created
+            .pointer("/result/snapshot_json_hex")
+            .and_then(Value::as_str)
+            .expect("Quote-stage snapshot");
+        let quote_restored = call(
+            "session_restore",
+            json!({
+                "snapshot_json_hex": quote_snapshot,
+                "deliveries": [rfq_delivery, quote_delivery],
+            }),
+        );
+        assert_eq!(
+            quote_restored["result"]["view"],
+            quote_created["result"]["view"]
+        );
+        let funding_attempt = call(
+            "prepare_funding_request",
+            json!({
+                "snapshot_json_hex": quote_snapshot,
+                "verification": verification,
+            }),
+        );
+        assert_eq!(
+            funding_attempt
+                .pointer("/error/code")
+                .and_then(Value::as_str),
+            Some("swp_contract_terms_mismatch"),
+            "Quote-stage session crossed the negotiated-terms gate: {funding_attempt}"
+        );
+        assert!(funding_attempt.get("result").is_none());
+
+        let order_ingested = call(
+            "session_ingest",
+            json!({
+                "snapshot_json_hex": quote_snapshot,
+                "records": [order],
+                "deliveries": [rfq_delivery, quote_delivery, order_delivery],
+            }),
+        );
+        assert_eq!(
+            order_ingested
+                .pointer("/result/view/verification/state")
+                .and_then(Value::as_str),
+            Some("order_verified"),
+            "Order-stage ingest failed: {order_ingested}"
+        );
+        assert_eq!(
+            order_ingested
+                .pointer("/result/ingested_records")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        let order_snapshot = order_ingested
+            .pointer("/result/snapshot_json_hex")
+            .and_then(Value::as_str)
+            .expect("Order-stage snapshot");
+        let order_restored = call(
+            "session_restore",
+            json!({
+                "snapshot_json_hex": order_snapshot,
+                "deliveries": [rfq_delivery, quote_delivery, order_delivery],
+            }),
+        );
+        assert_eq!(
+            order_restored["result"]["view"],
+            order_ingested["result"]["view"]
+        );
+    }
+
+    #[test]
+    fn progressive_browser_session_still_requires_exact_delivery_evidence() {
+        let (config, rfq, quote, _, _) = reverse_fixture();
+        let requester = config
+            .get("requester_pubkey")
+            .and_then(Value::as_str)
+            .expect("requester public key");
+        let response = call(
+            "session_create",
+            json!({
+                "config": config,
+                "records": [rfq, quote],
+                "exit_packages": [],
+                "deliveries": [delivery(&rfq, requester)],
+            }),
+        );
+        assert_eq!(
+            response.pointer("/error/code").and_then(Value::as_str),
+            Some("swp_unresolved_loss")
+        );
+        assert!(response.get("result").is_none());
     }
 }

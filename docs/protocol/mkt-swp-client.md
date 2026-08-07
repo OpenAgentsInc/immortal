@@ -157,6 +157,15 @@ verify-before-fund checks; and cross the funding-authorized transition only
 when the host returns that exact prepared request unchanged. Preparation
 deliberately refuses the internal wallet callback after capturing the request,
 so it cannot persist or execute an authorization.
+
+Session operations are progressive. An exact RFQ + Quote prefix creates and
+restores a `quote_verified` view; adding the Order through `session_ingest`
+produces `order_verified`, followed by `awaiting_provider_contract` and
+`contract_terms_verified` only as their required signed records arrive. Every
+state still requires one exact validated delivery receipt per signed record.
+This progression does not move the funding boundary: negotiated terms,
+bilateral topology, rail evidence, exit packages, and local authorization are
+all rechecked only on the verify-before-fund path that requires them.
 Entropy, Nostr signing and wrapping, relay transport, durable snapshot storage,
 wallet actions, rail observations, secrets, and node credentials remain host
 capabilities. Gift-wrap decryption uses the existing callback transport API;

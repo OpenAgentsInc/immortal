@@ -4554,27 +4554,29 @@ impl SwapSession<AwaitingVerification> {
                 effect,
             )?;
         }
-        let bound = BoundSession::from_records(&persisted.config, &persisted.signed_records)?;
-        let topology = requester_topology(bound.swap_type);
-        let funding_effect_id = effect_id(
-            &bound.order.id,
-            topology.funding_effect_role,
-            topology.funding_leg_id,
-        )?;
-        if let Some(effect) = external_effects.get(&funding_effect_id) {
-            let request = persisted.funding_request.as_ref().ok_or_else(|| {
-                SwapClientError::new(
-                    "swp_external_effect_conflict",
-                    "persisted funding effect has no exact authorization request",
-                )
-            })?;
-            validate_effect_request_binding(
-                &persisted.config,
-                &persisted.signed_records,
-                &persisted.exit_packages,
-                &ExternalEffectRequest::Funding(request.clone()),
-                effect,
+        if !external_effects.is_empty() || persisted.funding_request.is_some() {
+            let bound = BoundSession::from_records(&persisted.config, &persisted.signed_records)?;
+            let topology = requester_topology(bound.swap_type);
+            let funding_effect_id = effect_id(
+                &bound.order.id,
+                topology.funding_effect_role,
+                topology.funding_leg_id,
             )?;
+            if let Some(effect) = external_effects.get(&funding_effect_id) {
+                let request = persisted.funding_request.as_ref().ok_or_else(|| {
+                    SwapClientError::new(
+                        "swp_external_effect_conflict",
+                        "persisted funding effect has no exact authorization request",
+                    )
+                })?;
+                validate_effect_request_binding(
+                    &persisted.config,
+                    &persisted.signed_records,
+                    &persisted.exit_packages,
+                    &ExternalEffectRequest::Funding(request.clone()),
+                    effect,
+                )?;
+            }
         }
         validate_lifecycle(
             &persisted.config,
@@ -10475,7 +10477,17 @@ fn validate_session_material(
             "signed record history contains duplicate event IDs",
         ));
     }
-    let order = exactly_one(records, MKT_ORDER_KIND, "swp_contract_terms_mismatch")?;
+    let orders = records
+        .iter()
+        .filter(|event| event.kind == MKT_ORDER_KIND)
+        .collect::<Vec<_>>();
+    if orders.len() > 1 {
+        return Err(SwapClientError::new(
+            "swp_idempotency_conflict",
+            "signed record history contains multiple Order records",
+        ));
+    }
+    let order = orders.first().copied();
     let rfq = exactly_one(records, MKT_RFQ_KIND, "swp_unresolved_loss")?;
     let quote = exactly_one(records, MKT_QUOTE_KIND, "swp_contract_terms_mismatch")?;
     let quote_profile = validate_requester_quote(config, rfq, quote)?;
@@ -10486,6 +10498,12 @@ fn validate_session_material(
             MKT_STATUS_KIND | MKT_CANCEL_KIND | MKT_CLOSE_KIND
         )
     }) {
+        let order = order.ok_or_else(|| {
+            SwapClientError::new(
+                "swp_contract_missing",
+                "post-Quote record history has no Order",
+            )
+        })?;
         require_marked_reference(event, "order", &order.id)?;
     }
     for package in exit_packages {
