@@ -31,6 +31,7 @@ grep -Fq 'outstanding_value_capacity' "${operator}"
 grep -Fq 'admissions.issubset(receipts)' "${operator}"
 test "$(grep -Fc 'wallet-driver public-regtest-dynamic-worker-once >/dev/null 2>&1' "${operator}")" -eq 1
 test "$(grep -Fc 'wallet-driver public-regtest-demo-input-once >/dev/null 2>&1' "${operator}")" -eq 1
+grep -Fq '.request.expires_at | type == "number" and . > $now' "${operator}"
 grep -Fq 'maximum_connections' "${fixture}"
 grep -Fq 'header_up X-Immortal-Client-IP {remote_host}' deploy/public-regtest/Caddyfile.example
 grep -Fq 'User=immortal-regtest-gateway' deploy/public-regtest/immortal-public-regtest-gateway.service

@@ -205,7 +205,7 @@ PY
 }
 
 process_dynamic_requests() {
-  local request session_id worker_lock session_state owner_pid
+  local request session_id worker_lock session_state owner_pid now
   shopt -s nullglob
   for request in "${gateway_state}"/sessions/*/private-dynamic-request.json; do
     session_id="$(basename "$(dirname "${request}")")"
@@ -214,6 +214,10 @@ process_dynamic_requests() {
     test -f "${session_state}" || continue
     jq -e '.revoked_at == null and (.journey.stage // "") != "completed"' \
       "${session_state}" >/dev/null 2>&1 || continue
+    now="$(date +%s)"
+    jq -e --argjson now "${now}" \
+      '.request.expires_at | type == "number" and . > $now' \
+      "${request}" >/dev/null 2>&1 || continue
     worker_lock="${gateway_state}/sessions/${session_id}/dynamic-worker.lock"
     if test -d "${worker_lock}"; then
       owner_pid="$(cat "${worker_lock}/pid" 2>/dev/null || true)"
