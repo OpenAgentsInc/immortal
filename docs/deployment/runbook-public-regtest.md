@@ -110,6 +110,8 @@ run `up` again; bootstrap operations are idempotent and readiness is reproved.
 Bootstrap maintains eight independently reservable confirmed Bitcoin outputs
 per provider, leaving headroom above the five-session concurrency gate. It
 funds only missing outputs and mines them before readiness is published.
+`up` reapplies this idempotent bootstrap even when the persistent topology is
+already healthy, so increasing a capacity target takes effect without reset.
 To replace one service and wait for the complete topology to recover:
 
 ```sh

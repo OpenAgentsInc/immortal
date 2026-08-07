@@ -663,6 +663,7 @@ start_topology() {
   docker compose version >/dev/null 2>&1 || fail "Docker Compose is unavailable"
   compose config --quiet
   if test -f "${manifest}" && test -n "$(compose ps --services --status running)"; then
+    bootstrap
     wait_for "existing persistent topology" readiness_probe
     check_ready
     return
