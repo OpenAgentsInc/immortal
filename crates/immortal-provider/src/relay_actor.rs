@@ -138,6 +138,10 @@ pub(crate) trait ProviderMode {
         Ok(Vec::new())
     }
 
+    fn session_is_disposed(&mut self, _session_id: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+
     fn prepare_recovered_record(
         &mut self,
         _session: &mut ProviderSession,
@@ -511,6 +515,9 @@ impl<M: ProviderMode> RelayActor<M> {
 
         self.sessions.clear();
         for (session_id, records) in sessions {
+            if self.mode.session_is_disposed(&session_id)? {
+                continue;
+            }
             let records = order_recovery_records(records, self.signer.pubkey());
             let Some(actor) = self.recover_session_group(&session_id, records)? else {
                 continue;
@@ -672,6 +679,12 @@ impl<M: ProviderMode> RelayActor<M> {
         let record = delivered.record().event().clone();
         let session_id = session_id(&record)?.to_owned();
         let provider_authored = record.pubkey == self.signer.pubkey();
+        if !self.sessions.contains_key(&session_id) && self.mode.session_is_disposed(&session_id)? {
+            eprintln!(
+                "immortal-provider: ignoring delayed relay record for disposed session {session_id}"
+            );
+            return Ok(());
+        }
         if provider_authored && !self.sessions.contains_key(&session_id) {
             eprintln!(
                 "immortal-provider: ignoring delayed provider echo for inactive session {session_id}"

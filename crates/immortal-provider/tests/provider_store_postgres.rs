@@ -640,6 +640,20 @@ async fn active_session_recovery_excludes_only_durable_dispositions() {
             .expect("same disposition must replay"),
         StoreWriteOutcome::Replay
     );
+    assert_eq!(
+        store
+            .session_disposition(&disposed_session)
+            .await
+            .expect("disposed session lookup must succeed"),
+        Some("quote_expired".to_owned())
+    );
+    assert_eq!(
+        store
+            .session_disposition(&active_session)
+            .await
+            .expect("active session lookup must succeed"),
+        None
+    );
     assert!(matches!(
         store
             .dispose_session(&disposed_session, "contract_stalled", 6)

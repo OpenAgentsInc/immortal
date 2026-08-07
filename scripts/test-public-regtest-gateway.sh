@@ -167,8 +167,15 @@ jq -e '
   (.capability | length) == 64 and
   .signed_manifest.manifest.network == "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4" and
   .signed_manifest.manifest.origin == "https://bazaar-regtest.example" and
-  .signed_manifest.signature_event.content == (.signed_manifest.manifest | tojson)
+  (.signed_manifest.signature_event.content | fromjson) == .signed_manifest.manifest
 ' "${create_response}" >/dev/null
+python3 - "${create_response}" signed_manifest <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))[sys.argv[2]]
+canonical = json.dumps(value["manifest"], sort_keys=True, separators=(",", ":"))
+if value["signature_event"]["content"] != canonical:
+    raise SystemExit("session manifest content is not canonical JSON")
+PY
 session_id="$(jq -r '.signed_manifest.manifest.sandbox_session_id' "${create_response}")"
 capability="$(jq -r '.capability' "${create_response}")"
 if grep -R -F "${capability}" "${gateway_state}" >/dev/null 2>&1; then
@@ -250,8 +257,15 @@ jq -e --arg provider "${provider}" --arg effect "${effect_id}" '
     state:"authorized",
     receipt:null
   }] and
-  .signature_event.content == (.manifest | tojson)
+  (.signature_event.content | fromjson) == .manifest
 ' "${manifest}" >/dev/null
+python3 - "${manifest}" root <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+canonical = json.dumps(value["manifest"], sort_keys=True, separators=(",", ":"))
+if value["signature_event"]["content"] != canonical:
+    raise SystemExit("refreshed manifest content is not canonical JSON")
+PY
 
 submission="${private_root}/submission.json"
 jq -c '{schema:"openagents.immortal.public-regtest-effect.v1",sandbox_session_id,provider_pubkey,effect}' \

@@ -231,7 +231,7 @@ process_dynamic_requests() {
         --user "$(id -u):$(id -g)" \
         -e "IMMORTAL_PUBLIC_REGTEST_SESSION_ID=${session_id}" \
         -e "IMMORTAL_LAB_STATE_DIR=/state/public-sessions/${session_id}" \
-        wallet-driver public-regtest-dynamic-worker-once; then
+        wallet-driver public-regtest-dynamic-worker-once >/dev/null 2>&1; then
         echo "public-regtest-operator: dynamic worker failed for ${session_id}" >&2
       fi
       rm -f -- "${worker_lock}/pid"
@@ -257,7 +257,7 @@ process_demo_inputs() {
       --user "$(id -u):$(id -g)" \
       -e "IMMORTAL_PUBLIC_REGTEST_SESSION_ID=${session_id}" \
       -e "IMMORTAL_LAB_STATE_DIR=/state/public-sessions/${session_id}" \
-      wallet-driver public-regtest-demo-input-once; then
+      wallet-driver public-regtest-demo-input-once >/dev/null 2>&1; then
       echo "public-regtest-operator: demo input worker failed for ${session_id}" >&2
     fi
     rmdir "${worker_lock}" 2>/dev/null || true

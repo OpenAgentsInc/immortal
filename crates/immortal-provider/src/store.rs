@@ -1008,6 +1008,20 @@ impl ProviderStore {
         replay_or_conflict(stored_reason == reason_code, "session disposition")
     }
 
+    pub async fn session_disposition(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<String>, ProviderStoreError> {
+        self.ensure_current()?;
+        validate_hex(session_id, "session ID")?;
+        let statement = self.client.prepare(SELECT_SESSION_DISPOSITION_SQL).await?;
+        Ok(self
+            .client
+            .query_opt(&statement, &[&session_id])
+            .await?
+            .map(|row| row.get(0)))
+    }
+
     pub async fn persist_exit_package(
         &self,
         package: &PublicExitPackage,

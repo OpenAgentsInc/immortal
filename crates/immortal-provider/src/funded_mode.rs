@@ -5961,6 +5961,15 @@ impl ProviderMode for FundedMode {
             })
     }
 
+    fn session_is_disposed(&mut self, session_id: &str) -> Result<bool, String> {
+        self.handle
+            .block_on(self.store.session_disposition(session_id))
+            .map(|disposition| disposition.is_some())
+            .map_err(|error| {
+                format!("could not inspect durable provider session disposition: {error}")
+            })
+    }
+
     fn prepare_recovered_record(
         &mut self,
         session: &mut ProviderSession,

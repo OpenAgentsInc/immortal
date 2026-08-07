@@ -41,7 +41,16 @@ dynamic request. Workers run asynchronously so the controller can continue
 mining, use a session-specific requester state directory, and retain a PID
 lock that is recovered after operator replacement. The worker executes the
 ordinary two-provider protocol path; the loop neither rewrites the request
-nor receives a generic wallet/RPC method.
+nor receives a generic wallet/RPC method. Worker stdout and stderr are
+discarded at this boundary so private destinations, invoices, and rail data
+cannot enter the operator's service journal; failures produce only a generic
+session-scoped operator error.
+
+Provider restart recovery checks the durable disposition before admitting
+either historical or delayed live relay records. A rejected, expired, or
+closed session therefore remains terminal even when its gift wrap is still
+present in bounded relay history; replay cannot mutate its disposition or
+prevent the provider from reconnecting.
 
 The same loop watches capability-owned `demo-input-request.json` records. It
 runs the fixed wallet-driver allocation command inside the private acceptance
