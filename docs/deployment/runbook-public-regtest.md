@@ -107,6 +107,9 @@ fallbacks; the loop applies the same bounded policies.
 
 Durable services use `restart: unless-stopped`. After a Docker or host restart,
 run `up` again; bootstrap operations are idempotent and readiness is reproved.
+Bootstrap maintains eight independently reservable confirmed Bitcoin outputs
+per provider, leaving headroom above the five-session concurrency gate. It
+funds only missing outputs and mines them before readiness is published.
 To replace one service and wait for the complete topology to recover:
 
 ```sh

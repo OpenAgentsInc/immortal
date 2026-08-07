@@ -95,6 +95,9 @@ if "IMMORTAL_PROVIDER_FUNDED_TOPOLOGY_RELAY_AUTH_URLS=wss://relay-a.regtest.exam
     raise SystemExit("wallet driver does not authenticate against the public relay authorities")
 PY
 
+grep -Fq 'provider_utxo_target=8' "${runner}"
+grep -Fq 'sendtoaddress "${address}" 0.1' "${runner}"
+
 rendered="$(
   IMMORTAL_PUBLIC_REGTEST_STATE_DIR="${state_dir}" \
   IMMORTAL_PUBLIC_REGTEST_GATEWAY_STATE_DIR="${state_dir}/gateway" \

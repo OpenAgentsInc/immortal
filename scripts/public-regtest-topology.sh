@@ -15,6 +15,7 @@ relay_b_port="${IMMORTAL_PUBLIC_REGTEST_RELAY_B_PORT:-18081}"
 marker="${state_dir}/ownership.json"
 manifest="${state_dir}/public-ready.json"
 postgres_image="postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193"
+provider_utxo_target=8
 
 usage() {
   cat <<'USAGE'
@@ -466,10 +467,21 @@ cln_wallet_funded() {
   cln_cli "$1" listfunds | jq -e 'any(.outputs[]; .status == "confirmed")'
 }
 
-address_funded() {
+confirmed_address_utxos() {
   local node="$1" address="$2"
   bitcoin_cli "${node}" scantxoutset start "[\"addr(${address})\"]" |
-    jq -e '.success == true and .total_amount > 0'
+    jq -er '.unspents | length'
+}
+
+ensure_provider_utxos() {
+  local node="$1" address="$2" count missing
+  count="$(confirmed_address_utxos "${node}" "${address}")"
+  [[ "${count}" =~ ^[0-9]+$ ]] || fail "provider UTXO count is invalid"
+  if test "${count}" -ge "${provider_utxo_target}"; then return; fi
+  missing=$((provider_utxo_target - count))
+  for _ in $(seq 1 "${missing}"); do
+    bitcoin_cli a -rpcwallet=public-regtest-miner sendtoaddress "${address}" 0.1 >/dev/null
+  done
 }
 
 bootstrap() {
@@ -521,12 +533,8 @@ bootstrap() {
   local provider_a_address provider_b_address
   provider_a_address="$(compose run --rm --no-deps provider-a address | tail -1)"
   provider_b_address="$(compose run --rm --no-deps provider-b address | tail -1)"
-  if ! address_funded a "${provider_a_address}" >/dev/null; then
-    bitcoin_cli a -rpcwallet=public-regtest-miner sendtoaddress "${provider_a_address}" 1.0 >/dev/null
-  fi
-  if ! address_funded b "${provider_b_address}" >/dev/null; then
-    bitcoin_cli a -rpcwallet=public-regtest-miner sendtoaddress "${provider_b_address}" 1.0 >/dev/null
-  fi
+  ensure_provider_utxos a "${provider_a_address}"
+  ensure_provider_utxos b "${provider_b_address}"
   bitcoin_cli a -rpcwallet=public-regtest-miner generatetoaddress 6 "${miner_address}" >/dev/null
   wait_for "provider funding convergence" chains_synced
 }
