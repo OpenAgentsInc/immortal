@@ -68,6 +68,7 @@ use serde_json::{Map, Value, json};
 use tokio::{runtime::Runtime, task::JoinHandle};
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message, WebSocket, client};
 
+use crate::browser_demo::{self, BrowserEffectRequest, BrowserSession};
 use crate::state::{
     BoltzAdapterApproval, BoltzAdapterBroadcast, BoltzAdapterFinalizeRequest, BoltzAdapterPrepared,
     FundedCheckpoint, FundedInjectionRequest, LabPaths, clear_boltz_adapter_controls,
@@ -4894,6 +4895,7 @@ fn run_funded_journey_with_environment(
     if journey != FundedJourney::SubmarineRefund {
         if let Some(restored) = restore_authorized_session(environment, journey)? {
             let result = resume_authorized_journey(runtime, environment, journey, restored)?;
+            browser_demo::record_terminal(&environment.control.paths, journey.name(), &result)?;
             verify_health(&environment.health_url)?;
             return Ok(json!({
                 "step": journey.name(),
@@ -4930,6 +4932,7 @@ fn run_funded_journey_with_environment(
     if journey != FundedJourney::SubmarineRefund {
         verify_health(&environment.health_url)?;
     }
+    browser_demo::record_terminal(&environment.control.paths, journey.name(), &result)?;
     Ok(json!({
         "step": journey.name(),
         "provider_pubkey": provider_pubkey,
@@ -7096,6 +7099,7 @@ fn continue_submarine(
         true,
         json!({"external_identifier": intended_txid.clone()}),
     )?;
+    let browser_effect = session.await_browser_effect(INPUT_AMOUNT_SAT)?;
     let lockup_txid = broadcast_bitcoin_once(
         runtime,
         &environment.bitcoind,
@@ -7103,7 +7107,9 @@ fn continue_submarine(
         raw_funding,
         &intended_txid,
     )?;
-    session.record_funding_effect(lockup_txid.clone(), sha256(raw_funding.as_bytes()))?;
+    let result_digest = sha256(raw_funding.as_bytes());
+    session.record_funding_effect(lockup_txid.clone(), result_digest)?;
+    session.record_browser_effect(browser_effect.as_ref(), &lockup_txid, result_digest)?;
     finish_submarine(runtime, environment, session, lockup_txid, payment_hash)
 }
 
@@ -7516,6 +7522,7 @@ fn continue_reverse(
         true,
         json!({"external_identifier": payment_hash.clone()}),
     )?;
+    let browser_effect = session.await_browser_effect(INPUT_AMOUNT_SAT)?;
     let payment_task = spawn_reverse_payment_once(
         runtime,
         &environment.peer_cln,
@@ -7523,7 +7530,9 @@ fn continue_reverse(
         invoice.clone(),
         payment_hash.clone(),
     )?;
-    session.record_funding_effect(payment_hash.clone(), sha256(payment_hash.as_bytes()))?;
+    let result_digest = sha256(payment_hash.as_bytes());
+    session.record_funding_effect(payment_hash.clone(), result_digest)?;
+    session.record_browser_effect(browser_effect.as_ref(), &payment_hash, result_digest)?;
     continue_reverse_after_funding_effect(
         runtime,
         environment,
@@ -9749,6 +9758,57 @@ impl SessionContext {
         }
         self.authorized_verifier = Some(authorized);
         self.persist_authorized("funding_authorized", true)
+    }
+
+    fn await_browser_effect(
+        &self,
+        amount_sat: u64,
+    ) -> Result<Option<BrowserEffectRequest>, String> {
+        if !browser_demo::enabled_for(&self.journey_name) {
+            return Ok(None);
+        }
+        let authorized = self
+            .authorized_verifier
+            .as_ref()
+            .ok_or_else(|| "browser demo has no engine funding authorization".to_owned())?;
+        let request = authorized
+            .funding_request()
+            .map_err(|error| format!("browser demo has no engine funding request: {error}"))?;
+        let swap_type = self
+            .contract
+            .get("swap_type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "browser demo Contract has no swap type".to_owned())?;
+        browser_demo::await_engine_effect(
+            &self.control.paths,
+            BrowserSession {
+                journey: &self.journey_name,
+                swap_type,
+                requester_pubkey: self.requester.pubkey(),
+                provider_pubkey: &self.provider_pubkey,
+                relay_url: &self.relay_url,
+                amount_sat,
+            },
+            request,
+        )
+        .map(Some)
+    }
+
+    fn record_browser_effect(
+        &self,
+        request: Option<&BrowserEffectRequest>,
+        external_identifier: &str,
+        result_digest: [u8; 32],
+    ) -> Result<(), String> {
+        let Some(request) = request else {
+            return Ok(());
+        };
+        browser_demo::record_engine_effect(
+            &self.control.paths,
+            request,
+            external_identifier,
+            &lower_hex(&result_digest),
+        )
     }
 
     fn persist_authorized(&mut self, label: &str, safe_to_stop: bool) -> Result<(), String> {

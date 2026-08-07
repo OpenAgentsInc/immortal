@@ -1,0 +1,48 @@
+{
+  "schema": "openagents.immortal.browser-demo-contract.v1",
+  "process_gate": "scripts/test-browser-demo-funded.sh",
+  "launcher": "scripts/dev-funded-browser-demo.sh",
+  "mode": "unsafe_local_funded_regtest_demo",
+  "network": "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4",
+  "adapter": {
+    "default_bind": "127.0.0.1:19336",
+    "default_origin": "http://127.0.0.1:3000",
+    "endpoints": ["GET /v1/session", "POST /v1/effects", "OPTIONS /v1/session", "OPTIONS /v1/effects"],
+    "effect_methods": ["broadcast_bitcoin_funding", "pay_lightning_invoice"],
+    "maximum_amount_sat": 1000000,
+    "maximum_request_bytes": 16384,
+    "maximum_timeout_seconds": 900
+  },
+  "journeys": {
+    "submarine": {
+      "effect_method": "broadcast_bitcoin_funding",
+      "terminal_rails": ["bitcoin", "lightning"]
+    },
+    "reverse": {
+      "effect_method": "pay_lightning_invoice",
+      "terminal_rails": ["bitcoin", "lightning"]
+    }
+  },
+  "idempotency": {
+    "request_authority": "immortal-client FundingAuthorizationRequest",
+    "binding": ["session_id", "order_id", "effect_id", "idempotency_digest"],
+    "exact_replay": "prior_receipt",
+    "changed_replay": "http_409"
+  },
+  "refusals": [
+    "mainnet",
+    "non_loopback_bind",
+    "non_allowlisted_origin",
+    "unknown_method",
+    "unbounded_amount",
+    "changed_idempotency_digest"
+  ],
+  "claims": {
+    "local_funded_regtest_demo": true,
+    "production_wallet_api": false,
+    "mainnet": false,
+    "custody_by_adapter": false,
+    "node_credentials_exposed": false,
+    "live_deployment": false
+  }
+}

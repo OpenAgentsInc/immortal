@@ -24,6 +24,7 @@ primitives) against a loopback dev relay — the same wire
 | `claim` | Runs a reverse session, persists its wallet-only preimage before RFQ publication, pays the provider hold invoice, and broadcasts the requester script-path claim. |
 | `refund` | Runs the noncooperative reverse lane until the provider's script-path refund and cancelled hold invoice are locally verified. |
 | `funded-smoke` | Runs all three funded journeys and writes the private evidence consumed by `scripts/test-provider-funded.sh`. |
+| `browser-demo-adapter` | Serves the exact-origin loopback callback and public-safe session view for a browser-driven funded regtest smoke. It has no node or wallet credentials and admits only engine-bound Bitcoin funding or Lightning payment effects. |
 | `status` | Prints the persisted state (identity pubkey, discovery summary, sessions and their steps). |
 | `run --to <step>` | Runs the no-spend preflight through `verify`, or funded submarine → reverse claim → reverse refund journeys through the selected funded step. |
 
@@ -51,6 +52,9 @@ All state lives under one directory (`IMMORTAL_LAB_STATE_DIR`, default
   journey; `funded-checkpoint.json` mirrors the most recently written one for
   external control scripts. Checkpoint details contain record IDs and snapshot
   paths, never custody material.
+- `browser-demo-manifest.json` and `browser-demo-<effect-id>-{request,receipt}.json`
+  — public-safe projection plus exact mode-0600 browser admission ledger. They
+  contain no raw transaction, invoice, preimage, key, or node credential.
 
 Every file and directory is mode 0600/0700 on Unix and every write is
 sync-plus-temp-file rename. `IMMORTAL_LAB_STOP_AFTER=<journey>:<checkpoint>`
@@ -73,11 +77,13 @@ mode-0600 `funded-injection.json` request, restart the named process, and
 write a bound acknowledgement to `funded-continue`:
 
 ```json
-{"schema":"openagents.immortal.lab-injection-ack.v1","run_id":"<run-id>","checkpoint":"reverse:funding_effect_recorded","injection":"provider_crash","restored":true}
+{"schema":"openagents.immortal.lab-injection-ack.v1","run_id":"<run-id>","checkpoint":"reverse:funding_effect_recorded","injection":"provider_crash","restored":true,"evidence":{"target":"provider-a","before_pid":1234,"after_pid":5678,"transition":"process_replaced_and_ready"}}
 ```
 
 The harness rejects stale, mismatched, oversized, malformed, or
-custody-bearing acknowledgements.
+custody-bearing acknowledgements. A successful relay-loss or provider-crash
+acknowledgement must also name the bounded target and prove distinct positive
+process IDs before and after the ready restart.
 
 The funded process wrapper accepts one bounded outer control at a time:
 `IMMORTAL_PROVIDER_FUNDED_RESTART_AT`, or
@@ -101,6 +107,17 @@ disposable processes, verify readiness, and atomically write the bound
 mode-0600 acknowledgement. Harness-owned rejection cases additionally require
 an empty Bitcoin mempool, no provider Lightning payment, and no funded
 checkpoint before and after the refusal.
+
+`scripts/dev-funded-browser-demo.sh` leaves the same adapter available for an
+external Bazaar client until Ctrl-C performs owned teardown.
+`scripts/test-browser-demo-funded.sh` runs the disposable funded smoke in
+browser-demo mode. The production requester engine publishes one exact effect
+ID and request digest at a time; the loopback adapter can only admit that
+request and return the harness's durable receipt. The manifest separates the
+provider's signed Status claim from locally verified rail evidence and never
+allows a settled presentation before terminal verification. See
+`docs/conformance/browser-demo-funded.md` for the HTTP contract, replay law,
+and macOS teardown recipe.
 
 After an acknowledged relay loss, the wallet replaces and NIP-42 authenticates
 both relay sockets, then resubscribes the reader without draining stored
@@ -149,6 +166,10 @@ nonce.
 
 - Only `ws://` loopback relay URLs are accepted (same refusal as
   `dev-market-seed`), so throwaway traffic cannot reach a production relay.
+- The browser adapter accepts only a numeric IPv4 loopback bind, one exact
+  numeric loopback HTTP origin, Bitcoin regtest, two closed effect methods,
+  and engine-issued session/effect/digest coordinates. It exposes no generic
+  node, wallet, shell, or filesystem method.
 - Dependency allowlist: the workspace's seven pinned crates. The harness also
   reuses the in-repo `immortal-client`, `immortal-core`, and
   `immortal-provider` rail/wallet libraries; shipped products do not depend on

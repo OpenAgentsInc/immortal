@@ -172,6 +172,25 @@ zero-spend Close records with:
 ./scripts/test-dev-no-spend-demo.sh
 ```
 
+The funded browser-demo qualification is a separate manual gate because it
+starts real disposable Bitcoin and Lightning rails:
+
+```sh
+./scripts/test-browser-demo-funded.sh
+```
+
+To leave the same adapter available for Bazaar at
+`http://127.0.0.1:19336/v1/session` until Ctrl-C:
+
+```sh
+./scripts/dev-funded-browser-demo.sh
+```
+
+Its HTTP adapter binds only to IPv4 loopback, accepts one exact loopback
+origin, and has no node or wallet credentials. The full boundary and macOS
+teardown recipe are in
+[`browser-demo-funded.md`](../conformance/browser-demo-funded.md).
+
 ## Run the disposable Liquid rail
 
 The Liquid conformance gate owns a temporary elementsd regtest node, wallet,

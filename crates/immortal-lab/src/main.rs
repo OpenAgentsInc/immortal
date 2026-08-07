@@ -1,7 +1,7 @@
 //! Dev-only lab harness binary (immortal#32). Never deployed.
 
 use immortal_lab::{
-    adversarial,
+    adversarial, browser_demo,
     cli::{self, Command, Step},
     funded::{self, DoomsdayCase, FundedJourney},
     relay::{relay_url_from_env, topology_relay_urls_from_env},
@@ -64,6 +64,7 @@ fn execute(command: Command) -> Result<(), Exit> {
         Command::DoomsdayKeylessRequest => emit(funded::prepare_doomsday_keyless_request()),
         Command::DoomsdayKeylessExecutor => emit(funded::run_doomsday_keyless_executor()),
         Command::BoltzAdapter => emit(funded::run_boltz_adapter_session()),
+        Command::BrowserDemoAdapter => emit(browser_demo::run_server()),
         Command::Run { to } => {
             if to >= Step::Fund {
                 emit(funded::run_funded_journey(FundedJourney::Submarine))?;

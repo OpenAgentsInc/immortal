@@ -84,6 +84,12 @@
       "scope": "client"
     },
     {
+      "path": "tests/fixtures/lab/browser-demo-v1.json",
+      "sha256": "1edc8f07b859832dd95f11fbed9831ebfd53bc11cf8d8d5156509556c023856d",
+      "bytes": 1567,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/lab/funded-checkpoints-v1.json",
       "sha256": "5de6c6fc8e3c7b414049b02f74215a28877c567c0c7eb9bcd1df2c829830ced0",
       "bytes": 3597,

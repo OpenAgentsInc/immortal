@@ -273,6 +273,13 @@ using CLN by default or LND with
 `IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL=lnd`, and submarine, reverse, and
 noncooperative refund journeys. Its topology and public evidence contract are documented in
 [`provider-funded-smoke.md`](docs/conformance/provider-funded-smoke.md).
+`scripts/dev-funded-browser-demo.sh` starts the external-client mode for
+Bazaar. `scripts/test-browser-demo-funded.sh` proves the loopback-only,
+exact-origin browser effect adapter over that topology with real submarine and
+reverse regtest journeys, durable receipt replay, independent rail evidence,
+and fail-closed origin/network/method bounds. See
+[`browser-demo-funded.md`](docs/conformance/browser-demo-funded.md). This is
+explicitly unsafe local demo tooling, not a production wallet API.
 Operators should follow the
 [`immortal-provider` Debian runbook](docs/deployment/runbook-provider-debian.md)
 for its separate database, wallet file, bitcoind, selected Lightning rail, health,

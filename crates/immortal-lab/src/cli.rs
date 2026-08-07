@@ -28,6 +28,8 @@ COMMANDS:
     doomsday-keyless-executor
                         Execute one bounded credential-free Esplora request
     boltz-adapter       Run the process-gated transaction-first adapter callback
+    browser-demo-adapter
+                        Serve the closed loopback funded-regtest browser callback
     status              Print persisted lab state
     run [--to STEP]     Run through STEP (discover, rfq, quote, verify, fund,
                         claim, or refund; defaults to verify)
@@ -137,6 +139,7 @@ pub enum Command {
     DoomsdayKeylessRequest,
     DoomsdayKeylessExecutor,
     BoltzAdapter,
+    BrowserDemoAdapter,
     Status,
     Run { to: Step },
     Help,
@@ -178,6 +181,7 @@ pub fn parse(arguments: &[String]) -> Result<Command, String> {
         "doomsday-keyless-request" => Command::DoomsdayKeylessRequest,
         "doomsday-keyless-executor" => Command::DoomsdayKeylessExecutor,
         "boltz-adapter" => Command::BoltzAdapter,
+        "browser-demo-adapter" => Command::BrowserDemoAdapter,
         "status" => Command::Status,
         "run" => {
             let mut to = Step::Verify;
@@ -234,6 +238,10 @@ mod tests {
             Ok(Command::AdversarialCase)
         );
         assert_eq!(parse(&args(&["boltz-adapter"])), Ok(Command::BoltzAdapter));
+        assert_eq!(
+            parse(&args(&["browser-demo-adapter"])),
+            Ok(Command::BrowserDemoAdapter)
+        );
         assert_eq!(parse(&args(&["status"])), Ok(Command::Status));
         assert_eq!(parse(&args(&["help"])), Ok(Command::Help));
     }

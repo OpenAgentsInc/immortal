@@ -24,6 +24,10 @@ injection_timeout_seconds="${IMMORTAL_PROVIDER_FUNDED_INJECTION_TIMEOUT_SECONDS:
 lightning_rail="${IMMORTAL_PROVIDER_FUNDED_LIGHTNING_RAIL:-cln}"
 shadow_reference_origin="${IMMORTAL_PROVIDER_FUNDED_SHADOW_REFERENCE_ORIGIN:-}"
 shadow_output="${IMMORTAL_PROVIDER_FUNDED_SHADOW_OUTPUT:-}"
+browser_demo="${IMMORTAL_PROVIDER_FUNDED_BROWSER_DEMO:-0}"
+browser_demo_client="${IMMORTAL_PROVIDER_FUNDED_BROWSER_DEMO_CLIENT:-builtin}"
+browser_adapter_process=""
+browser_driver_process=""
 if { test -n "${shadow_reference_origin}" && test -z "${shadow_output}"; } \
   || { test -z "${shadow_reference_origin}" && test -n "${shadow_output}"; }; then
   echo "test-provider-funded: shadow reference and output must be configured together" >&2
@@ -41,6 +45,12 @@ fi
 cleanup() {
   local exit_status=$?
   trap - EXIT INT TERM
+  for process in "${browser_adapter_process}" "${browser_driver_process}"; do
+    if test -n "${process}" && kill -0 "${process}" >/dev/null 2>&1; then
+      kill -TERM "${process}" >/dev/null 2>&1 || true
+      wait "${process}" >/dev/null 2>&1 || true
+    fi
+  done
   if test "${exit_status}" -ne 0; then
     echo "test-provider-funded: failed during ${current_phase}" >&2
   fi
@@ -229,13 +239,26 @@ if test -n "${restart_at}" && test -n "${injection}"; then
   echo "test-provider-funded: restart and injection cases are mutually exclusive" >&2
   exit 1
 fi
+if ! [[ "${browser_demo}" =~ ^[01]$ ]]; then
+  echo "test-provider-funded: browser demo control must be 0 or 1" >&2
+  exit 1
+fi
+if ! [[ "${browser_demo_client}" =~ ^(builtin|external)$ ]] \
+  || { test "${browser_demo}" = 0 && test "${browser_demo_client}" != builtin; }; then
+  echo "test-provider-funded: browser demo client must be builtin or external" >&2
+  exit 1
+fi
+if test "${browser_demo}" = 1 && { test -n "${restart_at}" || test -n "${injection}"; }; then
+  echo "test-provider-funded: browser demo cannot share restart or injection controls" >&2
+  exit 1
+fi
 if [[ ! "${injection_timeout_seconds}" =~ ^[0-9]{1,4}$ ]] \
   || test "${injection_timeout_seconds}" -lt 1 \
   || test "${injection_timeout_seconds}" -gt 3600; then
   echo "test-provider-funded: injection timeout is outside 1..=3600 seconds" >&2
   exit 1
 fi
-if test -z "${restart_at}" && test -z "${injection}"; then
+if test "${browser_demo}" = 0 && test -z "${restart_at}" && test -z "${injection}"; then
   restart_at="$(python3 -c '
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as source:
@@ -251,7 +274,7 @@ fi
 control_metadata="$(python3 -c '
 import json, sys
 
-checkpoint_path, matrix_path, restart_at, injection, inject_at = sys.argv[1:]
+checkpoint_path, matrix_path, restart_at, injection, inject_at, browser_demo = sys.argv[1:]
 with open(checkpoint_path, encoding="utf-8") as source:
     checkpoints = json.load(source)
 with open(matrix_path, encoding="utf-8") as source:
@@ -268,7 +291,11 @@ injection_contracts = {
 }
 matrix_injections = matrix.get("injection_cases", {})
 
-if restart_at:
+if browser_demo == "1":
+    if restart_at or injection or inject_at:
+        raise SystemExit("browser demo cannot share matrix controls")
+    print("complete\t")
+elif restart_at:
     if inject_at:
         raise SystemExit("restart cases cannot set an injection checkpoint")
     if restart_at not in restartable:
@@ -296,7 +323,7 @@ elif injection:
 else:
     raise SystemExit("no funded smoke control was selected")
 ' "${checkpoint_manifest_file}" "${matrix_manifest_file}" \
-  "${restart_at}" "${injection}" "${inject_at}")" || {
+  "${restart_at}" "${injection}" "${inject_at}" "${browser_demo}")" || {
   echo "test-provider-funded: invalid matrix control" >&2
   exit 1
 }
@@ -528,6 +555,13 @@ compose() {
   "${compose_prefix[@]}" "$@"
 }
 
+container_pid() {
+  local service="$1" container
+  container="$(compose ps --quiet "${service}")"
+  test -n "${container}"
+  "${container_runtime[@]}" inspect --format '{{.State.Pid}}' "${container}"
+}
+
 wait_for() {
   local description="$1"
   shift
@@ -686,6 +720,9 @@ acknowledge_external_injection() {
   local request_metadata
   local request_run_id
   local request_sha256
+  local before_pid
+  local after_pid
+  local evidence_target
   if ! wait_for_injection_request "${request_file}"; then
     return 1
   fi
@@ -736,6 +773,8 @@ PY
   case "${injection}" in
     relay_loss)
       current_phase=relay-loss-injection
+      evidence_target=relay-a
+      before_pid="$(container_pid relay)"
       compose stop relay >/dev/null
       if compose ps --services --status running | grep -qx relay; then
         echo "test-provider-funded: relay remained running during relay-loss injection" >&2
@@ -744,11 +783,14 @@ PY
       compose up --detach relay >/dev/null
       wait_for "restored relay" compose run --rm --no-deps --entrypoint /usr/bin/curl "${provider_service}" \
         --fail --silent --show-error http://127.0.0.1:18080/health
+      after_pid="$(container_pid relay)"
       compose up --detach --force-recreate "${provider_service}" >/dev/null
       wait_for_provider
       ;;
     provider_crash)
       current_phase=provider-crash-injection
+      evidence_target=provider-a
+      before_pid="$(container_pid "${provider_service}")"
       compose kill "${provider_service}" >/dev/null
       if compose ps --services --status running | grep -qx "${provider_service}"; then
         echo "test-provider-funded: provider remained running after the crash injection" >&2
@@ -756,16 +798,24 @@ PY
       fi
       compose up --detach "${provider_service}" >/dev/null
       wait_for_provider
+      after_pid="$(container_pid "${provider_service}")"
       ;;
     *)
       echo "test-provider-funded: external acknowledgement requested for another injection" >&2
       return 1
       ;;
   esac
+  if ! [[ "${before_pid}" =~ ^[1-9][0-9]*$ ]] \
+    || ! [[ "${after_pid}" =~ ^[1-9][0-9]*$ ]] \
+    || test "${before_pid}" = "${after_pid}"; then
+    echo "test-provider-funded: external injection did not replace one bounded process" >&2
+    return 1
+  fi
 
   current_phase=injection-acknowledgement
   python3 - "${request_file}" "${acknowledgement_file}" \
-    "${request_run_id}" "${request_sha256}" "${injection}" "${inject_at}" <<'PY'
+    "${request_run_id}" "${request_sha256}" "${injection}" "${inject_at}" \
+    "${evidence_target}" "${before_pid}" "${after_pid}" <<'PY'
 import hashlib
 import json
 import os
@@ -795,6 +845,12 @@ acknowledgement = {
     "checkpoint": expected_checkpoint,
     "injection": expected_injection,
     "restored": True,
+    "evidence": {
+        "target": sys.argv[7],
+        "before_pid": int(sys.argv[8]),
+        "after_pid": int(sys.argv[9]),
+        "transition": "process_replaced_and_ready",
+    },
 }
 encoded = json.dumps(acknowledgement, separators=(",", ":")).encode()
 temporary_path = acknowledgement_path.with_name(acknowledgement_path.name + ".tmp")
@@ -987,7 +1043,190 @@ if ! grep -qx 'immortal_provider_ready 1' "${private_root}/evidence/metrics-befo
   exit 1
 fi
 
-if test -n "${injection}"; then
+if test "${browser_demo}" = 1; then
+  current_phase=browser-demo-build
+  cargo build --locked --quiet -p immortal-lab
+  browser_origin="http://127.0.0.1:3000"
+  browser_bind="127.0.0.1:19336"
+  browser_url="http://${browser_bind}"
+  browser_log="${private_root}/browser-adapter.log"
+
+  start_browser_adapter() {
+    IMMORTAL_LAB_STATE_DIR="${private_root}/state" \
+      IMMORTAL_LAB_BROWSER_DEMO_BIND="${browser_bind}" \
+      IMMORTAL_LAB_BROWSER_DEMO_ORIGIN="${browser_origin}" \
+      IMMORTAL_LAB_BROWSER_DEMO_TIMEOUT_SECONDS=300 \
+      target/debug/immortal-lab browser-demo-adapter \
+      >>"${browser_log}" 2>&1 &
+    browser_adapter_process=$!
+    for _ in $(seq 1 100); do
+      if ! kill -0 "${browser_adapter_process}" >/dev/null 2>&1; then
+        echo "test-provider-funded: browser adapter exited during startup" >&2
+        return 1
+      fi
+      status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+        --header "Origin: ${browser_origin}" "${browser_url}/v1/session" || true)"
+      if test "${status}" = 200 || test "${status}" = 404; then return 0; fi
+      sleep 0.05
+    done
+    echo "test-provider-funded: browser adapter did not bind loopback" >&2
+    return 1
+  }
+
+  fetch_browser_effect() {
+    local journey="$1" output="$2"
+    curl --fail --silent --show-error --header "Origin: ${browser_origin}" \
+      "${browser_url}/v1/session" | python3 -c '
+import json, pathlib, sys
+manifest = json.load(sys.stdin)
+journey, output = sys.argv[1:]
+if manifest.get("schema") != "openagents.immortal.browser-demo-manifest.v1":
+    raise SystemExit("browser manifest has another schema")
+if manifest.get("network") != "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4":
+    raise SystemExit("browser manifest is not Bitcoin regtest")
+if manifest.get("active_journey") != journey:
+    raise SystemExit("browser manifest has another active journey")
+active = manifest.get("journeys", {}).get(journey, {})
+if active.get("presentation", {}).get("settled_allowed") is not False:
+    raise SystemExit("browser manifest allowed settlement before rail evidence")
+effect = active.get("pending_effect")
+if not isinstance(effect, dict):
+    raise SystemExit("browser manifest has no pending engine effect")
+pathlib.Path(output).write_text(json.dumps(effect, separators=(",", ":")), encoding="utf-8")
+' "${journey}" "${output}"
+  }
+
+  submit_browser_effect() {
+    local effect_file="$1" receipt_file="$2" expected_status="${3:-200}" status
+    status="$(curl --silent --show-error --output "${receipt_file}" --write-out '%{http_code}' \
+      --header "Origin: ${browser_origin}" \
+      --header 'Content-Type: application/json' \
+      --data-binary "@${effect_file}" "${browser_url}/v1/effects")"
+    if test "${status}" != "${expected_status}"; then
+      echo "test-provider-funded: browser effect returned HTTP ${status}, expected ${expected_status}" >&2
+      return 1
+    fi
+  }
+
+  current_phase=browser-demo-startup
+  start_browser_adapter
+  compose run --rm --no-deps \
+    --env IMMORTAL_LAB_BROWSER_DEMO_MODE=1 \
+    --env "IMMORTAL_LAB_BROWSER_DEMO_ORIGIN=${browser_origin}" \
+    --env IMMORTAL_LAB_BROWSER_DEMO_TIMEOUT_SECONDS=300 \
+    driver >"${private_root}/driver.log" 2>&1 &
+  browser_driver_process=$!
+
+  if test "${browser_demo_client}" = external; then
+    current_phase=browser-demo-external-client
+    echo "test-provider-funded: browser demo ready ${browser_url}/v1/session"
+    echo "test-provider-funded: allowed origin ${browser_origin}"
+    echo "test-provider-funded: Ctrl-C tears down only this disposable topology"
+    if ! wait "${browser_driver_process}"; then
+      echo "test-provider-funded: external browser-driven funded swap failed" >&2
+      exit 1
+    fi
+    browser_driver_process=""
+    current_phase=browser-demo-terminal-inspection
+    echo "test-provider-funded: browser demo terminal evidence ready; Ctrl-C to tear down"
+    while kill -0 "${browser_adapter_process}" >/dev/null 2>&1; do sleep 1; done
+    exit 0
+  fi
+
+  submarine_effect="${private_root}/submarine-browser-effect.json"
+  submarine_receipt="${private_root}/submarine-browser-receipt.json"
+  current_phase=browser-demo-submarine
+  for _ in $(seq 1 1200); do
+    if fetch_browser_effect submarine "${submarine_effect}" >/dev/null 2>&1; then break; fi
+    if ! kill -0 "${browser_driver_process}" >/dev/null 2>&1; then
+      echo "test-provider-funded: funded driver exited before submarine browser authorization" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+  test -s "${submarine_effect}"
+  submit_browser_effect "${submarine_effect}" "${submarine_receipt}"
+  jq -e '.schema == "openagents.immortal.browser-demo-effect-receipt.v1" and .state == "admitted"' \
+    "${submarine_receipt}" >/dev/null
+
+  current_phase=browser-demo-adapter-restart
+  kill -TERM "${browser_adapter_process}"
+  wait "${browser_adapter_process}" >/dev/null 2>&1 || true
+  browser_adapter_process=""
+  start_browser_adapter
+  replay_receipt="${private_root}/submarine-browser-replay.json"
+  submit_browser_effect "${submarine_effect}" "${replay_receipt}"
+  if ! cmp -s "${submarine_receipt}" "${replay_receipt}"; then
+    echo "test-provider-funded: restarted adapter did not replay the exact receipt" >&2
+    exit 1
+  fi
+
+  conflict_effect="${private_root}/submarine-browser-conflict.json"
+  python3 - "${submarine_effect}" "${conflict_effect}" <<'PY'
+import json, pathlib, sys
+effect = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+effect["idempotency_digest"] = ("0" if effect["idempotency_digest"][0] != "0" else "1") + effect["idempotency_digest"][1:]
+pathlib.Path(sys.argv[2]).write_text(json.dumps(effect, separators=(",", ":")), encoding="utf-8")
+PY
+  submit_browser_effect "${conflict_effect}" "${private_root}/browser-conflict-response.json" 409
+  mainnet_effect="${private_root}/submarine-browser-mainnet.json"
+  python3 - "${submarine_effect}" "${mainnet_effect}" <<'PY'
+import json, pathlib, sys
+effect = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+effect["network"] = "mainnet"
+pathlib.Path(sys.argv[2]).write_text(json.dumps(effect, separators=(",", ":")), encoding="utf-8")
+PY
+  submit_browser_effect "${mainnet_effect}" "${private_root}/browser-mainnet-response.json" 400
+  refused_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --header 'Origin: http://127.0.0.1:3001' "${browser_url}/v1/session")"
+  if test "${refused_status}" != 403; then
+    echo "test-provider-funded: browser adapter accepted another origin" >&2
+    exit 1
+  fi
+  unknown_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    --header "Origin: ${browser_origin}" "${browser_url}/v1/rpc")"
+  if test "${unknown_status}" != 404; then
+    echo "test-provider-funded: browser adapter exposed an unknown method" >&2
+    exit 1
+  fi
+
+  reverse_effect="${private_root}/reverse-browser-effect.json"
+  reverse_receipt="${private_root}/reverse-browser-receipt.json"
+  current_phase=browser-demo-reverse
+  for _ in $(seq 1 1200); do
+    if fetch_browser_effect reverse "${reverse_effect}" >/dev/null 2>&1; then break; fi
+    if ! kill -0 "${browser_driver_process}" >/dev/null 2>&1; then
+      echo "test-provider-funded: funded driver exited before reverse browser authorization" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+  test -s "${reverse_effect}"
+  submit_browser_effect "${reverse_effect}" "${reverse_receipt}"
+  jq -e '.request.method == "pay_lightning_invoice" and .state == "admitted"' \
+    "${reverse_receipt}" >/dev/null
+  if ! wait "${browser_driver_process}"; then
+    echo "test-provider-funded: browser-driven funded swap driver failed" >&2
+    exit 1
+  fi
+  browser_driver_process=""
+
+  current_phase=browser-demo-terminal-evidence
+  curl --fail --silent --show-error --header "Origin: ${browser_origin}" \
+    "${browser_url}/v1/session" >"${private_root}/evidence/browser-demo-manifest.json"
+  jq -e '
+    .mode == "unsafe_local_funded_regtest_demo" and
+    .journeys.submarine.provider_status_claim.verified == false and
+    .journeys.reverse.provider_status_claim.verified == false and
+    .journeys.submarine.requester_verification.state == "terminal_rail_evidence_verified" and
+    .journeys.reverse.requester_verification.state == "terminal_rail_evidence_verified" and
+    .journeys.submarine.presentation.settled_allowed == true and
+    .journeys.reverse.presentation.settled_allowed == true
+  ' "${private_root}/evidence/browser-demo-manifest.json" >/dev/null
+  kill -TERM "${browser_adapter_process}"
+  wait "${browser_adapter_process}" >/dev/null 2>&1 || true
+  browser_adapter_process=""
+elif test -n "${injection}"; then
   driver_arguments=(
     run --rm --no-deps
     --env "IMMORTAL_LAB_INJECTION=${injection}"
@@ -1033,6 +1272,7 @@ if test -n "${injection}"; then
     fi
     if ! wait "${driver_process}"; then
       echo "test-provider-funded: driver failed after the acknowledged external injection" >&2
+      sed -n '1,200p' "${private_root}/driver-injection.log" >&2 || true
       exit 1
     fi
   else
