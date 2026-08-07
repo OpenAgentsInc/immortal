@@ -147,6 +147,7 @@ for name, service in services.items():
     }:
         raise SystemExit(f"private service entered public edge network: {name}")
 PY
+grep -Fq 'relay-a-public relay-b-public wallet-driver' "${runner}"
 
 invalid_state="${state_dir}.invalid"
 if IMMORTAL_PUBLIC_REGTEST_STATE_DIR="${invalid_state}" \
