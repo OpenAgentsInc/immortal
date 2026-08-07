@@ -1727,9 +1727,17 @@ fn run_dynamic_reverse_topology(
 }
 
 fn dynamic_public_journey_names(swap_type: &str, request_id: &str) -> [String; 2] {
+    let binding = request_id
+        .bytes()
+        .map(|byte| match byte {
+            b'0'..=b'9' => char::from(b'a' + byte - b'0'),
+            b'a'..=b'f' => char::from(b'k' + byte - b'a'),
+            _ => '_',
+        })
+        .collect::<String>();
     [
-        format!("dynamic_{swap_type}_a_{request_id}"),
-        format!("dynamic_{swap_type}_b_{request_id}"),
+        format!("dynamic_{swap_type}_a_{binding}"),
+        format!("dynamic_{swap_type}_b_{binding}"),
     ]
 }
 
@@ -14891,7 +14899,10 @@ mod tests {
         let second = dynamic_public_journey_names("reverse", &"22".repeat(32));
         assert_ne!(first, second);
         assert_ne!(first[0], first[1]);
-        assert!(first.iter().all(|name| name.contains(&"11".repeat(32))));
+        assert!(first.iter().all(|name| {
+            name.bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        }));
     }
 
     #[test]
