@@ -280,6 +280,12 @@ reverse regtest journeys, durable receipt replay, independent rail evidence,
 and fail-closed origin/network/method bounds. See
 [`browser-demo-funded.md`](docs/conformance/browser-demo-funded.md). This is
 explicitly unsafe local demo tooling, not a production wallet API.
+For a persistent public regtest sandbox, `scripts/public-regtest-topology.sh`
+keeps two peered Bitcoin nodes, three Lightning nodes, two funded providers,
+and two relay/database boundaries across restarts. Only the relay WebSocket
+ports bind to loopback for an operator TLS proxy; all rail, database, wallet,
+and control authority remains private. See the
+[`public regtest runbook`](docs/deployment/runbook-public-regtest.md).
 Operators should follow the
 [`immortal-provider` Debian runbook](docs/deployment/runbook-provider-debian.md)
 for its separate database, wallet file, bitcoind, selected Lightning rail, health,

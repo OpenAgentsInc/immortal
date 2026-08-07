@@ -230,6 +230,7 @@ enum DeliveryTarget<'a> {
 
 struct RelayActor<M> {
     relay_url: String,
+    relay_auth_url: String,
     signer: MarketSigner,
     offering_address: String,
     sessions: BTreeMap<String, SessionActor>,
@@ -240,6 +241,7 @@ struct RelayActor<M> {
 
 pub(crate) fn run_with_mode<M: ProviderMode>(
     relay_url: String,
+    relay_auth_url: String,
     signer: MarketSigner,
     mode: M,
     direct_recovery_bind: Option<SocketAddr>,
@@ -251,6 +253,7 @@ pub(crate) fn run_with_mode<M: ProviderMode>(
         .transpose()?;
     let mut actor = RelayActor {
         relay_url,
+        relay_auth_url,
         signer,
         offering_address,
         sessions: BTreeMap::new(),
@@ -352,9 +355,9 @@ impl<M: ProviderMode> RelayActor<M> {
     fn run_connection(&mut self) -> Result<(), String> {
         let now = unix_now()?;
         let mut reader = connect(&self.relay_url, self.mode.mode_name())?;
-        authenticate(&mut reader, &self.signer, &self.relay_url, now)?;
+        authenticate(&mut reader, &self.signer, &self.relay_auth_url, now)?;
         let mut publisher = connect(&self.relay_url, self.mode.mode_name())?;
-        authenticate(&mut publisher, &self.signer, &self.relay_url, now)?;
+        authenticate(&mut publisher, &self.signer, &self.relay_auth_url, now)?;
         let mut drain_announced = self.health.is_draining();
         self.publish_discovery_state(
             &mut publisher,
@@ -1869,6 +1872,7 @@ mod tests {
         let offering_address = format!("39601:{}:recovery-test", signer.pubkey());
         let mut without_history = RelayActor {
             relay_url: "ws://127.0.0.1:1".to_owned(),
+            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
             signer: signer.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),
@@ -1894,6 +1898,7 @@ mod tests {
 
         let mut with_history = RelayActor {
             relay_url: "ws://127.0.0.1:1".to_owned(),
+            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
             signer,
             offering_address,
             sessions: BTreeMap::new(),
@@ -1954,6 +1959,7 @@ mod tests {
             .expect("signed RFQ");
         let mut actor = RelayActor {
             relay_url: "ws://127.0.0.1:1".to_owned(),
+            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
@@ -1985,6 +1991,7 @@ mod tests {
         let event = provider.sign(100, MKT_STATUS_KIND, Vec::new(), "{}".to_owned());
         let mut actor = RelayActor {
             relay_url: "ws://127.0.0.1:1".to_owned(),
+            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
@@ -2063,6 +2070,7 @@ mod tests {
         );
         let actor = RelayActor {
             relay_url: "ws://127.0.0.1:1".to_owned(),
+            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
@@ -2182,6 +2190,7 @@ mod tests {
         .event;
         let mut actor = RelayActor {
             relay_url: "ws://127.0.0.1:1".to_owned(),
+            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
@@ -2338,6 +2347,7 @@ mod tests {
             .collect();
         let mut actor = RelayActor {
             relay_url: "ws://127.0.0.1:1".to_owned(),
+            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
             signer: provider.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),
@@ -2363,6 +2373,7 @@ mod tests {
 
         let mut pruned = RelayActor {
             relay_url: "ws://127.0.0.1:1".to_owned(),
+            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
             signer: provider.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),
@@ -2388,6 +2399,7 @@ mod tests {
 
         let mut rejected = RelayActor {
             relay_url: "ws://127.0.0.1:1".to_owned(),
+            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
@@ -2407,6 +2419,7 @@ mod tests {
         drain_health.begin_drain();
         let mut draining = RelayActor {
             relay_url: "ws://127.0.0.1:1".to_owned(),
+            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
             signer: rejected.signer.clone(),
             offering_address: rejected.offering_address.clone(),
             sessions: BTreeMap::new(),
@@ -2457,6 +2470,7 @@ mod tests {
         let now = unix_now().expect("current time");
         let mut actor = RelayActor {
             relay_url: "ws://127.0.0.1:1".to_owned(),
+            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
             signer: provider.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),
@@ -2597,6 +2611,7 @@ mod tests {
 
         let actor = |reservation_confirmation| RelayActor {
             relay_url: "ws://127.0.0.1:1".to_owned(),
+            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
             signer: provider.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),

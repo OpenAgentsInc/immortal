@@ -1,0 +1,130 @@
+services:
+  bitcoin-a:
+    restart: unless-stopped
+
+  bitcoin-b:
+    restart: unless-stopped
+
+  relay-a-public:
+    build:
+      context: .
+      dockerfile: Dockerfile.forwarder
+    command: ["--rule", "0.0.0.0:18080=bitcoin-a:28080"]
+    depends_on:
+      - provider-a-egress
+    networks:
+      - adversarial
+      - public-edge
+    ports:
+      - "127.0.0.1:${IMMORTAL_PUBLIC_REGTEST_RELAY_A_PORT:-18080}:18080"
+    restart: unless-stopped
+
+  relay-b-public:
+    build:
+      context: .
+      dockerfile: Dockerfile.forwarder
+    command: ["--rule", "0.0.0.0:18081=bitcoin-b:28081"]
+    depends_on:
+      - provider-b-egress
+    networks:
+      - adversarial
+      - public-edge
+    ports:
+      - "127.0.0.1:${IMMORTAL_PUBLIC_REGTEST_RELAY_B_PORT:-18081}:18081"
+    restart: unless-stopped
+
+  bitcoin-a-rpc-forwarder:
+    build:
+      context: .
+      dockerfile: Dockerfile.forwarder
+    command: ["--rule", "0.0.0.0:28443=127.0.0.1:18443"]
+    depends_on:
+      - bitcoin-a
+    network_mode: service:bitcoin-a
+    restart: unless-stopped
+
+  bitcoin-b-rpc-forwarder:
+    build:
+      context: .
+      dockerfile: Dockerfile.forwarder
+    command: ["--rule", "0.0.0.0:28443=127.0.0.1:18443"]
+    depends_on:
+      - bitcoin-b
+    network_mode: service:bitcoin-b
+    restart: unless-stopped
+
+  relay-a-postgres:
+    restart: unless-stopped
+
+  relay-b-postgres:
+    restart: unless-stopped
+
+  provider-a-postgres:
+    restart: unless-stopped
+
+  provider-b-postgres:
+    restart: unless-stopped
+
+  relay-a:
+    restart: unless-stopped
+
+  relay-b:
+    restart: unless-stopped
+
+  cln-provider-a:
+    restart: unless-stopped
+
+  cln-provider-b:
+    restart: unless-stopped
+
+  cln-wallet:
+    restart: unless-stopped
+
+  alert-sink-a:
+    restart: unless-stopped
+
+  alert-sink-b:
+    restart: unless-stopped
+
+  provider-a:
+    restart: unless-stopped
+
+  provider-b:
+    restart: unless-stopped
+
+  provider-a-egress:
+    restart: unless-stopped
+    command:
+      - --rule
+      - 0.0.0.0:28080=127.0.0.1:18080
+      - --rule
+      - 0.0.0.0:29091=127.0.0.1:9091
+      - --rule
+      - 0.0.0.0:29191=127.0.0.1:9191
+      - --rule
+      - 0.0.0.0:23002=127.0.0.1:3002
+
+  provider-b-egress:
+    restart: unless-stopped
+    command:
+      - --rule
+      - 0.0.0.0:28081=127.0.0.1:18081
+      - --rule
+      - 0.0.0.0:29092=127.0.0.1:9092
+      - --rule
+      - 0.0.0.0:29192=127.0.0.1:9192
+
+  wallet-gateway:
+    restart: unless-stopped
+
+  wallet-driver:
+    profiles: ["acceptance"]
+    restart: "no"
+
+  keyless-executor:
+    profiles: ["acceptance"]
+    restart: "no"
+
+networks:
+  public-edge:
+    driver: bridge

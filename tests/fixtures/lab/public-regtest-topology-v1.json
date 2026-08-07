@@ -1,0 +1,79 @@
+{
+  "schema": "openagents.immortal.public-regtest-topology.v1",
+  "issue": 41,
+  "operator_command": "scripts/public-regtest-topology.sh",
+  "compose_files": [
+    "scripts/support/provider-funded/adversarial-compose.yaml",
+    "deploy/public-regtest/compose.yaml"
+  ],
+  "network": "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4",
+  "topology": {
+    "bitcoin_nodes": ["provider-a", "provider-b"],
+    "bitcoin_nodes_peered": true,
+    "lightning_nodes": ["provider-a", "provider-b", "requester"],
+    "lightning_edges": [
+      "provider-a:requester",
+      "provider-b:requester",
+      "provider-a:provider-b"
+    ],
+    "providers": ["provider-a", "provider-b"],
+    "provider_databases": 2,
+    "relays": ["relay-a", "relay-b"],
+    "relay_databases": 2,
+    "single_operator_first_milestone": true,
+    "operator_independent_relay_issue": 31
+  },
+  "persistence": {
+    "named_volumes": [
+      "bitcoin-a-data",
+      "bitcoin-b-data",
+      "cln-provider-a-data",
+      "cln-provider-b-data",
+      "cln-wallet-data",
+      "provider-a-postgres-data",
+      "provider-b-postgres-data",
+      "relay-a-postgres-data",
+      "relay-b-postgres-data"
+    ],
+    "secret_state_mode": "0700",
+    "secret_file_mode": "0600",
+    "owned_reset_required": true,
+    "backup_requires_stopped_topology": true
+  },
+  "exposure": {
+    "public_protocols": ["https", "wss"],
+    "plain_relay_bind": "numeric_ipv4_loopback",
+    "public_rpc": false,
+    "public_postgres": false,
+    "public_provider_health": false,
+    "tls_termination": "operator_reverse_proxy"
+  },
+  "readiness": {
+    "same_bitcoin_tip": true,
+    "minimum_bitcoin_peer_count": 1,
+    "required_lightning_channels_per_node": 2,
+    "provider_health": "ready",
+    "relay_health": "ready",
+    "manifest_schema": "openagents.immortal.public-regtest-ready.v1",
+    "maximum_manifest_bytes": 32768
+  },
+  "commands": [
+    "init",
+    "config",
+    "up",
+    "ready",
+    "status",
+    "restart",
+    "backup",
+    "down",
+    "reset",
+    "contract"
+  ],
+  "claims": {
+    "persistent_multi_node_regtest_profile": true,
+    "public_effect_gateway": false,
+    "public_browser_session": false,
+    "operator_independence": false,
+    "mainnet": false
+  }
+}

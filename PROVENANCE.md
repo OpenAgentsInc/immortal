@@ -1287,6 +1287,17 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   kind, relay behavior, custody material, advertisement, workflow, or billed
   automation.
 
+### 2026-08-07 — Codex 5.6 Sol, persistent public regtest topology
+
+- Promoted the qualified two-bitcoind, three-CLN, two-provider, two-relay
+  adversarial topology into a persistent operator profile for issue #41.
+- Added private generated configuration, explicit named state, loopback-only
+  relay publication, WSS route pins, deterministic readiness evidence,
+  restart, offline backup, and ownership-checked reset operations.
+- Added no dependency, protocol kind, mainnet authority, public wallet/RPC
+  surface, workflow, or billed automation. Browser effect authorization and
+  operator-independent relay redundancy remain separate work.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

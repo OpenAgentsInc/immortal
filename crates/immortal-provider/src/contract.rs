@@ -1143,6 +1143,15 @@ fn environment_contract() -> Value {
             false,
             Some("loopback_plaintext_websocket_url")
         ),
+        optional_env_string(
+            "IMMORTAL_PROVIDER_RELAY_AUTH_URL",
+            &["funded"],
+            1,
+            2048,
+            false,
+            Some("exact_websocket_authority"),
+            false
+        ),
         env_string(
             "IMMORTAL_PROVIDER_IDENTITY_SECRET",
             &["funded", "no_spend"],

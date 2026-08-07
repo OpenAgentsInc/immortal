@@ -208,6 +208,7 @@ async fn run_async() -> Result<(), FundedError> {
         None
     };
     let relay_url = config.relay_url.clone();
+    let relay_auth_url = config.relay_auth_url.clone();
     let mode_bitcoind = config.bitcoind.clone();
     let mode_ark = config.arkd.clone().map(ArkFundedRail::new);
     let mode_liquid = liquid_provider_rail(config.elementsd.clone());
@@ -297,7 +298,14 @@ async fn run_async() -> Result<(), FundedError> {
     let relay_thread = thread::Builder::new()
         .name("immortal-provider-relay".to_owned())
         .spawn(move || {
-            let result = run_with_mode(relay_url, signer, mode, direct_recovery_bind, relay_health);
+            let result = run_with_mode(
+                relay_url,
+                relay_auth_url,
+                signer,
+                mode,
+                direct_recovery_bind,
+                relay_health,
+            );
             if relay_sender.send(result).is_err() {
                 eprintln!("immortal-provider: relay result receiver closed during shutdown");
             }

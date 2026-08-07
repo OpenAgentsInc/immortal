@@ -89,6 +89,7 @@ impl fmt::Debug for DatabaseUrl {
 pub struct FundedProviderConfig {
     database_url: DatabaseUrl,
     pub relay_url: String,
+    pub relay_auth_url: String,
     pub bitcoind: BitcoindClient,
     pub arkd: Option<ArkdClient>,
     pub elementsd: Option<ElementsdClient>,
@@ -158,6 +159,7 @@ impl fmt::Debug for FundedProviderConfig {
             .debug_struct("FundedProviderConfig")
             .field("database_url", &self.database_url)
             .field("relay_url", &self.relay_url)
+            .field("relay_auth_url", &self.relay_auth_url)
             .field("bitcoind", &self.bitcoind)
             .field("arkd", &self.arkd)
             .field("elementsd", &self.elementsd)
@@ -195,6 +197,9 @@ impl FundedProviderConfig {
         validate_relay_url(&relay_url)?;
         relay_actor::validate_relay_url(&relay_url, "funded")
             .map_err(|_| ConfigError::Invalid("IMMORTAL_PROVIDER_RELAY_URL"))?;
+        let relay_auth_url =
+            optional("IMMORTAL_PROVIDER_RELAY_AUTH_URL").unwrap_or_else(|| relay_url.clone());
+        validate_relay_auth_url(&relay_auth_url)?;
         let network = parse_network(&required("IMMORTAL_PROVIDER_BITCOIN_NETWORK")?)?;
         let lab_timeout_profile = lab_timeout_profile_from_lookup(network, optional)?;
         let cooperative_signing = cooperative_signing_from_lookup(lab_timeout_profile, optional)?;
@@ -279,6 +284,7 @@ impl FundedProviderConfig {
         Ok(Self {
             database_url: DatabaseUrl(database_url),
             relay_url,
+            relay_auth_url,
             bitcoind,
             arkd,
             elementsd,
@@ -637,6 +643,33 @@ fn validate_relay_url(value: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_relay_auth_url(value: &str) -> Result<(), ConfigError> {
+    if value.len() > MAX_RELAY_URL_BYTES
+        || value.bytes().any(|byte| byte.is_ascii_control())
+        || value.contains('@')
+        || value.contains('?')
+        || value.contains('#')
+    {
+        return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_RELAY_AUTH_URL"));
+    }
+    let authority = value
+        .strip_prefix("ws://")
+        .or_else(|| value.strip_prefix("wss://"))
+        .and_then(|remainder| remainder.strip_suffix('/').or(Some(remainder)))
+        .filter(|remainder| {
+            !remainder.is_empty()
+                && !remainder.contains('/')
+                && remainder.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':' | b'[' | b']')
+                })
+        })
+        .ok_or(ConfigError::Invalid("IMMORTAL_PROVIDER_RELAY_AUTH_URL"))?;
+    if authority.starts_with(':') || authority.ends_with(':') {
+        return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_RELAY_AUTH_URL"));
+    }
+    Ok(())
+}
+
 fn parse_number<T>(name: &'static str, value: &str) -> Result<T, ConfigError>
 where
     T: std::str::FromStr,
@@ -672,6 +705,14 @@ mod tests {
         assert!(validate_database_url("https://127.0.0.1/provider").is_err());
         assert!(validate_relay_url("ws://127.0.0.1:7777").is_ok());
         assert!(validate_relay_url("wss://relay.example").is_err());
+        assert!(validate_relay_auth_url("wss://relay.example").is_ok());
+        assert!(validate_relay_auth_url("ws://127.0.0.1:7777").is_ok());
+        assert!(validate_relay_auth_url("https://relay.example").is_err());
+        assert!(validate_relay_auth_url("wss://relay.example/path").is_err());
+        assert!(validate_relay_auth_url("wss://user@relay.example").is_err());
+        assert!(validate_relay_auth_url("wss://relay.example?query").is_err());
+        assert!(validate_relay_auth_url("wss://relay.example#fragment").is_err());
+        assert!(validate_relay_auth_url("wss://relay example").is_err());
     }
 
     #[test]

@@ -103,6 +103,7 @@ pub fn run() -> Result<(), String> {
     let signer = signer_from_lower_hex(&identity_secret)?;
     let variant = NoSpendVariant::from_environment()?;
     run_with_mode(
+        relay_url.clone(),
         relay_url,
         signer,
         NoSpendMode { variant },

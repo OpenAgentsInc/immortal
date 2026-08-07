@@ -197,6 +197,7 @@ provider transport is not claimed.
 | --- | --- | --- |
 | `IMMORTAL_PROVIDER_DATABASE_URL` | funded | Provider-owned Postgres URL, bounded to 4,096 bytes. It must name a database separate from every relay database. |
 | `IMMORTAL_PROVIDER_RELAY_URL` | funded, no-spend | Bounded `ws://` loopback relay URL. Userinfo, query strings, fragments, public peers, and TLS URLs are rejected. |
+| `IMMORTAL_PROVIDER_RELAY_AUTH_URL` | funded (optional) | Exact bounded `ws://` or `wss://` authority placed in NIP-42 authentication. Defaults to the loopback connection URL; set it to the public relay authority when connecting through a local proxy. |
 | `IMMORTAL_PROVIDER_IDENTITY_SECRET` | funded, no-spend | Provider Nostr identity as exactly 64 lowercase hexadecimal characters. |
 | `IMMORTAL_PROVIDER_BITCOIN_NETWORK` | funded | One of `mainnet`, `testnet`, `signet`, or `regtest`; there is no implicit default. |
 | `IMMORTAL_PROVIDER_BITCOIND_HOST` | funded | Host that resolves and connects only to loopback. |

@@ -167,6 +167,14 @@ the pinned upstream applications.
   operator-independence, and public-replacement claims.
   `scripts/test-lab-adversarial-manifest.sh` rejects omissions or additions
   before the process runner can claim the matrix.
+- `lab/public-regtest-topology-v1.json` promotes the qualified adversarial
+  topology into an operator-owned persistent profile: two peered Bitcoin
+  nodes, three Lightning roles, two independently keyed funded providers,
+  two relays and four product databases. It pins the public-port allowlist,
+  readiness manifest, persistence and reset boundaries, and explicitly
+  excludes browser authority, operator independence, and mainnet claims.
+  `scripts/test-public-regtest-topology.sh` proves its static configuration
+  and refusal gates without provisioning the long-running stack.
 - `nipmkt/swp-profile-v1.json` pins the relay-observable MKT-SWP v1 adoption
   at OpenAgents commit `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`:
   Offering grammar, kind-39610 profile binding and immutable wrapped

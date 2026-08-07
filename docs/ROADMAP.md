@@ -460,6 +460,23 @@ network. Each packet has its own process gate.
 | [#35](https://github.com/OpenAgentsInc/immortal/issues/35) | **Complete:** one-command one-relay/two-provider no-spend topology, bounded public manifest, distinguishable signed Quote policies, supervised in-flight recovery, and full zero-spend lifecycle process gate | #34, #32 |
 | [#36](https://github.com/OpenAgentsInc/immortal/issues/36) | **Complete:** loopback-only exact-origin funded-regtest adapter, engine-bound Bitcoin/Lightning effects, durable receipt replay, public-safe provider-vs-rail evidence, and real submarine/reverse process proof with explicit unsafe-local boundary | #34, #35, #25 |
 
+### Public regtest demo program (2026-08-07)
+
+The public sandbox keeps the qualified rails online without turning browser
+code into custody authority. Issue #41 is complete at the source-contract
+level: the persistent profile owns two peered Bitcoin nodes, three Lightning
+roles, two funded providers, and two durable relay/database boundaries, while
+publishing only loopback relay ports for an operator TLS proxy. Deployment
+evidence is retained by the operator runbook rather than claimed by the
+repository fixture alone.
+
+| Issue | Packet | Depends on |
+| --- | --- | --- |
+| [#41](https://github.com/OpenAgentsInc/immortal/issues/41) | **Complete:** persistent multi-node public regtest topology, private generated state, public-safe readiness, restart/backup/owned reset contract | #18, #36 |
+| [#42](https://github.com/OpenAgentsInc/immortal/issues/42) | Bounded public capability gateway for requester effects | #41 |
+| [#43](https://github.com/OpenAgentsInc/immortal/issues/43) | Dynamic public demo sessions, funding and cleanup | #42 |
+| [#44](https://github.com/OpenAgentsInc/immortal/issues/44) | Public deployment operations, observability, backup/restore and acceptance record | #41, #42, #43 |
+
 ## M13 — Market extension ledger (post-replacement)
 
 The issue-backed extensions that grow the market after M12's replacement
