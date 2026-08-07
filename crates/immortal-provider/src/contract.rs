@@ -327,6 +327,8 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
             "ark_native_session_actor":false,
             "ark_client_snapshot_required":true,
             "ark_exit_package_bytes_in_provider_state":false,
+            "ark_external_process_operator_removal_lab":true,
+            "ark_keyless_exit_lab":true,
             "unresolved_state_is_success":false
         },
         "limits":limits_contract(),

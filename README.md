@@ -31,8 +31,12 @@ The products:
   exits without claiming independent verification of arbitrary confidential
   proofs. A fixture-gated regtest Ark adapter also executes one externally
   signed, client-authorized transfer through a loopback arkd while retaining
-  only public identifiers and digests; native Ark session and pair
-  advertisement remain disabled until their conformance packet. Its
+  only public identifiers and digests. The external-process regtest gate also
+  transfers and settles a funded VTXO, prepares its funded exit, permanently
+  removes the operator/indexer/wallet state, and recovers the participant's
+  Bitcoin output through a keyless Esplora executor. Native Ark session and
+  pair advertisement remain disabled; this local proof makes no deployed or
+  public replacement claim. Its
   allowlist-only MuSig2
   foundation and signed actor support the cooperative key-path protocol. The
   actor is fail-closed on exact stored Status bytes and the pre-committed

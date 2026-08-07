@@ -122,6 +122,158 @@ random_hex() {
   LC_ALL=C od -An -N "${byte_count}" -tx1 /dev/urandom | tr -d ' \n'
 }
 
+run_ark_operator_removal_case() (
+  set -euo pipefail
+  local case_id="$1" expected="$2" record_path raw_record
+  raw_record="$(mktemp "${TMPDIR:-/tmp}/immortal-ark-case-record.XXXXXX")"
+  record_path="${record_dir}/${case_id}.json"
+
+  cleanup_ark_record() {
+    local exit_status=$?
+    trap - EXIT INT TERM
+    case "$(basename "${raw_record}")" in
+      immortal-ark-case-record.*) rm -f -- "${raw_record}" || exit_status=1 ;;
+      *) echo "test-lab-adversarial: ${case_id}: refused unexpected Ark record" >&2; exit_status=1 ;;
+    esac
+    exit "${exit_status}"
+  }
+  trap cleanup_ark_record EXIT INT TERM
+
+  IMMORTAL_ARK_LAB_RECORD_PATH="${raw_record}" \
+    ./scripts/test-ark-operator-removal.sh
+
+  python3 - "${fixture}" "${raw_record}" "${record_path}" \
+    "${case_id}" "${expected}" <<'PY'
+import json
+import os
+import pathlib
+import re
+import sys
+
+fixture = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+raw_path = pathlib.Path(sys.argv[2])
+if raw_path.stat().st_size > 32768:
+    raise SystemExit("Ark operator-removal record exceeds its bound")
+result = json.loads(raw_path.read_text(encoding="utf-8"))
+if result.get("schema") != "openagents.immortal.ark-operator-removal-lab.v1":
+    raise SystemExit("Ark operator-removal record has another schema")
+
+ark = fixture["topology"]["ark"]
+sources = result.get("sources")
+if not isinstance(sources, dict) or set(sources) != {
+    "immortal", "arkd", "arkade_ts_sdk", "arkade_unilateral_exit", "arkade_regtest"
+}:
+    raise SystemExit("Ark operator-removal record has another source set")
+if re.fullmatch(r"[0-9a-f]{40}", sources["immortal"]) is None:
+    raise SystemExit("Ark operator-removal record has no Immortal revision")
+if sources != {
+    "immortal": sources["immortal"],
+    "arkd": ark["source_revision"],
+    "arkade_ts_sdk": ark["client_revision"],
+    "arkade_unilateral_exit": ark["keyless_executor_revision"],
+    "arkade_regtest": ark["regtest_revision"],
+}:
+    raise SystemExit("Ark operator-removal record is not source pinned")
+
+preparation = result.get("preparation")
+if not isinstance(preparation, dict) or preparation.get("schema") != "openagents.immortal.ark-operator-removal-preparation.v1":
+    raise SystemExit("Ark operator-removal preparation is absent")
+if re.fullmatch(r"[0-9a-f]{64}", preparation.get("package_sha256", "")) is None:
+    raise SystemExit("Ark exit-package digest is invalid")
+if re.fullmatch(r"0[23][0-9a-f]{64}", preparation.get("operator_signer_pubkey", "")) is None:
+    raise SystemExit("Ark operator signer is invalid")
+if re.fullmatch(r"[0-9a-f]{64}:[0-9]+", preparation.get("received_vtxo_id", "")) is None:
+    raise SystemExit("Ark received VTXO identity is invalid")
+if preparation.get("step_kinds") != ["broadcast", "package", "sweep"] or preparation.get("step_count") != 3:
+    raise SystemExit("Ark funded exit has another step shape")
+for name in ("received_amount_sat", "recovered_amount_sat"):
+    value = preparation.get(name)
+    if not isinstance(value, str) or re.fullmatch(r"[1-9][0-9]*", value) is None:
+        raise SystemExit(f"Ark preparation has invalid {name}")
+if int(preparation["recovered_amount_sat"]) >= int(preparation["received_amount_sat"]):
+    raise SystemExit("Ark recovered amount does not account for an exit fee")
+
+recovery = result.get("recovery")
+if not isinstance(recovery, dict) or recovery.get("schema") != "openagents.immortal.ark-operator-removal-receipt.v1":
+    raise SystemExit("Ark recovery receipt is absent")
+if (
+    recovery.get("package_sha256") != preparation["package_sha256"]
+    or recovery.get("operator_endpoints_removed") is not True
+    or recovery.get("execution_authority") != "keyless_esplora"
+    or recovery.get("confirmed_recovered_sat") != preparation["recovered_amount_sat"]
+    or recovery.get("expected_recovered_sat") != preparation["recovered_amount_sat"]
+):
+    raise SystemExit("Ark keyless recovery does not bind the prepared exit")
+transaction_ids = recovery.get("completed_transaction_ids")
+if (
+    not isinstance(transaction_ids, list)
+    or len(transaction_ids) < 2
+    or any(re.fullmatch(r"[0-9a-f]{64}", value or "") is None for value in transaction_ids)
+):
+    raise SystemExit("Ark keyless recovery has no exact confirmed transaction lineage")
+events = recovery.get("events")
+if not isinstance(events, list) or not events:
+    raise SystemExit("Ark keyless recovery has no ordered executor evidence")
+statuses = {event.get("status") for event in events if isinstance(event, dict)}
+if not {"broadcast", "waiting_csv", "confirmed"}.issubset(statuses):
+    raise SystemExit("Ark keyless recovery did not traverse broadcast, CSV, and confirmation")
+
+if result.get("claims") != {
+    "actual_arkd_process": True,
+    "actual_vtxo_transfer": True,
+    "funded_presigned_exit": True,
+    "operator_indexer_wallet_permanently_removed_before_recovery": True,
+    "keyless_bitcoin_recovery": True,
+    "live_deployment": False,
+    "public_replacement": False,
+}:
+    raise SystemExit("Ark operator-removal claims changed")
+
+banned = {
+    "claim_key", "macaroon", "password", "preimage", "private_key", "raw_transaction",
+    "refund_key", "seed", "secret", "spend_key", "fee_key", "vtxo_key", "private_nonce",
+}
+def scan(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if str(key).lower().replace("-", "_") in banned:
+                raise SystemExit(f"Ark retained evidence contains banned member {key}")
+            scan(child)
+    elif isinstance(value, list):
+        for child in value:
+            scan(child)
+scan(result)
+
+record = {
+    "schema": fixture["evidence"]["retained_record"]["schema"],
+    "case_id": sys.argv[4],
+    "expected": sys.argv[5],
+    "infrastructure": {
+        "ark": ark,
+        "actual_external_processes": True,
+        "operator_state_removed_before_recovery": True,
+    },
+    "result": result,
+    "local_only": True,
+}
+encoded = (json.dumps(record, indent=2, sort_keys=True) + "\n").encode()
+if len(encoded) > min(32768, fixture["evidence"]["retained_record"]["maximum_bytes"]):
+    raise SystemExit("Ark adversarial record exceeds its retained bound")
+path = pathlib.Path(sys.argv[3])
+path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+os.chmod(path.parent, 0o700)
+temporary = path.with_name(path.name + ".tmp")
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(descriptor, "wb") as output:
+    output.write(encoded)
+    output.flush()
+    os.fsync(output.fileno())
+os.replace(temporary, path)
+os.chmod(path, 0o600)
+PY
+  echo "test-lab-adversarial: ${case_id}: passed; sanitized record ${record_path}"
+)
+
 run_case() (
   set -euo pipefail
   local case_id="$1" group="$2" expected="$3" selected_provider="$4"
@@ -130,6 +282,10 @@ run_case() (
   local external_injection external_checkpoint external_target cooperative_signing liquid_case zero_conf_case
   local wallet_driver_container_name
   local -a doomsday_stopped_targets=()
+  if test "${case_id}" = doomsday-ark-operator-gone; then
+    run_ark_operator_removal_case "${case_id}" "${expected}"
+    exit 0
+  fi
   private_root="$(mktemp -d "${TMPDIR:-/tmp}/immortal-adversarial-case.XXXXXX")"
   project_name="immortal-18-$(printf '%s' "${case_id}" | cut -c1-24)-$(random_hex 5)"
   provider_image_ref="${project_name}-provider:local"

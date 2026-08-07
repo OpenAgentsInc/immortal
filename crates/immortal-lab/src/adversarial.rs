@@ -75,6 +75,9 @@ enum ProofPlan {
         journey: LiquidJourney,
     },
     Doomsday(DoomsdayCase),
+    ExternalProcess {
+        process_gate: &'static str,
+    },
     Unsupported {
         reason: &'static str,
     },
@@ -325,6 +328,10 @@ fn execute_proof(selected: &SelectedCase) -> Result<Value, String> {
             journey,
         } => funded::run_adversarial_liquid_journey(provider_index, journey),
         ProofPlan::Doomsday(case) => funded::recover_doomsday_case(case),
+        ProofPlan::ExternalProcess { process_gate } => Err(format!(
+            "{} requires the external process gate {process_gate}",
+            selected.manifest.case_id
+        )),
         ProofPlan::Unsupported { reason } => Err(format!(
             "unsupported adversarial proof for {}: {reason}",
             selected.manifest.case_id
@@ -1116,6 +1123,9 @@ fn proof_plan(case_id: &str) -> ProofPlan {
         "doomsday-liquid-reverse-coordinator-gone" => {
             ProofPlan::Doomsday(DoomsdayCase::LiquidReverseCoordinatorGone)
         }
+        "doomsday-ark-operator-gone" => ProofPlan::ExternalProcess {
+            process_gate: "scripts/test-ark-operator-removal.sh",
+        },
         "musig2-submarine-provider-a" => ProofPlan::Cooperative {
             provider_index: 0,
             journey: CooperativeJourney::Complete,
@@ -1208,7 +1218,7 @@ mod tests {
     #[test]
     fn manifest_has_exact_bounded_case_ledger() {
         let cases = parse_manifest().expect("adversarial manifest should parse");
-        assert_eq!(cases.len(), 46);
+        assert_eq!(cases.len(), 47);
         assert_eq!(
             cases
                 .get("route-submarine-provider-a")
@@ -1279,7 +1289,7 @@ mod tests {
             .keys()
             .filter(|case_id| !matches!(proof_plan(case_id), ProofPlan::Unsupported { .. }))
             .count();
-        assert_eq!(supported, 46);
+        assert_eq!(supported, 47);
         let unsupported = cases
             .keys()
             .filter(|case_id| matches!(proof_plan(case_id), ProofPlan::Unsupported { .. }))
@@ -1294,6 +1304,18 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn ark_operator_removal_requires_its_external_process_gate() {
+        let selected = selection(
+            "doomsday-ark-operator-gone",
+            "completed_keyless_bitcoin_recovery",
+            None,
+        )
+        .expect("Ark case should be in the manifest");
+        let error = execute_proof(&selected).expect_err("Ark cannot pass inside the Rust process");
+        assert!(error.contains("scripts/test-ark-operator-removal.sh"));
     }
 
     #[test]

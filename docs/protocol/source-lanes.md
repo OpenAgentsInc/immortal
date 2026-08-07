@@ -1384,3 +1384,32 @@ limit. This packet adds no dependency, credential, Offering pair, native Ark
 session actor, NIP-11 advertisement, deployment claim, or public replacement
 claim. The external-process Ark lab and permanent operator-removal proof
 remain the final #20 packet.
+
+## M13 MKT-SWP Ark external-process closure (2026-08-07)
+
+The final issue #20 packet executes the source definition's operator-removal
+case against exact clean checkouts of Arkd
+`8b34e352859595cc03ba22ffa35088ab88b87fd9`, the Arkade TypeScript SDK
+`dfa1af44274bae97bd184b499d7697ea5f5e4cd3`, the unilateral-exit app
+`d9c949d3be7cc6eaab7551bc52cc502b90647b2d`, and the Arkade regtest
+submodule `15354f994dbba032f856e9a8e02f33b69b8c0e8a`. The gate builds Arkd and
+its wallet from those bytes, then uses the upstream client to receive and
+settle an actual 100,000-sat VTXO and prepare a funded, fully pre-signed exit.
+
+Before recovery, the controller permanently removes Arkd, its wallet,
+NBXplorer, Postgres, and their persistent volumes and proves every operator
+endpoint unavailable. A fresh process loads the retained package through the
+pinned keyless executor, uses only Bitcoin Esplora, mines the required CSV
+ladder, and verifies the exact final participant output. The retained fixture
+record contains source revisions, public operator and transaction identities,
+the package digest, amounts, and executor state transitions. The exit package,
+wallet identities, signing material, preimages, credentials, and private
+nonces remain in the owned temporary directory and are removed after the run.
+
+`doomsday-ark-operator-gone` is the 47th #18 adversarial case. The manifest
+binds the external process counts, source revisions, removal law, retained
+authority, and evidence views; `scripts/test-ark-operator-removal.sh` is its
+process gate. This closes local Ark replacement capability without adding a
+kind, dependency, native provider session actor, Offering pair, relay
+authority, NIP-11 advertisement, live deployment claim, independent operator
+claim, or public replacement claim.

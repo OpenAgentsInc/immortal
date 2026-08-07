@@ -139,6 +139,34 @@ coordinator-absent direct Liquid claim with Lightning settlement:
 These commands use throwaway regtest custody only. They do not configure a
 production elementsd wallet or establish a live deployment claim.
 
+## Run the Ark operator-removal drill
+
+The Ark gate builds Arkd from the exact pinned MIT source, starts the pinned
+Arkade regtest topology, transfers and settles a 100,000-sat participant VTXO,
+and prepares a funded fully pre-signed exit. It then removes Arkd, its wallet,
+indexer, Postgres, and their volumes before a fresh keyless process executes
+the retained package through Bitcoin Esplora:
+
+```sh
+./scripts/test-ark-operator-removal.sh
+./scripts/test-lab-adversarial.sh --case doomsday-ark-operator-gone
+```
+
+The default source paths are sibling checkouts under
+`projects/arkade/repos/`: Arkd `8b34e352859595cc03ba22ffa35088ab88b87fd9`,
+the TypeScript SDK `dfa1af44274bae97bd184b499d7697ea5f5e4cd3`, the
+unilateral-exit app `d9c949d3be7cc6eaab7551bc52cc502b90647b2d`, and its
+regtest submodule `15354f994dbba032f856e9a8e02f33b69b8c0e8a`. Override the
+first three with `ARKD_SOURCE`, `ARKADE_SDK_SOURCE`, and
+`ARKADE_EXIT_SOURCE`. The gate refuses changed revisions, dirty source trees,
+or pre-existing fixed-name upstream containers. Its retained record contains
+public identities, digests, transaction IDs, amounts, and executor states;
+the private exit package and throwaway identities are removed with the owned
+temporary directory.
+
+This is a local capability proof. It does not run a public Ark operator,
+enable an Ark Offering pair, or establish deployment or replacement evidence.
+
 ## Point clients at the relay
 
 Set the client relay URL to `ws://127.0.0.1:18080`. NIP-42 authentication is

@@ -100,6 +100,21 @@ if liquid != {
     "enabled_only_for_cases": liquid_case_ids,
 }:
     raise SystemExit("Liquid three-node isolation contract changed")
+ark = topology.get("ark", {})
+if ark != {
+    "implementation": "arkade",
+    "network": "regtest",
+    "operator_processes": 1,
+    "operator_wallet_processes": 1,
+    "operator_indexer_processes": 1,
+    "source_revision": "8b34e352859595cc03ba22ffa35088ab88b87fd9",
+    "client_revision": "dfa1af44274bae97bd184b499d7697ea5f5e4cd3",
+    "keyless_executor_revision": "d9c949d3be7cc6eaab7551bc52cc502b90647b2d",
+    "regtest_revision": "15354f994dbba032f856e9a8e02f33b69b8c0e8a",
+    "enabled_only_for_cases": ["doomsday-ark-operator-gone"],
+    "process_gate": "scripts/test-ark-operator-removal.sh",
+}:
+    raise SystemExit("Ark external-process topology contract changed")
 
 profile = fixture.get("lab_profile", {})
 if profile != {
@@ -164,6 +179,7 @@ expected_ids = {
     "doomsday-liquid-submarine-provider-gone",
     "doomsday-liquid-reverse-coordinator-gone",
     "doomsday-keyless-esplora-broadcast",
+    "doomsday-ark-operator-gone",
     "musig2-submarine-provider-a",
     "musig2-submarine-provider-b",
     "musig2-abort-script-path",
@@ -182,8 +198,8 @@ if set(case_ids) != expected_ids:
     raise SystemExit(f"adversarial scenario closure changed: missing={missing}, extra={extra}")
 if fixture.get("execution", {}).get("maximum_cases") != 48:
     raise SystemExit("adversarial scenario maximum is not 48")
-if len(case_ids) != 46:
-    raise SystemExit("adversarial scenario closure is not the exact 46-case matrix")
+if len(case_ids) != 47:
+    raise SystemExit("adversarial scenario closure is not the exact 47-case matrix")
 if [case["id"] for case in groups["routing"] if case["id"] in liquid_case_ids] != liquid_case_ids[:8]:
     raise SystemExit("Liquid routing cases are not the exact ordered extension")
 if [case["id"] for case in groups["doomsday"] if case["id"] in liquid_case_ids] != liquid_case_ids[8:]:
@@ -197,16 +213,22 @@ for view in (
     "elementsd-provider-a",
     "elementsd-provider-b",
     "elementsd-wallet",
+    "ark-participant",
+    "bitcoin-esplora",
 ):
     if view not in evidence.get("independent_views", []):
-        raise SystemExit(f"Liquid evidence omits independent view {view}")
+        raise SystemExit(f"adversarial evidence omits independent view {view}")
 for check in (
     "liquid-raw-transaction-and-id",
     "liquid-outpoint-spend-lineage",
     "liquid-provider-restart-exact-known-replay",
+    "ark-received-vtxo-id-and-amount",
+    "ark-exit-package-digest-and-step-order",
+    "ark-operator-indexer-wallet-removal",
+    "ark-final-participant-bitcoin-output",
 ):
     if check not in evidence.get("required_checks", []):
-        raise SystemExit(f"Liquid evidence omits required check {check}")
+        raise SystemExit(f"adversarial evidence omits required check {check}")
 def liquid_case(
     shape,
     selected_provider,
@@ -392,6 +414,16 @@ if doomsday.get("keyless_process") != {
     "maximum_request_bytes": 65536,
 }:
     raise SystemExit("doomsday keyless process boundary changed")
+if doomsday.get("ark_operator_removal") != {
+    "actual_vtxo_transfer": True,
+    "fully_presigned_funded_exit_before_removal": True,
+    "remove_permanently": ["arkd", "arkd-wallet", "ark-indexer", "ark-postgres"],
+    "retain_only": ["verified-exit-package", "bitcoin-esplora-access"],
+    "execution_authority": "keyless-esplora",
+    "final_output": "participant-bitcoin-address",
+    "operator_endpoint_required_after_removal": False,
+}:
+    raise SystemExit("Ark permanent-operator-removal contract changed")
 if doomsday.get("recovery_planner_requires") != [
     "verified-local-chain-observation",
     "verified-local-lightning-observation",
@@ -409,6 +441,8 @@ if doomsday.get("real_regtest_terminal_proof") != [
 claims = fixture.get("claims", {})
 if claims.get("liquid_chain_local_capability") is not True:
     raise SystemExit("adversarial manifest omits bounded local Liquid chain capability")
+if claims.get("ark_local_capability") is not True:
+    raise SystemExit("adversarial manifest omits bounded local Ark capability")
 for forbidden in (
     "chain_swap",
     "liquid",
@@ -453,6 +487,12 @@ if grep -Fq 'test-provider-liquid.sh' scripts/test-lab-adversarial.sh \
   || grep -Eq 'IMMORTAL_LAB_[A-Z0-9_]*PROVIDER[A-Z0-9_]*(SECRET|SEED|PRIVATE)' \
     scripts/test-lab-adversarial.sh; then
   echo "test-lab-adversarial-manifest: Liquid lab bypasses the shipped provider signer" >&2
+  exit 1
+fi
+if ! grep -Fq 'scripts/test-ark-operator-removal.sh' scripts/test-lab-adversarial.sh \
+  || ! grep -Fq 'doomsday-ark-operator-gone' scripts/test-lab-adversarial.sh \
+  || ! grep -Fq 'openagents.immortal.ark-operator-removal-lab.v1' scripts/test-lab-adversarial.sh; then
+  echo "test-lab-adversarial-manifest: Ark external-process dispatch is incomplete" >&2
   exit 1
 fi
 

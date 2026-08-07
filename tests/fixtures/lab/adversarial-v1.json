@@ -68,6 +68,19 @@
         "doomsday-liquid-submarine-provider-gone",
         "doomsday-liquid-reverse-coordinator-gone"
       ]
+    },
+    "ark": {
+      "implementation": "arkade",
+      "network": "regtest",
+      "operator_processes": 1,
+      "operator_wallet_processes": 1,
+      "operator_indexer_processes": 1,
+      "source_revision": "8b34e352859595cc03ba22ffa35088ab88b87fd9",
+      "client_revision": "dfa1af44274bae97bd184b499d7697ea5f5e4cd3",
+      "keyless_executor_revision": "d9c949d3be7cc6eaab7551bc52cc502b90647b2d",
+      "regtest_revision": "15354f994dbba032f856e9a8e02f33b69b8c0e8a",
+      "enabled_only_for_cases": ["doomsday-ark-operator-gone"],
+      "process_gate": "scripts/test-ark-operator-removal.sh"
     }
   },
   "lab_profile": {
@@ -141,7 +154,8 @@
       {"id": "doomsday-reverse-coordinator-gone", "expected": "completed_or_refunded"},
       {"id": "doomsday-liquid-submarine-provider-gone", "expected": "refunded"},
       {"id": "doomsday-liquid-reverse-coordinator-gone", "expected": "completed"},
-      {"id": "doomsday-keyless-esplora-broadcast", "expected": "broadcast_complete_presigned_transaction"}
+      {"id": "doomsday-keyless-esplora-broadcast", "expected": "broadcast_complete_presigned_transaction"},
+      {"id": "doomsday-ark-operator-gone", "expected": "completed_keyless_bitcoin_recovery"}
     ],
     "cooperative": [
       {"id": "musig2-submarine-provider-a", "expected": "completed_key_path", "provider": "provider-a"},
@@ -201,6 +215,23 @@
       "has_custody_mounts": false,
       "maximum_request_bytes": 65536
     },
+    "ark_operator_removal": {
+      "actual_vtxo_transfer": true,
+      "fully_presigned_funded_exit_before_removal": true,
+      "remove_permanently": [
+        "arkd",
+        "arkd-wallet",
+        "ark-indexer",
+        "ark-postgres"
+      ],
+      "retain_only": [
+        "verified-exit-package",
+        "bitcoin-esplora-access"
+      ],
+      "execution_authority": "keyless-esplora",
+      "final_output": "participant-bitcoin-address",
+      "operator_endpoint_required_after_removal": false
+    },
     "recovery_planner_requires": [
       "verified-local-chain-observation",
       "verified-local-lightning-observation",
@@ -226,7 +257,9 @@
       "cln-wallet",
       "elementsd-provider-a",
       "elementsd-provider-b",
-      "elementsd-wallet"
+      "elementsd-wallet",
+      "ark-participant",
+      "bitcoin-esplora"
     ],
     "required_checks": [
       "transaction-bytes-and-id",
@@ -239,6 +272,10 @@
       "liquid-raw-transaction-and-id",
       "liquid-outpoint-spend-lineage",
       "liquid-provider-restart-exact-known-replay",
+      "ark-received-vtxo-id-and-amount",
+      "ark-exit-package-digest-and-step-order",
+      "ark-operator-indexer-wallet-removal",
+      "ark-final-participant-bitcoin-output",
       "no-custody-material-persisted"
     ],
     "liquid_case_record": {
@@ -422,6 +459,7 @@
   "claims": {
     "submarine_and_reverse_local_capability": true,
     "liquid_chain_local_capability": true,
+    "ark_local_capability": true,
     "chain_swap": false,
     "liquid": false,
     "zero_confirmation": false,

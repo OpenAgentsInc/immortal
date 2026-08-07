@@ -130,6 +130,21 @@ process over the same database and wallet-seed file, then requires one
 provider abort, no recreated nonce or partial/final signature, and the same
 script claim. Retained records contain only normalized public evidence.
 
+The Ark doomsday case uses a separate pinned external topology:
+
+```sh
+scripts/test-lab-adversarial.sh --case doomsday-ark-operator-gone
+```
+
+It builds Arkd and its wallet from the fixture-pinned source, transfers and
+settles an actual participant VTXO, prepares a funded fully pre-signed exit,
+then removes the operator, wallet, indexer, Postgres, and their volumes. A
+fresh process holding only the package and Bitcoin Esplora access broadcasts
+the remaining transaction ladder after its CSV delays and verifies the exact
+confirmed participant output. The sanitized record contains no package bytes,
+wallet identity, signing key, preimage, macaroon, credential, or private
+nonce.
+
 ## Safety rails
 
 - Only `ws://` loopback relay URLs are accepted (same refusal as

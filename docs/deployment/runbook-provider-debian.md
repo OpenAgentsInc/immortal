@@ -544,3 +544,24 @@ database-backup digest, restored all three provider migrations, and passed the
 submarine, reverse, and noncooperative-refund smoke. The bounded receipt is
 [`2026-08-05-debian-provider-764d119.json`](../conformance/records/2026-08-05-debian-provider-764d119.json).
 It does not establish a live provider or public replacement claim.
+
+## 10. Ark external-process qualification
+
+Ark execution is off by default and has no native provider session or
+advertised pair. Before enabling the fixture-gated regtest adapter on a build
+host, run:
+
+```sh
+./scripts/test-provider-ark-transfer.sh
+./scripts/test-lab-adversarial.sh --case doomsday-ark-operator-gone
+./scripts/export-provider-contract.sh --check
+```
+
+The first gate proves durable persist-before-RPC transfer execution and exact
+restart behavior against a bounded loopback Arkd adapter. The second builds
+the pinned Arkd sources, creates an actual participant VTXO and funded exit,
+permanently removes the operator/indexer/wallet state, and reaches the final
+participant Bitcoin output through the retained package and Esplora alone.
+Neither gate imports Ark wallet credentials or exit-package bytes into the
+provider database. Production Ark activation needs a separate reviewed
+session/pair packet and deployment evidence.
