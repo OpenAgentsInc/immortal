@@ -1412,4 +1412,5 @@ authority, and evidence views; `scripts/test-ark-operator-removal.sh` is its
 process gate. This closes local Ark replacement capability without adding a
 kind, dependency, native provider session actor, Offering pair, relay
 authority, NIP-11 advertisement, live deployment claim, independent operator
-claim, or public replacement claim.
+claim, or public replacement claim. The pushed-main execution receipt is
+`docs/conformance/records/2026-08-07-ark-operator-removal-77a27fa.json`.
