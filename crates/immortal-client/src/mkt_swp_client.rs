@@ -20428,7 +20428,7 @@ fn network_name(network: BitcoinNetwork) -> &'static str {
     }
 }
 
-fn validate_esplora_url(url: &str) -> Result<&str, SwapClientError> {
+pub(crate) fn validate_esplora_url(url: &str) -> Result<&str, SwapClientError> {
     let url = url.strip_suffix('/').unwrap_or(url);
     let (scheme, remainder) = url
         .strip_prefix("https://")

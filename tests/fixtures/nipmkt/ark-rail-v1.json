@@ -71,6 +71,89 @@
         "value": "10"
       },
       "commitment_sha256": "b03095d5310b6ad4af8f5a11d119c13014c08d613163b53bcc6ca2cb89845369"
+    },
+    "exit_package": {
+      "schema": "openagents.mkt-swp.exit.v1",
+      "profile": "mkt-swp",
+      "profile_version": 1,
+      "order_id": "6666666666666666666666666666666666666666666666666666666666666666",
+      "swap_contract_ids": [
+        "4444444444444444444444444444444444444444444444444444444444444444",
+        "5555555555555555555555555555555555555555555555555555555555555555"
+      ],
+      "contract_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "participant_role": "requester",
+      "leg_id": "source",
+      "network_id": "bip122:0f9188f13cb7b2c9e5c30f844f792506",
+      "asset_id": "swp:1:bip122:0f9188f13cb7b2c9e5c30f844f792506:btc:ark:arkade:f8030b7ec7ea7dc149f6aad59756c66fbf07147642bf515fc6c9de0d6582499a",
+      "effect_id": "7777777777777777777777777777777777777777777777777777777777777777",
+      "funding": {
+        "vtxo_id": "395559425d103f3c76d13a85f3443d56c853fd5ac6c5291a1a4178c4d7289196:0",
+        "input_vtxo_ids": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0"
+        ],
+        "anchor_outpoint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+        "signed_vtxo_graph": [
+          "02000000000101aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000ffffffff02a086010000000000225120a59934408e9c1e7d1e06932683d749ea4c613143b6b5dc5c922082c31adf912610270000000000002251204d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076601403edc2f0dbed09ee01c4fba67320fddb0e43371e5ba8b86670d974f32370fc78eac1c3974206afae6a112bcc546a8d910305a75e5865a4b8353b1495c41cc186d00000000"
+        ],
+        "signed_vtxo_graph_sha256": "ce0b354a98f9e9be0988cd3bf4d713c5e94f0efac31953c720d0677e6a17007d",
+        "amount": "100000",
+        "owner_pubkey": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"
+      },
+      "exit": {
+        "mode": "presigned",
+        "fee_funding_mode": "prefunded_presigned",
+        "path": "refund",
+        "fee_child_outpoints": [
+          "395559425d103f3c76d13a85f3443d56c853fd5ac6c5291a1a4178c4d7289196:1"
+        ],
+        "signed_transactions": [
+          {
+            "transaction_id": "2365b4bb859e0e7fb04dcde26ea02f2ef37d153b71c8ac2f5c32e9f25bae67ba",
+            "signed_transaction": "02000000000102969128d7c478411a1a29c5c65afd53c8563d44f3853ad1763c3f105d4259553900000000000a000000969128d7c478411a1a29c5c65afd53c8563d44f3853ad1763c3f105d425955390100000000ffffffff01e0a50100000000002251204d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d07660340cbaa86a2b1dbca161360bb960887497e97661112a5418aa72daf21d2bfc8857f65155523899c86056bf546544ee5d6552fa8a00d2f090d89892a480e5665325826010ab275204d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766ac41c04d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766fb3bfdfa7592bef08f28b0d85f6db7ae7b53dbee12798075cd03920bdac65c8a01401c0e8e7f1f354dd0f2fa40fb4ad1ce0ea6c48a892514f81cfdbcd61e1bb8dd8d23041bc1d454833170d046d11a6abdc71a07c7f147079f973a3347b9251e7afb00000000",
+            "parent_transaction_id": null,
+            "earliest_broadcast_height": "410",
+            "latest_safe_broadcast_height": "480"
+          }
+        ],
+        "final_destination_script_pubkey": "51204d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "fee_policy": {
+          "target_blocks": "2",
+          "maximum_total_fee": "2000",
+          "bump_mode": "replacement_forbidden"
+        }
+      },
+      "verification": {
+        "network_id": "bip122:0f9188f13cb7b2c9e5c30f844f792506",
+        "asset_id": "swp:1:bip122:0f9188f13cb7b2c9e5c30f844f792506:btc:ark:arkade:f8030b7ec7ea7dc149f6aad59756c66fbf07147642bf515fc6c9de0d6582499a",
+        "protocol_family": "arkade",
+        "protocol_version": "arkade-regtest-v1",
+        "operator_identity_sha256": "f8030b7ec7ea7dc149f6aad59756c66fbf07147642bf515fc6c9de0d6582499a",
+        "operator_policy_sha256": "7cbd1186f066b0e4b9386c3401d0f2ca64fe8e54e35ac53b49490a2018fcd3f3",
+        "vtxo_commitment_sha256": "b03095d5310b6ad4af8f5a11d119c13014c08d613163b53bcc6ca2cb89845369",
+        "payment_hash": "d896fe84e1e5d3aa186879c4f28c8fd746e702b8bde8a5ad38b7395ec42e970b",
+        "claim_path_sha256": "a91ddd8bf3c968f5b6d78d13c48a6c2ffb763665bb39fc8f64446a281ad2e348",
+        "refund_path_sha256": "5312b5ba3c0e62bbfa28b68c9e6e270b90ada0596088d4bb84b5f08d19203daa",
+        "expiry": {
+          "domain": "block_height",
+          "value": "500"
+        },
+        "unilateral_exit_delay": {
+          "domain": "blocks",
+          "value": "10"
+        }
+      },
+      "secret_commitments": {
+        "payment_hash": "d896fe84e1e5d3aa186879c4f28c8fd746e702b8bde8a5ad38b7395ec42e970b",
+        "preimage_recovery_ref": null
+      },
+      "broadcast": {
+        "mode": "keyless_esplora_sequence",
+        "esplora_urls": [
+          "http://127.0.0.1:3002/api"
+        ],
+        "minimum_agreeing_sources": 1
+      }
     }
   },
   "bark": {

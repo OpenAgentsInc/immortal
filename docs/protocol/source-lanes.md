@@ -1271,3 +1271,34 @@ provider effect, persisted exit-package bytes, NIP-11 advertisement,
 deployment, or public replacement claim. Client exit persistence, covenant
 reservation state, provider adaptation, and the permanent-operator-removal
 lab remain later #20 packets.
+
+## M13 MKT-SWP Ark client-exit adoption (2026-08-07)
+
+The second issue #20 packet adopts the source's pre-signed Ark exit-package
+boundary in `immortal-client`. The client accepts the exact closed Ark package
+shape, recomputes its canonical digest, and binds it to both Swap Contract
+IDs, the contract digest, Order, participant role, leg, effect, operator,
+graph, selected VTXO, paths, expiry, and exit delay. It decodes every exit
+transaction, proves the first spends the selected VTXO, proves every later
+transaction spends its declared predecessor, consumes each unique pre-funded
+fee child once, verifies every Taproot signature, checks the total fee and
+safe-height window, and requires one exact final participant output.
+
+Only `presigned` plus `prefunded_presigned` is accepted. A condition secret,
+fee key, spend key, private nonce, seed, macaroon, or operator token fails
+with `swp_secret_material_forbidden`. Transfer authorization is unavailable
+until an external private-artifact store returns a matching digest and opaque
+reference. The durable client snapshot retains that digest/reference and
+bounded transaction summaries; it contains no graph bytes, exit bytes,
+witness, payment hash, key, or preimage. Recovery reloads the exact canonical
+artifact by reference and emits one ordered keyless Esplora request at a
+time. Exact already-known bytes advance the sequence and a changed witness
+under the same transaction ID fails closed.
+
+The checked-in fixture adds a synthetic signed refund transaction whose
+separate fee child is already funded by the graph transaction. Native and
+wasm client tests cover verify-before-transfer, persistence and restore,
+safe-start delay, exact replay, witness conflict, incomplete signature,
+duplicate JSON, commitment mutation, fee-key refusal, and a condition-secret
+tripwire. This packet changes no relay or provider behavior, NIP-11
+advertisement, deployment, custody authority, or public replacement claim.

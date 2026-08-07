@@ -325,8 +325,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/ark-rail-v1.json",
-      "sha256": "9702dbaf1a2af5b08bb4dc6921f682ed6c0582883dfc94560438fb8caa2a7c03",
-      "bytes": 7123,
+      "sha256": "b2ecf4555f6caf508f438d99ea61ff6edb39a4772ab94880ce109f3f12f52ab4",
+      "bytes": 12092,
       "scope": "relay"
     },
     {

@@ -574,6 +574,28 @@ pub fn verify_ark_graph(
     })
 }
 
+pub fn verify_fully_signed_ark_transaction(
+    transaction: &Transaction,
+    prevouts: &[TransactionOutput],
+) -> Result<(), ArkError> {
+    verify_transaction_signatures(transaction, prevouts)
+        .map_err(|_| ArkError::ExitUnsafe("exit transaction signature"))
+}
+
+pub fn reject_ark_transaction_secrets(transaction: &Transaction) -> Result<(), ArkError> {
+    if transaction
+        .inputs
+        .iter()
+        .flat_map(|input| &input.witness)
+        .any(|element| element.len() == 32)
+    {
+        return Err(ArkError::SecretMaterialForbidden(
+            "exit transaction contains a condition secret",
+        ));
+    }
+    Ok(())
+}
+
 fn graph_is_connected(
     selected: usize,
     dependencies: &[BTreeSet<usize>],

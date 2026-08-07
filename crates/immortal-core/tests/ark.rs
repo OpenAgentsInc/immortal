@@ -18,7 +18,12 @@ const NETWORK: &str = "bip122:0f9188f13cb7b2c9e5c30f844f792506";
 #[test]
 fn ark_fixture_is_byte_stable_and_verifies() {
     let (expected, descriptor, policy, material, terms, graph_sha256) = build_fixture();
-    assert_eq!(fixture(), expected);
+    let mut actual = fixture();
+    let exit_package = actual["arkade"]
+        .as_object_mut()
+        .and_then(|arkade| arkade.remove("exit_package"));
+    assert!(exit_package.is_some_and(|value| value.is_object()));
+    assert_eq!(actual, expected);
     let verified = verify_ark_graph(
         &descriptor,
         &policy,
