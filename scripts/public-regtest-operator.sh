@@ -32,8 +32,9 @@ lightning_balance() {
     --lightning-dir=/root/.lightning --rpc-file=/rail-rpc/lightning-rpc \
     listpeerchannels | jq -er '
       def msat: if type == "object" then .msat else . end;
-      [.channels[] | select(.state == "CHANNELD_NORMAL") | (.to_us_msat | msat)] | add as $local |
-      [.channels[] | select(.state == "CHANNELD_NORMAL") | ((.total_msat | msat) - (.to_us_msat | msat))] | add as $remote |
+      . as $root |
+      [$root.channels[] | select(.state == "CHANNELD_NORMAL") | (.to_us_msat | msat)] | add as $local |
+      [$root.channels[] | select(.state == "CHANNELD_NORMAL") | ((.total_msat | msat) - (.to_us_msat | msat))] | add as $remote |
       [$local, $remote] | @tsv'
 }
 
