@@ -1327,7 +1327,8 @@ fn public_worker_error_code(error: &str) -> String {
         .split(|character: char| {
             !character.is_ascii_lowercase() && !character.is_ascii_digit() && character != '_'
         })
-        .find(|part| part.starts_with("swp_"))
+        .filter(|part| part.starts_with("swp_"))
+        .last()
         .unwrap_or("swp_public_worker_failed")
         .to_owned()
 }
@@ -14975,6 +14976,12 @@ mod tests {
         assert_eq!(
             public_worker_error_code("swp_public_reverse_quote_lane_1_failed: private"),
             "swp_public_reverse_quote_lane_1_failed"
+        );
+        assert_eq!(
+            public_worker_error_code(
+                "swp_public_reverse_execution_failed: swp_public_reverse_invoice_failed: private"
+            ),
+            "swp_public_reverse_invoice_failed"
         );
     }
 
