@@ -1,0 +1,65 @@
+{
+  "clean_debian_environment": true,
+  "cleanup": {
+    "matching_provider_containers_after_run": 0,
+    "private_runtime_artifacts_retained": false
+  },
+  "command": "scripts/run-debian-provider-funded.sh --receipt <record>",
+  "deployment_assets": {
+    "backup_digest_verified": true,
+    "backup_restore_passed": true,
+    "custody_backup_included": false,
+    "database_migrations_restored": 4,
+    "environment_file_mode": "0600",
+    "relay_unit_required": false,
+    "systemd_prerequisite_units": "acceptance-only stubs; funded smoke proves live bitcoind and CLN processes",
+    "systemd_verified": true
+  },
+  "environment_boundary": "The Debian process and Docker daemon are fresh and disposable. The privileged outer container starts a new dockerd with an empty data root and removes it after the gate.",
+  "finished_at": "2026-08-07T02:24:42Z",
+  "funded_smoke": {
+    "forced_restart": "submarine:funding_authorized",
+    "journeys": [
+      "submarine",
+      "reverse",
+      "noncooperative_refund"
+    ],
+    "passed": true
+  },
+  "limitations": [
+    "This does not establish live deployment or a public replacement claim.",
+    "This runs the single-provider funded smoke; the separate #32 topology gate covers two providers."
+  ],
+  "manifests": {
+    "deploy/backup/immortal-provider-backup": "b5171cff3a40cc5887a198f0274a8c5a66c421fa33f3ae0c8e4642b17425c598",
+    "deploy/backup/immortal-provider-backup.service": "edb8305cc316391bf508601b0db0c39735b7eeade5d079053103387cb9bcbfe4",
+    "deploy/backup/immortal-provider-backup.timer": "39a38773d74148c0365e80de82c9292399eaaacfa5758294e273cfddc2764d66",
+    "deploy/caddy/immortal-provider.Caddyfile": "1938d9cfad0f1251e76841cc243b208a7bd330c4598361ca2ba43be6fa139372",
+    "deploy/immortal-provider.env.example": "59a947402db2aaf13d30ad7c2601b3e0a567508b0d8f941a892a65321c2bf156",
+    "deploy/nginx/immortal-provider.conf": "c56cc6daac3482ef2cda0458a9e6403456dc001bc08bc8fd4b4925f6926ba971",
+    "deploy/systemd/immortal-provider.service": "f67742b1e60149aec914674277d0d4546d7f5dc8c88eafb2c2aa190b407fb3f6",
+    "scripts/run-debian-provider-funded.sh": "17ed8f7149baf48aa24d5d872b7c7e34f4dc625fef9ca1f0aa897f2a9738a31a",
+    "scripts/test-debian-provider-funded.sh": "894d7203ac7f99dd9e6de7e2da6a3ed6221d7e8eff60f863a62a68734d8c15ab",
+    "scripts/test-provider-deployment-assets.sh": "f0a090096e62fb41552ac87095e315435d5f2b9e682834664c0efdd402cdbbe8",
+    "scripts/test-provider-funded.sh": "82cea8f333965bbe9db15ebd7b6107fb0ecbe67a9f831f02cff56439a72b3f9f",
+    "tests/fixtures/lab/funded-checkpoints-v1.json": "5de6c6fc8e3c7b414049b02f74215a28877c567c0c7eb9bcd1df2c829830ced0",
+    "tests/fixtures/lab/funded-matrix-v1.json": "71dc0b09fd2ca43d4c0c70bc70768b37111de688d9699a24cf0313a6c53e9573",
+    "tests/fixtures/nipmkt/swap-network-migration-v1.json": "51f62cef4d59c31e752dbf3374e796fadc1c9a837a0c090008314a67e9bcea73",
+    "tests/fixtures/provider/funded-smoke-v1.json": "882c1c6afa6ec7d1a9c09d3a8b4fb4c23d3e454e096262a91adb042747dafb54"
+  },
+  "platform": {
+    "architecture": "aarch64",
+    "cargo": "cargo 1.85.0 (d73d2caf9 2024-12-31)",
+    "docker_client": "26.1.5+dfsg1",
+    "docker_server": "26.1.5+dfsg1",
+    "go": "go version go1.24.4 linux/arm64",
+    "node": "v20.19.2",
+    "operating_system": "Debian 13",
+    "rustc": "rustc 1.85.0 (4d91de4e4 2025-02-17) (built from a source tarball)"
+  },
+  "result": "passed",
+  "schema": "openagents.immortal.debian-provider-funded-run.v1",
+  "scope": "fresh-debian-13-disposable-container",
+  "source_commit": "bf1585b56fc15e012474cef9f41a04b9ba187967",
+  "started_at": "2026-08-07T02:16:07Z"
+}
