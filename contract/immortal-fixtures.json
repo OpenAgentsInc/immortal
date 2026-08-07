@@ -324,6 +324,12 @@
       "scope": "relay"
     },
     {
+      "path": "tests/fixtures/nipmkt/ark-rail-v1.json",
+      "sha256": "9702dbaf1a2af5b08bb4dc6921f682ed6c0582883dfc94560438fb8caa2a7c03",
+      "bytes": 7123,
+      "scope": "relay"
+    },
+    {
       "path": "tests/fixtures/nipmkt/boltz-client-adapters-v1.json",
       "sha256": "e6e4d9436c9e2c090ae3319578bb02c1c5175143748749f3eef1923bcb22f625",
       "bytes": 6143,

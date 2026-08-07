@@ -2,6 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "mkt-swp-verify")]
+pub mod ark;
 pub mod boltz_compat;
 pub mod domain;
 #[cfg(feature = "mkt-swp-verify")]

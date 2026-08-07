@@ -1243,3 +1243,31 @@ lab execution, and any advertisement wait for the separate #20 adoption
 packet. This sync changes no relay admission, Postgres schema, dependency,
 custody boundary, NIP-11 advertisement, deployment, or public replacement
 claim.
+
+## M13 MKT-SWP Ark verification-core adoption (2026-08-07)
+
+Issue #20 adopts the source definition's family-neutral verification boundary
+in `immortal-core`. The implementation parses the exact operator descriptor,
+recomputes its RFC 8785 identity and complete public-policy digest, and keeps
+Arkade transaction trees distinct from Bark transaction chains. Asset and
+pair matching bind one family, operator, and Bitcoin network; Ark-to-Ark,
+cross-operator, cross-network, and family-substitution paths fail closed.
+
+The verifier applies the source limits before graph traversal: 32 input
+VTXOs, 64 signed transactions, 32 parent edges, and 262,144 decoded bytes. It
+parses and re-identifies every Bitcoin transaction, resolves every input from
+the allowlisted observed roots or another graph transaction, refuses cycles
+and duplicate spends, checks family topology and transaction weight, and
+verifies each Taproot key-path or secret-free script-path Schnorr signature.
+The selected VTXO must reproduce the amount, owner key, payment hash,
+claim/refund path digests and control blocks, expiry domain and safety delta,
+unilateral-exit delay, and canonical commitment.
+
+`tests/fixtures/nipmkt/ark-rail-v1.json` contains byte-stable signed Arkade
+graph bytes, separate Arkade and Bark descriptor identities, policy digests,
+Taproot paths, the selected VTXO commitment, source bounds, and the complete
+Ark case ledger. This packet adds no dependency, event kind, relay authority,
+provider effect, persisted exit-package bytes, NIP-11 advertisement,
+deployment, or public replacement claim. Client exit persistence, covenant
+reservation state, provider adaptation, and the permanent-operator-removal
+lab remain later #20 packets.

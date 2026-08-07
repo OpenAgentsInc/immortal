@@ -175,6 +175,14 @@ the pinned upstream applications.
   enforcement here is lower-hex shape plus tag/body equality; RFC 8785
   recomputation, bilateral agreement, lifecycle, funding, exit, and doomsday
   execution remain client/handler cases.
+- `nipmkt/ark-rail-v1.json` pins the MKT-SWP Ark verification core at
+  OpenAgents commit `c241e324e4a195c6a1fcbb04acc54647c2fa2208`: separate
+  Arkade and Bark operator identities and policies, byte-stable signed graph
+  bytes, observed-anchor authority, Taproot owner/claim/refund commitments,
+  exact VTXO commitment, source bounds, and the complete Ark
+  positive/negative/reservation/privacy/recovery case ledger. Client exit
+  execution, provider effects, and the external arkd process gate are tracked
+  by later #20 packets.
 - `nipmkt/pfi-profile-v1.json` pins the relay-observable MKT-PFI v1 adoption
   at the same OpenAgents revision: closed public kind-39630 Qualification
   Policies, Offering asset/market/limit/policy/risk/rail grammar, redacted

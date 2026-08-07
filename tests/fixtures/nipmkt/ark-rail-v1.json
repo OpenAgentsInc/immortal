@@ -1,0 +1,146 @@
+{
+  "schema": "openagents.mkt-swp.ark-fixtures.v1",
+  "source": {
+    "commit": "c241e324e4a195c6a1fcbb04acc54647c2fa2208",
+    "specification": "nips/openagents/MKT-SWP.md"
+  },
+  "limits": {
+    "input_vtxos": 32,
+    "graph_transactions": 64,
+    "parent_edges": 32,
+    "decoded_graph_bytes": 262144
+  },
+  "arkade": {
+    "descriptor": {
+      "network_id": "bip122:0f9188f13cb7b2c9e5c30f844f792506",
+      "protocol_family": "arkade",
+      "protocol_version": "arkade-regtest-v1",
+      "operator_keys": {
+        "signer_pubkey": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+        "forfeit_pubkey": "024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+        "server_pubkey": null
+      },
+      "operator_policy_sha256": "7cbd1186f066b0e4b9386c3401d0f2ca64fe8e54e35ac53b49490a2018fcd3f3"
+    },
+    "operator_identity_sha256": "f8030b7ec7ea7dc149f6aad59756c66fbf07147642bf515fc6c9de0d6582499a",
+    "policy": {
+      "network_id": "bip122:0f9188f13cb7b2c9e5c30f844f792506",
+      "protocol_family": "arkade",
+      "protocol_version": "arkade-regtest-v1",
+      "minimum_vtxo_amount": "1",
+      "maximum_vtxo_amount": "10000000",
+      "maximum_input_vtxos": 32,
+      "maximum_graph_transactions": 64,
+      "maximum_parent_edges": 32,
+      "maximum_graph_bytes": 262144,
+      "maximum_transaction_weight": 400000,
+      "expiry_domain": "block_height",
+      "minimum_expiry_delta": "20",
+      "unilateral_exit_domain": "blocks",
+      "unilateral_exit_delay": "10",
+      "checkpoint_script_sha256": "128226a7b15ec9cf040380fbc30c644f0cb202287c1cfb43e2abcd774582b9a3",
+      "fee_rule_sha256": "c36381a16e0189605c6923701f6e4cc1b6c00bbc989e084cdf9e60a2fd96a36c"
+    },
+    "asset_id": "swp:1:bip122:0f9188f13cb7b2c9e5c30f844f792506:btc:ark:arkade:f8030b7ec7ea7dc149f6aad59756c66fbf07147642bf515fc6c9de0d6582499a",
+    "anchor": {
+      "outpoint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+      "amount": "112000",
+      "script_pubkey": "51201b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"
+    },
+    "signed_vtxo_graph": [
+      "02000000000101aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0000000000ffffffff02a086010000000000225120a59934408e9c1e7d1e06932683d749ea4c613143b6b5dc5c922082c31adf912610270000000000002251204d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076601403edc2f0dbed09ee01c4fba67320fddb0e43371e5ba8b86670d974f32370fc78eac1c3974206afae6a112bcc546a8d910305a75e5865a4b8353b1495c41cc186d00000000"
+    ],
+    "signed_vtxo_graph_sha256": "ce0b354a98f9e9be0988cd3bf4d713c5e94f0efac31953c720d0677e6a17007d",
+    "vtxo": {
+      "outpoint": "395559425d103f3c76d13a85f3443d56c853fd5ac6c5291a1a4178c4d7289196:0",
+      "amount": "100000",
+      "owner_pubkey": "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+      "payment_hash": "d896fe84e1e5d3aa186879c4f28c8fd746e702b8bde8a5ad38b7395ec42e970b",
+      "claim_script": "82012088a820d896fe84e1e5d3aa186879c4f28c8fd746e702b8bde8a5ad38b7395ec42e970b88204d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766ac",
+      "claim_control_block": "c04d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766b29738acb4d4c4c2f98774ee6d2b75edf3ed59c23170267f8073acf79ac33009",
+      "claim_path_sha256": "a91ddd8bf3c968f5b6d78d13c48a6c2ffb763665bb39fc8f64446a281ad2e348",
+      "refund_script": "010ab275204d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766ac",
+      "refund_control_block": "c04d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766fb3bfdfa7592bef08f28b0d85f6db7ae7b53dbee12798075cd03920bdac65c8a",
+      "refund_path_sha256": "5312b5ba3c0e62bbfa28b68c9e6e270b90ada0596088d4bb84b5f08d19203daa",
+      "expiry": {
+        "domain": "block_height",
+        "value": "500"
+      },
+      "unilateral_exit_delay": {
+        "domain": "blocks",
+        "value": "10"
+      },
+      "commitment_sha256": "b03095d5310b6ad4af8f5a11d119c13014c08d613163b53bcc6ca2cb89845369"
+    }
+  },
+  "bark": {
+    "descriptor": {
+      "network_id": "bip122:0f9188f13cb7b2c9e5c30f844f792506",
+      "protocol_family": "bark",
+      "protocol_version": "bark-regtest-v1",
+      "operator_keys": {
+        "signer_pubkey": null,
+        "forfeit_pubkey": null,
+        "server_pubkey": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"
+      },
+      "operator_policy_sha256": "0d1f7104ef46c8179cf417c360d70eff82e4b4ffccb7c3bfa1379e229f104d76"
+    },
+    "operator_identity_sha256": "d55ac81ab577b80ec501f59c75863bfdff49180f6a155fe3126b4521d83e58de",
+    "policy": {
+      "network_id": "bip122:0f9188f13cb7b2c9e5c30f844f792506",
+      "protocol_family": "bark",
+      "protocol_version": "bark-regtest-v1",
+      "minimum_vtxo_amount": "1",
+      "maximum_vtxo_amount": "10000000",
+      "maximum_input_vtxos": 32,
+      "maximum_graph_transactions": 64,
+      "maximum_parent_edges": 32,
+      "maximum_graph_bytes": 262144,
+      "maximum_transaction_weight": 400000,
+      "expiry_domain": "block_height",
+      "minimum_expiry_delta": "20",
+      "unilateral_exit_domain": "blocks",
+      "unilateral_exit_delay": "10",
+      "checkpoint_script_sha256": "128226a7b15ec9cf040380fbc30c644f0cb202287c1cfb43e2abcd774582b9a3",
+      "fee_rule_sha256": "c36381a16e0189605c6923701f6e4cc1b6c00bbc989e084cdf9e60a2fd96a36c"
+    },
+    "asset_id": "swp:1:bip122:0f9188f13cb7b2c9e5c30f844f792506:btc:ark:bark:d55ac81ab577b80ec501f59c75863bfdff49180f6a155fe3126b4521d83e58de"
+  },
+  "cases": {
+    "positive": [
+      "swp-v1-arkade-submarine-vtxo",
+      "swp-v1-bark-reverse-vtxo",
+      "swp-v1-ark-chain-regtest",
+      "swp-v1-ark-covenant-hard-reservation",
+      "swp-v1-ark-exit-keyless"
+    ],
+    "negative": {
+      "swp-v1-negative-ark-operator-identity": "swp_ark_operator_mismatch",
+      "swp-v1-negative-ark-family-substitution": "swp_ark_operator_mismatch",
+      "swp-v1-negative-ark-cross-operator-pair": "swp_invalid_pair",
+      "swp-v1-negative-ark-cross-network-pair": "swp_invalid_pair",
+      "swp-v1-negative-ark-graph-cycle": "swp_ark_graph_invalid",
+      "swp-v1-negative-ark-graph-over-bounds": "swp_ark_graph_invalid",
+      "swp-v1-negative-ark-graph-signature": "swp_ark_graph_invalid",
+      "swp-v1-negative-ark-vtxo-owner": "swp_ark_vtxo_invalid",
+      "swp-v1-negative-ark-vtxo-amount": "swp_ark_vtxo_invalid",
+      "swp-v1-negative-ark-vtxo-expiry": "swp_ark_vtxo_invalid",
+      "swp-v1-negative-ark-exit-incomplete": "swp_ark_exit_unsafe",
+      "swp-v1-negative-ark-exit-safe-start": "swp_ark_exit_unsafe",
+      "swp-v1-negative-ark-exit-fee-key": "swp_secret_material_forbidden",
+      "swp-v1-negative-ark-exit-condition-preimage": "swp_secret_material_forbidden"
+    },
+    "reservation": [
+      "swp-v1-ark-reserve-double-use"
+    ],
+    "privacy": [
+      "swp-v1-privacy-ark-operator-token-tripwire",
+      "swp-v1-privacy-ark-vtxo-key-tripwire",
+      "swp-v1-privacy-ark-raw-exit-package-tripwire"
+    ],
+    "recovery": [
+      "swp-v1-doomsday-ark-operator-gone",
+      "swp-v1-ark-exit-deadline-recovery"
+    ]
+  }
+}
