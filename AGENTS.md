@@ -16,6 +16,10 @@ Read `README.md` and `docs/MONOREPO.md` first.
    - `immortal-client-web`: `immortal-client` only. It is the pointer-free,
      bounded WASM ABI wrapper and owns no signer, transport, storage, or wallet
      capability.
+   - `immortal-public-regtest-gateway`: `serde`, `serde_json`, `sha2`, plus
+     `immortal-core`. It has no provider, wallet, rail, database, async
+     runtime, or client-engine dependency. The dev-only lab may depend on it
+     to drive the private side of the fixed-path public-regtest handoff.
    - `immortal-relay`: `tokio`, `tokio-tungstenite`, `tokio-postgres`,
      `secp256k1`, `sha2`, `serde`, `serde_json`, plus `immortal-core`.
    - `immortal-provider`: the same seven external crates as the relay, plus

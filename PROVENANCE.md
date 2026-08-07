@@ -1298,6 +1298,19 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
   surface, workflow, or billed automation. Browser effect authorization and
   operator-independent relay redundancy remain separate work.
 
+### 2026-08-07 — Codex 5.6 Sol, public-regtest capability gateway
+
+- Added the separate loopback-behind-TLS public-regtest gateway for issue #42:
+  exact HTTPS Origin and trusted client-IP policy, one-time 256-bit
+  capabilities stored only as digests, Schnorr-signed bounded manifests,
+  typed expiry/revocation/rate refusals, and atomic engine-effect admission.
+- Kept rail authority in the existing private funded worker. The public
+  runtime has one closed entrypoint and persists only redacted authorizations,
+  public-safe receipts, and bounded quota state. Exact receipts survive
+  gateway/worker replacement and concurrent replay.
+- Added no dependency, event-kind adoption, database, mainnet authority,
+  generic wallet/RPC surface, workflow, or billed automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

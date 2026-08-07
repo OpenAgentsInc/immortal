@@ -25,6 +25,9 @@ primitives) against a loopback dev relay — the same wire
 | `refund` | Runs the noncooperative reverse lane until the provider's script-path refund and cancelled hold invoice are locally verified. |
 | `funded-smoke` | Runs all three funded journeys and writes the private evidence consumed by `scripts/test-provider-funded.sh`. |
 | `browser-demo-adapter` | Serves the exact-origin loopback callback and public-safe session view for a browser-driven funded regtest smoke. It has no node or wallet credentials and admits only engine-bound Bitcoin funding or Lightning payment effects. |
+| `public-regtest-gateway` | Starts the distinct capability-scoped public-regtest boundary behind an operator TLS proxy. |
+| `public-regtest-bind-fixture` | Privately binds one closed redacted engine authorization under an explicit fixture gate. |
+| `public-regtest-worker-once` | Privately proves one admitted effect/receipt handoff without adding a public rail method. |
 | `status` | Prints the persisted state (identity pubkey, discovery summary, sessions and their steps). |
 | `run --to <step>` | Runs the no-spend preflight through `verify`, or funded submarine → reverse claim → reverse refund journeys through the selected funded step. |
 
@@ -118,6 +121,12 @@ provider's signed Status claim from locally verified rail evidence and never
 allows a settled presentation before terminal verification. See
 `docs/conformance/browser-demo-funded.md` for the HTTP contract, replay law,
 and macOS teardown recipe.
+
+`scripts/test-public-regtest-gateway.sh` qualifies the separate public mode:
+one-time capabilities stored only as digests, signed manifests, exact HTTPS
+Origin and proxy-overwritten client-IP policy, private fixed-path worker
+handoff, replacement-safe admission, and exact concurrent receipt replay. See
+`docs/conformance/public-regtest-gateway.md`.
 
 After an acknowledged relay loss, the wallet replaces and NIP-42 authenticates
 both relay sockets, then resubscribes the reader without draining stored

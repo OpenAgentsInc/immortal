@@ -1,9 +1,17 @@
-# Copy the two site blocks into the operator-owned Caddy configuration and
-# replace both example domains. Plain relay ports remain bound to 127.0.0.1.
+# Copy the site blocks into the operator-owned Caddy configuration and replace
+# the example domains. Plain application ports remain bound to 127.0.0.1.
 relay-a.regtest.example.com {
 	reverse_proxy 127.0.0.1:18080
 }
 
 relay-b.regtest.example.com {
 	reverse_proxy 127.0.0.1:18081
+}
+
+# The gateway itself validates the browser Origin. Caddy must overwrite, not
+# append, the client-IP header because capabilities are bound to this value.
+gateway.regtest.example.com {
+	reverse_proxy 127.0.0.1:19337 {
+		header_up X-Immortal-Client-IP {remote_host}
+	}
 }

@@ -1,0 +1,46 @@
+{
+  "schema": "openagents.immortal.public-regtest-gateway-contract.v1",
+  "network": "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4",
+  "gateway": {
+    "default_bind": "127.0.0.1:19337",
+    "tls_boundary": "operator reverse proxy",
+    "origin_scheme": "https",
+    "maximum_request_bytes": 16384,
+    "endpoints": [
+      "POST /v1/public-regtest/sessions",
+      "GET /v1/public-regtest/sessions/{session_id}",
+      "DELETE /v1/public-regtest/sessions/{session_id}",
+      "POST /v1/public-regtest/sessions/{session_id}/effects"
+    ]
+  },
+  "session": {
+    "capability_entropy_bits": 256,
+    "capability_storage": "sha256_digest_only",
+    "maximum_lifetime_seconds": 3600,
+    "maximum_effects": 2,
+    "maximum_concurrent_effects": 1,
+    "maximum_requests": 64,
+    "maximum_amount_sat": 1000000,
+    "allowed_methods": ["broadcast_bitcoin_funding", "pay_lightning_invoice"],
+    "bindings": ["origin", "client_ip", "sandbox_session_id", "requester_identity", "provider_pubkey", "engine_session_id", "order_id", "effect_id", "idempotency_digest", "network", "method", "amount_sat"]
+  },
+  "separation": {
+    "public_process_has_rail_credentials": false,
+    "public_process_has_wallet_seed": false,
+    "public_process_has_rpc_method_parameter": false,
+    "private_worker_verifies_complete_engine_authorization": true,
+    "handoff": "mode-0600 fixed-path admission and receipt records"
+  },
+  "replay": {
+    "exact": "byte-identical durable receipt",
+    "changed": "effect_conflict",
+    "concurrent": "one per-session filesystem lock and one create-new admission"
+  },
+  "claims": {
+    "public_regtest_only": true,
+    "mainnet": false,
+    "general_wallet_api": false,
+    "dynamic_inputs": false,
+    "production_value": false
+  }
+}

@@ -30,6 +30,12 @@ COMMANDS:
     boltz-adapter       Run the process-gated transaction-first adapter callback
     browser-demo-adapter
                         Serve the closed loopback funded-regtest browser callback
+    public-regtest-gateway
+                        Serve the capability-scoped public-regtest HTTP boundary
+    public-regtest-worker-once
+                        Consume one admitted effect in the private fixture worker
+    public-regtest-bind-fixture
+                        Bind one closed fixture authorization from the private side
     status              Print persisted lab state
     run [--to STEP]     Run through STEP (discover, rfq, quote, verify, fund,
                         claim, or refund; defaults to verify)
@@ -140,6 +146,9 @@ pub enum Command {
     DoomsdayKeylessExecutor,
     BoltzAdapter,
     BrowserDemoAdapter,
+    PublicRegtestGateway,
+    PublicRegtestWorkerOnce,
+    PublicRegtestBindFixture,
     Status,
     Run { to: Step },
     Help,
@@ -182,6 +191,9 @@ pub fn parse(arguments: &[String]) -> Result<Command, String> {
         "doomsday-keyless-executor" => Command::DoomsdayKeylessExecutor,
         "boltz-adapter" => Command::BoltzAdapter,
         "browser-demo-adapter" => Command::BrowserDemoAdapter,
+        "public-regtest-gateway" => Command::PublicRegtestGateway,
+        "public-regtest-worker-once" => Command::PublicRegtestWorkerOnce,
+        "public-regtest-bind-fixture" => Command::PublicRegtestBindFixture,
         "status" => Command::Status,
         "run" => {
             let mut to = Step::Verify;
@@ -241,6 +253,18 @@ mod tests {
         assert_eq!(
             parse(&args(&["browser-demo-adapter"])),
             Ok(Command::BrowserDemoAdapter)
+        );
+        assert_eq!(
+            parse(&args(&["public-regtest-gateway"])),
+            Ok(Command::PublicRegtestGateway)
+        );
+        assert_eq!(
+            parse(&args(&["public-regtest-worker-once"])),
+            Ok(Command::PublicRegtestWorkerOnce)
+        );
+        assert_eq!(
+            parse(&args(&["public-regtest-bind-fixture"])),
+            Ok(Command::PublicRegtestBindFixture)
         );
         assert_eq!(parse(&args(&["status"])), Ok(Command::Status));
         assert_eq!(parse(&args(&["help"])), Ok(Command::Help));

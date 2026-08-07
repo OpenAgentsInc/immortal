@@ -1,0 +1,24 @@
+[package]
+name = "immortal-public-regtest-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Capability-scoped public-regtest browser boundary"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "immortal-public-regtest-gateway"
+path = "src/main.rs"
+
+# Owner-approved minimal public-boundary allowlist. This product links no
+# provider, wallet, rail, database, async runtime, or client engine.
+[dependencies]
+immortal-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

@@ -18,6 +18,9 @@ use std::{
 use immortal_client::mkt_swp_client::{
     ExternalEffectRequest, FundingAction, FundingAuthorizationRequest, provider_support,
 };
+use immortal_public_regtest_gateway::{
+    self as public_regtest_gateway, GatewayEffectRequest, WorkerEffectReceipt,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
@@ -134,6 +137,15 @@ pub fn await_engine_effect(
         amount_sat: session.amount_sat,
     };
     validate_effect(&effect)?;
+    if let Ok(sandbox_session_id) = std::env::var("IMMORTAL_PUBLIC_REGTEST_SESSION_ID") {
+        public_regtest_gateway::await_admission(
+            &sandbox_session_id,
+            session.requester_pubkey,
+            session.provider_pubkey,
+            &gateway_effect(&effect),
+        )?;
+        return Ok(effect);
+    }
     let allowed_origin = allowed_origin()?;
     let mut manifest = load_manifest(paths)?.unwrap_or(BrowserManifest {
         schema: MANIFEST_SCHEMA.to_owned(),
@@ -213,6 +225,20 @@ pub fn record_engine_effect(
         state: "admitted".to_owned(),
         admitted_at: unix_now()?,
     };
+    if let Ok(sandbox_session_id) = std::env::var("IMMORTAL_PUBLIC_REGTEST_SESSION_ID") {
+        public_regtest_gateway::record_receipt(
+            &sandbox_session_id,
+            &WorkerEffectReceipt {
+                schema: candidate.schema.clone(),
+                request: gateway_effect(&candidate.request),
+                external_identifier: candidate.external_identifier.clone(),
+                result_digest: candidate.result_digest.clone(),
+                state: candidate.state.clone(),
+                admitted_at: candidate.admitted_at,
+            },
+        )?;
+        return Ok(());
+    }
     let receipt = if let Some(existing) = load_receipt(paths, &request.effect_id)? {
         if existing != candidate
             && (existing.request != candidate.request
@@ -583,6 +609,20 @@ fn validate_effect(effect: &BrowserEffectRequest) -> Result<(), String> {
         return Err("browser effect method differs from its swap journey".to_owned());
     }
     Ok(())
+}
+
+fn gateway_effect(effect: &BrowserEffectRequest) -> GatewayEffectRequest {
+    GatewayEffectRequest {
+        schema: effect.schema.clone(),
+        network: effect.network.clone(),
+        journey: effect.journey.clone(),
+        session_id: effect.session_id.clone(),
+        order_id: effect.order_id.clone(),
+        effect_id: effect.effect_id.clone(),
+        idempotency_digest: effect.idempotency_digest.clone(),
+        method: effect.method.clone(),
+        amount_sat: effect.amount_sat,
+    }
 }
 
 fn validate_contract() -> Result<(), String> {

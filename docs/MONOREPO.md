@@ -46,6 +46,7 @@ audited primitives.
 | `immortal-provider` | binary, new | The liquidity-provider daemon: publishes Offerings, answers RFQs, signs Quotes, reserves capacity, executes swaps against its own rail nodes, runs the refund watchtower | Seed, hot wallet, claim/refund keys, unreleased preimages, node credentials — the money |
 | client engine | library crate (+ wasm), existing code | Verify-before-fund swap engine embedded by wallets; source of the generated TypeScript SDK | Nothing; the embedding wallet holds the user's keys |
 | shared core | library crate, existing code | Event/tag/filter/canonical-ID domain, NIP-44, MKT grammar, Bitcoin/Lightning verification primitives (taproot tagged hashes, output-key and control-block verification, invoice parsing) | Nothing; pure logic, fixture-tested |
+| public-regtest gateway | binary | Capability-scoped, origin/IP-bound browser admission and signed public-safe manifests for the shared regtest demo | Capability digests and redacted regtest effect receipts; never wallet or rail authority |
 | regtest lab | dev harness (#18) | Adversarial multi-provider, multi-relay lab driving both binaries against external regtest nodes | Regtest coins only |
 
 Future hardened products (beyond swaps) follow the same pattern: one
@@ -187,6 +188,9 @@ crates/
                            TypeScript SDK and contract fixtures
   immortal-client-web/     pointer-free executable browser ABI over
                            immortal-client; no host authority
+  immortal-public-regtest-gateway/
+                           closed public-regtest HTTP boundary; no provider,
+                           wallet, rail, database, or client-engine dependency
   immortal-provider/       session logic (#14) + rail executors +
                            wallet + watchtower; [[bin]] immortal-provider
 ```

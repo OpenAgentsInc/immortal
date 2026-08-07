@@ -8,6 +8,7 @@ use immortal_lab::{
     state::LabPaths,
     steps,
 };
+use immortal_public_regtest_gateway as public_regtest_gateway;
 
 fn main() {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
@@ -65,6 +66,11 @@ fn execute(command: Command) -> Result<(), Exit> {
         Command::DoomsdayKeylessExecutor => emit(funded::run_doomsday_keyless_executor()),
         Command::BoltzAdapter => emit(funded::run_boltz_adapter_session()),
         Command::BrowserDemoAdapter => emit(browser_demo::run_server()),
+        Command::PublicRegtestGateway => emit(public_regtest_gateway::run_server()),
+        Command::PublicRegtestWorkerOnce => emit(public_regtest_gateway::run_fixture_worker_once()),
+        Command::PublicRegtestBindFixture => {
+            emit(public_regtest_gateway::bind_fixture_authorization())
+        }
         Command::Run { to } => {
             if to >= Step::Fund {
                 emit(funded::run_funded_journey(FundedJourney::Submarine))?;

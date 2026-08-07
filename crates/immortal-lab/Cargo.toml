@@ -22,6 +22,7 @@ path = "src/main.rs"
 immortal-client.workspace = true
 immortal-core.workspace = true
 immortal-provider = { path = "../immortal-provider" }
+immortal-public-regtest-gateway.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

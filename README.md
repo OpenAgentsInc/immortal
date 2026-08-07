@@ -59,6 +59,9 @@ The virtual Cargo workspace makes those roles explicit:
 `crates/immortal-core` owns shared pure primitives,
 `crates/immortal-client` owns wallet-embedded client engines,
 `crates/immortal-client-web` owns their ordinary browser ABI artifact,
+`crates/immortal-public-regtest-gateway` owns the capability-scoped public
+regtest HTTP boundary without provider, wallet, rail, database, or client
+engine dependencies,
 `crates/immortal-relay` builds the existing `immortal` binary, and
 `crates/immortal-provider` owns the provider session engine, no-spend mode,
 funded rail executors, wallet boundary, provider database, and watchtower.
@@ -286,6 +289,12 @@ and two relay/database boundaries across restarts. Only the relay WebSocket
 ports bind to loopback for an operator TLS proxy; all rail, database, wallet,
 and control authority remains private. See the
 [`public regtest runbook`](docs/deployment/runbook-public-regtest.md).
+The separate `immortal-public-regtest-gateway` process adds the public browser
+boundary without broadening the local adapter: short-lived origin/IP-bound
+capabilities, signed manifests, exact engine-effect admission, and durable
+receipt replay while the private funded worker remains the only rail actor.
+See the
+[`public-regtest gateway contract`](docs/conformance/public-regtest-gateway.md).
 Operators should follow the
 [`immortal-provider` Debian runbook](docs/deployment/runbook-provider-debian.md)
 for its separate database, wallet file, bitcoind, selected Lightning rail, health,

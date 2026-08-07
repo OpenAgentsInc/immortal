@@ -363,6 +363,7 @@ dependencies = [
  "immortal-client",
  "immortal-core",
  "immortal-provider",
+ "immortal-public-regtest-gateway",
  "serde",
  "serde_json",
  "sha2",
@@ -385,6 +386,16 @@ dependencies = [
  "tokio-postgres",
  "tokio-rustls",
  "tokio-tungstenite",
+]
+
+[[package]]
+name = "immortal-public-regtest-gateway"
+version = "0.0.1"
+dependencies = [
+ "immortal-core",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

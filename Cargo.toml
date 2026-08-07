@@ -6,6 +6,7 @@ members = [
     "crates/immortal-relay",
     "crates/immortal-provider",
     "crates/immortal-lab",
+    "crates/immortal-public-regtest-gateway",
 ]
 default-members = ["crates/immortal-relay"]
 resolver = "2"
@@ -31,3 +32,4 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring
 immortal-core = { path = "crates/immortal-core", default-features = false }
 immortal-client = { path = "crates/immortal-client" }
 immortal-client-web = { path = "crates/immortal-client-web" }
+immortal-public-regtest-gateway = { path = "crates/immortal-public-regtest-gateway" }

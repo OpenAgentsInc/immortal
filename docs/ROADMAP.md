@@ -473,7 +473,7 @@ repository fixture alone.
 | Issue | Packet | Depends on |
 | --- | --- | --- |
 | [#41](https://github.com/OpenAgentsInc/immortal/issues/41) | **Complete:** persistent multi-node public regtest topology, private generated state, public-safe readiness, restart/backup/owned reset contract | #18, #36 |
-| [#42](https://github.com/OpenAgentsInc/immortal/issues/42) | Bounded public capability gateway for requester effects | #41 |
+| [#42](https://github.com/OpenAgentsInc/immortal/issues/42) | **Complete:** bounded public capability gateway, signed sessions, private worker handoff, exact durable effect replay | #41 |
 | [#43](https://github.com/OpenAgentsInc/immortal/issues/43) | Dynamic public demo sessions, funding and cleanup | #42 |
 | [#44](https://github.com/OpenAgentsInc/immortal/issues/44) | Public deployment operations, observability, backup/restore and acceptance record | #41, #42, #43 |
 

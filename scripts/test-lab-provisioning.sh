@@ -11,6 +11,7 @@ scripts=(
   scripts/public-regtest-topology.sh
   scripts/test-lab-adversarial-manifest.sh
   scripts/test-public-regtest-topology.sh
+  scripts/test-public-regtest-gateway.sh
   scripts/test-lab-topology-quotes.sh
   scripts/test-lab-topology-funded.sh
   scripts/test-provider-liquid.sh
@@ -125,6 +126,7 @@ jq -e '
 test "${adversarial_manifest}" = "tests/fixtures/lab/adversarial-v1.json"
 scripts/test-lab-adversarial-manifest.sh --check
 scripts/test-public-regtest-topology.sh
+scripts/test-public-regtest-gateway.sh
 
 scripts/lab-bitcoind.sh help | grep -q 'rbf-replace'
 scripts/lab-cln.sh help | grep -q 'wallet (3)'

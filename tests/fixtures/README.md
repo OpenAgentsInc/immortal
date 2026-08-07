@@ -175,6 +175,10 @@ the pinned upstream applications.
   excludes browser authority, operator independence, and mainnet claims.
   `scripts/test-public-regtest-topology.sh` proves its static configuration
   and refusal gates without provisioning the long-running stack.
+- `lab/public-regtest-gateway-v1.json` pins the distinct public-regtest HTTP
+  boundary: signed manifests, origin/IP-bound capability digests, exact
+  provider/engine-effect bindings, quotas, process separation, and durable
+  receipt replay through replacement and concurrency.
 - `nipmkt/swp-profile-v1.json` pins the relay-observable MKT-SWP v1 adoption
   at OpenAgents commit `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`:
   Offering grammar, kind-39610 profile binding and immutable wrapped
