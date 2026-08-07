@@ -1449,6 +1449,7 @@ fn run_dynamic_submarine_topology(
     validated
         .require_destination_amount(output_amount)
         .map_err(|error| error.to_string())?;
+    let journey_names = dynamic_public_journey_names("submarine", &validated.request.request_id);
     let client_input = fund_client_wallet(runtime, &environments[0])?;
     let requester_key = environments[0]
         .wallet
@@ -1467,11 +1468,7 @@ fn run_dynamic_submarine_topology(
         .map_err(|error| format!("could not derive dynamic exit destination: {error}"))?;
     let mut candidates = Vec::with_capacity(2);
     for index in 0..2 {
-        let journey_name = if index == 0 {
-            "dynamic_submarine_a"
-        } else {
-            "dynamic_submarine_b"
-        };
+        let journey_name = &journey_names[index];
         let input = NegotiationInput {
             journey_name,
             swap_type: "submarine",
@@ -1496,11 +1493,7 @@ fn run_dynamic_submarine_topology(
     eprintln!("immortal-lab: dynamic submarine received two comparable Quotes");
     let unselected_index = unselected.environment_index;
     let unselected_input = NegotiationInput {
-        journey_name: if unselected_index == 0 {
-            "dynamic_submarine_a"
-        } else {
-            "dynamic_submarine_b"
-        },
+        journey_name: &journey_names[unselected_index],
         swap_type: "submarine",
         payment_hash,
         invoice: Some(invoice),
@@ -1522,11 +1515,7 @@ fn run_dynamic_submarine_topology(
     let selected_provider = selected.quote.provider_pubkey.clone();
     let selected_quote = selected.quote.quote_id.clone();
     let selected_input = NegotiationInput {
-        journey_name: if selected_index == 0 {
-            "dynamic_submarine_a"
-        } else {
-            "dynamic_submarine_b"
-        },
+        journey_name: &journey_names[selected_index],
         swap_type: "submarine",
         payment_hash,
         invoice: Some(invoice),
@@ -1608,6 +1597,7 @@ fn run_dynamic_reverse_topology(
         .destination_script_pubkey
         .as_deref()
         .ok_or_else(|| "dynamic reverse request has no destination script".to_owned())?;
+    let journey_names = dynamic_public_journey_names("reverse", &validated.request.request_id);
     let preimage = random_32()?;
     let payment_hash = lower_hex(&sha256(&preimage));
     store_funded_secret(&environments[0].control.paths, "dynamic_reverse", &preimage)?;
@@ -1620,11 +1610,7 @@ fn run_dynamic_reverse_topology(
         .internal_key;
     let mut candidates = Vec::with_capacity(2);
     for index in 0..2 {
-        let journey_name = if index == 0 {
-            "dynamic_reverse_a"
-        } else {
-            "dynamic_reverse_b"
-        };
+        let journey_name = &journey_names[index];
         let input = NegotiationInput {
             journey_name,
             swap_type: "reverse",
@@ -1649,11 +1635,7 @@ fn run_dynamic_reverse_topology(
     eprintln!("immortal-lab: dynamic reverse received two comparable Quotes");
     let unselected_index = unselected.environment_index;
     let unselected_input = NegotiationInput {
-        journey_name: if unselected_index == 0 {
-            "dynamic_reverse_a"
-        } else {
-            "dynamic_reverse_b"
-        },
+        journey_name: &journey_names[unselected_index],
         swap_type: "reverse",
         payment_hash: &payment_hash,
         invoice: None,
@@ -1675,11 +1657,7 @@ fn run_dynamic_reverse_topology(
     let selected_provider = selected.quote.provider_pubkey.clone();
     let selected_quote = selected.quote.quote_id.clone();
     let selected_input = NegotiationInput {
-        journey_name: if selected_index == 0 {
-            "dynamic_reverse_a"
-        } else {
-            "dynamic_reverse_b"
-        },
+        journey_name: &journey_names[selected_index],
         swap_type: "reverse",
         payment_hash: &payment_hash,
         invoice: None,
@@ -1747,6 +1725,13 @@ fn run_dynamic_reverse_topology(
         "destination_output":{"amount_sat":destination_amount_sat,"contract_amount_sat":output_amount,"commitment_sha256":validated.destination_commitment_sha256},
         "terminal_authority":"requester_admitted_bitcoin_and_lightning_evidence",
     }))
+}
+
+fn dynamic_public_journey_names(swap_type: &str, request_id: &str) -> [String; 2] {
+    [
+        format!("dynamic_{swap_type}_a_{request_id}"),
+        format!("dynamic_{swap_type}_b_{request_id}"),
+    ]
 }
 
 fn validate_dynamic_request(
@@ -14897,6 +14882,15 @@ mod tests {
         include_str!("../../../tests/fixtures/nipmkt/liquid-rail-v1.json");
     const LIQUID_RUNTIME_FIXTURE: &str =
         include_str!("../../../tests/fixtures/provider/liquid-runtime-v1.json");
+
+    #[test]
+    fn public_provider_sessions_are_bound_to_the_dynamic_request() {
+        let first = dynamic_public_journey_names("reverse", &"11".repeat(32));
+        let second = dynamic_public_journey_names("reverse", &"22".repeat(32));
+        assert_ne!(first, second);
+        assert_ne!(first[0], first[1]);
+        assert!(first.iter().all(|name| name.contains(&"11".repeat(32))));
+    }
 
     #[test]
     fn public_relay_authentication_mapping_preserves_connection_order() {

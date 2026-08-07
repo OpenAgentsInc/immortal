@@ -92,6 +92,10 @@ with a session-specific state directory. The gateway cannot launch this
 worker, read its wallet/rail mounts, or select a destination. A terminal
 worker projection deletes the private address/invoice handoff while retaining
 only its signed commitment and public-safe two-rail evidence. The wallet driver
+binds each provider-side negotiation session name to the validated dynamic
+request ID, so separate browser requests cannot reuse one provider session.
+The same request ID is stable across recovery and must not be replaced to make
+an ambiguous execution look new. The wallet driver
 connects through the two private loopback relay sockets but signs NIP-42
 against their exact public `wss://` authorities from the owned topology state;
 connection and authentication URL order must remain identical.
