@@ -1,5 +1,9 @@
 # Public regtest shared-service qualification
 
+Public NIP-11 advertises NIP-59 because the relays accept and recipient-gate
+kind-1059 gift wraps for private swap negotiation. A public browser must fail
+closed when this transport capability is absent from the relay identity.
+
 This packet turns the persistent topology and capability gateway into a
 bounded, single-operator public regtest service. Its executable contract is
 `tests/fixtures/lab/public-regtest-service-v1.json`. It is not a mainnet,

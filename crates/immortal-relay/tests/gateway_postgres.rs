@@ -271,7 +271,7 @@ async fn assert_nip11_http(address: SocketAddr) {
             .unwrap()
             .contains(&json!(42))
     );
-    for nip in [17, 29, 45, 50, 65, 70, 86, 94, 98] {
+    for nip in [17, 29, 45, 50, 59, 65, 70, 86, 94, 98] {
         assert!(
             document["supported_nips"]
                 .as_array()

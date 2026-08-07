@@ -4,7 +4,7 @@
   "description": "fixture description",
   "contact": "mailto:operator@example.com",
   "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "supported_nips": [1, 9, 11, 40, 45, 50, 65, 94, 17, 42, 70],
+  "supported_nips": [1, 9, 11, 40, 45, 50, 65, 94, 17, 42, 59, 70],
   "supported_extensions": ["mkt-swp:1", "nip-aa", "nip-ae", "nip-am", "nip-ao", "nip-ap", "nip-er", "nip-mkt", "nip-mkt-lsp:1", "nip-mkt-mint:1", "nip-mkt-p2p:1", "nip-mkt-pfi:1", "nip-mp", "nip-oa", "nip-rs"],
   "max_message_length": 4096,
   "max_subscriptions": 4,
