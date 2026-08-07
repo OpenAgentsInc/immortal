@@ -86,6 +86,25 @@ the requester's contract, countersigns identical terms, and closes mutually
 cancelled submarine, reverse, and chain sessions. It never calls a funding,
 wallet, node, payment, or broadcast API.
 
+`IMMORTAL_PROVIDER_NO_SPEND_VARIANT` is an optional closed development-policy
+selector. Its default preserves the normal no-spend Offering and 600-second
+Quote lifetime. `demo_alternate` publishes a separately addressed Offering,
+shortens the Quote lifetime to 420 seconds and the requested completion
+promise by 120 seconds, and uses a distinct provider-signed reservation
+disclosure. It does not alter frozen rail commitments, quote class, reservation
+class, or settlement claims. Both variants remain firm/soft coordination-only
+Quotes and terminate through bilateral cancellation with zero external spend.
+The selector is for distinguishable local demo providers, not inventory or
+price authority.
+
+`scripts/dev-no-spend-demo.sh` supervises one disposable loopback relay and
+two such provider processes. Its atomic
+`openagents.immortal.no-spend-demo-manifest.v1` document exposes only public
+connection and discovery data. `scripts/test-dev-no-spend-demo.sh` proves the
+two signed heads and Quotes, restarts provider A after its Order while provider
+B remains unchanged, and completes both sessions through bilateral Contracts,
+accepted Status, mutual cancellation, and exact zero-spend Close records.
+
 Funded mode adds a provider-owned Postgres database, a mode-0600 operator seed
 file, dynamic hard reservations, bounded bitcoind and Core Lightning clients,
 transaction construction, script-path settlement, and a polling watchtower.

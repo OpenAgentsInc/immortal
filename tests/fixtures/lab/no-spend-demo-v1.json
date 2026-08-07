@@ -1,0 +1,76 @@
+{
+  "schema": "openagents.immortal.no-spend-demo.v1",
+  "launcher": "scripts/dev-no-spend-demo.sh",
+  "process_gate": "scripts/test-dev-no-spend-demo.sh",
+  "manifest_schema": "openagents.immortal.no-spend-demo-manifest.v1",
+  "smoke_schema": "openagents.immortal.no-spend-demo-smoke.v1",
+  "topology": {
+    "relay_count": 1,
+    "provider_count": 2,
+    "requester_identity_count": 1,
+    "provider_mode": "no_spend",
+    "distinct_provider_keys": true,
+    "isolated_provider_identity_files": true,
+    "relay_and_postgres_disposable": true,
+    "loopback_only": true
+  },
+  "manifest": {
+    "maximum_bytes": 32768,
+    "file_mode": "0644",
+    "atomic_replace": true,
+    "public_safe": true,
+    "required_relay_members": [
+      "websocket_url",
+      "health_url",
+      "contract_sha256",
+      "contract_identity",
+      "health"
+    ],
+    "required_provider_members": [
+      "role",
+      "pubkey",
+      "offering_coordinate",
+      "policy",
+      "health"
+    ]
+  },
+  "quote_policies": [
+    {
+      "role": "provider-a",
+      "variant": "default",
+      "quote_lifetime_seconds": 600,
+      "completion_discount_seconds": 0,
+      "quote_class": "firm",
+      "reservation_class": "soft"
+    },
+    {
+      "role": "provider-b",
+      "variant": "demo_alternate",
+      "quote_lifetime_seconds": 420,
+      "completion_discount_seconds": 120,
+      "quote_class": "firm",
+      "reservation_class": "soft"
+    }
+  ],
+  "lifecycle": {
+    "path": [
+      "rfq",
+      "quote",
+      "order",
+      "provider_restart",
+      "bilateral_contract",
+      "accepted_status",
+      "mutual_cancel",
+      "close"
+    ],
+    "external_spend_effects": 0,
+    "loss_classification": "none",
+    "restart_preserves_identity": true,
+    "unselected_provider_restart_count": 0
+  },
+  "custody": {
+    "manifest_contains_secrets": false,
+    "rail_effects": false,
+    "wallet_or_node_credentials": false
+  }
+}

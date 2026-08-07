@@ -23,20 +23,89 @@ use crate::relay_actor::{
 const PROVIDER_ID: &str = "immortal-no-spend";
 const OFFERING_ID: &str = "immortal-no-spend-swaps";
 const QUOTE_LIFETIME_SECONDS: u64 = 600;
+const ALTERNATE_QUOTE_LIFETIME_SECONDS: u64 = 420;
+const ALTERNATE_COMPLETION_DISCOUNT_SECONDS: u64 = 120;
 const FULL_SESSION_FIXTURES: &str =
     include_str!("../../../tests/fixtures/nipmkt/swp-full-sessions-v1.json");
 
-struct NoSpendMode;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoSpendVariant {
+    Default,
+    DemoAlternate,
+}
+
+impl NoSpendVariant {
+    fn from_environment() -> Result<Self, String> {
+        match std::env::var("IMMORTAL_PROVIDER_NO_SPEND_VARIANT") {
+            Err(std::env::VarError::NotPresent) => Ok(Self::Default),
+            Ok(value) if value == "default" => Ok(Self::Default),
+            Ok(value) if value == "demo_alternate" => Ok(Self::DemoAlternate),
+            Ok(_) => Err(
+                "IMMORTAL_PROVIDER_NO_SPEND_VARIANT must be default or demo_alternate".to_owned(),
+            ),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err("IMMORTAL_PROVIDER_NO_SPEND_VARIANT must contain valid UTF-8".to_owned())
+            }
+        }
+    }
+
+    fn provider_id(self) -> &'static str {
+        match self {
+            Self::Default => PROVIDER_ID,
+            Self::DemoAlternate => "immortal-no-spend-demo-alternate",
+        }
+    }
+
+    fn offering_id(self) -> &'static str {
+        match self {
+            Self::Default => OFFERING_ID,
+            Self::DemoAlternate => "immortal-no-spend-swaps-demo-alternate",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Default => "Immortal no-spend provider",
+            Self::DemoAlternate => "Immortal no-spend provider (alternate demo policy)",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::DemoAlternate => "demo_alternate",
+        }
+    }
+
+    fn quote_lifetime_seconds(self) -> u64 {
+        match self {
+            Self::Default => QUOTE_LIFETIME_SECONDS,
+            Self::DemoAlternate => ALTERNATE_QUOTE_LIFETIME_SECONDS,
+        }
+    }
+
+    fn capacity_bucket_id(self) -> &'static str {
+        match self {
+            Self::Default => "no-spend-rehearsal",
+            Self::DemoAlternate => "no-spend-rehearsal-demo-alternate",
+        }
+    }
+}
+
+struct NoSpendMode {
+    variant: NoSpendVariant,
+}
 
 pub fn run() -> Result<(), String> {
     let relay_url = required_environment("IMMORTAL_PROVIDER_RELAY_URL")?;
     validate_relay_url(&relay_url, "no-spend")?;
     let identity_secret = required_environment("IMMORTAL_PROVIDER_IDENTITY_SECRET")?;
     let signer = signer_from_lower_hex(&identity_secret)?;
+    let variant = NoSpendVariant::from_environment()?;
     run_with_mode(
         relay_url,
         signer,
-        NoSpendMode,
+        NoSpendMode { variant },
         None,
         Arc::new(ProviderHealth::default()),
     )
@@ -48,19 +117,27 @@ impl ProviderMode for NoSpendMode {
     }
 
     fn provider_id(&self) -> &str {
-        PROVIDER_ID
+        self.variant.provider_id()
     }
 
     fn offering_id(&self) -> &str {
-        OFFERING_ID
+        self.variant.offering_id()
     }
 
     fn discovery_metadata(&self) -> Value {
-        json!({
-            "name":"Immortal no-spend provider",
-            "mode":"no_spend",
-            "settlement_claim":"coordination only; no external spend effects"
-        })
+        match self.variant {
+            NoSpendVariant::Default => json!({
+                "name":self.variant.name(),
+                "mode":"no_spend",
+                "settlement_claim":"coordination only; no external spend effects"
+            }),
+            NoSpendVariant::DemoAlternate => json!({
+                "name":self.variant.name(),
+                "mode":"no_spend",
+                "demo_policy":self.variant.label(),
+                "settlement_claim":"coordination only; no external spend effects"
+            }),
+        }
     }
 
     fn offering(&self) -> Value {
@@ -94,9 +171,9 @@ impl ProviderMode for NoSpendMode {
                 return Err("RFQ expired before the no-spend Quote was created".to_owned());
             }
             let expiration = created_at
-                .saturating_add(QUOTE_LIFETIME_SECONDS)
+                .saturating_add(self.variant.quote_lifetime_seconds())
                 .min(rfq_expiration);
-            let profile = quote_profile(swap_type, rfq, expiration)?;
+            let profile = quote_profile(swap_type, rfq, expiration, self.variant)?;
             let session_id = session.config().session_id.clone();
             session
                 .soft_quote(
@@ -300,7 +377,12 @@ fn no_spend_offering() -> Value {
     })
 }
 
-fn quote_profile(swap_type: &str, rfq: &Event, expiration: u64) -> Result<Value, String> {
+fn quote_profile(
+    swap_type: &str,
+    rfq: &Event,
+    expiration: u64,
+    variant: NoSpendVariant,
+) -> Result<Value, String> {
     let fixtures: Value = serde_json::from_str(FULL_SESSION_FIXTURES)
         .map_err(|error| format!("full-session fixture is invalid: {error}"))?;
     let records = fixtures
@@ -328,14 +410,23 @@ fn quote_profile(swap_type: &str, rfq: &Event, expiration: u64) -> Result<Value,
         .and_then(|constraints| constraints.get("desired_completion_time"))
         .and_then(Value::as_u64)
         .ok_or_else(|| "RFQ has no desired completion time".to_owned())?;
-    profile["terms"]["desired_completion_time"] = Value::from(desired_completion);
+    let completion = match variant {
+        NoSpendVariant::Default => desired_completion,
+        NoSpendVariant::DemoAlternate => {
+            desired_completion.saturating_sub(ALTERNATE_COMPLETION_DISCOUNT_SECONDS)
+        }
+    };
+    profile["terms"]["desired_completion_time"] = Value::from(completion.max(1));
     profile["reservation_terms"]["reservation_expires_at"] = Value::from(expiration);
     profile["reservation_terms"]["reservation_id"] =
         Value::String(deterministic_id("reservation", session_id(rfq)?));
     profile["reservation_terms"]["capacity_bucket_id"] =
-        Value::String("no-spend-rehearsal".to_owned());
-    profile["reservation_terms"]["proof_ref"] =
-        Value::String(format!("provider-signed:no-spend:{}", session_id(rfq)?));
+        Value::String(variant.capacity_bucket_id().to_owned());
+    profile["reservation_terms"]["proof_ref"] = Value::String(format!(
+        "provider-signed:no-spend:{}:{}",
+        variant.label(),
+        session_id(rfq)?
+    ));
     profile["reservation_terms"]["capacity_commitment_sha256"] =
         Value::String(deterministic_id("capacity", session_id(rfq)?));
     Ok(profile)
@@ -453,7 +544,8 @@ fn lower_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         Event, FULL_SESSION_FIXTURES, MKT_CLOSE_KIND, MKT_RFQ_KIND, MKT_STATUS_KIND, NoSpendMode,
-        OFFERING_ID, ProviderMode, ProviderSession, has_kind_by_author, no_spend_offering,
+        NoSpendVariant, OFFERING_ID, ProviderMode, ProviderSession, has_kind_by_author,
+        no_spend_offering,
     };
     use immortal_client::mkt_swp_client::{SwapClientConfig, SwapRecordFactory};
     use immortal_core::market::MarketSigner;
@@ -476,7 +568,9 @@ mod tests {
 
     #[test]
     fn no_spend_discovery_hooks_preserve_the_public_contract() {
-        let mode = NoSpendMode;
+        let mode = NoSpendMode {
+            variant: NoSpendVariant::Default,
+        };
         assert_eq!(mode.mode_name(), "no-spend");
         assert_eq!(mode.provider_id(), "immortal-no-spend");
         assert_eq!(mode.offering_id(), "immortal-no-spend-swaps");
@@ -487,6 +581,31 @@ mod tests {
                 "mode":"no_spend",
                 "settlement_claim":"coordination only; no external spend effects"
             })
+        );
+        assert_eq!(mode.offering(), no_spend_offering());
+    }
+
+    #[test]
+    fn alternate_demo_policy_is_distinct_without_claiming_rail_effects() {
+        let mode = NoSpendMode {
+            variant: NoSpendVariant::DemoAlternate,
+        };
+        assert_eq!(mode.mode_name(), "no-spend");
+        assert_eq!(mode.provider_id(), "immortal-no-spend-demo-alternate");
+        assert_eq!(mode.offering_id(), "immortal-no-spend-swaps-demo-alternate");
+        assert_eq!(
+            mode.discovery_metadata(),
+            json!({
+                "name":"Immortal no-spend provider (alternate demo policy)",
+                "mode":"no_spend",
+                "demo_policy":"demo_alternate",
+                "settlement_claim":"coordination only; no external spend effects"
+            })
+        );
+        assert_eq!(mode.variant.quote_lifetime_seconds(), 420);
+        assert_eq!(
+            mode.variant.capacity_bucket_id(),
+            "no-spend-rehearsal-demo-alternate"
         );
         assert_eq!(mode.offering(), no_spend_offering());
     }
@@ -534,7 +653,9 @@ mod tests {
         session
             .ingest_signed(request.verify_signed(event).expect("signed RFQ"))
             .expect("ingest RFQ");
-        let mut mode = NoSpendMode;
+        let mut mode = NoSpendMode {
+            variant: NoSpendVariant::Default,
+        };
 
         assert_eq!(
             mode.dispose_stalled_session(&session, requester.pubkey(), 299),

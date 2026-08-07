@@ -457,7 +457,7 @@ network. Each packet has its own process gate.
 | Issue | Packet | Depends on |
 | --- | --- | --- |
 | [#34](https://github.com/OpenAgentsInc/immortal/issues/34) | **Complete:** ordinary zero-import browser WASM artifact over the production requester dispatcher, pinned ABI/requester contract/source revision, JS/TS adapter, and all-shape live no-spend acceptance with stable restore | #12, #14 |
-| [#35](https://github.com/OpenAgentsInc/immortal/issues/35) | One-command two-provider no-spend demo topology and public offering/quote feed | #34, #32 |
+| [#35](https://github.com/OpenAgentsInc/immortal/issues/35) | **Complete:** one-command one-relay/two-provider no-spend topology, bounded public manifest, distinguishable signed Quote policies, supervised in-flight recovery, and full zero-spend lifecycle process gate | #34, #32 |
 | [#36](https://github.com/OpenAgentsInc/immortal/issues/36) | Loopback funded-regtest demo adapter with explicit unsafe-mode boundary | #34, #35, #25 |
 
 ## M13 — Market extension ledger (post-replacement)

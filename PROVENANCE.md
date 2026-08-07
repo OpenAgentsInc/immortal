@@ -28,6 +28,24 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-06 — Codex 5.6 Sol, two-provider no-spend demo / issue #35
+
+- Added one ownership-checked foreground launcher for a disposable loopback
+  relay/Postgres pair and two independently keyed no-spend provider processes.
+  It atomically emits a bounded public-safe manifest and supervises provider
+  restart without exposing identity material, logs, PIDs, or controls.
+- Added the closed `default`/`demo_alternate` no-spend policy selector. The
+  alternate provider changes only truthful Quote lifetime, completion promise,
+  Offering address, and reservation disclosure; frozen rail commitments,
+  firm/soft semantics, and the zero-external-spend claim remain unchanged.
+- Added a live process gate that discovers both signed public heads, obtains
+  independently attributable private Quotes, restarts provider A after Order,
+  proves provider B remains untouched, and completes both paths through
+  bilateral Contracts, accepted Status, mutual cancellation, and exact
+  zero-spend Close records. Added no dependency, service, database, event kind,
+  relay behavior, custody authority, remote target, workflow, or billed
+  automation.
+
 ### 2026-08-06 — Codex 5.6 Sol, executable browser requester / issue #34
 
 - Added the ordinary `immortal-client-web` zero-import WASM artifact over the

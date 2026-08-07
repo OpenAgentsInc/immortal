@@ -1,7 +1,8 @@
 use std::{
-    fs::File,
+    fs::{self, File},
     io::{BufRead, BufReader, Read},
     net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
+    path::Path,
     process::{Child, Command, Stdio},
     sync::mpsc,
     thread,
@@ -13,9 +14,9 @@ use immortal_client::mkt_swp_client::{
 };
 use immortal_core::{
     domain::{
-        Event, MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_QUOTE_KIND, MKT_STATUS_KIND,
-        MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND, MktProfileSupport,
-        Tag,
+        Event, MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_OFFERING_KIND, MKT_PROVIDER_PROFILE_KIND,
+        MKT_QUOTE_KIND, MKT_STATUS_KIND, MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION,
+        MKT_SWP_SWAP_CONTRACT_KIND, MktProfileSupport, Tag,
     },
     market::{MarketSigner, WrapMaterial, unwrap_mkt_record, wrap_mkt_record},
 };
@@ -142,6 +143,12 @@ fn separate_no_spend_daemon_recovers_and_completes_all_swap_shapes() {
     run_live_smoke().expect("no-spend live smoke failed");
 }
 
+#[test]
+#[ignore = "requires scripts/dev-no-spend-demo.sh; run scripts/test-dev-no-spend-demo.sh"]
+fn two_provider_demo_manifest_quotes_restart_and_close_are_live() {
+    run_two_provider_demo_smoke().expect("two-provider demo smoke failed");
+}
+
 fn run_live_smoke() -> Result<(), String> {
     let relay_url = std::env::var("IMMORTAL_PROVIDER_LIVE_RELAY_URL")
         .unwrap_or_else(|_| "ws://127.0.0.1:18080".to_owned());
@@ -164,6 +171,263 @@ fn run_live_smoke() -> Result<(), String> {
     }
     provider.stop()?;
     Ok(())
+}
+
+#[derive(Debug)]
+struct FlowReceipt {
+    requester_pubkey: String,
+    provider_pubkey: String,
+    quote_id: String,
+    quote_lifetime_seconds: u64,
+    desired_completion_time: u64,
+    output_amount: String,
+    maximum_total_fee: String,
+    close_id: String,
+}
+
+fn run_two_provider_demo_smoke() -> Result<(), String> {
+    let manifest_path = std::env::var("IMMORTAL_DEMO_MANIFEST")
+        .map_err(|_| "IMMORTAL_DEMO_MANIFEST is required".to_owned())?;
+    let control_dir = std::env::var("IMMORTAL_DEMO_CONTROL_DIR")
+        .map_err(|_| "IMMORTAL_DEMO_CONTROL_DIR is required".to_owned())?;
+    let manifest_bytes = fs::read(&manifest_path)
+        .map_err(|error| format!("could not read demo manifest: {error}"))?;
+    if manifest_bytes.len() > 32_768 {
+        return Err("demo manifest exceeds its public bound".to_owned());
+    }
+    let raw_manifest = String::from_utf8(manifest_bytes)
+        .map_err(|error| format!("demo manifest is not UTF-8: {error}"))?;
+    for forbidden in [
+        "identity_secret",
+        "provider-a.secret",
+        "provider-b.secret",
+        "private_key",
+        "preimage",
+        "macaroon",
+    ] {
+        if raw_manifest.to_ascii_lowercase().contains(forbidden) {
+            return Err(format!(
+                "public demo manifest contains forbidden {forbidden}"
+            ));
+        }
+    }
+    let manifest: Value = serde_json::from_str(&raw_manifest)
+        .map_err(|error| format!("demo manifest is invalid JSON: {error}"))?;
+    if manifest.get("schema").and_then(Value::as_str)
+        != Some("openagents.immortal.no-spend-demo-manifest.v1")
+        || manifest.get("mode").and_then(Value::as_str) != Some("no_spend")
+        || manifest
+            .pointer("/lifecycle/external_spend_effects")
+            .and_then(Value::as_u64)
+            != Some(0)
+    {
+        return Err("demo manifest contract is invalid".to_owned());
+    }
+    let relay_url = manifest
+        .pointer("/relay/websocket_url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "demo manifest omits relay WebSocket URL".to_owned())?;
+    loopback_addresses(relay_url)?;
+    let provider_a = demo_provider(&manifest, "provider-a")?;
+    let provider_b = demo_provider(&manifest, "provider-b")?;
+    if provider_a.0 == provider_b.0 || provider_a.1 == provider_b.1 {
+        return Err("demo providers do not have distinct identities and Offerings".to_owned());
+    }
+    verify_demo_discovery(relay_url, &[&provider_a, &provider_b])?;
+
+    let manifest_path_for_restart = manifest_path.clone();
+    let provider_a_pubkey = provider_a.0.clone();
+    let provider_b_pubkey = provider_b.0.clone();
+    let mut restart = move || {
+        fs::write(
+            Path::new(&control_dir).join("restart-provider-a"),
+            b"restart\n",
+        )
+        .map_err(|error| format!("could not request provider-a restart: {error}"))?;
+        for _ in 0..300 {
+            let current: Value = serde_json::from_slice(
+                &fs::read(&manifest_path_for_restart)
+                    .map_err(|error| format!("could not reread demo manifest: {error}"))?,
+            )
+            .map_err(|error| format!("updated demo manifest is invalid: {error}"))?;
+            let current_a = demo_provider(&current, "provider-a")?;
+            let current_b = demo_provider(&current, "provider-b")?;
+            let a_restarts = demo_restart_count(&current, "provider-a")?;
+            let b_restarts = demo_restart_count(&current, "provider-b")?;
+            let a_ready = demo_health_state(&current, "provider-a")? == "ready";
+            let b_ready = demo_health_state(&current, "provider-b")? == "ready";
+            if a_restarts >= 1 && a_ready && b_ready {
+                if current_a.0 != provider_a_pubkey || current_b.0 != provider_b_pubkey {
+                    return Err("provider identity changed across supervised restart".to_owned());
+                }
+                if b_restarts != 0 {
+                    return Err("provider-b restarted while provider-a recovered".to_owned());
+                }
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        Err("provider-a did not recover its in-flight session in time".to_owned())
+    };
+    let a = drive_flow_with_restart(
+        relay_url,
+        &provider_a.0,
+        &provider_a.1,
+        31,
+        "submarine",
+        "demo-provider-a",
+        Some(&mut restart),
+    )?;
+    let b = drive_flow_with_restart(
+        relay_url,
+        &provider_b.0,
+        &provider_b.1,
+        31,
+        "submarine",
+        "demo-provider-b",
+        None,
+    )?;
+    if a.requester_pubkey != b.requester_pubkey
+        || a.provider_pubkey == b.provider_pubkey
+        || a.quote_id == b.quote_id
+        || a.quote_lifetime_seconds == b.quote_lifetime_seconds
+        || a.desired_completion_time == b.desired_completion_time
+    {
+        return Err(
+            "demo Quotes are not independently attributable and policy-distinct".to_owned(),
+        );
+    }
+    println!(
+        "{}",
+        json!({
+            "schema":"openagents.immortal.no-spend-demo-smoke.v1",
+            "relay_url":relay_url,
+            "requester_pubkey":a.requester_pubkey,
+            "providers":[
+                {
+                    "pubkey":a.provider_pubkey,
+                    "quote_id":a.quote_id,
+                    "quote_lifetime_seconds":a.quote_lifetime_seconds,
+                    "desired_completion_time":a.desired_completion_time,
+                    "output_amount":a.output_amount,
+                    "maximum_total_fee":a.maximum_total_fee,
+                    "close_id":a.close_id,
+                    "restart_count":demo_restart_count(&serde_json::from_slice(&fs::read(&manifest_path).map_err(|error| format!("could not read final demo manifest: {error}"))?).map_err(|error| format!("final demo manifest is invalid: {error}"))?, "provider-a")?
+                },
+                {
+                    "pubkey":b.provider_pubkey,
+                    "quote_id":b.quote_id,
+                    "quote_lifetime_seconds":b.quote_lifetime_seconds,
+                    "desired_completion_time":b.desired_completion_time,
+                    "output_amount":b.output_amount,
+                    "maximum_total_fee":b.maximum_total_fee,
+                    "close_id":b.close_id,
+                    "restart_count":0
+                }
+            ],
+            "external_spend_effects":0
+        })
+    );
+    Ok(())
+}
+
+fn demo_provider(manifest: &Value, role: &str) -> Result<(String, String), String> {
+    let provider = manifest
+        .get("providers")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|provider| provider.get("role").and_then(Value::as_str) == Some(role))
+        })
+        .ok_or_else(|| format!("demo manifest omits {role}"))?;
+    let pubkey = provider
+        .get("pubkey")
+        .and_then(Value::as_str)
+        .filter(|value| value.len() == 64 && value.bytes().all(is_lower_hex))
+        .ok_or_else(|| format!("demo manifest has an invalid {role} public key"))?;
+    let offering = provider
+        .get("offering_coordinate")
+        .and_then(Value::as_str)
+        .filter(|value| value.starts_with(&format!("39601:{pubkey}:")))
+        .ok_or_else(|| format!("demo manifest has an invalid {role} Offering"))?;
+    Ok((pubkey.to_owned(), offering.to_owned()))
+}
+
+fn demo_restart_count(manifest: &Value, role: &str) -> Result<u64, String> {
+    demo_provider_value(manifest, role, "/health/restart_count")?
+        .as_u64()
+        .ok_or_else(|| format!("demo manifest has an invalid {role} restart count"))
+}
+
+fn demo_health_state<'a>(manifest: &'a Value, role: &str) -> Result<&'a str, String> {
+    demo_provider_value(manifest, role, "/health/state")?
+        .as_str()
+        .ok_or_else(|| format!("demo manifest has an invalid {role} health state"))
+}
+
+fn demo_provider_value<'a>(
+    manifest: &'a Value,
+    role: &str,
+    pointer: &str,
+) -> Result<&'a Value, String> {
+    manifest
+        .get("providers")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|provider| provider.get("role").and_then(Value::as_str) == Some(role))
+        })
+        .and_then(|provider| provider.pointer(pointer))
+        .ok_or_else(|| format!("demo manifest omits {role}{pointer}"))
+}
+
+fn verify_demo_discovery(relay_url: &str, providers: &[&(String, String)]) -> Result<(), String> {
+    let mut relay = connect(relay_url)?;
+    send_json(
+        &mut relay.websocket,
+        json!(["REQ", "demo-discovery", {"kinds":[MKT_PROVIDER_PROFILE_KIND,MKT_OFFERING_KIND],"limit":16}]),
+    )?;
+    let mut events = Vec::new();
+    loop {
+        let message = read_json(&mut relay.websocket)?;
+        if message == json!(["EOSE", "demo-discovery"]) {
+            break;
+        }
+        if let Some(value) = message
+            .as_array()
+            .filter(|fields| fields.first().and_then(Value::as_str) == Some("EVENT"))
+            .and_then(|fields| fields.get(2))
+        {
+            events.push(
+                serde_json::from_value::<Event>(value.clone())
+                    .map_err(|error| format!("demo discovery returned a non-event: {error}"))?,
+            );
+        }
+    }
+    for (pubkey, offering) in providers {
+        let distinct = offering
+            .rsplit_once(':')
+            .map(|(_, distinct)| distinct)
+            .ok_or_else(|| "demo Offering coordinate is invalid".to_owned())?;
+        if !events
+            .iter()
+            .any(|event| event.kind == MKT_PROVIDER_PROFILE_KIND && event.pubkey == *pubkey)
+            || !events.iter().any(|event| {
+                event.kind == MKT_OFFERING_KIND
+                    && event.pubkey == *pubkey
+                    && tag_value(event, "d") == Some(distinct)
+            })
+        {
+            return Err(format!("relay discovery omits signed heads for {pubkey}"));
+        }
+    }
+    Ok(())
+}
+
+fn is_lower_hex(byte: u8) -> bool {
+    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
 }
 
 fn publish_incompatible_rfq(relay_url: &str, provider_pubkey: &str) -> Result<(), String> {
@@ -204,13 +468,55 @@ fn drive_flow(
     restart_after_order: bool,
     provider: &mut ProviderProcess,
 ) -> Result<(), String> {
+    let offering = format!("39601:{provider_pubkey}:{OFFERING_ID}");
+    let session_label = format!("live-no-spend-{swap_type}");
+    if restart_after_order {
+        let mut restart = || {
+            provider.stop()?;
+            *provider = ProviderProcess::start(relay_url)?;
+            Ok(())
+        };
+        drive_flow_with_restart(
+            relay_url,
+            provider_pubkey,
+            &offering,
+            requester_secret_byte,
+            swap_type,
+            &session_label,
+            Some(&mut restart),
+        )?;
+    } else {
+        drive_flow_with_restart(
+            relay_url,
+            provider_pubkey,
+            &offering,
+            requester_secret_byte,
+            swap_type,
+            &session_label,
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+fn drive_flow_with_restart(
+    relay_url: &str,
+    provider_pubkey: &str,
+    offering_address: &str,
+    requester_secret_byte: u8,
+    swap_type: &str,
+    session_label: &str,
+    mut restart_after_order: Option<&mut dyn FnMut() -> Result<(), String>>,
+) -> Result<FlowReceipt, String> {
     let requester = MarketSigner::from_secret_bytes([requester_secret_byte; 32])?;
-    let session_id = digest(&format!("live-no-spend-session:{swap_type}"));
+    let session_id = digest(&format!(
+        "live-no-spend-session:{session_label}:{swap_type}"
+    ));
     let config = SwapClientConfig {
         session_id: session_id.clone(),
         requester_pubkey: requester.pubkey().to_owned(),
         provider_pubkey: provider_pubkey.to_owned(),
-        offering_address: format!("39601:{provider_pubkey}:{OFFERING_ID}"),
+        offering_address: offering_address.to_owned(),
         provider_route: None,
     };
     let factory = SwapRecordFactory::new(config.clone())
@@ -232,7 +538,7 @@ fn drive_flow(
                 "config": config,
                 "created_at": now,
                 "distinct": digest(&format!("rfq:{session_id}")),
-                "expiration": now.saturating_add(300),
+                "expiration": now.saturating_add(900),
                 "mkt_swp": fixture_profile(swap_type, 39_604, None)?
             }),
         )?,
@@ -249,6 +555,31 @@ fn drive_flow(
     verifier
         .ingest_signed(quote.clone())
         .map_err(|error| format!("live verifier rejected Quote: {error}"))?;
+    let quote_expiration = tag_value(&quote, "expiration")
+        .ok_or_else(|| "live Quote omitted expiration".to_owned())?
+        .parse::<u64>()
+        .map_err(|_| "live Quote expiration is invalid".to_owned())?;
+    let quote_profile = record_profile(&quote)?;
+    let quote_terms = quote_profile
+        .get("terms")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "live Quote omitted terms".to_owned())?;
+    let quote_lifetime_seconds = quote_expiration.saturating_sub(quote.created_at);
+    let desired_completion_time = quote_terms
+        .get("desired_completion_time")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "live Quote omitted desired completion time".to_owned())?;
+    let output_amount = quote_terms
+        .get("output_amount")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "live Quote omitted output amount".to_owned())?
+        .to_owned();
+    let maximum_total_fee = quote_terms
+        .get("maximum_total_fee")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "live Quote omitted maximum total fee".to_owned())?
+        .to_owned();
+    let quote_id = quote.id.clone();
     let order = sign_request(
         browser_signing_request(
             "requester_order",
@@ -269,9 +600,8 @@ fn drive_flow(
         .map_err(|error| format!("live verifier rejected Order: {error}"))?;
     publish_private(&mut publisher, &order, &requester, provider_pubkey)?;
 
-    if restart_after_order {
-        provider.stop()?;
-        *provider = ProviderProcess::start(relay_url)?;
+    if let Some(restart) = restart_after_order.as_mut() {
+        restart()?;
     }
 
     let requester_status = sign_request(
@@ -458,7 +788,16 @@ fn drive_flow(
     {
         return Err("browser session replay duplicated a signed record or request".to_owned());
     }
-    Ok(())
+    Ok(FlowReceipt {
+        requester_pubkey: requester.pubkey().to_owned(),
+        provider_pubkey: provider_pubkey.to_owned(),
+        quote_id,
+        quote_lifetime_seconds,
+        desired_completion_time,
+        output_amount,
+        maximum_total_fee,
+        close_id: close.id,
+    })
 }
 
 fn browser_signing_request(operation: &str, input: Value) -> Result<MktSigningRequest, String> {

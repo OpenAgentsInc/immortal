@@ -116,6 +116,62 @@ submarine, reverse, and chain sessions through bilateral contracts, mutual
 cancellation, and provider-authored zero-loss Close records. It performs no
 funding, payment, wallet, node, or broadcast action.
 
+## Start the two-provider Bazaar demo
+
+From a clean Immortal checkout, one foreground command starts one disposable
+loopback relay/Postgres pair and two independently keyed no-spend providers:
+
+```sh
+./scripts/dev-no-spend-demo.sh
+```
+
+The command prints the absolute path to
+`target/immortal-no-spend-demo-state/manifest.json`. The manifest is replaced
+atomically as health changes and contains only the relay URL and contract
+identity, provider public keys and Offering coordinates, public demo policy,
+and process health. Provider identity secrets, logs, PID files, and ownership
+controls remain mode-0600 files outside that document. Ctrl-C terminates only
+the processes created by this launcher and removes their disposable state.
+
+Provider A uses the normal no-spend policy. Provider B uses the bounded
+`demo_alternate` policy: the same frozen no-spend rail commitments, a
+420-second rather than 600-second Quote lifetime, a 120-second shorter
+completion promise, and independently attributable reservation disclosure.
+Both policies truthfully advertise coordination only and no external spend
+effects. They remain firm Quotes with soft provider-signed reservations.
+
+Useful commands from another terminal are:
+
+```sh
+./scripts/dev-no-spend-demo.sh status
+./scripts/dev-no-spend-demo.sh restart provider-a
+./scripts/dev-no-spend-demo.sh down
+```
+
+Set `IMMORTAL_DEMO_RELAY_PORT` to select another loopback port and
+`IMMORTAL_DEMO_STATE_DIR` to select an unused owned state directory whose
+basename starts with `immortal-no-spend-demo-`. Non-loopback relay targets are
+not accepted. The launcher refuses a pre-existing state directory rather than
+claiming or deleting it.
+
+For Bazaar, keep the launcher running, copy the absolute manifest path it
+prints, and start Bazaar from the Bazaar repository root:
+
+```sh
+IMMORTAL_DEMO_MANIFEST='/absolute/path/printed/by/the/launcher/manifest.json' pnpm dev
+```
+
+The Bazaar integration packet consumes this contract; the browser does not
+scrape launcher logs. Prove the entire local topology, including two signed
+discovery heads, one requester comparison fanned out as two provider-bound
+private RFQ/Quote paths, an in-flight provider-A restart,
+bilateral Contracts, accepted Status, mutual cancellation, and exact
+zero-spend Close records with:
+
+```sh
+./scripts/test-dev-no-spend-demo.sh
+```
+
 ## Run the disposable Liquid rail
 
 The Liquid conformance gate owns a temporary elementsd regtest node, wallet,

@@ -263,6 +263,10 @@ browser dispatcher and proves stable persist/reload with exact signed-record
 replay. `scripts/test-client-browser-abi.sh` compiles and invokes
 the actual `wasm32-unknown-unknown` artifact from Node. See the
 [`local development runbook`](docs/deployment/runbook-local-dev.md).
+For the Bazaar demo, `scripts/dev-no-spend-demo.sh` supervises one disposable
+loopback relay plus two independently keyed no-spend providers and writes a
+bounded public-safe manifest for the browser host. Its process proof is
+`scripts/test-dev-no-spend-demo.sh`.
 `scripts/test-provider-funded.sh` is the separate manual regtest gate for the
 normal funded daemon: Bitcoin Core, separate product databases, a provider
 using CLN by default or LND with

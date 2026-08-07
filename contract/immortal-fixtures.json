@@ -96,6 +96,12 @@
       "scope": "client"
     },
     {
+      "path": "tests/fixtures/lab/no-spend-demo-v1.json",
+      "sha256": "57e8577e77d128f3978cc9c65c44bb6c2da8a0f8e551d01685ad7842ebe4fe66",
+      "bytes": 1917,
+      "scope": "client"
+    },
+    {
       "path": "tests/fixtures/lab/provisioning-v1.json",
       "sha256": "0a8d29b2bbb5b28983991810a28e9a334076e056a721c4c0bbedc78aa0599e08",
       "bytes": 4040,

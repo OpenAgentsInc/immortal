@@ -36,6 +36,9 @@ const CLN_ADVERSARIAL_HOLD_FIXTURE: &[u8] =
 const DIRECT_RECOVERY_FIXTURE_PATH: &str = "tests/fixtures/provider/direct-recovery-v1.json";
 const DIRECT_RECOVERY_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/direct-recovery-v1.json");
+const NO_SPEND_DEMO_FIXTURE_PATH: &str = "tests/fixtures/lab/no-spend-demo-v1.json";
+const NO_SPEND_DEMO_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/lab/no-spend-demo-v1.json");
 const MIGRATION_FIXTURE_PATH: &str = "tests/fixtures/nipmkt/swap-network-migration-v1.json";
 const MIGRATION_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/nipmkt/swap-network-migration-v1.json");
@@ -544,6 +547,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 fixture_entry(ADVERSARIAL_LAB_FIXTURE_PATH, ADVERSARIAL_LAB_FIXTURE),
                 fixture_entry(CLN_ADVERSARIAL_HOLD_FIXTURE_PATH, CLN_ADVERSARIAL_HOLD_FIXTURE),
                 fixture_entry(DIRECT_RECOVERY_FIXTURE_PATH, DIRECT_RECOVERY_FIXTURE),
+                fixture_entry(NO_SPEND_DEMO_FIXTURE_PATH, NO_SPEND_DEMO_FIXTURE),
                 fixture_entry(MIGRATION_FIXTURE_PATH, MIGRATION_FIXTURE),
                 fixture_entry(LIQUID_FIXTURE_PATH, LIQUID_FIXTURE),
                 fixture_entry(LIQUID_RUNTIME_FIXTURE_PATH, LIQUID_RUNTIME_FIXTURE),
@@ -1146,6 +1150,11 @@ fn environment_contract() -> Value {
             64,
             true,
             Some("lowercase_hex")
+        ),
+        optional_env_choice(
+            "IMMORTAL_PROVIDER_NO_SPEND_VARIANT",
+            &["no_spend"],
+            &["default", "demo_alternate"]
         ),
         env_choice(
             "IMMORTAL_PROVIDER_BITCOIN_NETWORK",
