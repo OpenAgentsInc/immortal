@@ -1489,7 +1489,7 @@ fn run_dynamic_submarine_topology(
         require_dynamic_destination_commitment(&quoted, &validated.destination_commitment_sha256)?;
         candidates.push(funded_topology_candidate(index, quoted)?);
     }
-    let (selected, unselected, ranked) = rank_dynamic_candidates(candidates, output_amount)?;
+    let (selected, unselected, ranked) = rank_dynamic_candidates(candidates)?;
     eprintln!("immortal-lab: dynamic submarine received two comparable Quotes");
     let unselected_index = unselected.environment_index;
     let unselected_input = NegotiationInput {
@@ -1564,8 +1564,6 @@ fn run_dynamic_reverse_topology(
     amount: u64,
     supplied: Option<&dynamic::ValidatedDynamicRequest>,
 ) -> Result<Value, String> {
-    let expected = dynamic_quote(SwapType::Reverse, amount)?;
-    let output_amount = canonical_u64(&expected.output_amount)?;
     let generated;
     let validated = if let Some(validated) = supplied {
         validated
@@ -1631,7 +1629,7 @@ fn run_dynamic_reverse_topology(
         require_dynamic_destination_commitment(&quoted, &validated.destination_commitment_sha256)?;
         candidates.push(funded_topology_candidate(index, quoted)?);
     }
-    let (selected, unselected, ranked) = rank_dynamic_candidates(candidates, output_amount)?;
+    let (selected, unselected, ranked) = rank_dynamic_candidates(candidates)?;
     eprintln!("immortal-lab: dynamic reverse received two comparable Quotes");
     let unselected_index = unselected.environment_index;
     let unselected_input = NegotiationInput {
@@ -1654,6 +1652,7 @@ fn run_dynamic_reverse_topology(
     eprintln!("immortal-lab: dynamic reverse released the unselected reservation");
 
     let selected_index = selected.environment_index;
+    let selected_output_amount = selected.output_amount;
     let selected_provider = selected.quote.provider_pubkey.clone();
     let selected_quote = selected.quote.quote_id.clone();
     let selected_input = NegotiationInput {
@@ -1722,7 +1721,7 @@ fn run_dynamic_reverse_topology(
         "selection":{"provider_pubkey":selected_provider,"quote_id":selected_quote},
         "unselected":cancellation,
         "terminal":terminal,
-        "destination_output":{"amount_sat":destination_amount_sat,"contract_amount_sat":output_amount,"commitment_sha256":validated.destination_commitment_sha256},
+        "destination_output":{"amount_sat":destination_amount_sat,"contract_amount_sat":selected_output_amount,"commitment_sha256":validated.destination_commitment_sha256},
         "terminal_authority":"requester_admitted_bitcoin_and_lightning_evidence",
     }))
 }
@@ -1750,14 +1749,14 @@ fn dynamic_quote(
     derive_quote_with_worst_case_vbytes(
         &PricingConfig {
             spread_bps: 100,
-            fallback_feerate_sat_per_vb: Some(2),
+            fallback_feerate_sat_per_vb: Some(20),
             min_swap_sat: dynamic::MINIMUM_AMOUNT_SAT,
             max_swap_sat: dynamic::MAXIMUM_AMOUNT_SAT,
             quote_expiry_seconds: 600,
             reservation_tier: ReservationTier::Hard,
             lightning_routing_fee_ppm: 2_900,
         },
-        &FeerateObservation::Fallback { sat_per_vb: 2 },
+        &FeerateObservation::Fallback { sat_per_vb: 20 },
         &CapacityBounds {
             capacity_bucket_id: "dynamic-public-regtest".to_owned(),
             available_capacity: dynamic::MAXIMUM_AMOUNT_SAT.to_string(),
@@ -1775,17 +1774,20 @@ fn dynamic_quote(
 
 fn rank_dynamic_candidates(
     mut candidates: Vec<FundedTopologyCandidate>,
-    expected_output: u64,
 ) -> Result<(FundedTopologyCandidate, FundedTopologyCandidate, Vec<Value>), String> {
     if candidates.len() != 2 {
         return Err("dynamic request did not receive exactly two Quotes".to_owned());
     }
     require_comparable_funded_quotes(&candidates[0].quote, &candidates[1].quote)?;
-    if candidates
-        .iter()
-        .any(|candidate| candidate.output_amount != expected_output)
-    {
-        return Err("dynamic provider Quote differs from the locally derived output".to_owned());
+    for candidate in &candidates {
+        let input = canonical_u64(&candidate.quote.input_amount)?;
+        if candidate
+            .output_amount
+            .checked_add(candidate.maximum_total_fee)
+            != Some(input)
+        {
+            return Err("dynamic provider Quote does not conserve atomic units".to_owned());
+        }
     }
     candidates.sort_by(compare_funded_topology_candidate);
     let ranked = candidates
@@ -14890,6 +14892,21 @@ mod tests {
         assert_ne!(first, second);
         assert_ne!(first[0], first[1]);
         assert!(first.iter().all(|name| name.contains(&"11".repeat(32))));
+    }
+
+    #[test]
+    fn public_demo_quote_uses_the_deployed_feerate_policy() {
+        for swap_type in [SwapType::Submarine, SwapType::Reverse] {
+            let quote = dynamic_quote(swap_type, 100_000).expect("demo quote should derive");
+            let input = canonical_u64(&quote.input_amount).expect("input should be canonical");
+            let output = canonical_u64(&quote.output_amount).expect("output should be canonical");
+            let fee =
+                canonical_u64(&quote.maximum_total_fee).expect("maximum fee should be canonical");
+            let miner =
+                canonical_u64(&quote.miner_fee_budget).expect("miner fee should be canonical");
+            assert_eq!(input, output + fee);
+            assert_eq!(miner % 20, 0);
+        }
     }
 
     #[test]

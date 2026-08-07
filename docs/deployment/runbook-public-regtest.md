@@ -112,8 +112,15 @@ fallbacks; the loop applies the same bounded policies.
 Durable services use `restart: unless-stopped`. After a Docker or host restart,
 run `up` again; bootstrap operations are idempotent and readiness is reproved.
 Bootstrap maintains eight independently reservable confirmed Bitcoin outputs
-per provider, leaving headroom above the five-session concurrency gate. It
-funds only missing outputs and mines them before readiness is published.
+per provider. Both public-demo providers use the same disclosed 100-bps spread
+and 20-sat/vB fallback so an amount-bound submarine invoice can receive two
+economically comparable signed Quotes. Provider independence remains real;
+the shared price policy is a demo constraint, not a production market rule.
+`up` reconciles these two non-secret settings on persistent state and replaces
+both providers across a Nostr timestamp boundary only when they drift. The
+eight outputs per provider leave headroom above the five-session concurrency
+gate; bootstrap funds only missing outputs and mines them before readiness is
+published.
 `up` reapplies this idempotent bootstrap even when the persistent topology is
 already healthy, so increasing a capacity target takes effect without reset.
 To replace one service and wait for the complete topology to recover:

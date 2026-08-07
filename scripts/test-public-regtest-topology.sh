@@ -93,12 +93,19 @@ if owner.get("relay_urls") != [
 wallet_environment = (root / "wallet-driver.env").read_text(encoding="utf-8")
 if "IMMORTAL_PROVIDER_FUNDED_TOPOLOGY_RELAY_AUTH_URLS=wss://relay-a.regtest.example,wss://relay-b.regtest.example\n" not in wallet_environment:
     raise SystemExit("wallet driver does not authenticate against the public relay authorities")
+for role in ("a", "b"):
+    provider_environment = (root / f"provider-{role}.env").read_text(encoding="utf-8")
+    if "IMMORTAL_PROVIDER_SPREAD_BPS=100\n" not in provider_environment:
+        raise SystemExit(f"provider {role} does not use the public demo spread")
+    if "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB=20\n" not in provider_environment:
+        raise SystemExit(f"provider {role} does not use the public demo feerate")
 PY
 
 grep -Fq 'provider_utxo_target=8' "${runner}"
 grep -Fq 'sendtoaddress "${address}" 0.1' "${runner}"
-grep -A3 'if test -f "${manifest}"' "${runner}" | grep -Fq 'bootstrap'
+grep -A12 'if test -f "${manifest}"' "${runner}" | grep -Fq 'bootstrap'
 grep -A7 'provider-a|provider-b)' "${runner}" | grep -Fq 'sleep 1'
+grep -Fq 'reconcile_public_provider_pricing' "${runner}"
 
 rendered="$(
   IMMORTAL_PUBLIC_REGTEST_STATE_DIR="${state_dir}" \

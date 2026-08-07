@@ -215,7 +215,7 @@ IMMORTAL_PROVIDER_CHAIN_STALE_SECONDS=30
 IMMORTAL_PROVIDER_MINIMUM_CONFIRMATIONS=1
 IMMORTAL_PROVIDER_REORG_SAFETY_BLOCKS=2
 IMMORTAL_PROVIDER_SPREAD_BPS=${spread}
-IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB=2
+IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB=20
 IMMORTAL_PROVIDER_QUOTE_MIN_SAT=10000
 IMMORTAL_PROVIDER_QUOTE_MAX_SAT=1000000
 IMMORTAL_PROVIDER_QUOTE_EXPIRY_SECONDS=300
@@ -223,6 +223,38 @@ IMMORTAL_PROVIDER_RESERVATION_TIER=hard
 IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM=2900
 EOF
   chmod 0600 "${path}"
+}
+
+reconcile_public_provider_pricing() {
+  python3 - "${state_dir}/provider-a.env" "${state_dir}/provider-b.env" <<'PY'
+import os, pathlib, sys
+changed = False
+for name in sys.argv[1:]:
+    path = pathlib.Path(name)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    file_changed = False
+    values = {
+        "IMMORTAL_PROVIDER_SPREAD_BPS": "100",
+        "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB": "20",
+    }
+    rewritten = []
+    for line in lines:
+        key = line.partition("=")[0]
+        replacement = f"{key}={values[key]}" if key in values else line
+        file_changed |= replacement != line
+        rewritten.append(replacement)
+    if file_changed:
+        changed = True
+        temporary = path.with_name(path.name + ".pricing-next")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write("\n".join(rewritten) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+raise SystemExit(0 if changed else 1)
+PY
 }
 
 initialize() {
@@ -348,10 +380,10 @@ IMMORTAL_MKT_SWP_COORDINATION_ENABLED=true
 EOF
   write_provider_env "${state_dir}/provider-a.env" a "${provider_a_password}" 18080 \
     "${provider_a_identity}" "${bitcoin_a_user}" "${bitcoin_a_password}" \
-    /rail/cln-provider-a/lightning-rpc /run/immortal-private/provider-a-wallet-seed 9091 90
+    /rail/cln-provider-a/lightning-rpc /run/immortal-private/provider-a-wallet-seed 9091 100
   write_provider_env "${state_dir}/provider-b.env" b "${provider_b_password}" 18081 \
     "${provider_b_identity}" "${bitcoin_b_user}" "${bitcoin_b_password}" \
-    /rail/cln-provider-b/lightning-rpc /run/immortal-private/provider-b-wallet-seed 9092 120
+    /rail/cln-provider-b/lightning-rpc /run/immortal-private/provider-b-wallet-seed 9092 100
   cat >"${state_dir}/esplora.env" <<EOF
 IMMORTAL_ESPLORA_BITCOIND_RPC_USER=${bitcoin_a_user}
 IMMORTAL_ESPLORA_BITCOIND_RPC_PASSWORD=${bitcoin_a_password}
@@ -659,10 +691,17 @@ start_topology() {
   initialize
   require_owned_state
   require_commands docker jq python3
+  local pricing_changed=false
+  if reconcile_public_provider_pricing; then pricing_changed=true; fi
   docker info >/dev/null 2>&1 || fail "Docker is unavailable"
   docker compose version >/dev/null 2>&1 || fail "Docker Compose is unavailable"
   compose config --quiet
   if test -f "${manifest}" && test -n "$(compose ps --services --status running)"; then
+    if test "${pricing_changed}" = true; then
+      compose stop provider-a provider-b
+      sleep 1
+      compose up --detach --force-recreate provider-a provider-b
+    fi
     bootstrap
     wait_for "existing persistent topology" readiness_probe
     check_ready
