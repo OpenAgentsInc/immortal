@@ -90,6 +90,9 @@ if owner.get("relay_urls") != [
     "wss://relay-a.regtest.example", "wss://relay-b.regtest.example"
 ]:
     raise SystemExit("public relay pins changed")
+wallet_environment = (root / "wallet-driver.env").read_text(encoding="utf-8")
+if "IMMORTAL_PROVIDER_FUNDED_TOPOLOGY_RELAY_AUTH_URLS=wss://relay-a.regtest.example,wss://relay-b.regtest.example\n" not in wallet_environment:
+    raise SystemExit("wallet driver does not authenticate against the public relay authorities")
 PY
 
 rendered="$(

@@ -91,7 +91,10 @@ The loop notices one fixed `private-dynamic-request.json` at a time and runs
 with a session-specific state directory. The gateway cannot launch this
 worker, read its wallet/rail mounts, or select a destination. A terminal
 worker projection deletes the private address/invoice handoff while retaining
-only its signed commitment and public-safe two-rail evidence.
+only its signed commitment and public-safe two-rail evidence. The wallet driver
+connects through the two private loopback relay sockets but signs NIP-42
+against their exact public `wss://` authorities from the owned topology state;
+connection and authentication URL order must remain identical.
 
 Probe `/healthz` for liveness and `/readyz` for admission. Alert when
 readiness is false/stale, free disk approaches 1 GiB, either Lightning side

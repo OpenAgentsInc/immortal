@@ -72,6 +72,50 @@ pub fn parse_topology_relay_urls(value: &str) -> Result<Vec<String>, String> {
     Ok(relay_urls)
 }
 
+pub fn parse_topology_relay_auth_urls(value: &str) -> Result<Vec<String>, String> {
+    let relay_urls = value.split(',').map(str::to_owned).collect::<Vec<_>>();
+    if relay_urls.len() != TOPOLOGY_RELAY_COUNT {
+        return Err(format!(
+            "the topology gate requires exactly {TOPOLOGY_RELAY_COUNT} comma-separated relay authentication URLs"
+        ));
+    }
+    let mut unique = BTreeSet::new();
+    for relay_url in &relay_urls {
+        if !valid_relay_auth_url(relay_url) || !unique.insert(relay_url.clone()) {
+            return Err(
+                "topology relay authentication URLs must be distinct exact ws:// or wss:// authorities"
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(relay_urls)
+}
+
+fn valid_relay_auth_url(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > MAX_RELAY_URL_BYTES
+        || value.bytes().any(|byte| byte.is_ascii_control())
+        || value.contains('@')
+        || value.contains('?')
+        || value.contains('#')
+    {
+        return false;
+    }
+    value
+        .strip_prefix("ws://")
+        .or_else(|| value.strip_prefix("wss://"))
+        .map(|remainder| remainder.strip_suffix('/').unwrap_or(remainder))
+        .is_some_and(|authority| {
+            !authority.is_empty()
+                && !authority.starts_with(':')
+                && !authority.ends_with(':')
+                && !authority.contains('/')
+                && authority.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':' | b'[' | b']')
+                })
+        })
+}
+
 impl RelayClient {
     pub fn connect(relay_url: &str) -> Result<Self, String> {
         let addresses = loopback_addresses(relay_url)?;
@@ -331,5 +375,25 @@ mod tests {
         assert!(parse_topology_relay_urls("ws://127.0.0.1:18080").is_err());
         assert!(parse_topology_relay_urls("ws://127.0.0.1:18080,ws://127.0.0.1:18080").is_err());
         assert!(parse_topology_relay_urls("ws://127.0.0.1:18080,wss://relay.example.com").is_err());
+    }
+
+    #[test]
+    fn topology_authentication_relays_are_exact_distinct_authorities() {
+        assert_eq!(
+            parse_topology_relay_auth_urls("wss://relay-a.example.com,wss://relay-b.example.com")
+                .expect("two public authentication authorities should be accepted"),
+            ["wss://relay-a.example.com", "wss://relay-b.example.com"]
+        );
+        assert!(parse_topology_relay_auth_urls("wss://relay-a.example.com").is_err());
+        assert!(
+            parse_topology_relay_auth_urls("wss://relay-a.example.com,wss://relay-a.example.com")
+                .is_err()
+        );
+        assert!(
+            parse_topology_relay_auth_urls(
+                "wss://relay-a.example.com/path,wss://relay-b.example.com"
+            )
+            .is_err()
+        );
     }
 }

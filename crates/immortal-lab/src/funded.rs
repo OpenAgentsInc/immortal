@@ -13576,11 +13576,12 @@ fn authenticate(
     relay_url: &str,
     now: u64,
 ) -> Result<(), String> {
+    let authentication_url = funded_relay_authentication_url(relay_url)?;
     let event = signer.sign(
         now,
         22_242,
         vec![
-            Tag::new(vec!["relay".into(), relay_url.into()]),
+            Tag::new(vec!["relay".into(), authentication_url]),
             Tag::new(vec!["challenge".into(), client.challenge.clone()]),
         ],
         String::new(),
@@ -13591,6 +13592,33 @@ fn authenticate(
         &event.id,
         Instant::now() + IO_TIMEOUT,
     )
+}
+
+fn funded_relay_authentication_url(relay_url: &str) -> Result<String, String> {
+    let Ok(auth_value) = std::env::var("IMMORTAL_PROVIDER_FUNDED_TOPOLOGY_RELAY_AUTH_URLS") else {
+        return Ok(relay_url.to_owned());
+    };
+    let connection_value = required_environment("IMMORTAL_PROVIDER_FUNDED_TOPOLOGY_RELAY_URLS")?;
+    resolve_funded_relay_authentication_url(relay_url, &connection_value, &auth_value)
+}
+
+fn resolve_funded_relay_authentication_url(
+    relay_url: &str,
+    connection_value: &str,
+    auth_value: &str,
+) -> Result<String, String> {
+    let connection_urls = crate::relay::parse_topology_relay_urls(connection_value)?;
+    let authentication_urls = crate::relay::parse_topology_relay_auth_urls(&auth_value)?;
+    let index = connection_urls
+        .iter()
+        .position(|candidate| candidate == relay_url)
+        .ok_or_else(|| {
+            "funded relay connection URL has no configured authentication authority".to_owned()
+        })?;
+    authentication_urls
+        .get(index)
+        .cloned()
+        .ok_or_else(|| "funded relay authentication mapping is incomplete".to_owned())
 }
 
 fn subscribe(client: &mut RelayClient, recipient: &str) -> Result<(), String> {
@@ -14867,6 +14895,29 @@ mod tests {
         include_str!("../../../tests/fixtures/nipmkt/liquid-rail-v1.json");
     const LIQUID_RUNTIME_FIXTURE: &str =
         include_str!("../../../tests/fixtures/provider/liquid-runtime-v1.json");
+
+    #[test]
+    fn public_relay_authentication_mapping_preserves_connection_order() {
+        let connections = "ws://127.0.0.1:18080,ws://127.0.0.1:18081";
+        let authorities = "wss://relay-a.example,wss://relay-b.example";
+        assert_eq!(
+            resolve_funded_relay_authentication_url(
+                "ws://127.0.0.1:18081",
+                connections,
+                authorities
+            )
+            .expect("second connection should use the second public authority"),
+            "wss://relay-b.example"
+        );
+        assert!(
+            resolve_funded_relay_authentication_url(
+                "ws://127.0.0.1:18082",
+                connections,
+                authorities
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn public_demo_invoice_outlives_the_funded_bitcoin_timeout_ladder() {
