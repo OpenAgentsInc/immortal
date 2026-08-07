@@ -1813,15 +1813,21 @@ fn run_dynamic_reverse_topology(
 fn dynamic_public_journey_names(swap_type: &str, request_id: &str) -> [String; 2] {
     let binding = request_id
         .bytes()
+        .take(24)
         .map(|byte| match byte {
             b'0'..=b'9' => char::from(b'a' + byte - b'0'),
             b'a'..=b'f' => char::from(b'k' + byte - b'a'),
             _ => '_',
         })
         .collect::<String>();
+    let swap_code = match swap_type {
+        "reverse" => "r",
+        "submarine" => "s",
+        _ => "u",
+    };
     [
-        format!("dynamic_{swap_type}_a_{binding}"),
-        format!("dynamic_{swap_type}_b_{binding}"),
+        format!("pub_{swap_code}_a_{binding}"),
+        format!("pub_{swap_code}_b_{binding}"),
     ]
 }
 
@@ -14987,6 +14993,7 @@ mod tests {
             name.bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
         }));
+        assert!(first.iter().all(|name| name.len() == 32));
     }
 
     #[test]
