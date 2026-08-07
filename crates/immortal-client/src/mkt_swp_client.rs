@@ -9927,6 +9927,10 @@ fn validate_quote_against_rfq(
         _ => false,
     };
     let requester_public_keys = requester_public_keys_from_terms(terms)?;
+    let destination_commitment_matches = match constraints.get("destination_commitment_sha256") {
+        Some(commitment) => terms.get("destination_commitment_sha256") == Some(commitment),
+        None => true,
+    };
     if !amount_allowed
         || quoted_total_fee > maximum_total_fee
         || quoted_minimum < requested_minimum
@@ -9947,6 +9951,7 @@ fn validate_quote_against_rfq(
             == Some(true)
             && quote_class != "firm"
         || !invoice_matches
+        || !destination_commitment_matches
         || constraints.get("requester_public_keys") != Some(&requester_public_keys)
     {
         return Err(SwapClientError::new(

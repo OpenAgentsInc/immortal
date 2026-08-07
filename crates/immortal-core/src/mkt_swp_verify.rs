@@ -1404,6 +1404,76 @@ pub enum BitcoinNetwork {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SegwitAddress {
+    pub network: BitcoinNetwork,
+    pub witness_version: u8,
+    pub witness_program: Vec<u8>,
+    pub script_pubkey: Vec<u8>,
+}
+
+/// Parse and checksum-verify one native SegWit address without importing a
+/// wallet or Bitcoin SDK. Testnet and signet share the `tb` human-readable
+/// part and therefore cannot be distinguished by an address alone.
+pub fn parse_segwit_address(address: &str) -> Result<SegwitAddress, VerificationError> {
+    if address.len() < 8 || address.len() > 90 || !address.is_ascii() {
+        return Err(VerificationError::Bounds("SegWit address length"));
+    }
+    if address.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Err(VerificationError::Encoding(
+            "SegWit address must be lowercase",
+        ));
+    }
+    let separator = address
+        .rfind('1')
+        .ok_or(VerificationError::Encoding("SegWit address separator"))?;
+    let hrp = &address[..separator];
+    let network = match hrp {
+        "bc" => BitcoinNetwork::Bitcoin,
+        "tb" => BitcoinNetwork::Testnet,
+        "bcrt" => BitcoinNetwork::Regtest,
+        _ => return Err(VerificationError::Unsupported("SegWit address network")),
+    };
+    let encoded = address
+        .get(separator + 1..)
+        .ok_or(VerificationError::Encoding("SegWit address data"))?;
+    let words = bech32_words(encoded)?;
+    if words.len() < 7 {
+        return Err(VerificationError::Encoding("SegWit address data length"));
+    }
+    let witness_version = words[0];
+    if witness_version > 16 {
+        return Err(VerificationError::Unsupported("SegWit witness version"));
+    }
+    let expected_checksum = if witness_version == 0 { 1 } else { 0x2bc8_30a3 };
+    if bech32_polymod(hrp, &words) != expected_checksum {
+        return Err(VerificationError::Encoding("SegWit address checksum"));
+    }
+    let witness_program = convert_bits(&words[1..words.len() - 6], 5, 8, false)?;
+    if !(2..=40).contains(&witness_program.len())
+        || (witness_version == 0 && !matches!(witness_program.len(), 20 | 32))
+    {
+        return Err(VerificationError::Bounds("SegWit witness program"));
+    }
+    let mut script_pubkey = Vec::with_capacity(witness_program.len() + 2);
+    script_pubkey.push(if witness_version == 0 {
+        0
+    } else {
+        0x50 + witness_version
+    });
+    script_pubkey.push(
+        u8::try_from(witness_program.len())
+            .map_err(|_| VerificationError::Bounds("SegWit witness program"))?,
+    );
+    script_pubkey.extend_from_slice(&witness_program);
+    Ok(SegwitAddress {
+        network,
+        witness_version,
+        witness_program,
+        script_pubkey,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bolt11Invoice {
     pub network: BitcoinNetwork,
     pub amount_msat: Option<u64>,
@@ -1413,6 +1483,7 @@ pub struct Bolt11Invoice {
     pub payee: PublicKey,
     pub expiry_seconds: u64,
     pub minimum_final_cltv_delta: u64,
+    pub feature_bits: Vec<u16>,
 }
 
 pub fn parse_bolt11(invoice: &str) -> Result<Bolt11Invoice, VerificationError> {
@@ -1453,6 +1524,7 @@ pub fn parse_bolt11(invoice: &str) -> Result<Bolt11Invoice, VerificationError> {
     let mut has_description_hash = false;
     let mut expiry_seconds = 3_600;
     let mut minimum_final_cltv_delta = 18;
+    let mut feature_bits = None;
     let mut position = 7;
     while position < signed_words.len() {
         if signed_words.len() - position < 3 {
@@ -1496,6 +1568,23 @@ pub fn parse_bolt11(invoice: &str) -> Result<Bolt11Invoice, VerificationError> {
             }
             6 => expiry_seconds = minimal_word_integer(field, "BOLT11 expiry")?,
             24 => minimum_final_cltv_delta = minimal_word_integer(field, "BOLT11 CLTV delta")?,
+            5 => {
+                if feature_bits.is_some() {
+                    return Err(VerificationError::Invalid("duplicate BOLT11 features"));
+                }
+                let mut bits = Vec::new();
+                for (word_offset, word) in field.iter().rev().enumerate() {
+                    for bit in 0..5_usize {
+                        if word & (1 << bit) != 0 {
+                            bits.push(
+                                u16::try_from(word_offset * 5 + bit)
+                                    .map_err(|_| VerificationError::Bounds("BOLT11 features"))?,
+                            );
+                        }
+                    }
+                }
+                feature_bits = Some(bits);
+            }
             _ => {}
         }
         position = end;
@@ -1537,6 +1626,7 @@ pub fn parse_bolt11(invoice: &str) -> Result<Bolt11Invoice, VerificationError> {
         payee: recovered,
         expiry_seconds,
         minimum_final_cltv_delta,
+        feature_bits: feature_bits.unwrap_or_default(),
     })
 }
 
@@ -1675,6 +1765,13 @@ fn bech32_words(encoded: &str) -> Result<Vec<u8>, VerificationError> {
 }
 
 fn verify_bech32_checksum(hrp: &str, words: &[u8]) -> Result<(), VerificationError> {
+    if bech32_polymod(hrp, words) != 1 {
+        return Err(VerificationError::Encoding("BOLT11 checksum"));
+    }
+    Ok(())
+}
+
+fn bech32_polymod(hrp: &str, words: &[u8]) -> u32 {
     let mut values = Vec::with_capacity(hrp.len() * 2 + 1 + words.len());
     values.extend(hrp.bytes().map(|byte| byte >> 5));
     values.push(0);
@@ -1699,10 +1796,7 @@ fn verify_bech32_checksum(hrp: &str, words: &[u8]) -> Result<(), VerificationErr
             }
         }
     }
-    if polymod != 1 {
-        return Err(VerificationError::Encoding("BOLT11 checksum"));
-    }
-    Ok(())
+    polymod
 }
 
 fn convert_bits(
@@ -2990,6 +3084,23 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn regtest_segwit_destination_is_checksum_and_network_bound() {
+        let address = "bcrt1pvcpgfdxvvnklep6kdyewn80pphta54nwwrex3ahrvh2uh0e9dgwsalmcu5";
+        let parsed = parse_segwit_address(address).expect("recorded regtest address");
+        assert_eq!(parsed.network, BitcoinNetwork::Regtest);
+        assert_eq!(parsed.witness_version, 1);
+        assert_eq!(parsed.witness_program.len(), 32);
+        assert_eq!(parsed.script_pubkey[0..2], [0x51, 0x20]);
+
+        let mut changed = address.to_owned();
+        changed.pop();
+        changed.push('q');
+        assert!(parse_segwit_address(&changed).is_err());
+        assert!(parse_segwit_address(&address.replacen("bcrt", "bc", 1)).is_err());
+        assert!(parse_segwit_address(&address.to_ascii_uppercase()).is_err());
     }
 
     fn hex<const N: usize>(input: &str) -> [u8; N] {

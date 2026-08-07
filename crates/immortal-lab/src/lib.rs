@@ -10,6 +10,7 @@
 pub mod adversarial;
 pub mod browser_demo;
 pub mod cli;
+pub mod dynamic;
 pub mod funded;
 pub mod relay;
 pub mod state;

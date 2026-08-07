@@ -30,9 +30,9 @@ use immortal_client::mkt_swp_client::{
 };
 use immortal_core::{
     domain::{
-        Event, MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_ORDER_KIND, MKT_QUOTE_KIND, MKT_STATUS_KIND,
-        MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND, MktProfileSupport,
-        Tag, parse_unique_json, validate_mkt_public_event,
+        Event, MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_ORDER_KIND, MKT_QUOTE_KIND, MKT_RFQ_KIND,
+        MKT_STATUS_KIND, MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND,
+        MktProfileSupport, Tag, parse_unique_json, validate_mkt_public_event,
     },
     liquid::{LiquidAssetId, LiquidNetworkId, LiquidTransaction, parse_liquid_transaction},
     market::{MarketSigner, WrapMaterial, unwrap_mkt_record_raw, wrap_mkt_record},
@@ -69,6 +69,7 @@ use tokio::{runtime::Runtime, task::JoinHandle};
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message, WebSocket, client};
 
 use crate::browser_demo::{self, BrowserEffectRequest, BrowserSession};
+use crate::dynamic::{self, DynamicDestination, DynamicRequest, DynamicSwapType};
 use crate::state::{
     BoltzAdapterApproval, BoltzAdapterBroadcast, BoltzAdapterFinalizeRequest, BoltzAdapterPrepared,
     FundedCheckpoint, FundedInjectionRequest, LabPaths, clear_boltz_adapter_controls,
@@ -1056,6 +1057,7 @@ pub fn run_funded_topology() -> Result<Value, String> {
         &runtime,
         selected_environment,
         selected_session,
+        INPUT_AMOUNT_SAT,
         &funding.raw_transaction,
         Some(&funding.txid),
         &invoice.payment_hash,
@@ -1083,6 +1085,541 @@ pub fn run_funded_topology() -> Result<Value, String> {
     provider_support::reject_custody_material(&result)
         .map_err(|error| format!("funded topology result contains custody material: {error}"))?;
     Ok(result)
+}
+
+/// Execute both user-input public-regtest journeys against two independently
+/// keyed funded providers. This path deliberately uses the ordinary RFQ,
+/// Quote, Order, bilateral Contract, requester verification, and rail engines.
+pub fn run_dynamic_funded_topology() -> Result<Value, String> {
+    dynamic::fixture_contract().map_err(|error| error.to_string())?;
+    let runtime =
+        Runtime::new().map_err(|error| format!("could not start lab runtime: {error}"))?;
+    let environments = SmokeEnvironment::load_topology()?;
+    for environment in &environments {
+        verify_health(&environment.health_url)?;
+    }
+    let provider_pubkeys = environments
+        .iter()
+        .map(|environment| {
+            discover_provider(
+                &environment.relay_url,
+                &environment.requester,
+                JOURNEY_TIMEOUT,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if provider_pubkeys.len() != 2 || provider_pubkeys[0] == provider_pubkeys[1] {
+        return Err("dynamic topology did not discover two distinct providers".to_owned());
+    }
+    let amount = std::env::var("IMMORTAL_LAB_DYNAMIC_AMOUNT_SAT")
+        .unwrap_or_else(|_| "150000".to_owned())
+        .parse::<u64>()
+        .map_err(|_| "dynamic amount is not an integer".to_owned())?;
+    if !(dynamic::MINIMUM_AMOUNT_SAT..=dynamic::MAXIMUM_AMOUNT_SAT).contains(&amount) {
+        return Err("dynamic amount is outside the public-regtest bound".to_owned());
+    }
+    eprintln!("immortal-lab: dynamic topology starting submarine request");
+    let submarine =
+        run_dynamic_submarine_topology(&runtime, &environments, &provider_pubkeys, amount)?;
+    eprintln!("immortal-lab: dynamic submarine terminal evidence admitted");
+    wait_dynamic_provider_height_sync(&runtime, &environments[0])?;
+    eprintln!("immortal-lab: dynamic provider Lightning heights synchronized");
+    let reverse = run_dynamic_reverse_topology(&runtime, &environments, &provider_pubkeys, amount)?;
+    eprintln!("immortal-lab: dynamic reverse terminal evidence admitted");
+    for environment in &environments {
+        verify_health(&environment.health_url)?;
+    }
+    let result = json!({
+        "schema":"openagents.immortal.dynamic-funded-topology-result.v1",
+        "network":NETWORK_ID,
+        "amount_sat":amount,
+        "provider_pubkeys":provider_pubkeys,
+        "journeys":[submarine, reverse],
+    });
+    provider_support::reject_custody_material(&result)
+        .map_err(|error| format!("dynamic topology result contains custody material: {error}"))?;
+    Ok(result)
+}
+
+fn wait_dynamic_provider_height_sync(
+    runtime: &Runtime,
+    environment: &SmokeEnvironment,
+) -> Result<(), String> {
+    let paths = required_environment("IMMORTAL_LAB_DYNAMIC_PROVIDER_CLN_RPC_PATHS")?;
+    let clients = paths
+        .split(',')
+        .map(|path| {
+            ClnEndpoint::new(path)
+                .and_then(|endpoint| ClnClient::new(endpoint, ClnLimits::default()))
+                .map_err(|error| format!("dynamic provider CLN endpoint is invalid: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if clients.len() != 2 {
+        return Err("dynamic topology requires exactly two provider CLN endpoints".to_owned());
+    }
+    let deadline = Instant::now() + LIGHTNING_READINESS_TIMEOUT;
+    loop {
+        let bitcoin_height = chain_height(runtime, &environment.bitcoind, "dynamic-height-sync")?;
+        let mut synchronized = true;
+        for (index, client) in clients.iter().enumerate() {
+            let request_id = cln_id(&format!("dynamic-provider-height-{index}"))?;
+            let info = runtime
+                .block_on(client.node_info(&request_id))
+                .map_err(|error| format!("could not inspect dynamic provider CLN: {error}"))?;
+            synchronized &= info.block_height == bitcoin_height;
+        }
+        if synchronized {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("dynamic provider CLN nodes did not synchronize to bitcoind".to_owned());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
+fn run_dynamic_submarine_topology(
+    runtime: &Runtime,
+    environments: &[SmokeEnvironment],
+    provider_pubkeys: &[String],
+    amount: u64,
+) -> Result<Value, String> {
+    let expected = dynamic_quote(SwapType::Submarine, amount)?;
+    let output_amount = canonical_u64(&expected.output_amount)?;
+    let invoice = runtime
+        .block_on(
+            environments[0].peer_cln.invoice(
+                &cln_id("dynamic-topology-submarine-invoice")?,
+                Millisatoshi::from_satoshis(output_amount)
+                    .map_err(|error| format!("dynamic invoice amount is invalid: {error}"))?,
+                "immortal-dynamic-topology-submarine",
+                "Immortal dynamic public regtest submarine",
+                86_400,
+            ),
+        )
+        .map_err(|error| format!("could not create dynamic submarine invoice: {error}"))?;
+    let now = unix_now()?;
+    let validated = validate_dynamic_request(DynamicRequest {
+        schema: dynamic::SCHEMA.to_owned(),
+        request_id: digest("dynamic-topology-submarine-request"),
+        network: dynamic::NETWORK.to_owned(),
+        swap_type: DynamicSwapType::Submarine,
+        input_amount_sat: amount,
+        maximum_total_fee_sat: 5_000,
+        created_at: now,
+        expires_at: now + 300,
+        destination: DynamicDestination::Bolt11Invoice {
+            value: invoice.bolt11.clone(),
+        },
+    })?;
+    validated
+        .require_destination_amount(output_amount)
+        .map_err(|error| error.to_string())?;
+    if validated.payment_hash.as_deref() != Some(invoice.payment_hash.as_str()) {
+        return Err("dynamic invoice differs from the derived Quote output".to_owned());
+    }
+    let client_input = fund_client_wallet(runtime, &environments[0])?;
+    let requester_key = environments[0]
+        .wallet
+        .derive_address(
+            WalletPath::new(2, false, 30)
+                .map_err(|error| format!("dynamic refund path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive dynamic refund key: {error}"))?
+        .internal_key;
+    let exit_destination = environments[0]
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 30)
+                .map_err(|error| format!("dynamic exit path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive dynamic exit destination: {error}"))?;
+    let mut candidates = Vec::with_capacity(2);
+    for index in 0..2 {
+        let journey_name = if index == 0 {
+            "dynamic_submarine_a"
+        } else {
+            "dynamic_submarine_b"
+        };
+        let input = NegotiationInput {
+            journey_name,
+            swap_type: "submarine",
+            payment_hash: &invoice.payment_hash,
+            invoice: Some(&invoice.bolt11),
+            requester_key,
+            requester_funding_input: Some(&client_input),
+            exit_destination_script_pubkey: &exit_destination.script_pubkey,
+            presign_submarine_refund: false,
+        };
+        let quoted = prepare_quote_with_terms(
+            &environments[index],
+            &provider_pubkeys[index],
+            input,
+            amount,
+            5_000,
+        )?;
+        require_dynamic_destination_commitment(&quoted, &validated.destination_commitment_sha256)?;
+        candidates.push(funded_topology_candidate(index, quoted)?);
+    }
+    let (selected, unselected, ranked) = rank_dynamic_candidates(candidates, output_amount)?;
+    eprintln!("immortal-lab: dynamic submarine received two comparable Quotes");
+    let unselected_index = unselected.environment_index;
+    let unselected_input = NegotiationInput {
+        journey_name: if unselected_index == 0 {
+            "dynamic_submarine_a"
+        } else {
+            "dynamic_submarine_b"
+        },
+        swap_type: "submarine",
+        payment_hash: &invoice.payment_hash,
+        invoice: Some(&invoice.bolt11),
+        requester_key,
+        requester_funding_input: Some(&client_input),
+        exit_destination_script_pubkey: &exit_destination.script_pubkey,
+        presign_submarine_refund: false,
+    };
+    let unselected_quote = unselected.quote;
+    let unselected_session = finalize_negotiation(prepare_order(
+        &environments[unselected_index],
+        unselected.quoted,
+        unselected_input,
+    )?)?;
+    let cancellation = cancel_unselected_funded_session(unselected_session, &unselected_quote)?;
+    eprintln!("immortal-lab: dynamic submarine released the unselected reservation");
+
+    let selected_index = selected.environment_index;
+    let selected_provider = selected.quote.provider_pubkey.clone();
+    let selected_quote = selected.quote.quote_id.clone();
+    let selected_input = NegotiationInput {
+        journey_name: if selected_index == 0 {
+            "dynamic_submarine_a"
+        } else {
+            "dynamic_submarine_b"
+        },
+        swap_type: "submarine",
+        payment_hash: &invoice.payment_hash,
+        invoice: Some(&invoice.bolt11),
+        requester_key,
+        requester_funding_input: Some(&client_input),
+        exit_destination_script_pubkey: &exit_destination.script_pubkey,
+        presign_submarine_refund: false,
+    };
+    let mut session = finalize_negotiation(prepare_order(
+        &environments[selected_index],
+        selected.quoted,
+        selected_input,
+    )?)?;
+    session.wait_provider_state("accepted")?;
+    session.wait_provider_state("lock_terms_ready")?;
+    let funding = session
+        .requester_funding
+        .take()
+        .ok_or_else(|| "dynamic submarine has no funding transaction".to_owned())?;
+    let authorized = verify_submarine_before_fund(&session, &invoice.bolt11, &funding)?;
+    session.set_authorized_verifier(authorized)?;
+    let terminal = continue_submarine(
+        runtime,
+        &environments[selected_index],
+        session,
+        amount,
+        &funding.raw_transaction,
+        Some(&funding.txid),
+        &invoice.payment_hash,
+    )?;
+    Ok(json!({
+        "swap_type":"submarine",
+        "request":validated.public_view(),
+        "quotes":ranked,
+        "selection":{"provider_pubkey":selected_provider,"quote_id":selected_quote},
+        "unselected":cancellation,
+        "terminal":terminal,
+        "terminal_authority":"requester_admitted_bitcoin_and_lightning_evidence",
+    }))
+}
+
+fn run_dynamic_reverse_topology(
+    runtime: &Runtime,
+    environments: &[SmokeEnvironment],
+    provider_pubkeys: &[String],
+    amount: u64,
+) -> Result<Value, String> {
+    let expected = dynamic_quote(SwapType::Reverse, amount)?;
+    let output_amount = canonical_u64(&expected.output_amount)?;
+    let destination = environments[0]
+        .wallet
+        .derive_address(
+            WalletPath::new(0, true, 31)
+                .map_err(|error| format!("dynamic destination path is invalid: {error}"))?,
+        )
+        .map_err(|error| format!("could not derive dynamic destination: {error}"))?;
+    let now = unix_now()?;
+    let validated = validate_dynamic_request(DynamicRequest {
+        schema: dynamic::SCHEMA.to_owned(),
+        request_id: digest("dynamic-topology-reverse-request"),
+        network: dynamic::NETWORK.to_owned(),
+        swap_type: DynamicSwapType::Reverse,
+        input_amount_sat: amount,
+        maximum_total_fee_sat: 5_000,
+        created_at: now,
+        expires_at: now + 300,
+        destination: DynamicDestination::BitcoinAddress {
+            value: destination.address.clone(),
+        },
+    })?;
+    if validated.destination_script_pubkey.as_deref() != Some(destination.script_pubkey.as_slice())
+    {
+        return Err("dynamic address parser changed the entered destination".to_owned());
+    }
+    let preimage = random_32()?;
+    let payment_hash = lower_hex(&sha256(&preimage));
+    store_funded_secret(&environments[0].control.paths, "dynamic_reverse", &preimage)?;
+    let claim_path = WalletPath::new(2, false, 31)
+        .map_err(|error| format!("dynamic claim path is invalid: {error}"))?;
+    let requester_key = environments[0]
+        .wallet
+        .derive_address(claim_path)
+        .map_err(|error| format!("could not derive dynamic claim key: {error}"))?
+        .internal_key;
+    let mut candidates = Vec::with_capacity(2);
+    for index in 0..2 {
+        let journey_name = if index == 0 {
+            "dynamic_reverse_a"
+        } else {
+            "dynamic_reverse_b"
+        };
+        let input = NegotiationInput {
+            journey_name,
+            swap_type: "reverse",
+            payment_hash: &payment_hash,
+            invoice: None,
+            requester_key,
+            requester_funding_input: None,
+            exit_destination_script_pubkey: &destination.script_pubkey,
+            presign_submarine_refund: false,
+        };
+        let quoted = prepare_quote_with_terms(
+            &environments[index],
+            &provider_pubkeys[index],
+            input,
+            amount,
+            5_000,
+        )?;
+        require_dynamic_destination_commitment(&quoted, &validated.destination_commitment_sha256)?;
+        candidates.push(funded_topology_candidate(index, quoted)?);
+    }
+    let (selected, unselected, ranked) = rank_dynamic_candidates(candidates, output_amount)?;
+    eprintln!("immortal-lab: dynamic reverse received two comparable Quotes");
+    let unselected_index = unselected.environment_index;
+    let unselected_input = NegotiationInput {
+        journey_name: if unselected_index == 0 {
+            "dynamic_reverse_a"
+        } else {
+            "dynamic_reverse_b"
+        },
+        swap_type: "reverse",
+        payment_hash: &payment_hash,
+        invoice: None,
+        requester_key,
+        requester_funding_input: None,
+        exit_destination_script_pubkey: &destination.script_pubkey,
+        presign_submarine_refund: false,
+    };
+    let unselected_quote = unselected.quote;
+    let unselected_session = finalize_negotiation(prepare_order(
+        &environments[unselected_index],
+        unselected.quoted,
+        unselected_input,
+    )?)?;
+    let cancellation = cancel_unselected_funded_session(unselected_session, &unselected_quote)?;
+    eprintln!("immortal-lab: dynamic reverse released the unselected reservation");
+
+    let selected_index = selected.environment_index;
+    let selected_provider = selected.quote.provider_pubkey.clone();
+    let selected_quote = selected.quote.quote_id.clone();
+    let selected_input = NegotiationInput {
+        journey_name: if selected_index == 0 {
+            "dynamic_reverse_a"
+        } else {
+            "dynamic_reverse_b"
+        },
+        swap_type: "reverse",
+        payment_hash: &payment_hash,
+        invoice: None,
+        requester_key,
+        requester_funding_input: None,
+        exit_destination_script_pubkey: &destination.script_pubkey,
+        presign_submarine_refund: false,
+    };
+    let mut session = finalize_negotiation(prepare_order(
+        &environments[selected_index],
+        selected.quoted,
+        selected_input,
+    )?)?;
+    session.wait_provider_state("accepted")?;
+    let invoice_status = session.wait_provider_state("hold_invoice_ready")?;
+    let invoice = record_profile(&invoice_status)?
+        .get("invoice")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "dynamic reverse provider returned no invoice".to_owned())?
+        .to_owned();
+    let parsed_invoice = immortal_core::mkt_swp_verify::parse_bolt11(&invoice)
+        .map_err(|error| format!("dynamic reverse invoice is invalid: {error}"))?;
+    if parsed_invoice.amount_msat != amount.checked_mul(1_000) {
+        return Err("dynamic reverse invoice amount differs from the request".to_owned());
+    }
+    let authorized =
+        verify_reverse_before_fund(runtime, &environments[selected_index], &session, &invoice)?;
+    session.set_authorized_verifier(authorized)?;
+    let destination_terms = bitcoin_terms(&session.contract, "destination")?;
+    let destination_amount_sat = destination_terms
+        .amount_sat
+        .checked_sub(destination_terms.miner_fee_budget_sat)
+        .filter(|amount| *amount > 0)
+        .ok_or_else(|| "dynamic reverse claim fee consumes the selected output".to_owned())?;
+    let terminal = continue_reverse(
+        runtime,
+        &environments[selected_index],
+        session,
+        amount,
+        "dynamic_reverse",
+        false,
+        preimage,
+        payment_hash,
+        invoice,
+        claim_path,
+        destination.script_pubkey.to_vec(),
+    )?;
+    verify_dynamic_claim_destination(
+        runtime,
+        &environments[selected_index].bitcoind,
+        terminal
+            .get("claim_txid")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "dynamic reverse terminal result has no claim transaction".to_owned())?,
+        &destination.script_pubkey,
+        destination_amount_sat,
+    )?;
+    Ok(json!({
+        "swap_type":"reverse",
+        "request":validated.public_view(),
+        "quotes":ranked,
+        "selection":{"provider_pubkey":selected_provider,"quote_id":selected_quote},
+        "unselected":cancellation,
+        "terminal":terminal,
+        "destination_output":{"amount_sat":destination_amount_sat,"contract_amount_sat":output_amount,"commitment_sha256":validated.destination_commitment_sha256},
+        "terminal_authority":"requester_admitted_bitcoin_and_lightning_evidence",
+    }))
+}
+
+fn validate_dynamic_request(
+    request: DynamicRequest,
+) -> Result<dynamic::ValidatedDynamicRequest, String> {
+    let observed_at = unix_now()?;
+    let bytes = serde_json::to_vec(&request)
+        .map_err(|error| format!("could not encode dynamic request: {error}"))?;
+    dynamic::validate_request(&bytes, observed_at).map_err(|error| error.to_string())
+}
+
+fn dynamic_quote(
+    swap_type: SwapType,
+    amount: u64,
+) -> Result<immortal_provider::pricing::DerivedQuote, String> {
+    derive_quote_with_worst_case_vbytes(
+        &PricingConfig {
+            spread_bps: 100,
+            fallback_feerate_sat_per_vb: Some(2),
+            min_swap_sat: dynamic::MINIMUM_AMOUNT_SAT,
+            max_swap_sat: dynamic::MAXIMUM_AMOUNT_SAT,
+            quote_expiry_seconds: 600,
+            reservation_tier: ReservationTier::Hard,
+            lightning_routing_fee_ppm: 2_900,
+        },
+        &FeerateObservation::Fallback { sat_per_vb: 2 },
+        &CapacityBounds {
+            capacity_bucket_id: "dynamic-public-regtest".to_owned(),
+            available_capacity: dynamic::MAXIMUM_AMOUNT_SAT.to_string(),
+        },
+        &QuoteRequest {
+            swap_type,
+            side: QuoteSide::Input,
+            amount: amount.to_string(),
+        },
+        unix_now()?,
+        immortal_provider::pricing::worst_case_redeem_vbytes(swap_type),
+    )
+    .map_err(|error| format!("could not derive dynamic Quote: {error}"))
+}
+
+fn rank_dynamic_candidates(
+    mut candidates: Vec<FundedTopologyCandidate>,
+    expected_output: u64,
+) -> Result<(FundedTopologyCandidate, FundedTopologyCandidate, Vec<Value>), String> {
+    if candidates.len() != 2 {
+        return Err("dynamic request did not receive exactly two Quotes".to_owned());
+    }
+    require_comparable_funded_quotes(&candidates[0].quote, &candidates[1].quote)?;
+    if candidates
+        .iter()
+        .any(|candidate| candidate.output_amount != expected_output)
+    {
+        return Err("dynamic provider Quote differs from the locally derived output".to_owned());
+    }
+    candidates.sort_by(compare_funded_topology_candidate);
+    let ranked = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            json!({
+                "rank":index + 1,
+                "provider_pubkey":candidate.quote.provider_pubkey,
+                "session_id":candidate.quoted.config.session_id,
+                "rfq_id":candidate.quote.rfq_id,
+                "quote_id":candidate.quote.quote_id,
+                "input_amount":candidate.quote.input_amount,
+                "output_amount":candidate.quote.output_amount,
+                "maximum_total_fee":candidate.quote.fees.maximum_total_fee,
+            })
+        })
+        .collect::<Vec<_>>();
+    let unselected = candidates
+        .pop()
+        .ok_or_else(|| "dynamic request has no unselected Quote".to_owned())?;
+    let selected = candidates
+        .pop()
+        .ok_or_else(|| "dynamic request has no selected Quote".to_owned())?;
+    Ok((selected, unselected, ranked))
+}
+
+fn verify_dynamic_claim_destination(
+    runtime: &Runtime,
+    bitcoind: &BitcoindClient,
+    transaction_id: &str,
+    script_pubkey: &[u8; 34],
+    amount_sat: u64,
+) -> Result<(), String> {
+    let response = runtime
+        .block_on(bitcoind.raw_transaction(
+            &rpc_id("dynamic-reverse-destination")?,
+            transaction_id,
+            false,
+        ))
+        .map_err(|error| format!("could not inspect dynamic claim transaction: {error}"))?;
+    let raw = response
+        .as_str()
+        .ok_or_else(|| "dynamic claim transaction response is not hex".to_owned())?;
+    let transaction = Transaction::parse(&decode_hex(raw)?)
+        .map_err(|error| format!("dynamic claim transaction is invalid: {error}"))?;
+    let matching = transaction
+        .outputs
+        .iter()
+        .filter(|output| output.value_sat == amount_sat && output.script_pubkey == script_pubkey)
+        .count();
+    if matching != 1 {
+        return Err(
+            "dynamic claim did not pay the exact entered address and Quote amount".to_owned(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_funded_topology_fixture() -> Result<(), String> {
@@ -1152,6 +1689,28 @@ fn funded_topology_candidate(
     })
 }
 
+fn require_dynamic_destination_commitment(
+    quoted: &QuotedSession,
+    expected: &str,
+) -> Result<(), String> {
+    let rfq = quoted
+        .records
+        .iter()
+        .find(|record| record.kind == MKT_RFQ_KIND)
+        .ok_or_else(|| "dynamic session has no signed RFQ".to_owned())?;
+    let profile = record_profile(rfq)?;
+    let commitment = profile
+        .get("constraints")
+        .and_then(Value::as_object)
+        .and_then(|constraints| constraints.get("destination_commitment_sha256"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "dynamic signed RFQ has no destination commitment".to_owned())?;
+    if commitment != expected {
+        return Err("dynamic signed RFQ changed the validated destination commitment".to_owned());
+    }
+    Ok(())
+}
+
 fn require_comparable_funded_quotes(
     left: &RequesterQuoteView,
     right: &RequesterQuoteView,
@@ -1184,6 +1743,18 @@ fn cancel_unselected_funded_session(
     mut session: SessionContext,
     quote: &RequesterQuoteView,
 ) -> Result<Value, String> {
+    session
+        .wait_provider_state("accepted")
+        .map_err(|error| format!("unselected provider did not accept its Order: {error}"))?;
+    if quote.swap_type == SwapType::Reverse {
+        session
+            .wait_provider_state("hold_invoice_ready")
+            .map_err(|error| {
+                format!(
+                    "unselected reverse provider did not prepare its cancellable invoice: {error}"
+                )
+            })?;
+    }
     let session_id = session.verifier.config().session_id.clone();
     let (request, request_raw) = sign_request(
         session
@@ -1203,7 +1774,8 @@ fn cancel_unselected_funded_session(
             )
             .map_err(|error| format!("could not construct topology Cancel request: {error}"))?,
         &session.requester,
-    )?;
+    )
+    .map_err(|error| format!("unselected provider did not accept cancellation: {error}"))?;
     session
         .verifier
         .ingest_signed_record(request.clone())
@@ -1217,7 +1789,8 @@ fn cancel_unselected_funded_session(
         &request_raw,
         &session.requester,
         &session.provider_pubkey,
-    )?;
+    )
+    .map_err(|error| format!("unselected provider did not make cancellation effective: {error}"))?;
 
     let accepted = receive_matching_private(
         &mut session.reader,
@@ -1229,7 +1802,8 @@ fn cancel_unselected_funded_session(
                 && event.pubkey == session.provider_pubkey
                 && event.tag_values("action").eq(["accepted"])
         },
-    )?;
+    )
+    .map_err(|error| format!("unselected provider did not close cancellation: {error}"))?;
     let accepted_id = accepted.event.id.clone();
     session.deliveries.push(accepted.delivery);
     session
@@ -1260,13 +1834,15 @@ fn cancel_unselected_funded_session(
         &session.requester,
         &session_id,
         JOURNEY_TIMEOUT,
-        |event| {
-            event.kind == MKT_CLOSE_KIND
-                && event.pubkey == session.provider_pubkey
-                && event.tag_values("outcome").eq(["cancelled"])
-        },
+        |event| event.kind == MKT_CLOSE_KIND && event.pubkey == session.provider_pubkey,
     )?;
     let close_id = close.event.id.clone();
+    let close_outcome = exact_tag_value(&close.event, "outcome")?;
+    if close_outcome != "cancelled" {
+        return Err(format!(
+            "unselected provider closed with {close_outcome} instead of cancelled"
+        ));
+    }
     let profile = record_profile(&close.event)?;
     if profile
         .get("external_spend_effects")
@@ -5697,6 +6273,7 @@ fn drive_submarine(
         runtime,
         environment,
         session,
+        INPUT_AMOUNT_SAT,
         &funding.raw_transaction,
         Some(&funding.txid),
         &invoice.payment_hash,
@@ -7085,6 +7662,7 @@ fn continue_submarine(
     runtime: &Runtime,
     environment: &SmokeEnvironment,
     mut session: SessionContext,
+    input_amount_sat: u64,
     raw_funding: &str,
     expected_txid: Option<&str>,
     payment_hash: &str,
@@ -7099,7 +7677,7 @@ fn continue_submarine(
         true,
         json!({"external_identifier": intended_txid.clone()}),
     )?;
-    let browser_effect = session.await_browser_effect(INPUT_AMOUNT_SAT)?;
+    let browser_effect = session.await_browser_effect(input_amount_sat)?;
     let lockup_txid = broadcast_bitcoin_once(
         runtime,
         &environment.bitcoind,
@@ -7126,6 +7704,7 @@ fn resume_submarine(
             runtime,
             environment,
             session,
+            INPUT_AMOUNT_SAT,
             raw_funding,
             None,
             payment_hash,
@@ -7493,6 +8072,7 @@ fn drive_reverse(
         runtime,
         environment,
         session,
+        INPUT_AMOUNT_SAT,
         journey_name,
         refund,
         preimage,
@@ -7508,6 +8088,7 @@ fn continue_reverse(
     runtime: &Runtime,
     environment: &SmokeEnvironment,
     mut session: SessionContext,
+    input_amount_sat: u64,
     journey_name: &str,
     refund: bool,
     preimage: [u8; 32],
@@ -7522,7 +8103,7 @@ fn continue_reverse(
         true,
         json!({"external_identifier": payment_hash.clone()}),
     )?;
-    let browser_effect = session.await_browser_effect(INPUT_AMOUNT_SAT)?;
+    let browser_effect = session.await_browser_effect(input_amount_sat)?;
     let payment_task = spawn_reverse_payment_once(
         runtime,
         &environment.peer_cln,
@@ -7574,6 +8155,7 @@ fn resume_reverse(
             runtime,
             environment,
             session,
+            INPUT_AMOUNT_SAT,
             journey_name,
             refund,
             preimage,
@@ -10843,6 +11425,11 @@ fn funded_rfq_profile_with_terms(
         ),
         _ => return Err("funded smoke requested an unsupported swap type".to_owned()),
     };
+    let destination_commitment_sha256 = if let Some(invoice) = input.invoice {
+        lower_hex(&sha256(invoice.as_bytes()))
+    } else {
+        lower_hex(&sha256(input.exit_destination_script_pubkey))
+    };
     let mut constraints = json!({
         "allowed_script_modes":["taproot-musig2-script-exit"],
         "asset_pair":asset_pair,
@@ -10854,6 +11441,7 @@ fn funded_rfq_profile_with_terms(
             "replacement":"reject"
         },
         "desired_completion_time":now.saturating_add(86_400),
+        "destination_commitment_sha256":destination_commitment_sha256,
         "firm_quote_required":true,
         "input_amount":input_amount_sat.to_string(),
         "invoice_sha256":input.invoice.map(|invoice| lower_hex(&sha256(invoice.as_bytes()))),

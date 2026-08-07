@@ -53,6 +53,36 @@ test("compiled WASM executes a signed requester order vector", async () => {
   )
 })
 
+test("compiled WASM binds dynamic regtest input into requester RFQ identity", async () => {
+  const engine = await client()
+  const source = JSON.parse(await readFile(sourceFixturePath, "utf8"))
+  const snapshot = source.flows.submarine.snapshot
+  const original = snapshot.signed_records.find((record) => record.kind === 39604)
+  const profile = JSON.parse(original.content).mkt_swp
+  profile.constraints.input_amount = "150000"
+  profile.constraints.maximum_total_fee = "5000"
+  profile.constraints.destination_commitment_sha256 = "12".repeat(32)
+  const input = {
+    config: snapshot.config,
+    created_at: original.created_at,
+    distinct: original.tags.find((tag) => tag[0] === "d")[1],
+    expiration: Number(
+      original.tags.find((tag) => tag[0] === "expiration")[1],
+    ),
+    mkt_swp: profile,
+  }
+  const request = engine.invoke("requester_rfq", input)
+  const bound = JSON.parse(request.content).mkt_swp.constraints
+  assert.equal(bound.input_amount, "150000")
+  assert.equal(bound.destination_commitment_sha256, "12".repeat(32))
+
+  const mutated = structuredClone(input)
+  mutated.mkt_swp.constraints.destination_commitment_sha256 =
+    "13" + "12".repeat(31)
+  const changed = engine.invoke("requester_rfq", mutated)
+  assert.notEqual(changed.expected_event_id, request.expected_event_id)
+})
+
 test("compiled WASM preserves typed refusal and ABI mismatch", async () => {
   const engine = await client()
   const fixture = JSON.parse(await readFile(fixturePath, "utf8"))

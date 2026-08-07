@@ -9141,7 +9141,11 @@ fn is_effective_cancel(record: &Event) -> bool {
 }
 
 fn funded_cancel_pre_effect(requester_has_status: bool, provider_state: Option<&str>) -> bool {
-    !requester_has_status && matches!(provider_state, None | Some("accepted" | "lock_terms_ready"))
+    !requester_has_status
+        && matches!(
+            provider_state,
+            None | Some("accepted" | "lock_terms_ready" | "hold_invoice_ready")
+        )
 }
 
 fn status_transaction_reference(status: &Event) -> Result<(String, u32), String> {
@@ -10896,7 +10900,9 @@ mod tests {
         assert!(funded_cancel_pre_effect(false, None));
         assert!(funded_cancel_pre_effect(false, Some("accepted")));
         assert!(funded_cancel_pre_effect(false, Some("lock_terms_ready")));
+        assert!(funded_cancel_pre_effect(false, Some("hold_invoice_ready")));
         assert!(!funded_cancel_pre_effect(true, Some("lock_terms_ready")));
+        assert!(!funded_cancel_pre_effect(true, Some("hold_invoice_ready")));
         assert!(!funded_cancel_pre_effect(false, Some("funding_observed")));
     }
 

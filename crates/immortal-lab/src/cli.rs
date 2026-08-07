@@ -21,6 +21,9 @@ COMMANDS:
     funded-smoke        Run fund, claim, and refund; write conformance evidence
     funded-topology     Compare two funded providers, execute rank one, and
                         cancel rank two before any selected funding broadcast
+    dynamic-funded-topology
+                        Execute dynamic reverse and submarine user requests
+                        against two funded providers
     adversarial-case    Execute the manifest-selected #18 process proof
     doomsday-prepare    Persist a doomsday recovery cut and exit the requester
     doomsday-keyless-request
@@ -140,6 +143,7 @@ pub enum Command {
     Refund,
     FundedSmoke,
     FundedTopology,
+    DynamicFundedTopology,
     AdversarialCase,
     DoomsdayPrepare,
     DoomsdayKeylessRequest,
@@ -185,6 +189,7 @@ pub fn parse(arguments: &[String]) -> Result<Command, String> {
         "refund" => Command::Refund,
         "funded-smoke" => Command::FundedSmoke,
         "funded-topology" => Command::FundedTopology,
+        "dynamic-funded-topology" => Command::DynamicFundedTopology,
         "adversarial-case" => Command::AdversarialCase,
         "doomsday-prepare" => Command::DoomsdayPrepare,
         "doomsday-keyless-request" => Command::DoomsdayKeylessRequest,
@@ -244,6 +249,10 @@ mod tests {
         assert_eq!(
             parse(&args(&["funded-topology"])),
             Ok(Command::FundedTopology)
+        );
+        assert_eq!(
+            parse(&args(&["dynamic-funded-topology"])),
+            Ok(Command::DynamicFundedTopology)
         );
         assert_eq!(
             parse(&args(&["adversarial-case"])),

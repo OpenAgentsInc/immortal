@@ -17,9 +17,9 @@ Only two plain relay ports are published, both on numeric IPv4 loopback. Put a
 TLS reverse proxy on the host and publish only the corresponding `wss://`
 authorities. Bitcoin RPC/P2P, Lightning RPC/P2P, Postgres, provider health,
 plugin, miner, and wallet control traffic stay on the private Compose network.
-The capability gateway is a separate process and contract. It is intentionally
-not auto-started by this topology until the dynamic-session and shared-service
-qualification packets (#43 and #44) land. Follow
+The capability gateway is a separate process and contract. Dynamic session
+execution is qualified by #43, but it is intentionally not auto-started by
+this topology until the shared-service qualification packet (#44) lands. Follow
 [`public-regtest-gateway.md`](../conformance/public-regtest-gateway.md) for its
 closed configuration and process gate; never substitute the local adapter.
 

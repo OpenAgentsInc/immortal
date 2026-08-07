@@ -54,6 +54,7 @@ fn execute(command: Command) -> Result<(), Exit> {
         Command::Refund => emit(funded::run_funded_journey(FundedJourney::ReverseRefund)),
         Command::FundedSmoke => funded::run_funded_smoke().map_err(Exit::Failure),
         Command::FundedTopology => emit(funded::run_funded_topology()),
+        Command::DynamicFundedTopology => emit(funded::run_dynamic_funded_topology()),
         Command::AdversarialCase => emit(adversarial::run_from_env()),
         Command::DoomsdayPrepare => {
             let selected = std::env::var("IMMORTAL_LAB_ADVERSARIAL_CASE_ID").map_err(|_| {

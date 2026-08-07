@@ -179,6 +179,10 @@ the pinned upstream applications.
   boundary: signed manifests, origin/IP-bound capability digests, exact
   provider/engine-effect bindings, quotas, process separation, and durable
   receipt replay through replacement and concurrency.
+- `lab/dynamic-public-regtest-v1.json` pins the closed dynamic reverse and
+  submarine request bounds, concrete valid/invalid destination vectors,
+  two-Quote ordering, zero-effect loser release, signed/effect mutation
+  surface, and requester-admitted terminal authority.
 - `nipmkt/swp-profile-v1.json` pins the relay-observable MKT-SWP v1 adoption
   at OpenAgents commit `a7f5522c0a7430f9f5b1cfa09477dae2d16d3682`:
   Offering grammar, kind-39610 profile binding and immutable wrapped

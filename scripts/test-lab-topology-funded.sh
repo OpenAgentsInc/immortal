@@ -5,8 +5,20 @@ cd "$(dirname "$0")/.."
 support_dir="scripts/support/provider-funded"
 base_compose="${support_dir}/compose.yaml"
 topology_compose="${support_dir}/topology-compose.yaml"
-fixture="tests/fixtures/lab/topology-funded-v1.json"
-record_path="${IMMORTAL_LAB_FUNDED_TOPOLOGY_RECORD:-target/lab-evidence/topology-funded-v1.json}"
+dynamic_mode="${IMMORTAL_LAB_DYNAMIC_TOPOLOGY:-0}"
+if ! [[ "${dynamic_mode}" =~ ^[01]$ ]]; then
+  echo "test-lab-topology-funded: dynamic mode must be 0 or 1" >&2
+  exit 1
+fi
+if test "${dynamic_mode}" = 1; then
+  fixture="tests/fixtures/lab/dynamic-public-regtest-v1.json"
+  record_path="${IMMORTAL_LAB_FUNDED_TOPOLOGY_RECORD:-target/lab-evidence/dynamic-public-regtest-v1.json}"
+  topology_command=dynamic-funded-topology
+else
+  fixture="tests/fixtures/lab/topology-funded-v1.json"
+  record_path="${IMMORTAL_LAB_FUNDED_TOPOLOGY_RECORD:-target/lab-evidence/topology-funded-v1.json}"
+  topology_command=funded-topology
+fi
 private_root="$(mktemp -d "${TMPDIR:-/tmp}/immortal-funded-topology.XXXXXX")"
 project_name="immortal-funded-topology-$(LC_ALL=C od -An -N 6 -tx1 /dev/urandom | tr -d ' \n')"
 compose_ready=false
@@ -19,8 +31,11 @@ write_failure_record() {
 import json, os, pathlib, sys
 fixture = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 path = pathlib.Path(sys.argv[2])
+failure_schema = fixture.get("retained_record", {}).get(
+    "failure_schema", "openagents.immortal.dynamic-funded-topology-failure.v1"
+)
 record = {
-    "schema": fixture["retained_record"]["failure_schema"],
+    "schema": failure_schema,
     "phase": sys.argv[3],
     "exit_status": int(sys.argv[4]),
     "private_artifacts_retained": False,
@@ -51,6 +66,13 @@ cleanup() {
   fi
   if test "${exit_status}" -ne 0; then
     write_failure_record "${exit_status}" || true
+    if test -s "${private_root}/driver-error.log"; then
+      echo "test-lab-topology-funded: bounded driver error follows" >&2
+      sed -n '1,120p' "${private_root}/driver-error.log" >&2
+    elif test -s "${private_root}/evidence/driver.json"; then
+      echo "test-lab-topology-funded: bounded driver output follows" >&2
+      sed -n '1,120p' "${private_root}/evidence/driver.json" >&2
+    fi
   fi
   case "$(basename "${private_root}")" in
   immortal-funded-topology.*)
@@ -86,9 +108,17 @@ random_hex() {
   LC_ALL=C od -An -N "${byte_count}" -tx1 /dev/urandom | tr -d ' \n'
 }
 
-python3 - "${fixture}" <<'PY'
+python3 - "${fixture}" "${dynamic_mode}" <<'PY'
 import json, pathlib, sys
 fixture = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if sys.argv[2] == "1":
+    if (
+        fixture.get("schema") != "openagents.immortal.dynamic-public-regtest-fixture.v1"
+        or fixture.get("live_journeys") != ["reverse", "submarine"]
+        or fixture.get("quote_count") != 2
+    ):
+        raise SystemExit("dynamic topology fixture has another contract")
+    raise SystemExit(0)
 if fixture.get("schema") != "openagents.immortal.lab-funded-topology.v1":
     raise SystemExit("funded topology fixture has another schema")
 if fixture.get("selection", {}).get("ordering") != [
@@ -226,6 +256,7 @@ IMMORTAL_PROVIDER_FUNDED_SMOKE_BITCOIND_PORT=18443
 IMMORTAL_PROVIDER_FUNDED_SMOKE_BITCOIND_RPC_USER=immortal-smoke
 IMMORTAL_PROVIDER_FUNDED_SMOKE_BITCOIND_RPC_PASSWORD=${bitcoin_rpc_password}
 IMMORTAL_PROVIDER_FUNDED_SMOKE_CLN_RPC_PATH=/rail/cln-peer/lightning-rpc
+IMMORTAL_LAB_DYNAMIC_PROVIDER_CLN_RPC_PATHS=/rail/cln-provider/lightning-rpc,/rail/cln-provider-b/lightning-rpc
 IMMORTAL_PROVIDER_FUNDED_SMOKE_CLIENT_WALLET_SEED_FILE=/run/immortal-private/client-wallet-seed
 IMMORTAL_PROVIDER_FUNDED_SMOKE_EVIDENCE_FILE=/evidence/topology-funded-driver.json
 IMMORTAL_PROVIDER_FUNDED_SMOKE_TERMINAL_CONFIRMATIONS=${terminal_confirmations}
@@ -235,6 +266,7 @@ cp "${private_root}/driver-topology.env" "${private_root}/driver.env"
 cat >"${private_root}/compose.env" <<EOF
 IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR=${private_root}
 IMMORTAL_PROVIDER_FUNDED_BOLTZ_PUBLISH_HOST=127.0.0.1
+IMMORTAL_LAB_TOPOLOGY_COMMAND=${topology_command}
 EOF
 
 if docker info >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
@@ -373,8 +405,64 @@ wait_for "provider A" compose exec -T provider /usr/bin/curl --fail --silent htt
 wait_for "provider B" compose exec -T provider-b /usr/bin/curl --fail --silent http://127.0.0.1:9092/healthz
 
 current_phase=funded-driver
-compose run --rm --no-deps driver >"${private_root}/evidence/driver.json" \
+set +e
+compose run --no-deps -T driver >"${private_root}/evidence/driver.json" \
   2>"${private_root}/driver-error.log"
+driver_status=$?
+set -e
+if test "${driver_status}" -ne 0; then
+  compose logs --no-color driver >"${private_root}/driver-container.log" 2>&1 || true
+  compose logs --no-color provider provider-b >"${private_root}/provider-container.log" 2>&1 || true
+  echo "test-lab-topology-funded: driver exited ${driver_status}" >&2
+  sed -n '1,120p' "${private_root}/driver-error.log" >&2
+  sed -n '1,160p' "${private_root}/evidence/driver.json" >&2
+  sed -n '1,160p' "${private_root}/driver-container.log" >&2
+  sed -n '1,240p' "${private_root}/provider-container.log" >&2
+  exit "${driver_status}"
+fi
+if test "${dynamic_mode}" = 1; then
+  current_phase=dynamic-evidence
+  jq -e '
+    .schema == "openagents.immortal.dynamic-funded-topology-result.v1" and
+    .network == "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4" and
+    .amount_sat == 150000 and
+    (.provider_pubkeys | length) == 2 and
+    (.provider_pubkeys | unique | length) == 2 and
+    (.journeys | length) == 2 and
+    ([.journeys[].swap_type] | sort) == ["reverse", "submarine"] and
+    all(.journeys[];
+      (.quotes | length) == 2 and
+      ([.quotes[].provider_pubkey] | unique | length) == 2 and
+      .unselected.outcome == "cancelled" and
+      .unselected.external_spend_effects == 0 and
+      .terminal.result == "claimed" and
+      .terminal_authority == "requester_admitted_bitcoin_and_lightning_evidence" and
+      (.request.destination_commitment_sha256 | length) == 64
+    ) and
+    (first(.journeys[] | select(.swap_type == "reverse")) |
+      .request.destination_kind == "bitcoin_address" and
+      .request.destination_amount_sat == null and
+      (.destination_output.amount_sat > 0) and
+      (.destination_output.commitment_sha256 == .request.destination_commitment_sha256)
+    ) and
+    (first(.journeys[] | select(.swap_type == "submarine")) |
+      .request.destination_kind == "bolt11_invoice" and
+      (.request.destination_amount_sat > 0) and
+      (.request.payment_hash == .terminal.payment_hash)
+    )
+  ' "${private_root}/evidence/driver.json" >/dev/null
+  if grep -Eiq '"(invoice|preimage|raw_transaction|wallet_seed|rpc_password|macaroon)"[[:space:]]*:' \
+    "${private_root}/evidence/driver.json"; then
+    echo "test-lab-topology-funded: dynamic public evidence contains custody material" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "${record_path}")"
+  chmod 0700 "$(dirname "${record_path}")"
+  cp "${private_root}/evidence/driver.json" "${record_path}"
+  chmod 0600 "${record_path}"
+  echo "test-lab-topology-funded: dynamic reverse and submarine two-provider gate passed"
+  exit 0
+fi
 selected_order_id="$(jq -er .selected.order_id "${private_root}/evidence/driver.json")"
 unselected_order_id="$(jq -er .unselected.order_id "${private_root}/evidence/driver.json")"
 lockup_txid="$(jq -er .selected.lockup_txid "${private_root}/evidence/driver.json")"

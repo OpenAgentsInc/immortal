@@ -111,6 +111,6 @@ public output. Unit tests cover expiry, invalid methods/networks, unknown
 members, and cryptographic manifest verification.
 
 This is public regtest authorization infrastructure, not a mainnet wallet
-API. Dynamic destinations, two-Quote selection, and production session
-negotiation remain issue #43; shared-service load and remote TLS acceptance
-remain issue #44.
+API. Dynamic destinations and two-Quote production negotiation are qualified
+separately in [`dynamic-public-regtest.md`](dynamic-public-regtest.md).
+Shared-service load and remote TLS acceptance remain issue #44.

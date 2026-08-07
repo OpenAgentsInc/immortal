@@ -1,0 +1,56 @@
+{
+  "schema": "openagents.immortal.dynamic-public-regtest-fixture.v1",
+  "request_schema": "openagents.immortal.dynamic-public-regtest-request.v1",
+  "network": "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4",
+  "amount_sat": {
+    "minimum": 10000,
+    "maximum": 1000000
+  },
+  "destination_kinds": {
+    "reverse": "bitcoin_address",
+    "submarine": "bolt11_invoice"
+  },
+  "destination_vectors": {
+    "valid_regtest_address": "bcrt1pvcpgfdxvvnklep6kdyewn80pphta54nwwrex3ahrvh2uh0e9dgwsalmcu5",
+    "wrong_network_address": "bc1pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqpqqenm",
+    "valid_regtest_invoice": "lnbcrt10u1p489c7rpp5vvxu62txcsekdygj23ythvjmfl6p9fyuwvkm9j9tcxu9sx7hzrwsdq6d9kk6mmjw3skcttxd9u8gatjv5cqzzsxqyjw5qsp5cn6jpj7y8erx4ptq053e3wxsuqmzd2vf89spv0gnqwjyqpffy7lq9qxpqysgq7a3ujjdmarghmnawvwcrn0vcvt2wklkh8lccnp00geuxye5xaj09j2pjg3d0wf6gcvelgrhy23acaa7uu9ra30wfjr3qwswm3yvkc7gp7dllky",
+    "malformed_invoice": "lnbcrt1invalid"
+  },
+  "live_journeys": [
+    "reverse",
+    "submarine"
+  ],
+  "quote_count": 2,
+  "selection_order": [
+    "output_amount_desc",
+    "maximum_total_fee_asc",
+    "provider_pubkey_asc",
+    "quote_id_asc"
+  ],
+  "unselected": {
+    "terminal": "cancelled",
+    "effects": 0,
+    "reservation_released": true
+  },
+  "mutation_fields": [
+    "destination",
+    "amount",
+    "provider",
+    "quote",
+    "order",
+    "contract",
+    "funding_request"
+  ],
+  "terminal_authority": [
+    "requester_admitted_bitcoin_evidence",
+    "requester_admitted_lightning_evidence"
+  ],
+  "excluded": [
+    "mainnet",
+    "testnet",
+    "signet",
+    "bolt12",
+    "lnurl",
+    "liquid"
+  ]
+}

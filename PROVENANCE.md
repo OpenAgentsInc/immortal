@@ -1311,6 +1311,20 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 - Added no dependency, event-kind adoption, database, mainnet authority,
   generic wallet/RPC surface, workflow, or billed automation.
 
+### 2026-08-07 — Codex 5.6 Sol, dynamic public-regtest sessions
+
+- Added the closed dynamic regtest request contract, independent Rust
+  address/BOLT11 verification, signed destination commitments, and a real
+  two-provider reverse/submarine execution gate for issue #43.
+- Preserved the browser ABI v1 inventory because its existing typed session
+  operations already accept exact dynamic signed inputs. The OpenAgents
+  destination package remains a UI precheck; Immortal remains independent
+  funding authority and therefore does not add a runtime dependency on it.
+- Corrected reverse `hold_invoice_ready` cancellation to remain a truthful
+  pre-effect release state, with zero spend and confirmed hold cancellation.
+  Added no dependency, event kind, mainnet authority, public node/RPC method,
+  workflow, or billed automation.
+
 ## Rules
 
 1. Every AI-authored commit carries a `Co-Authored-By` trailer that names

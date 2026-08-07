@@ -194,6 +194,18 @@ pub fn build_funded_quote(
     let maximum_total_fee =
         canonical_amount(string(constraints, "maximum_total_fee")?, "swp_invalid_fee")?;
     let payment_hash = lower_hex_32(string(constraints, "payment_hash")?, "payment hash")?;
+    let destination_commitment = match constraints.get("destination_commitment_sha256") {
+        None => None,
+        Some(Value::String(value)) => {
+            Some(lower_hex(&lower_hex_32(value, "destination commitment")?))
+        }
+        Some(_) => {
+            return Err(error(
+                "swp_contract_terms_mismatch",
+                "RFQ destination commitment is not lowercase hex",
+            ));
+        }
+    };
     let requester_key = requester_key(constraints, swap_type)?;
     validate_requested_policy(constraints, policy)?;
 
@@ -659,7 +671,7 @@ pub fn build_funded_quote(
             "leg_id":bitcoin_leg_id,
         }));
     }
-    let terms = json!({
+    let mut terms = json!({
         "amount_equation":"input_minus_provider_and_quoted_fees",
         "asset_pair":asset_pair,
         "cancellation":{"effective_before_external_effect":true},
@@ -712,6 +724,15 @@ pub fn build_funded_quote(
         "timeout_ladder":ladder.value,
         "verifier_inputs":verifier_inputs,
     });
+    if let Some(commitment) = destination_commitment {
+        terms
+            .as_object_mut()
+            .ok_or_else(|| error("swp_contract_terms_mismatch", "Quote terms are invalid"))?
+            .insert(
+                "destination_commitment_sha256".to_owned(),
+                Value::String(commitment),
+            );
+    }
     let profile = json!({
         "critical":["terms"],
         "terms":terms,
@@ -1875,6 +1896,7 @@ fn validate_constraint_extensions(constraints: &Map<String, Value>) -> Result<()
         "asset_pair",
         "confirmation_policy",
         "desired_completion_time",
+        "destination_commitment_sha256",
         "firm_quote_required",
         "input_amount",
         "invoice_sha256",
@@ -1894,7 +1916,7 @@ fn validate_constraint_extensions(constraints: &Map<String, Value>) -> Result<()
     }
     if SUPPORTED
         .iter()
-        .filter(|member| **member != "invoice_sha256")
+        .filter(|member| !matches!(**member, "invoice_sha256" | "destination_commitment_sha256"))
         .any(|member| !constraints.contains_key(*member))
     {
         return Err(error(

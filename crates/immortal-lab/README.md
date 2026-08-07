@@ -19,6 +19,7 @@ primitives) against a loopback dev relay — the same wire
 | `quote` | NIP-42-authenticates, reads the recipient-gated kind-1059 subscription (stored history first, then a bounded live wait), unwraps with `unwrap_mkt_record`, and persists the session's Quote. Safe to re-run until the Quote arrives. |
 | `topology-quotes` | Uses one wallet identity to discover exactly one independently keyed provider on each of two loopback relays, collect both wrapped firm Quotes, reconstruct both production `RequesterSessionView` projections from exact delivery evidence, and apply the fixture-pinned total ordering. Requires `IMMORTAL_LAB_RELAY_URLS`. |
 | `funded-topology` | Uses the funded requester engine to compare two exact hard Quotes before either Order exists, cancel and release rank two through bilateral signed records, then verify, fund, and settle rank one. The disposable process gate supplies its two relays/providers/databases and three CLN nodes. |
+| `dynamic-funded-topology` | Executes bounded user-selected submarine and reverse regtest requests against both funded providers, deterministically selects one Quote, truthfully cancels the loser, and proves the entered invoice/address plus requester-admitted terminal evidence. |
 | `verify` | The verify-before-fund gate rendered from the engine's real verification output: structural revalidation of the signed Quote bytes, quote/reservation/expiration tag grammar, staleness, `validate_quote_profile`, and `validate_quote_against_rfq`. Prints a JSON verdict; a failing gate exits non-zero and marks the session `verification_failed`. |
 | `fund` | Runs a funded submarine session through bilateral contract verification, a persisted engine funding authorization, exact regtest transaction broadcast, and locally verified terminal Close. |
 | `claim` | Runs a reverse session, persists its wallet-only preimage before RFQ publication, pays the provider hold invoice, and broadcasts the requester script-path claim. |
@@ -127,6 +128,11 @@ one-time capabilities stored only as digests, signed manifests, exact HTTPS
 Origin and proxy-overwritten client-IP policy, private fixed-path worker
 handoff, replacement-safe admission, and exact concurrent receipt replay. See
 `docs/conformance/public-regtest-gateway.md`.
+
+`scripts/test-dynamic-funded-topology.sh` qualifies dynamic 10,000–1,000,000
+sat reverse and submarine requests through the real two-provider funded
+topology. See `docs/conformance/dynamic-public-regtest.md` for the closed input,
+signed commitment, selection, cancellation, and terminal-evidence contract.
 
 After an acknowledged relay loss, the wallet replaces and NIP-42 authenticates
 both relay sockets, then resubscribes the reader without draining stored

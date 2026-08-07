@@ -88,12 +88,21 @@ services:
         read_only: true
 
   driver:
-    command: ["funded-topology"]
+    command: ["${IMMORTAL_LAB_TOPOLOGY_COMMAND:-funded-topology}"]
     env_file:
       - ${IMMORTAL_PROVIDER_SMOKE_PRIVATE_DIR:?private directory is required}/driver-topology.env
     depends_on:
       - provider
       - provider-b
+    volumes:
+      - type: volume
+        source: cln-provider-rpc
+        target: /rail/cln-provider
+        read_only: true
+      - type: volume
+        source: cln-provider-b-rpc
+        target: /rail/cln-provider-b
+        read_only: true
 
 volumes:
   cln-provider-b-data:
