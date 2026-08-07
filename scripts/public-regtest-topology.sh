@@ -715,6 +715,7 @@ restart_service() {
       compose up --detach --force-recreate bitcoin-a
       compose up --detach --force-recreate relay-a cln-provider-a alert-sink-a \
         bitcoin-a-rpc-forwarder
+      sleep 1
       compose up --detach --force-recreate provider-a provider-a-egress
       ;;
     bitcoin-b)
@@ -723,7 +724,16 @@ restart_service() {
       compose up --detach --force-recreate bitcoin-b
       compose up --detach --force-recreate relay-b cln-provider-b alert-sink-b \
         bitcoin-b-rpc-forwarder
+      sleep 1
       compose up --detach --force-recreate provider-b provider-b-egress
+      ;;
+    provider-a|provider-b)
+      # Graceful shutdown publishes a `paused` replaceable head. Keep the new
+      # `active` head in a later Nostr second so the relay's equal-time event-ID
+      # tie-break cannot retain the shutdown state.
+      compose stop "${service}"
+      sleep 1
+      compose up --detach --force-recreate "${service}"
       ;;
     *)
       compose up --detach --force-recreate "${service}"

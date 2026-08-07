@@ -119,6 +119,10 @@ sudo env IMMORTAL_PUBLIC_REGTEST_STATE_DIR=/var/lib/immortal-public-regtest \
   scripts/public-regtest-topology.sh restart provider-a
 ```
 
+Provider replacement separates the graceful `paused` publication from the new
+`active` publication by one Nostr timestamp second, preventing an equal-time
+replaceable-event tie from leaving a healthy provider paused.
+
 The allowlist also accepts `provider-b`, either relay, either Bitcoin node, or
 any of the three CLN roles. Compare `status` before and after: provider public
 keys and Lightning node IDs must not change. Inspect Compose logs and stop if

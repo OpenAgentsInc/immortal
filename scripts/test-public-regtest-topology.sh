@@ -98,6 +98,7 @@ PY
 grep -Fq 'provider_utxo_target=8' "${runner}"
 grep -Fq 'sendtoaddress "${address}" 0.1' "${runner}"
 grep -A3 'if test -f "${manifest}"' "${runner}" | grep -Fq 'bootstrap'
+grep -A7 'provider-a|provider-b)' "${runner}" | grep -Fq 'sleep 1'
 
 rendered="$(
   IMMORTAL_PUBLIC_REGTEST_STATE_DIR="${state_dir}" \
