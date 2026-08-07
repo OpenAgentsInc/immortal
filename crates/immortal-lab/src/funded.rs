@@ -1524,10 +1524,16 @@ fn run_dynamic_submarine_topology(
             validated.request.maximum_total_fee_sat,
         )
         .map_err(|error| format!("swp_public_submarine_quote_lane_{index}_failed: {error}"))?;
-        require_dynamic_destination_commitment(&quoted, &validated.destination_commitment_sha256)?;
-        candidates.push(funded_topology_candidate(index, quoted)?);
+        require_dynamic_destination_commitment(&quoted, &validated.destination_commitment_sha256)
+            .map_err(|error| {
+            format!("swp_public_submarine_quote_commitment_lane_{index}_failed: {error}")
+        })?;
+        candidates.push(funded_topology_candidate(index, quoted).map_err(|error| {
+            format!("swp_public_submarine_quote_projection_lane_{index}_failed: {error}")
+        })?);
     }
-    let (selected, unselected, ranked) = rank_dynamic_candidates(candidates)?;
+    let (selected, unselected, ranked) = rank_dynamic_candidates(candidates)
+        .map_err(|error| format!("swp_public_submarine_quote_ranking_failed: {error}"))?;
     eprintln!("immortal-lab: dynamic submarine received two comparable Quotes");
     let unselected_index = unselected.environment_index;
     let unselected_input = NegotiationInput {
@@ -1541,11 +1547,14 @@ fn run_dynamic_submarine_topology(
         presign_submarine_refund: false,
     };
     let unselected_quote = unselected.quote;
-    let unselected_session = finalize_negotiation(prepare_order(
+    let unselected_pending = prepare_order(
         &environments[unselected_index],
         unselected.quoted,
         unselected_input,
-    )?)?;
+    )
+    .map_err(|error| format!("swp_public_submarine_unselected_order_failed: {error}"))?;
+    let unselected_session = finalize_negotiation(unselected_pending)
+        .map_err(|error| format!("swp_public_submarine_unselected_finalize_failed: {error}"))?;
     let cancellation = cancel_unselected_funded_session(unselected_session, &unselected_quote)
         .map_err(|error| format!("swp_public_submarine_release_failed: {error}"))?;
     eprintln!("immortal-lab: dynamic submarine released the unselected reservation");
@@ -1563,12 +1572,14 @@ fn run_dynamic_submarine_topology(
         exit_destination_script_pubkey: &exit_destination.script_pubkey,
         presign_submarine_refund: false,
     };
-    let mut session = finalize_negotiation(prepare_order(
+    let selected_pending = prepare_order(
         &environments[selected_index],
         selected.quoted,
         selected_input,
-    )?)
-    .map_err(|error| format!("swp_public_submarine_selection_failed: {error}"))?;
+    )
+    .map_err(|error| format!("swp_public_submarine_selected_order_failed: {error}"))?;
+    let mut session = finalize_negotiation(selected_pending)
+        .map_err(|error| format!("swp_public_submarine_selection_failed: {error}"))?;
     session
         .wait_provider_state("accepted")
         .map_err(|error| format!("swp_public_submarine_acceptance_failed: {error}"))?;
@@ -1581,7 +1592,9 @@ fn run_dynamic_submarine_topology(
         .ok_or_else(|| "dynamic submarine has no funding transaction".to_owned())?;
     let authorized = verify_submarine_before_fund(&session, invoice, &funding)
         .map_err(|error| format!("swp_public_submarine_authorization_failed: {error}"))?;
-    session.set_authorized_verifier(authorized)?;
+    session
+        .set_authorized_verifier(authorized)
+        .map_err(|error| format!("swp_public_submarine_authorization_store_failed: {error}"))?;
     let terminal = continue_submarine(
         runtime,
         &environments[selected_index],
@@ -1673,10 +1686,16 @@ fn run_dynamic_reverse_topology(
             validated.request.maximum_total_fee_sat,
         )
         .map_err(|error| format!("swp_public_reverse_quote_lane_{index}_failed: {error}"))?;
-        require_dynamic_destination_commitment(&quoted, &validated.destination_commitment_sha256)?;
-        candidates.push(funded_topology_candidate(index, quoted)?);
+        require_dynamic_destination_commitment(&quoted, &validated.destination_commitment_sha256)
+            .map_err(|error| {
+            format!("swp_public_reverse_quote_commitment_lane_{index}_failed: {error}")
+        })?;
+        candidates.push(funded_topology_candidate(index, quoted).map_err(|error| {
+            format!("swp_public_reverse_quote_projection_lane_{index}_failed: {error}")
+        })?);
     }
-    let (selected, unselected, ranked) = rank_dynamic_candidates(candidates)?;
+    let (selected, unselected, ranked) = rank_dynamic_candidates(candidates)
+        .map_err(|error| format!("swp_public_reverse_quote_ranking_failed: {error}"))?;
     eprintln!("immortal-lab: dynamic reverse received two comparable Quotes");
     let unselected_index = unselected.environment_index;
     let unselected_input = NegotiationInput {
@@ -1690,11 +1709,14 @@ fn run_dynamic_reverse_topology(
         presign_submarine_refund: false,
     };
     let unselected_quote = unselected.quote;
-    let unselected_session = finalize_negotiation(prepare_order(
+    let unselected_pending = prepare_order(
         &environments[unselected_index],
         unselected.quoted,
         unselected_input,
-    )?)?;
+    )
+    .map_err(|error| format!("swp_public_reverse_unselected_order_failed: {error}"))?;
+    let unselected_session = finalize_negotiation(unselected_pending)
+        .map_err(|error| format!("swp_public_reverse_unselected_finalize_failed: {error}"))?;
     let cancellation = cancel_unselected_funded_session(unselected_session, &unselected_quote)
         .map_err(|error| format!("swp_public_reverse_release_failed: {error}"))?;
     eprintln!("immortal-lab: dynamic reverse released the unselected reservation");
@@ -1713,38 +1735,44 @@ fn run_dynamic_reverse_topology(
         exit_destination_script_pubkey: destination_script,
         presign_submarine_refund: false,
     };
-    let mut session = finalize_negotiation(prepare_order(
+    let selected_pending = prepare_order(
         &environments[selected_index],
         selected.quoted,
         selected_input,
-    )?)
-    .map_err(|error| format!("swp_public_reverse_selection_failed: {error}"))?;
+    )
+    .map_err(|error| format!("swp_public_reverse_selected_order_failed: {error}"))?;
+    let mut session = finalize_negotiation(selected_pending)
+        .map_err(|error| format!("swp_public_reverse_selection_failed: {error}"))?;
     session
         .wait_provider_state("accepted")
         .map_err(|error| format!("swp_public_reverse_acceptance_failed: {error}"))?;
     let invoice_status = session
         .wait_provider_state("hold_invoice_ready")
         .map_err(|error| format!("swp_public_reverse_invoice_failed: {error}"))?;
-    let invoice = record_profile(&invoice_status)?
+    let invoice = record_profile(&invoice_status)
+        .map_err(|error| format!("swp_public_reverse_invoice_profile_failed: {error}"))?
         .get("invoice")
         .and_then(Value::as_str)
-        .ok_or_else(|| "dynamic reverse provider returned no invoice".to_owned())?
+        .ok_or_else(|| "swp_public_reverse_invoice_missing".to_owned())?
         .to_owned();
     let parsed_invoice = immortal_core::mkt_swp_verify::parse_bolt11(&invoice)
-        .map_err(|error| format!("dynamic reverse invoice is invalid: {error}"))?;
+        .map_err(|error| format!("swp_public_reverse_invoice_parse_failed: {error}"))?;
     if parsed_invoice.amount_msat != amount.checked_mul(1_000) {
-        return Err("dynamic reverse invoice amount differs from the request".to_owned());
+        return Err("swp_public_reverse_invoice_amount_mismatch".to_owned());
     }
     let authorized =
         verify_reverse_before_fund(runtime, &environments[selected_index], &session, &invoice)
             .map_err(|error| format!("swp_public_reverse_authorization_failed: {error}"))?;
-    session.set_authorized_verifier(authorized)?;
-    let destination_terms = bitcoin_terms(&session.contract, "destination")?;
+    session
+        .set_authorized_verifier(authorized)
+        .map_err(|error| format!("swp_public_reverse_authorization_store_failed: {error}"))?;
+    let destination_terms = bitcoin_terms(&session.contract, "destination")
+        .map_err(|error| format!("swp_public_reverse_destination_terms_failed: {error}"))?;
     let destination_amount_sat = destination_terms
         .amount_sat
         .checked_sub(destination_terms.miner_fee_budget_sat)
         .filter(|amount| *amount > 0)
-        .ok_or_else(|| "dynamic reverse claim fee consumes the selected output".to_owned())?;
+        .ok_or_else(|| "swp_public_reverse_destination_fee_exhausted".to_owned())?;
     let terminal = continue_reverse(
         runtime,
         &environments[selected_index],
@@ -1765,7 +1793,7 @@ fn run_dynamic_reverse_topology(
         terminal
             .get("claim_txid")
             .and_then(Value::as_str)
-            .ok_or_else(|| "dynamic reverse terminal result has no claim transaction".to_owned())?,
+            .ok_or_else(|| "swp_public_reverse_claim_reference_missing".to_owned())?,
         destination_script,
         destination_amount_sat,
     )
