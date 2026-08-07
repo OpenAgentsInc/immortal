@@ -110,6 +110,40 @@ pub struct FundedProviderConfig {
     pub boltz: Option<BoltzConfig>,
 }
 
+pub struct ArkTransferConfig {
+    database_url: DatabaseUrl,
+    pub arkd: ArkdClient,
+}
+
+impl fmt::Debug for ArkTransferConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ArkTransferConfig")
+            .field("database_url", &self.database_url)
+            .field("arkd", &self.arkd)
+            .finish()
+    }
+}
+
+impl ArkTransferConfig {
+    pub fn from_environment() -> Result<Self, ConfigError> {
+        let database_url = required("IMMORTAL_PROVIDER_DATABASE_URL")?;
+        validate_database_url(&database_url)?;
+        let network = parse_network(&required("IMMORTAL_PROVIDER_BITCOIN_NETWORK")?)?;
+        let profile = lab_timeout_profile_from_lookup(network, optional)?;
+        let arkd = arkd_from_lookup(network, profile, optional)?
+            .ok_or(ConfigError::Missing("IMMORTAL_PROVIDER_ARKD_ENABLED"))?;
+        Ok(Self {
+            database_url: DatabaseUrl(database_url),
+            arkd,
+        })
+    }
+
+    pub fn database_url(&self) -> &str {
+        &self.database_url.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZeroConfConfig {
     pub submarine: bool,

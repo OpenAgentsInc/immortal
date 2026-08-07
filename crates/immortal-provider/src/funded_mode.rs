@@ -41,6 +41,7 @@ use tokio::runtime::Handle;
 use crate::{
     ProviderEffectReceipt, ProviderEffectRequest, ProviderSession, ReservationConfirmation,
     ReservationRequest,
+    ark_funded::ArkFundedRail,
     bitcoind::{BitcoindClient, BitcoindError, ChainTip, RpcRequestId},
     cln::Millisatoshi,
     config::ZeroConfConfig,
@@ -96,6 +97,7 @@ pub(crate) struct FundedMode {
     store: ProviderStore,
     wallet: ProviderWallet,
     bitcoind: BitcoindClient,
+    ark: Option<ArkFundedRail>,
     lightning: Arc<dyn LightningRail>,
     liquid: Option<LiquidProviderRail>,
     network: BitcoinNetwork,
@@ -115,6 +117,7 @@ pub(crate) struct FundedMode {
 }
 
 pub(crate) struct FundedModePolicy {
+    pub ark: Option<ArkFundedRail>,
     pub network: BitcoinNetwork,
     pub cooperative_signing: bool,
     pub minimum_confirmations: u32,
@@ -442,6 +445,7 @@ impl FundedMode {
             store,
             wallet,
             bitcoind,
+            ark: policy.ark,
             lightning,
             liquid,
             network: policy.network,
@@ -5916,6 +5920,7 @@ impl ProviderMode for FundedMode {
 
     fn discovery_metadata(&self) -> Value {
         json!({
+            "ark_transfer_executor":self.ark.is_some(),
             "name":"Immortal funded provider",
             "mode":"funded",
             "settlement_claim":"provider-owned Bitcoin and Core Lightning rails"

@@ -17,6 +17,8 @@ fn run() -> Result<(), String> {
             println!("{}", immortal_provider::funded::receive_address()?);
             Ok(())
         }
+        #[cfg(feature = "funded")]
+        [command] if command == "ark-transfer" => immortal_provider::funded::ark_transfer(),
         #[cfg(any(feature = "funded", feature = "no-spend"))]
         [command] if command == "contract" => {
             use std::io::Write;
@@ -27,6 +29,8 @@ fn run() -> Result<(), String> {
                 .write_all(&bytes)
                 .map_err(|error| format!("could not write provider contract: {error}"))
         }
-        _ => Err("usage: immortal-provider <run|address|contract|--no-spend>".to_owned()),
+        _ => Err(
+            "usage: immortal-provider <run|address|ark-transfer|contract|--no-spend>".to_owned(),
+        ),
     }
 }

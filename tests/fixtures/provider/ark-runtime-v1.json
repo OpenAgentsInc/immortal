@@ -41,6 +41,51 @@
       "expected": "reserve_unit_unavailable"
     }
   ],
+  "transfer_effect": {
+    "command_schema": "openagents.immortal.ark-transfer-command.v1",
+    "operation": "ark_transfer",
+    "participant_input": "verified_ark_client_snapshot_and_externally_signed_transaction",
+    "persist_before_operator_rpc": true,
+    "restart_probe": "observe_exact_output_vtxo_before_exact_submit_replay",
+    "result_binding": [
+      "operator_identity_sha256",
+      "input_vtxo_ids",
+      "output_vtxo_id",
+      "signed_vtxo_graph_sha256",
+      "exit_package_sha256",
+      "ark_transaction_id"
+    ],
+    "retained_request": [
+      "order_id",
+      "effect_id",
+      "operator_identity_sha256",
+      "input_vtxo_ids",
+      "output_vtxo_id",
+      "signed_ark_transaction_sha256",
+      "final_ark_transaction_sha256",
+      "checkpoint_transaction_sha256",
+      "final_checkpoint_transaction_sha256",
+      "signed_vtxo_graph_sha256",
+      "exit_package_sha256"
+    ],
+    "never_retained": [
+      "raw_signed_transaction",
+      "raw_checkpoint_transaction",
+      "raw_exit_package",
+      "client_snapshot",
+      "artifact_ref"
+    ],
+    "cases": [
+      {"name": "ark-transfer-v1-first-apply", "expected": "applied"},
+      {"name": "ark-transfer-v1-exact-replay", "expected": "replay_without_rpc"},
+      {"name": "ark-transfer-v1-crash-observation", "expected": "recovered_from_exact_vtxo"},
+      {"name": "ark-transfer-v1-changed-graph", "expected": "conflict"},
+      {"name": "ark-transfer-v1-changed-exit", "expected": "conflict"},
+      {"name": "ark-transfer-v1-operator-result-change", "expected": "fail_closed"}
+    ],
+    "mkt_pair_advertisement": false,
+    "native_session_actor": false
+  },
   "custody_rejected": [
     "seed",
     "preimage",

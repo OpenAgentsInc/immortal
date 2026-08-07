@@ -177,8 +177,13 @@ selected Lightning rail. An explicitly enabled Liquid rail adds a loopback
 `elementsd` JSON-RPC endpoint and a provider-owned Elements wallet. The
 fixture-gated Ark adapter may connect to a loopback `arkd` REST mapping only
 under the regtest adversarial profile. It verifies the live public operator
-policy at startup; Ark session execution remains disabled until its separate
-runtime packet. The
+policy at startup. The lab-only `ark-transfer` command restores an exact
+verified client snapshot from bounded duplicate-free JSON, accepts an
+externally signed Ark transaction, persists only its public identifiers and
+digests before operator RPC, and observes the exact output VTXO before an
+exact restart submission. The provider does not retain the client snapshot,
+transaction bytes, graph, or exit package. Native Ark session execution,
+Offering pair advertisement, and NIP-11 advertisement remain disabled. The
 default `cln` rail uses an absolute Unix socket and keeps the seven-dependency
 build free of a TLS stack. The optional `lnd` feature adds the owner-approved
 rustls chain and speaks bounded REST over TLS to a loopback LND endpoint whose
@@ -254,6 +259,16 @@ transaction commitments and locally verified evidence.
 | `IMMORTAL_PROVIDER_QUOTE_EXPIRY_SECONDS` | `300` | Quote acceptance window, 1–3,600 seconds, further bounded by RFQ and invoice expiry. |
 | `IMMORTAL_PROVIDER_RESERVATION_TIER` | `hard` | Pricing reservation policy. Funded mode accepts `hard`; `none` and `soft` fail startup because funded rail effects require a durable reserve. |
 | `IMMORTAL_PROVIDER_LN_ROUTING_FEE_PPM` | `0` | Submarine outbound-Lightning routing budget, 0–100,000 parts per million. |
+
+`immortal-provider ark-transfer` reads one
+`openagents.immortal.ark-transfer-command.v1` object from standard input and
+prints one canonical public receipt. It uses only
+`IMMORTAL_PROVIDER_DATABASE_URL`, `IMMORTAL_PROVIDER_BITCOIN_NETWORK`,
+`IMMORTAL_PROVIDER_LAB_PROFILE`, and the five `IMMORTAL_PROVIDER_ARKD_*`
+settings above. Wallet, relay, bitcoind, and Lightning configuration are not
+read by this command. The command is a bounded regtest-lab executor for a
+client-authorized transfer effect; it does not advertise or open a native Ark
+market session.
 
 Zero-confirmation admission is disabled unless a direction flag and both caps
 are present. The provider accepts only an exact contract-bound transaction in

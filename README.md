@@ -29,7 +29,11 @@ The products:
   optional, off-by-default Liquid rail drives a loopback elementsd wallet for
   exact BTC↔L-BTC quoting, own-output unblinding, and unilateral script-path
   exits without claiming independent verification of arbitrary confidential
-  proofs. Its allowlist-only MuSig2
+  proofs. A fixture-gated regtest Ark adapter also executes one externally
+  signed, client-authorized transfer through a loopback arkd while retaining
+  only public identifiers and digests; native Ark session and pair
+  advertisement remain disabled until their conformance packet. Its
+  allowlist-only MuSig2
   foundation and signed actor support the cooperative key-path protocol. The
   actor is fail-closed on exact stored Status bytes and the pre-committed
   provider exit package. Submarine signer/runtime capability is available

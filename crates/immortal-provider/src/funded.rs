@@ -1,7 +1,8 @@
 use crate::{
+    ark_funded::{ArkFundedRail, ArkTransferCommand, MAX_ARK_TRANSFER_COMMAND_BYTES},
     bitcoind::RpcRequestId,
     boltz::{BoltzApi, serve_boltz},
-    config::FundedProviderConfig,
+    config::{ArkTransferConfig, FundedProviderConfig},
     funded_mode::{FundedMode, FundedModePolicy, signer_from_environment},
     health::{ProviderHealth, serve_health},
     liquid::LiquidProviderRail,
@@ -10,8 +11,15 @@ use crate::{
     wallet::{BitcoinNetwork, WalletPath},
     watchtower::Watchtower,
 };
+use immortal_core::{ark::canonical_json, domain::parse_json_without_duplicate_members};
 use serde_json::{Value, json};
-use std::{env, fmt, sync::Arc, thread};
+use std::{
+    env, fmt,
+    io::{Read, Write},
+    sync::Arc,
+    thread,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tokio::{
     runtime::Builder,
     sync::{oneshot, watch},
@@ -24,6 +32,7 @@ enum FundedError {
     Database(String),
     Bitcoind(String),
     Arkd(String),
+    ArkTransfer(String),
     Elementsd(String),
     Lightning(String),
     Wallet(String),
@@ -43,6 +52,7 @@ impl fmt::Display for FundedError {
             Self::Database(error) => write!(formatter, "provider database startup failed: {error}"),
             Self::Bitcoind(error) => write!(formatter, "provider bitcoind startup failed: {error}"),
             Self::Arkd(error) => write!(formatter, "provider arkd startup failed: {error}"),
+            Self::ArkTransfer(error) => write!(formatter, "provider Ark transfer failed: {error}"),
             Self::Elementsd(error) => {
                 write!(formatter, "provider elementsd startup failed: {error}")
             }
@@ -90,6 +100,61 @@ pub fn receive_address() -> Result<String, String> {
         )
         .map(|address| address.address)
         .map_err(|error| format!("provider wallet startup failed: {error}"))
+}
+
+pub fn ark_transfer() -> Result<(), String> {
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take(
+            u64::try_from(MAX_ARK_TRANSFER_COMMAND_BYTES)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1),
+        )
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("could not read Ark transfer command: {error}"))?;
+    let command = parse_ark_transfer_command(&bytes)?;
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| FundedError::Runtime.to_string())?;
+    let receipt = runtime
+        .block_on(run_ark_transfer(command))
+        .map_err(|error| error.to_string())?;
+    let mut output = canonical_json(&receipt)
+        .map_err(|error| format!("could not encode Ark transfer receipt: {error}"))?;
+    output.push(b'\n');
+    std::io::stdout()
+        .write_all(&output)
+        .map_err(|error| format!("could not write Ark transfer receipt: {error}"))
+}
+
+fn parse_ark_transfer_command(bytes: &[u8]) -> Result<ArkTransferCommand, String> {
+    if bytes.is_empty() || bytes.len() > MAX_ARK_TRANSFER_COMMAND_BYTES {
+        return Err("Ark transfer command is empty or exceeds its byte bound".to_owned());
+    }
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| "Ark transfer command is not UTF-8".to_owned())?;
+    let value = parse_json_without_duplicate_members(text, "Ark transfer command")?;
+    serde_json::from_value(value)
+        .map_err(|error| format!("Ark transfer command shape is invalid: {error}"))
+}
+
+async fn run_ark_transfer(
+    command: ArkTransferCommand,
+) -> Result<crate::ark_funded::ArkTransferReceipt, FundedError> {
+    let config = ArkTransferConfig::from_environment()
+        .map_err(|error| FundedError::Configuration(error.to_string()))?;
+    let (mut store, _) = ProviderStore::connect(config.database_url())
+        .await
+        .map_err(|error| FundedError::Database(error.to_string()))?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| FundedError::ArkTransfer("system time predates Unix epoch".to_owned()))?
+        .as_secs();
+    ArkFundedRail::new(config.arkd)
+        .execute_command(&mut store, &command, now)
+        .await
+        .map_err(|error| FundedError::ArkTransfer(error.to_string()))
 }
 
 async fn run_async() -> Result<(), FundedError> {
@@ -144,6 +209,7 @@ async fn run_async() -> Result<(), FundedError> {
     };
     let relay_url = config.relay_url.clone();
     let mode_bitcoind = config.bitcoind.clone();
+    let mode_ark = config.arkd.clone().map(ArkFundedRail::new);
     let mode_liquid = liquid_provider_rail(config.elementsd.clone());
     let watch_bitcoind = config.bitcoind.clone();
     let mode_lightning = config.lightning.clone();
@@ -173,6 +239,7 @@ async fn run_async() -> Result<(), FundedError> {
         mode_lightning,
         mode_liquid,
         FundedModePolicy {
+            ark: mode_ark,
             network,
             cooperative_signing,
             minimum_confirmations,
@@ -441,7 +508,16 @@ mod tests {
         elementsd::{ElementsdClient, ElementsdWalletName},
     };
 
-    use super::liquid_provider_rail;
+    use super::{MAX_ARK_TRANSFER_COMMAND_BYTES, liquid_provider_rail, parse_ark_transfer_command};
+
+    #[test]
+    fn ark_transfer_command_rejects_empty_duplicate_and_oversize_json() {
+        assert!(parse_ark_transfer_command(&[]).is_err());
+        assert!(parse_ark_transfer_command(br#"{"schema":"first","schema":"second"}"#).is_err());
+        assert!(
+            parse_ark_transfer_command(&vec![b' '; MAX_ARK_TRANSFER_COMMAND_BYTES + 1]).is_err()
+        );
+    }
 
     #[test]
     fn elementsd_configuration_is_passed_into_the_funded_mode_rail() {

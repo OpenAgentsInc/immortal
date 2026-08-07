@@ -157,6 +157,12 @@ fn provider_contract_binds_the_exact_provider_fixtures() {
         "regtest_lab_only"
     );
     assert_eq!(contract["rails"]["arkd"]["session_execution_wired"], false);
+    assert_eq!(contract["rails"]["arkd"]["transfer_effect_wired"], true);
+    assert_eq!(contract["rails"]["arkd"]["pair_advertised"], false);
+    assert_eq!(
+        contract["rails"]["arkd"]["transfer_command_schema"],
+        "openagents.immortal.ark-transfer-command.v1"
+    );
     assert_eq!(contract["rails"]["arkd"]["nip11_advertised"], false);
     assert_eq!(
         contract["rails"]["arkd"]["conformance_sha256"],
@@ -186,6 +192,21 @@ fn provider_contract_exports_closed_nonzero_runtime_limits() {
     assert_eq!(limits["relay_actor"]["active_sessions_per_requester"], 4);
     assert_eq!(limits["direct_recovery"]["request_wraps"], 32);
     assert_eq!(limits["direct_recovery"]["response_wraps"], 512);
+    assert_eq!(limits["rail_rpc"]["arkd"]["command_bytes"], 4_194_304);
+    assert_eq!(
+        contract["identity"]["commands"],
+        json!(["run", "address", "ark-transfer", "contract", "--no-spend"])
+    );
+    assert_eq!(
+        contract["operations"]["ark_transfer"]["persist_before_rpc"],
+        true
+    );
+    assert_eq!(
+        contract["operations"]["ark_transfer"]["raw_artifacts_retained"],
+        false
+    );
+    assert_eq!(contract["execution"]["ark_transfer_effect"], true);
+    assert_eq!(contract["execution"]["ark_native_session_actor"], false);
     assert_eq!(
         contract["operations"]["drain"]["signals"],
         json!(["SIGUSR1", "SIGTERM", "SIGINT"])

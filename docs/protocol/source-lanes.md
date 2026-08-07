@@ -1354,3 +1354,33 @@ the provider contract. This packet adds no dependency, credential, database
 state, session execution, NIP-11 advertisement, deployment claim, or public
 replacement claim. The funded Ark actor and external-process
 permanent-operator-removal lab remain later #20 packets.
+
+## M13 MKT-SWP Ark funded-transfer adoption (2026-08-07)
+
+The fifth issue #20 packet connects the verified Ark client authorization to
+one durable provider effect without adding a native Ark session actor. The
+lab-only `immortal-provider ark-transfer` command accepts a bounded,
+duplicate-free `openagents.immortal.ark-transfer-command.v1` object. It
+restores the exact transport-neutral client snapshot, requires the client
+engine to authorize the deterministic source or destination `ark_transfer`
+effect, binds the configured Arkade operator and asset identity, and verifies
+the externally signed transaction's exact output VTXO, amount, script, graph
+digest, exit-package digest, and checkpoint sets.
+
+The effect request is durably stored before arkd RPC. Stored state contains
+only the effect, public order/operator/VTXO identifiers, and transaction,
+graph, exit-package, and checkpoint digests. It never contains the client
+snapshot, raw transaction, graph, exit package, artifact reference, wallet
+seed, preimage, macaroon, claim/refund key, spend key, fee key, or private
+nonce. Exact applied replay performs no RPC. A pending restart first observes
+the exact output VTXO and resubmits only after an exact not-found response;
+any changed request, operator result, or observed VTXO fails closed.
+
+The provider Postgres integration test runs the restored client engine,
+durable request/result state, and bounded loopback arkd call sequence, then
+removes the endpoint before replay to prove RPC-free idempotency. The Ark
+runtime fixture and provider contract bind these cases and the command byte
+limit. This packet adds no dependency, credential, Offering pair, native Ark
+session actor, NIP-11 advertisement, deployment claim, or public replacement
+claim. The external-process Ark lab and permanent operator-removal proof
+remain the final #20 packet.

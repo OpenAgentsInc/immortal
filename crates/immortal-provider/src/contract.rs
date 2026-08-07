@@ -82,7 +82,9 @@ pub(crate) const ARKD_CONFIGURATION_SCHEMA: &str = concat!(
     "transport=bounded_loopback_http_1_1_rest\n",
     "operator=closed_public_document_and_live_info_match\n",
     "credentials=forbidden\n",
-    "session_execution=disabled\n",
+    "transfer_effect=verified_client_snapshot_and_externally_signed_transaction\n",
+    "native_session_actor=disabled\n",
+    "pair_advertisement=disabled\n",
     "nip11_advertisement=never\n",
 );
 
@@ -139,7 +141,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
             "crate_version":env!("CARGO_PKG_VERSION"),
             "build_profile":"default_features",
             "modes":["funded","no_spend"],
-            "commands":["run","address","contract","--no-spend"],
+            "commands":["run","address","ark-transfer","contract","--no-spend"],
             "one_binary_per_product":true,
             "one_postgres_per_product":true,
             "nips":nip_sources()?
@@ -290,6 +292,13 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 ],
                 "runtime_methods":["get_info","get_vtxos","submit_tx","finalize_tx"],
                 "get_info_is_verification_authority":false,
+                "transfer_effect_wired":true,
+                "transfer_command_schema":crate::ark_funded::ARK_TRANSFER_COMMAND_SCHEMA,
+                "transfer_input":"verified_client_snapshot_and_externally_signed_transaction",
+                "transfer_effect_persisted_before_rpc":true,
+                "transfer_restart":"observe_exact_vtxo_before_exact_submit_replay",
+                "transfer_retains_raw_artifacts":false,
+                "pair_advertised":false,
                 "session_execution_wired":false,
                 "nip11_advertised":false
             }
@@ -314,6 +323,10 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
             "zero_confirmation_local_view":"provider_local_bitcoind",
             "zero_confirmation_requester_finality_unchanged":true,
             "zero_confirmation_durable_aggregate_reservation":true,
+            "ark_transfer_effect":true,
+            "ark_native_session_actor":false,
+            "ark_client_snapshot_required":true,
+            "ark_exit_package_bytes_in_provider_state":false,
             "unresolved_state_is_success":false
         },
         "limits":limits_contract(),
@@ -394,6 +407,17 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 "configuration_access":false,
                 "custody_access":false,
                 "output":"canonical_provider_contract_v1"
+            },
+            "ark_transfer":{
+                "command":"ark-transfer",
+                "available_in":"regtest_lab_only",
+                "database_access":true,
+                "operator_rpc_access":true,
+                "persist_before_rpc":true,
+                "raw_artifacts_retained":false,
+                "requires":["postgres","arkd","verified_ark_client_snapshot","externally_signed_transaction"],
+                "pair_advertisement":false,
+                "native_session_actor":false
             },
             "health":{
                 "transport":"plaintext_http",
@@ -499,7 +523,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
         "v1_exclusions":[
             "zmq",
             "outbound_https_price_feeds",
-            "ark_session_execution",
+            "ark_native_session_actor",
             "evm",
             "cashu",
             "autoswap_inventory_strategy"
@@ -552,6 +576,7 @@ fn limits_contract() -> Value {
         },
         "rail_rpc":{
             "arkd":{
+                "command_bytes":crate::ark_funded::MAX_ARK_TRANSFER_COMMAND_BYTES,
                 "resolved_addresses":8,
                 "header_bytes":16 * 1024,
                 "request_bytes":1024 * 1024,
