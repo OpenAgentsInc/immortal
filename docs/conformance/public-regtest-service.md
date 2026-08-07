@@ -31,6 +31,8 @@ preimages, credentials, or rail endpoints.
 `scripts/public-regtest-operator.sh loop` runs beside the loopback gateway.
 Expired private dynamic requests are skipped before a worker is started, so a
 stale session cannot starve newer public sessions in the bounded worker queue.
+Failed workers retain no diagnostic file and expose only an allowlisted
+`swp_*` failure code (or `worker_failed_redacted`) to the operator journal.
 It reuses the topology's private Compose authority to inspect both chain tips,
 both providers/relays, all three Lightning nodes and channel balances, disk,
 session exposure, and receipt storage. It atomically publishes only the

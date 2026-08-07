@@ -1204,13 +1204,15 @@ pub fn run_public_dynamic_worker_once() -> Result<Value, String> {
     )?;
     let provider_pubkeys = environments
         .iter()
-        .map(|environment| {
+        .enumerate()
+        .map(|(index, environment)| {
             verify_health(&environment.health_url)?;
             discover_provider(
                 &environment.relay_url,
                 &environment.requester,
                 JOURNEY_TIMEOUT,
             )
+            .map_err(|_| format!("swp_public_provider_discovery_lane_{index}_failed"))
         })
         .collect::<Result<Vec<_>, String>>()?;
     if provider_pubkeys.len() != 2 || provider_pubkeys[0] == provider_pubkeys[1] {

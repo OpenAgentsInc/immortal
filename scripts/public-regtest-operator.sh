@@ -205,7 +205,7 @@ PY
 }
 
 process_dynamic_requests() {
-  local request session_id worker_lock session_state owner_pid now
+  local request session_id worker_lock session_state owner_pid now diagnostic failure_code
   shopt -s nullglob
   for request in "${gateway_state}"/sessions/*/private-dynamic-request.json; do
     session_id="$(basename "$(dirname "${request}")")"
@@ -231,13 +231,17 @@ process_dynamic_requests() {
     install -d -m 0700 "${state_dir}/state/public-sessions/${session_id}"
     (
       printf '%s\n' "${BASHPID}" >"${worker_lock}/pid"
+      diagnostic="$(mktemp "${state_dir}/dynamic-worker.XXXXXX")"
       if ! "${compose[@]}" --profile acceptance run --rm \
         --user "$(id -u):$(id -g)" \
         -e "IMMORTAL_PUBLIC_REGTEST_SESSION_ID=${session_id}" \
         -e "IMMORTAL_LAB_STATE_DIR=/state/public-sessions/${session_id}" \
-        wallet-driver public-regtest-dynamic-worker-once >/dev/null 2>&1; then
-        echo "public-regtest-operator: dynamic worker failed for ${session_id}" >&2
+        wallet-driver public-regtest-dynamic-worker-once >"${diagnostic}" 2>&1; then
+        failure_code="$(grep -Eo 'swp_[a-z0-9_]+' "${diagnostic}" | tail -n 1 || true)"
+        if test -z "${failure_code}"; then failure_code="worker_failed_redacted"; fi
+        echo "public-regtest-operator: dynamic worker failed (${failure_code})" >&2
       fi
+      rm -f -- "${diagnostic}"
       rm -f -- "${worker_lock}/pid"
       rmdir "${worker_lock}" 2>/dev/null || true
     ) &
