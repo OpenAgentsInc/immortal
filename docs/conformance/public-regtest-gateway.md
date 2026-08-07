@@ -41,7 +41,8 @@ before the existing wallet/rail code runs.
 `POST /v1/public-regtest/sessions` accepts a closed requester identity and
 client nonce. It returns a 256-bit random capability once and stores only its
 SHA-256 digest. The response also contains a NIP-01-shaped Schnorr-signed
-manifest bound to:
+manifest whose event content is recursively key-sorted canonical JSON and is
+bound to:
 
 - the exact Origin, client IP policy, sandbox session, requester identity,
   expiry, regtest network, source revision, requester-contract digest, and

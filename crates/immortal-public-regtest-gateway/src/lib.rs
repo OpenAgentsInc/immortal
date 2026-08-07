@@ -1477,7 +1477,7 @@ fn signed_manifest(
     };
     let manifest_value = serde_json::to_value(&manifest).map_err(|error| error.to_string())?;
     reject_custody_material(&manifest_value)?;
-    let content = serde_json::to_string(&manifest).map_err(|error| error.to_string())?;
+    let content = canonical_json(&manifest_value)?;
     let signature_event = config.signer.sign(
         unix_now()?,
         MANIFEST_EVENT_KIND,
@@ -1491,6 +1491,34 @@ fn signed_manifest(
         manifest,
         signature_event,
     })
+}
+
+fn canonical_json(value: &Value) -> Result<String, String> {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            serde_json::to_string(value).map_err(|error| error.to_string())
+        }
+        Value::Array(values) => {
+            let encoded = values
+                .iter()
+                .map(canonical_json)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(format!("[{}]", encoded.join(",")))
+        }
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort();
+            let encoded = keys
+                .into_iter()
+                .map(|key| {
+                    let name = serde_json::to_string(key).map_err(|error| error.to_string())?;
+                    let value = canonical_json(&values[key])?;
+                    Ok(format!("{name}:{value}"))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(format!("{{{}}}", encoded.join(",")))
+        }
+    }
 }
 
 fn validate_create(input: &CreateSessionRequest) -> Result<(), HttpError> {
@@ -2664,6 +2692,11 @@ mod tests {
         let decoded: SessionManifest =
             serde_json::from_str(&signed.signature_event.content).expect("manifest content");
         assert_eq!(decoded, signed.manifest);
+        let manifest_value = serde_json::to_value(&signed.manifest).expect("manifest value");
+        assert_eq!(
+            signed.signature_event.content,
+            canonical_json(&manifest_value).expect("canonical manifest")
+        );
         fs::remove_dir_all(root).expect("remove owned test root");
     }
 
