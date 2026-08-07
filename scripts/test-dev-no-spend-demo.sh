@@ -62,7 +62,8 @@ PY
   sleep 0.1
 done
 
-python3 - "${fixture}" "${state_dir}/manifest.json" "${relay_port}" <<'PY'
+python3 - "${fixture}" "${state_dir}/manifest.json" "${relay_port}" \
+  "tests/fixtures/nipmkt/swp-full-sessions-v1.json" <<'PY'
 import json
 import os
 import pathlib
@@ -98,6 +99,52 @@ for provider in providers:
     for member in ["variant", "quote_lifetime_seconds", "completion_discount_seconds", "quote_class", "reservation_class"]:
         if policy.get(member) != row[member]:
             raise SystemExit(f"{provider['role']} policy {member} differs from the fixture")
+
+sessions = json.load(open(sys.argv[4], encoding="utf-8"))
+expected_templates = []
+for swap_type in ["submarine", "reverse", "chain"]:
+    records = sessions["flows"][swap_type]["snapshot"]["signed_records"]
+    quotes = [record for record in records if record.get("kind") == 39605]
+    if len(quotes) != 1:
+        raise SystemExit(f"full-session fixture has another {swap_type} Quote count")
+    terms = json.loads(quotes[0]["content"])["mkt_swp"]["terms"]
+    invoice_sha256 = None
+    if swap_type == "submarine":
+        lightning = [
+            verifier for verifier in terms["verifier_inputs"]
+            if verifier.get("leg_id") == "lightning"
+        ]
+        if len(lightning) != 1:
+            raise SystemExit("full-session fixture has another submarine Lightning verifier count")
+        invoice_sha256 = lightning[0]["invoice_sha256"]
+    requester_public_keys = []
+    for verifier in terms["verifier_inputs"]:
+        for leaf in verifier.get("taproot_tree", []):
+            if leaf.get("participant_role") == "requester":
+                requester_public_keys.append({
+                    "leg_id": verifier["leg_id"],
+                    "path": leaf["path"],
+                    "public_key": leaf["signing_pubkey"],
+                })
+    requester_public_keys.sort(
+        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"))
+    )
+    expected_templates.append({
+        "swap_type": swap_type,
+        "input_asset_id": terms["asset_pair"][0],
+        "output_asset_id": terms["asset_pair"][1],
+        "input_amount": terms["input_amount"],
+        "payment_hash": terms["payment_hash"],
+        "invoice_sha256": invoice_sha256,
+        "requester_public_keys": requester_public_keys,
+    })
+request_contract = manifest.get("request_contract")
+expected_contract = {
+    "schema": fixture["request_contract"]["schema"],
+    "templates": expected_templates,
+}
+if request_contract != expected_contract:
+    raise SystemExit("demo request contract differs from the pinned Quote fixtures")
 lower = raw.lower()
 for forbidden in [b"identity_secret", b"provider-a.secret", b"provider-b.secret", b"private_key", b"preimage", b"macaroon"]:
     if forbidden in lower:

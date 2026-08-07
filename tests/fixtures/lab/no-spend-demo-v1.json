@@ -2,7 +2,7 @@
   "schema": "openagents.immortal.no-spend-demo.v1",
   "launcher": "scripts/dev-no-spend-demo.sh",
   "process_gate": "scripts/test-dev-no-spend-demo.sh",
-  "manifest_schema": "openagents.immortal.no-spend-demo-manifest.v1",
+  "manifest_schema": "openagents.immortal.no-spend-demo-manifest.v2",
   "smoke_schema": "openagents.immortal.no-spend-demo-smoke.v1",
   "topology": {
     "relay_count": 1,
@@ -52,6 +52,21 @@
       "reservation_class": "soft"
     }
   ],
+  "request_contract": {
+    "schema": "openagents.immortal.no-spend-request-contract.v1",
+    "swap_types": ["submarine", "reverse", "chain"],
+    "required_template_members": [
+      "swap_type",
+      "input_asset_id",
+      "output_asset_id",
+      "input_amount",
+      "payment_hash",
+      "invoice_sha256",
+      "requester_public_keys"
+    ],
+    "fixture_bound": true,
+    "private_key_authority": false
+  },
   "lifecycle": {
     "path": [
       "rfq",

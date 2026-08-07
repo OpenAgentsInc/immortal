@@ -99,11 +99,19 @@ price authority.
 
 `scripts/dev-no-spend-demo.sh` supervises one disposable loopback relay and
 two such provider processes. Its atomic
-`openagents.immortal.no-spend-demo-manifest.v1` document exposes only public
-connection and discovery data. `scripts/test-dev-no-spend-demo.sh` proves the
-two signed heads and Quotes, restarts provider A after its Order while provider
-B remains unchanged, and completes both sessions through bilateral Contracts,
-accepted Status, mutual cancellation, and exact zero-spend Close records.
+`openagents.immortal.no-spend-demo-manifest.v2` document exposes public
+connection and discovery data plus a closed
+`openagents.immortal.no-spend-request-contract.v1`. That request contract is
+derived from the same committed full-session Quotes as the no-spend provider
+and publishes the exact asset pair, input amount, payment-hash commitment,
+nullable invoice digest, and requester fixture public keys for submarine,
+reverse, and chain RFQs. These are non-secret, demo-only commitments with no
+private-key authority and must never receive funds. Missing, changed, or
+additional request-contract members fail fixture comparison.
+`scripts/test-dev-no-spend-demo.sh` proves the request contract, two signed
+heads and Quotes, restarts provider A after its Order while provider B remains
+unchanged, and completes both sessions through bilateral Contracts, accepted
+Status, mutual cancellation, and exact zero-spend Close records.
 
 Funded mode adds a provider-owned Postgres database, a mode-0600 operator seed
 file, dynamic hard reservations, bounded bitcoind and Core Lightning clients,

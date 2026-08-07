@@ -149,6 +149,33 @@ fn two_provider_demo_manifest_quotes_restart_and_close_are_live() {
     run_two_provider_demo_smoke().expect("two-provider demo smoke failed");
 }
 
+#[test]
+fn demo_request_contract_is_closed_fixture_bound_and_public_safe() {
+    let expected = expected_demo_request_contract().expect("fixture request contract");
+    let valid = json!({"request_contract":expected});
+    verify_demo_request_contract(&valid).expect("fixture request contract should verify");
+
+    let mut missing = valid.clone();
+    missing["request_contract"]
+        .as_object_mut()
+        .unwrap()
+        .remove("templates");
+    assert!(verify_demo_request_contract(&missing).is_err());
+
+    let mut unknown = valid.clone();
+    unknown["request_contract"]["unexpected"] = Value::Bool(true);
+    assert!(verify_demo_request_contract(&unknown).is_err());
+
+    let mut malformed = valid.clone();
+    malformed["request_contract"]["templates"][0]["payment_hash"] = Value::String("AA".repeat(32));
+    assert!(verify_demo_request_contract(&malformed).is_err());
+
+    let mut secret_bearing = valid;
+    secret_bearing["request_contract"]["templates"][0]["private_key"] =
+        Value::String("11".repeat(32));
+    assert!(verify_demo_request_contract(&secret_bearing).is_err());
+}
+
 fn run_live_smoke() -> Result<(), String> {
     let relay_url = std::env::var("IMMORTAL_PROVIDER_LIVE_RELAY_URL")
         .unwrap_or_else(|_| "ws://127.0.0.1:18080".to_owned());
@@ -214,7 +241,7 @@ fn run_two_provider_demo_smoke() -> Result<(), String> {
     let manifest: Value = serde_json::from_str(&raw_manifest)
         .map_err(|error| format!("demo manifest is invalid JSON: {error}"))?;
     if manifest.get("schema").and_then(Value::as_str)
-        != Some("openagents.immortal.no-spend-demo-manifest.v1")
+        != Some("openagents.immortal.no-spend-demo-manifest.v2")
         || manifest.get("mode").and_then(Value::as_str) != Some("no_spend")
         || manifest
             .pointer("/lifecycle/external_spend_effects")
@@ -223,6 +250,7 @@ fn run_two_provider_demo_smoke() -> Result<(), String> {
     {
         return Err("demo manifest contract is invalid".to_owned());
     }
+    verify_demo_request_contract(&manifest)?;
     let relay_url = manifest
         .pointer("/relay/websocket_url")
         .and_then(Value::as_str)
@@ -329,6 +357,142 @@ fn run_two_provider_demo_smoke() -> Result<(), String> {
         })
     );
     Ok(())
+}
+
+fn verify_demo_request_contract(manifest: &Value) -> Result<(), String> {
+    let actual = manifest
+        .get("request_contract")
+        .ok_or_else(|| "demo manifest omits its request contract".to_owned())?;
+    let expected = expected_demo_request_contract()?;
+    if actual != &expected {
+        return Err("demo request contract differs from the pinned Quote fixtures".to_owned());
+    }
+    Ok(())
+}
+
+fn expected_demo_request_contract() -> Result<Value, String> {
+    let sessions: Value = serde_json::from_str(FULL_SESSION_FIXTURES)
+        .map_err(|error| format!("full-session fixture is invalid: {error}"))?;
+    let mut templates = Vec::new();
+    for swap_type in ["submarine", "reverse", "chain"] {
+        let records = sessions
+            .pointer(&format!("/flows/{swap_type}/snapshot/signed_records"))
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("full-session fixture omits {swap_type} records"))?;
+        let quotes = records
+            .iter()
+            .filter(|record| record.get("kind").and_then(Value::as_u64) == Some(39_605))
+            .collect::<Vec<_>>();
+        if quotes.len() != 1 {
+            return Err(format!(
+                "full-session fixture has another {swap_type} Quote count"
+            ));
+        }
+        let quote_content = quotes[0]
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("full-session fixture has no {swap_type} Quote content"))?;
+        let quote: Value = serde_json::from_str(quote_content)
+            .map_err(|error| format!("{swap_type} Quote content is invalid: {error}"))?;
+        let terms = quote
+            .pointer("/mkt_swp/terms")
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("{swap_type} Quote has no terms"))?;
+        let asset_pair = terms
+            .get("asset_pair")
+            .and_then(Value::as_array)
+            .filter(|pair| pair.len() == 2)
+            .ok_or_else(|| format!("{swap_type} Quote has another asset-pair shape"))?;
+        let input_asset_id = required_string(&asset_pair[0], "input asset ID")?;
+        let output_asset_id = required_string(&asset_pair[1], "output asset ID")?;
+        let input_amount = required_string(
+            terms.get("input_amount").unwrap_or(&Value::Null),
+            "input amount",
+        )?;
+        let payment_hash = required_lower_hex_32(
+            terms.get("payment_hash").unwrap_or(&Value::Null),
+            "payment hash",
+        )?;
+        let verifiers = terms
+            .get("verifier_inputs")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("{swap_type} Quote has no verifier inputs"))?;
+        let invoice_sha256 = if swap_type == "submarine" {
+            let lightning = verifiers
+                .iter()
+                .filter(|verifier| {
+                    verifier.get("leg_id").and_then(Value::as_str) == Some("lightning")
+                })
+                .collect::<Vec<_>>();
+            if lightning.len() != 1 {
+                return Err("submarine Quote has another Lightning verifier count".to_owned());
+            }
+            Value::String(required_lower_hex_32(
+                lightning[0].get("invoice_sha256").unwrap_or(&Value::Null),
+                "invoice digest",
+            )?)
+        } else {
+            Value::Null
+        };
+        let mut requester_public_keys = Vec::new();
+        for verifier in verifiers {
+            let Some(tree) = verifier.get("taproot_tree").and_then(Value::as_array) else {
+                continue;
+            };
+            let leg_id = required_string(
+                verifier.get("leg_id").unwrap_or(&Value::Null),
+                "verifier leg ID",
+            )?;
+            for leaf in tree.iter().filter(|leaf| {
+                leaf.get("participant_role").and_then(Value::as_str) == Some("requester")
+            }) {
+                requester_public_keys.push(json!({
+                    "leg_id":leg_id,
+                    "path":required_string(
+                        leaf.get("path").unwrap_or(&Value::Null),
+                        "requester key path",
+                    )?,
+                    "public_key":required_lower_hex_32(
+                        leaf.get("signing_pubkey").unwrap_or(&Value::Null),
+                        "requester public key",
+                    )?,
+                }));
+            }
+        }
+        if requester_public_keys.is_empty() {
+            return Err(format!("{swap_type} Quote has no requester public key"));
+        }
+        requester_public_keys.sort_by_key(Value::to_string);
+        templates.push(json!({
+            "swap_type":swap_type,
+            "input_asset_id":input_asset_id,
+            "output_asset_id":output_asset_id,
+            "input_amount":input_amount,
+            "payment_hash":payment_hash,
+            "invoice_sha256":invoice_sha256,
+            "requester_public_keys":requester_public_keys,
+        }));
+    }
+    Ok(json!({
+        "schema":"openagents.immortal.no-spend-request-contract.v1",
+        "templates":templates,
+    }))
+}
+
+fn required_string(value: &Value, label: &str) -> Result<String, String> {
+    value
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("demo request contract {label} is invalid"))
+}
+
+fn required_lower_hex_32(value: &Value, label: &str) -> Result<String, String> {
+    let value = required_string(value, label)?;
+    if value.len() != 64 || !value.bytes().all(is_lower_hex) {
+        return Err(format!("demo request contract {label} is invalid"));
+    }
+    Ok(value)
 }
 
 fn demo_provider(manifest: &Value, role: &str) -> Result<(String, String), String> {

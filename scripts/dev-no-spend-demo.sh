@@ -236,7 +236,8 @@ write_manifest() {
   python3 - "${state_dir}/relay-contract.json" "${manifest_path}" \
     "${source_revision}" "${relay_url}" "${relay_contract_sha256}" \
     "${relay_state}" "${provider_a_pubkey}" "${provider_a_state}" "${provider_a_restarts}" \
-    "${provider_b_pubkey}" "${provider_b_state}" "${provider_b_restarts}" <<'PY'
+    "${provider_b_pubkey}" "${provider_b_state}" "${provider_b_restarts}" \
+    "tests/fixtures/nipmkt/swp-full-sessions-v1.json" <<'PY'
 import json
 import os
 import pathlib
@@ -246,6 +247,7 @@ import sys
 contract_path = pathlib.Path(sys.argv[1])
 output_path = pathlib.Path(sys.argv[2])
 contract = json.loads(contract_path.read_text(encoding="utf-8"))
+sessions = json.loads(pathlib.Path(sys.argv[13]).read_text(encoding="utf-8"))
 providers = []
 rows = [
     ("provider-a", sys.argv[7], sys.argv[8], int(sys.argv[9]), "default", "immortal-no-spend-swaps", 600, 0),
@@ -268,8 +270,68 @@ for role, pubkey, state, restarts, variant, offering_id, lifetime, discount in r
         },
         "health": {"state": state, "restart_count": restarts},
     })
+
+request_templates = []
+for swap_type in ["submarine", "reverse", "chain"]:
+    records = sessions["flows"][swap_type]["snapshot"]["signed_records"]
+    quote_records = [record for record in records if record.get("kind") == 39605]
+    if len(quote_records) != 1:
+        raise SystemExit(f"full-session fixture has another {swap_type} Quote count")
+    terms = json.loads(quote_records[0]["content"])["mkt_swp"]["terms"]
+    asset_pair = terms.get("asset_pair")
+    if not isinstance(asset_pair, list) or len(asset_pair) != 2 or not all(
+        isinstance(asset, str) and asset for asset in asset_pair
+    ):
+        raise SystemExit(f"full-session fixture has an invalid {swap_type} asset pair")
+    payment_hash = terms.get("payment_hash")
+    if not isinstance(payment_hash, str) or re.fullmatch(r"[0-9a-f]{64}", payment_hash) is None:
+        raise SystemExit(f"full-session fixture has an invalid {swap_type} payment hash")
+    invoice_sha256 = None
+    if swap_type == "submarine":
+        lightning = [
+            verifier for verifier in terms.get("verifier_inputs", [])
+            if verifier.get("leg_id") == "lightning"
+        ]
+        if len(lightning) != 1:
+            raise SystemExit("full-session fixture has another submarine Lightning verifier count")
+        invoice_sha256 = lightning[0].get("invoice_sha256")
+        if not isinstance(invoice_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", invoice_sha256) is None:
+            raise SystemExit("full-session fixture has an invalid submarine invoice digest")
+    requester_public_keys = []
+    for verifier in terms.get("verifier_inputs", []):
+        for leaf in verifier.get("taproot_tree", []):
+            if leaf.get("participant_role") != "requester":
+                continue
+            key = {
+                "leg_id": verifier.get("leg_id"),
+                "path": leaf.get("path"),
+                "public_key": leaf.get("signing_pubkey"),
+            }
+            if (
+                not isinstance(key["leg_id"], str)
+                or not isinstance(key["path"], str)
+                or not isinstance(key["public_key"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", key["public_key"]) is None
+            ):
+                raise SystemExit(f"full-session fixture has an invalid {swap_type} requester key")
+            requester_public_keys.append(key)
+    requester_public_keys.sort(
+        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"))
+    )
+    if not requester_public_keys:
+        raise SystemExit(f"full-session fixture has no {swap_type} requester key")
+    request_templates.append({
+        "swap_type": swap_type,
+        "input_asset_id": asset_pair[0],
+        "output_asset_id": asset_pair[1],
+        "input_amount": terms["input_amount"],
+        "payment_hash": payment_hash,
+        "invoice_sha256": invoice_sha256,
+        "requester_public_keys": requester_public_keys,
+    })
+
 document = {
-    "schema": "openagents.immortal.no-spend-demo-manifest.v1",
+    "schema": "openagents.immortal.no-spend-demo-manifest.v2",
     "source_revision": sys.argv[3],
     "network": "regtest",
     "mode": "no_spend",
@@ -281,6 +343,10 @@ document = {
         "health": {"state": sys.argv[6]},
     },
     "providers": providers,
+    "request_contract": {
+        "schema": "openagents.immortal.no-spend-request-contract.v1",
+        "templates": request_templates,
+    },
     "lifecycle": {
         "terminal_path": "bilateral_contract_then_mutual_cancel",
         "external_spend_effects": 0,

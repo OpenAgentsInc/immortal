@@ -103,8 +103,8 @@
     },
     {
       "path": "tests/fixtures/lab/no-spend-demo-v1.json",
-      "sha256": "57e8577e77d128f3978cc9c65c44bb6c2da8a0f8e551d01685ad7842ebe4fe66",
-      "bytes": 1917,
+      "sha256": "ae954e369c8869a0e182eda81140dac74e254632a11dcb479d41e649f27d0ec9",
+      "bytes": 2335,
       "scope": "client"
     },
     {
