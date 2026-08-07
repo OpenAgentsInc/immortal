@@ -24,6 +24,9 @@ jq -e '
 ' "${fixture}" >/dev/null
 
 grep -Fq 'lightning_liquidity_' "${operator}"
+grep -Fq 'def msat: if type == "object" then .msat else . end;' "${operator}"
+grep -Fq -- '--project-name "${compose_project}"' "${operator}"
+grep -Fq 'free_bytes="$((free_kib * 1024))"' "${operator}"
 grep -Fq 'outstanding_value_capacity' "${operator}"
 grep -Fq 'admissions.issubset(receipts)' "${operator}"
 grep -Fq 'maximum_connections' "${fixture}"
@@ -36,7 +39,8 @@ service_root="$(mktemp -d "${TMPDIR:-/tmp}/immortal-service-cleanup.XXXXXX")"
 trap 'rm -rf -- "${service_root}"' EXIT INT TERM
 gateway_root="${service_root}/gateway"
 mkdir -p "${gateway_root}/sessions"
-printf '{}\n' >"${service_root}/ownership.json"
+printf '{"compose_project":"immortal-public-regtest-1111111111"}\n' \
+  >"${service_root}/ownership.json"
 old_time="$(( $(date +%s) - 700000 ))"
 empty_id="$(printf '11%.0s' $(seq 1 32))"
 pending_id="$(printf '22%.0s' $(seq 1 32))"

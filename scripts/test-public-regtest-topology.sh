@@ -94,6 +94,7 @@ PY
 
 rendered="$(
   IMMORTAL_PUBLIC_REGTEST_STATE_DIR="${state_dir}" \
+  IMMORTAL_PUBLIC_REGTEST_GATEWAY_STATE_DIR="${state_dir}/gateway" \
     docker compose \
       --env-file "${state_dir}/compose.env" \
       --file scripts/support/provider-funded/adversarial-compose.yaml \

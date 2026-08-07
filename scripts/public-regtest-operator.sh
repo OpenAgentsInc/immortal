@@ -17,7 +17,11 @@ for command_name in docker jq python3; do
   command -v "${command_name}" >/dev/null 2>&1 || fail "${command_name} is required"
 done
 
-compose=(docker compose --project-directory .
+compose_project="$(jq -er .compose_project "${state_dir}/ownership.json")"
+[[ "${compose_project}" =~ ^immortal-public-regtest-[0-9a-f]{10}$ ]] ||
+  fail "owned topology has an invalid Compose project"
+
+compose=(docker compose --project-directory . --project-name "${compose_project}"
   --env-file "${state_dir}/compose.env"
   -f scripts/support/provider-funded/adversarial-compose.yaml
   -f deploy/public-regtest/compose.yaml)
@@ -27,8 +31,9 @@ lightning_balance() {
   "${compose[@]}" exec -T "${service}" lightning-cli --network=regtest \
     --lightning-dir=/root/.lightning --rpc-file=/rail-rpc/lightning-rpc \
     listpeerchannels | jq -er '
-      [.channels[] | select(.state == "CHANNELD_NORMAL") | .to_us_msat.msat] | add as $local |
-      [.channels[] | select(.state == "CHANNELD_NORMAL") | (.total_msat.msat - .to_us_msat.msat)] | add as $remote |
+      def msat: if type == "object" then .msat else . end;
+      [.channels[] | select(.state == "CHANNELD_NORMAL") | (.to_us_msat | msat)] | add as $local |
+      [.channels[] | select(.state == "CHANNELD_NORMAL") | ((.total_msat | msat) - (.to_us_msat | msat))] | add as $remote |
       [$local, $remote] | @tsv'
 }
 
@@ -83,7 +88,7 @@ rebalance() {
 
 write_readiness() {
   install -d -m 0700 "${gateway_state}"
-  local manifest_file failures_file topology_log free_bytes revision
+  local manifest_file failures_file topology_log free_kib free_bytes revision
   manifest_file="$(mktemp "${gateway_state}/operator-manifest.XXXXXX")"
   failures_file="$(mktemp "${gateway_state}/operator-failures.XXXXXX")"
   topology_log="$(mktemp "${gateway_state}/operator-topology.XXXXXX")"
@@ -106,7 +111,9 @@ write_readiness() {
       printf 'lightning_unavailable_%s\n' "${service}" >>"${failures_file}"
     fi
   done
-  free_bytes="$(df -Pk "${state_dir}" | awk 'NR==2 {print $4 * 1024}')"
+  free_kib="$(df -Pk "${state_dir}" | awk 'NR==2 {print $4}')"
+  [[ "${free_kib}" =~ ^[0-9]+$ ]] || fail "free disk capacity is not an integer"
+  free_bytes="$((free_kib * 1024))"
   if test "${free_bytes}" -lt 1073741824; then printf '%s\n' disk_space_low >>"${failures_file}"; fi
   test ! -e "${gateway_state}/maintenance" || printf '%s\n' maintenance >>"${failures_file}"
   revision="$(jq -er .source_revision "${state_dir}/ownership.json")"
