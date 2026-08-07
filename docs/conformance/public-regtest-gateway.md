@@ -68,8 +68,11 @@ dispatch.
 `POST .../inputs` is the public-demo convenience boundary. It accepts only a
 session-bound `reverse|submarine` plus an amount inside the existing funded
 range. A private requester-rail worker allocates one deterministic `bcrt1`
-destination or one amount-bearing, ten-minute `lnbcrt` invoice and returns it
-only to the authenticated browser request. The public gateway still has no
+destination or one amount-bearing, three-hour `lnbcrt` invoice and returns it
+only to the authenticated browser request. The three-hour Lightning rail
+expiry outlives the funded Quote, funding, and confirmation timeout ladder;
+the allocation response itself remains usable for only ten minutes. The
+public gateway still has no
 wallet or node credential. Exact retries return the same allocation; changed
 amounts or directions conflict, and an accepted swap request permanently
 closes allocation for that session. This endpoint is not a general faucet,

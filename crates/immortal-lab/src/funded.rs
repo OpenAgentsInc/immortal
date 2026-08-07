@@ -98,6 +98,8 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const JOURNEY_TIMEOUT: Duration = Duration::from_secs(180);
 const LIGHTNING_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 const SUBMARINE_REFUND_INVOICE_EXPIRY_SECONDS: u32 = 86_400;
+const PUBLIC_DEMO_INPUT_TTL_SECONDS: u64 = 600;
+const PUBLIC_DEMO_INVOICE_EXPIRY_SECONDS: u32 = 10_800;
 const DOOMSDAY_DIRECT_RECOVERY_TIMEOUT: Duration = Duration::from_secs(90);
 const DOOMSDAY_DIRECT_RECOVERY_MAX_BYTES: usize = 8 * 1_024 * 1_024;
 const DOOMSDAY_KEYLESS_MAX_BYTES: usize = 64 * 1_024;
@@ -1310,7 +1312,7 @@ pub fn run_public_demo_input_once() -> Result<Value, String> {
     let quote = dynamic_quote(swap_type, request.amount_sat)?;
     let output_amount = canonical_u64(&quote.output_amount)?;
     let now = unix_now()?;
-    let expires_at = now.saturating_add(600);
+    let expires_at = now.saturating_add(PUBLIC_DEMO_INPUT_TTL_SECONDS);
     let destination = match swap_type {
         SwapType::Submarine => {
             let label = format!("public-demo-{}", &sandbox_session_id[..32]);
@@ -1322,7 +1324,7 @@ pub fn run_public_demo_input_once() -> Result<Value, String> {
                             .map_err(|error| format!("demo invoice amount is invalid: {error}"))?,
                         &label,
                         "Immortal public regtest demo",
-                        600,
+                        PUBLIC_DEMO_INVOICE_EXPIRY_SECONDS,
                     ),
                 )
                 .map_err(|error| format!("could not create public demo invoice: {error}"))?
@@ -14865,6 +14867,18 @@ mod tests {
         include_str!("../../../tests/fixtures/nipmkt/liquid-rail-v1.json");
     const LIQUID_RUNTIME_FIXTURE: &str =
         include_str!("../../../tests/fixtures/provider/liquid-runtime-v1.json");
+
+    #[test]
+    fn public_demo_invoice_outlives_the_funded_bitcoin_timeout_ladder() {
+        const QUOTE_VALIDITY_SECONDS: u32 = 300;
+        const FUNDING_AND_CONFIRMATION_BLOCKS: u32 = 13;
+        const REGTEST_BLOCK_INTERVAL_SECONDS: u32 = 600;
+        let minimum_ladder = QUOTE_VALIDITY_SECONDS
+            + FUNDING_AND_CONFIRMATION_BLOCKS * REGTEST_BLOCK_INTERVAL_SECONDS;
+
+        assert!(PUBLIC_DEMO_INVOICE_EXPIRY_SECONDS > minimum_ladder);
+        assert_eq!(PUBLIC_DEMO_INPUT_TTL_SECONDS, 600);
+    }
 
     #[test]
     fn liquid_fee_schedule_replays_every_fixture_shape_at_a_non_lab_rate() {
