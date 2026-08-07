@@ -21,7 +21,7 @@
         "lane": "openagents",
         "repo": "https://github.com/OpenAgentsInc/openagents",
         "subdir": "docs/nips",
-        "commit": "dfc6bacdca4f69eacd4d487000f6207f9a3ac0e7"
+        "commit": "c241e324e4a195c6a1fcbb04acc54647c2fa2208"
       }
     ]
   },

@@ -1215,3 +1215,31 @@ and public-replacement claims false: this is configured local capability, not
 a production claim. This adoption allocates no event kind and changes no relay
 admission, relay Postgres schema, dependency, custody boundary, or NIP-11
 advertisement.
+
+## M13 MKT-SWP Ark source sync (2026-08-07)
+
+Issue #20 advances the OpenAgents source lane from
+`dfc6bacdca4f69eacd4d487000f6207f9a3ac0e7` to
+`c241e324e4a195c6a1fcbb04acc54647c2fa2208`. Four of the 46 lane files
+change: `MKT-SWP.md` defines the Ark settlement rail, while `README.md`,
+`MKT.md`, and `PROPOSED.md` update their existing profile indexes. The other
+42 files are byte-identical.
+
+The source definition adds operator-bound Arkade and Bark asset identities,
+exact public operator-policy and endpoint terms, bounded family-native VTXO
+graph verification (32 inputs, 64 transactions, 32 parent edges, and 262,144
+decoded bytes), covenant-reserve evidence with global VTXO double-use
+locking, and a fully pre-signed keyless exit-package shape. Fee keys, spend
+keys, private nonces, preimages, operator credentials, and live package bytes
+remain prohibited from relay/server artifacts and persisted product state.
+The permanent-operator-removal fixture requires exit using only signed
+records, the verified graph and package, and Bitcoin access.
+
+This sync assigns no new event kind: Ark reuses the existing private MKT-SWP
+Swap Contract kind `39610`, so no reserved-block collision allocation changes.
+The regenerated relay contract and fixture manifest change only the pinned
+OpenAgents commit. Runtime verification, client/provider effects, fixtures,
+lab execution, and any advertisement wait for the separate #20 adoption
+packet. This sync changes no relay admission, Postgres schema, dependency,
+custody boundary, NIP-11 advertisement, deployment, or public replacement
+claim.
