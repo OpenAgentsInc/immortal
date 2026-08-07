@@ -1099,7 +1099,9 @@ pub fn record_demo_input_response(response: &DemoInputResponse) -> Result<(), St
         }
         return Ok(());
     }
-    write_json_create_new(&path, response)
+    // The HTTP waiter polls concurrently. Install the complete response with
+    // atomic rename so it can never observe the create-new file half-written.
+    write_json(&path, response)
 }
 
 /// Publish the semantic validator's redacted request projection. This is the
