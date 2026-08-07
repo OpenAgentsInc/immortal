@@ -362,8 +362,9 @@ are the M13 ledger below.
 
 Current M12 replacement-capability status: #9, #10, upstream #9311, #11, #12,
 #13, #14, #16, #17, #18, #19, #24, #25, #26, #27, #28, and #29 are complete.
-The pushed-main adversarial lab passed all 43 cases at `6c4cd10` and published
-its bounded record under `docs/conformance/records/`. At source commit
+#30 is also complete. The pushed-main adversarial lab passed all 46 cases at
+`3d65af1`, including the three opt-in zero-confirmation downgrade attacks, and
+published its bounded record under `docs/conformance/records/`. At source commit
 `764d119`, #19 passed the fresh
 Debian install/backup/restore/funded gate, seven public read-only GETs against
 the live Boltz API, and the cutover/rollback rehearsal. Five response-shape
@@ -380,8 +381,8 @@ funding precommitment, live pricing integration, CLN and feature-gated LND
 rails, and provider contract/runtime
 fixtures. Its disposable three-journey funded gate passed locally on
 2026-08-04 with CLN and on 2026-08-05 with LND on macOS 26.4 arm64, and the
-Debian 13 arm64 closing gate passed on 2026-08-05. The Boltz-parity rows #30
-and #31 and the M13 rails remain separately tracked; live public claims still
+Debian 13 arm64 closing gate passed on 2026-08-05. The Boltz-parity row #31
+and the M13 rails remain separately tracked; live public claims still
 require their stated deployment evidence.
 
 The #15 compatibility packet now includes both halves: the relay's
@@ -436,7 +437,7 @@ sequenced first among extensions for commercial parity.
 | [#28](https://github.com/OpenAgentsInc/immortal/issues/28) | Provider pricing and quoting policy engine: configurable spread, miner-fee pass-through, dynamic min/max from the reservation ledger, deterministic derivation fixtures | #14, #25 |
 | [#26](https://github.com/OpenAgentsInc/immortal/issues/26) | MuSig2 cooperative key-path settlement — **complete**: BIP-327 primitives and vectors, exact signed-Status provider actor, durable effect/watch recovery, provider-A/provider-B key-path proof, abort/crash script-path fallback, and an off-by-default production submarine opt-in. Reverse preimage-release vocabulary remains deferred | #25 |
 | [#29](https://github.com/OpenAgentsInc/immortal/issues/29) | LND provider rail via REST behind the `rustls` feature: pinned cert, macaroons, native hold invoices, mixed CLN/LND lab pairs | #25 |
-| [#30](https://github.com/OpenAgentsInc/immortal/issues/30) | 0-conf acceptance policy: opt-in, direction-bounded, RBF/conflict downgrade, explicit non-confirmed status vocabulary | #25, #18 |
+| [#30](https://github.com/OpenAgentsInc/immortal/issues/30) | 0-conf acceptance policy — **complete**: off by default; requester-funded Bitcoin directions only; non-RBF/no-unconfirmed-ancestor admission; signed per-swap and aggregate caps; durable exposure reservation; explicit accepted/confirmation-required status vocabulary; RBF replacement, double-spend race, mempool loss, and ancestor-eviction downgrade before rail effects; all three added attacks pass in the pushed-main 46-case aggregate | #25, #18 |
 | [#31](https://github.com/OpenAgentsInc/immortal/issues/31) | Second operator-independent relay deployment: infrastructure-independent host, own identity and backups, relay-set docs; operator independence honestly deferred to recruitment | — |
 
 The production user-facing swap surface is tracked downstream as

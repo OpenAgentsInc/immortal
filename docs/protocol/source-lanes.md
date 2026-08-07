@@ -1203,8 +1203,15 @@ non-RBF competing spend, mempool loss, and newly unconfirmed ancestry. The
 requester engine validates the closed decision proof but does not treat
 acceptance as finality or relax verify-before-fund and refund rules.
 
-The fixture and single-case process gates pass replacement, double-spend, and
-ancestor-invalidation downgrades with the bound invoice still unpaid. The
-complete adversarial record is the remaining closure gate. This adoption
-allocates no event kind and changes no relay admission, relay Postgres schema,
-dependency, custody boundary, or NIP-11 advertisement.
+The single-case process gates and the complete pushed-main aggregate at
+`3d65af1` pass replacement, double-spend, and ancestor-invalidation downgrades
+with the bound invoice still unpaid. All 46 aggregate cases passed, and the
+bounded record is retained at
+`docs/conformance/records/2026-08-06-adversarial-regtest-3d65af1.json`. The
+three zero-confirmation attacks preserve every prior routing, failure,
+custody-tripwire, noncooperative, doomsday, Liquid, and cooperative oracle.
+The record keeps live deployment, operator independence, zero-confirmation,
+and public-replacement claims false: this is configured local capability, not
+a production claim. This adoption allocates no event kind and changes no relay
+admission, relay Postgres schema, dependency, custody boundary, or NIP-11
+advertisement.
