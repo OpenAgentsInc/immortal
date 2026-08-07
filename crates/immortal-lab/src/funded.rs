@@ -4891,17 +4891,17 @@ fn run_funded_journey_with_environment(
         &environment.requester,
         JOURNEY_TIMEOUT,
     )?;
-    if journey != FundedJourney::SubmarineRefund
-        && let Some(restored) = restore_authorized_session(environment, journey)?
-    {
-        let result = resume_authorized_journey(runtime, environment, journey, restored)?;
-        verify_health(&environment.health_url)?;
-        return Ok(json!({
-            "step": journey.name(),
-            "provider_pubkey": provider_pubkey,
-            "resumed": true,
-            "journey": result,
-        }));
+    if journey != FundedJourney::SubmarineRefund {
+        if let Some(restored) = restore_authorized_session(environment, journey)? {
+            let result = resume_authorized_journey(runtime, environment, journey, restored)?;
+            verify_health(&environment.health_url)?;
+            return Ok(json!({
+                "step": journey.name(),
+                "provider_pubkey": provider_pubkey,
+                "resumed": true,
+                "journey": result,
+            }));
+        }
     }
     let result = match journey {
         FundedJourney::Submarine => {

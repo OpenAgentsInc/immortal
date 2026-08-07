@@ -1034,12 +1034,13 @@ fn validate_known_transactions(
         if let Some(previous) = known.insert(
             transaction.transaction_id.clone(),
             transaction.signed_transaction_sha256.clone(),
-        ) && previous != transaction.signed_transaction_sha256
-        {
-            return Err(ArkClientError::new(
-                "swp_external_effect_conflict",
-                "known Ark transaction ID has conflicting byte digests",
-            ));
+        ) {
+            if previous != transaction.signed_transaction_sha256 {
+                return Err(ArkClientError::new(
+                    "swp_external_effect_conflict",
+                    "known Ark transaction ID has conflicting byte digests",
+                ));
+            }
         }
     }
     Ok(known)

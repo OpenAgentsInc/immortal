@@ -4809,29 +4809,34 @@ impl FundedMode {
                 "provider_destination_broadcast",
             )
             .is_none()
-            && let Some(source_refunded) =
-                status_by_state(records, requester_pubkey, "requester_source_refunded")
         {
-            if !self.chain_source_refund_is_final(
-                session,
-                &terms.source,
-                source_refunded,
-                required_confirmations,
-            )? {
-                return Ok(None);
+            if let Some(source_refunded) =
+                status_by_state(records, requester_pubkey, "requester_source_refunded")
+            {
+                if !self.chain_source_refund_is_final(
+                    session,
+                    &terms.source,
+                    source_refunded,
+                    required_confirmations,
+                )? {
+                    return Ok(None);
+                }
+                require_requester_source_refund_evidence(session, source_refunded, &terms.source)?;
+                let evidence = unfunded_destination_reservation_evidence(
+                    session,
+                    &terms.destination,
+                    created_at,
+                )?;
+                return Self::next_status_with_evidence_after(
+                    session,
+                    created_at,
+                    "refunded",
+                    &source_refunded.id,
+                    evidence,
+                    Map::new(),
+                )
+                .map(Some);
             }
-            require_requester_source_refund_evidence(session, source_refunded, &terms.source)?;
-            let evidence =
-                unfunded_destination_reservation_evidence(session, &terms.destination, created_at)?;
-            return Self::next_status_with_evidence_after(
-                session,
-                created_at,
-                "refunded",
-                &source_refunded.id,
-                evidence,
-                Map::new(),
-            )
-            .map(Some);
         }
         match provider_state {
             Some("accepted") => {

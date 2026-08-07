@@ -110,10 +110,10 @@ fn m8_long_run_soak() -> TestResult<()> {
     let reader_errors = observed_sender.clone();
     let reader = thread::spawn(move || {
         let result = read_subscription(subscriber, &sentinel_id, observed_sender);
-        if let Err(error) = &result
-            && let Err(send_error) = reader_errors.send(Err(error.clone()))
-        {
-            eprintln!("soak subscription error could not be reported: {send_error}");
+        if let Err(error) = &result {
+            if let Err(send_error) = reader_errors.send(Err(error.clone())) {
+                eprintln!("soak subscription error could not be reported: {send_error}");
+            }
         }
         result
     });
@@ -399,10 +399,10 @@ impl Drop for RelayProcess {
                 eprintln!("failed to wait for soak relay: {error}");
             }
         }
-        if let Some(output_thread) = self.output_thread.take()
-            && output_thread.join().is_err()
-        {
-            eprintln!("soak relay output thread panicked during cleanup");
+        if let Some(output_thread) = self.output_thread.take() {
+            if output_thread.join().is_err() {
+                eprintln!("soak relay output thread panicked during cleanup");
+            }
         }
     }
 }

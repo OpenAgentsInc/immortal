@@ -1439,16 +1439,16 @@ impl LiquidProviderRail {
                 created_at: now,
             })
             .await?;
-        if let Some(existing) = store.public_effect(effect_id).await?
-            && existing.state == "applied"
-        {
-            let transaction_id =
-                existing
-                    .external_reference
-                    .ok_or(LiquidProviderError::Invalid(
-                        "applied provider exit effect has no transaction ID",
-                    ))?;
-            return Ok(LiquidBroadcastReceipt { transaction_id });
+        if let Some(existing) = store.public_effect(effect_id).await? {
+            if existing.state == "applied" {
+                let transaction_id =
+                    existing
+                        .external_reference
+                        .ok_or(LiquidProviderError::Invalid(
+                            "applied provider exit effect has no transaction ID",
+                        ))?;
+                return Ok(LiquidBroadcastReceipt { transaction_id });
+            }
         }
         let verified = match request.exit_package.path.as_str() {
             "claim" => self.verify_provider_claim(request).await?,

@@ -5476,26 +5476,30 @@ impl<State> SwapSession<State> {
             request,
             &effect,
         )?;
-        if let ExternalEffectRequest::WalletSigning(wallet_request) = request
-            && let Some(binding) = self
+        if let ExternalEffectRequest::WalletSigning(wallet_request) = request {
+            if let Some(binding) = self
                 .funding_request
                 .as_ref()
                 .and_then(|request| request.liquid.as_deref())
-            && wallet_request.effect_id == binding.recovery_package.effect_id
-        {
-            return Err(SwapClientError::new(
-                "swp_external_effect_conflict",
-                "Liquid wallet signing alone is not a recorded claim or refund effect",
-            ));
+            {
+                if wallet_request.effect_id == binding.recovery_package.effect_id {
+                    return Err(SwapClientError::new(
+                        "swp_external_effect_conflict",
+                        "Liquid wallet signing alone is not a recorded claim or refund effect",
+                    ));
+                }
+            }
         }
-        if let ExternalEffectRequest::LiquidBroadcast(broadcast_request) = request
-            && let Some(binding) = self
+        if let ExternalEffectRequest::LiquidBroadcast(broadcast_request) = request {
+            if let Some(binding) = self
                 .funding_request
                 .as_ref()
                 .and_then(|request| request.liquid.as_deref())
-            && broadcast_request.effect_id == binding.recovery_package.effect_id
-        {
-            validate_liquid_broadcast_request(binding, broadcast_request)?;
+            {
+                if broadcast_request.effect_id == binding.recovery_package.effect_id {
+                    validate_liquid_broadcast_request(binding, broadcast_request)?;
+                }
+            }
         }
         if self.external_effects.contains_key(&effect.effect_id) {
             let previous = self
@@ -7410,12 +7414,12 @@ fn verify_quote_contract_execution_resolution(
                     "resolved Liquid funding output does not pay the quoted scriptPubKey",
                 ));
             }
-            if let ConfidentialValue::Explicit(value) = output.value
-                && value != quoted_amount
-            {
-                return Err(mismatch(
-                    "resolved Liquid funding output differs from the quoted amount",
-                ));
+            if let ConfidentialValue::Explicit(value) = output.value {
+                if value != quoted_amount {
+                    return Err(mismatch(
+                        "resolved Liquid funding output differs from the quoted amount",
+                    ));
+                }
             }
             if let ConfidentialAsset::Explicit(asset) = output.asset {
                 let (_, expected_asset) = LiquidAssetId::parse_mkt(require_string(
