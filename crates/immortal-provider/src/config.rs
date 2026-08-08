@@ -104,7 +104,7 @@ pub struct FundedProviderConfig {
     pub minimum_confirmations: u32,
     pub reorg_safety_blocks: u32,
     pub pricing: PricingConfig,
-    pub lab_forces_fallback_feerate: bool,
+    pub force_fallback_feerate: bool,
     pub hold_invoice_expiry_seconds: u32,
     pub cooperative_signing: bool,
     pub zero_conf: Option<ZeroConfConfig>,
@@ -174,10 +174,7 @@ impl fmt::Debug for FundedProviderConfig {
             .field("minimum_confirmations", &self.minimum_confirmations)
             .field("reorg_safety_blocks", &self.reorg_safety_blocks)
             .field("pricing", &self.pricing)
-            .field(
-                "lab_forces_fallback_feerate",
-                &self.lab_forces_fallback_feerate,
-            )
+            .field("force_fallback_feerate", &self.force_fallback_feerate)
             .field(
                 "hold_invoice_expiry_seconds",
                 &self.hold_invoice_expiry_seconds,
@@ -267,8 +264,8 @@ impl FundedProviderConfig {
             MIN_CONFIRMATIONS..=MAX_CONFIRMATIONS,
         )?;
         let mut pricing = PricingConfig::from_env().map_err(ConfigError::Pricing)?;
-        let lab_forces_fallback_feerate =
-            lab_forces_fallback_feerate(lab_timeout_profile, &pricing)?;
+        let force_fallback_feerate = lab_forces_fallback_feerate(lab_timeout_profile, &pricing)?
+            || regtest_forces_fallback_feerate(network, &pricing, optional)?;
         let hold_invoice_expiry_seconds = match lab_timeout_profile {
             Some(profile) => {
                 pricing.quote_expiry_seconds = profile.quote_expiry_seconds;
@@ -299,7 +296,7 @@ impl FundedProviderConfig {
             minimum_confirmations,
             reorg_safety_blocks,
             pricing,
-            lab_forces_fallback_feerate,
+            force_fallback_feerate,
             hold_invoice_expiry_seconds,
             cooperative_signing,
             zero_conf,
@@ -627,6 +624,27 @@ fn lab_forces_fallback_feerate(
     Ok(profile.is_some())
 }
 
+fn regtest_forces_fallback_feerate(
+    network: BitcoinNetwork,
+    pricing: &PricingConfig,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<bool, ConfigError> {
+    let Some(value) = lookup("IMMORTAL_PROVIDER_REGTEST_FIXED_FEERATE") else {
+        return Ok(false);
+    };
+    if value != "true" || network != BitcoinNetwork::Regtest {
+        return Err(ConfigError::Invalid(
+            "IMMORTAL_PROVIDER_REGTEST_FIXED_FEERATE",
+        ));
+    }
+    if pricing.fallback_feerate_sat_per_vb.is_none() {
+        return Err(ConfigError::Missing(
+            "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB",
+        ));
+    }
+    Ok(true)
+}
+
 fn validate_database_url(value: &str) -> Result<(), ConfigError> {
     if value.len() > MAX_DATABASE_URL_BYTES
         || !(value.starts_with("postgres://") || value.starts_with("postgresql://"))
@@ -719,6 +737,38 @@ mod tests {
     fn network_parser_has_no_implicit_default() {
         assert_eq!(parse_network("regtest"), Ok(BitcoinNetwork::Regtest));
         assert!(parse_network("bitcoin").is_err());
+    }
+
+    #[test]
+    fn fixed_feerate_gate_is_explicit_and_regtest_only() {
+        let pricing = PricingConfig::from_lookup(|name| {
+            (name == "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB").then(|| "20".to_owned())
+        })
+        .expect("fallback pricing");
+        let enabled = |name: &str| {
+            (name == "IMMORTAL_PROVIDER_REGTEST_FIXED_FEERATE").then(|| "true".to_owned())
+        };
+        assert_eq!(
+            regtest_forces_fallback_feerate(BitcoinNetwork::Regtest, &pricing, enabled),
+            Ok(true)
+        );
+        assert_eq!(
+            regtest_forces_fallback_feerate(BitcoinNetwork::Mainnet, &pricing, enabled),
+            Err(ConfigError::Invalid(
+                "IMMORTAL_PROVIDER_REGTEST_FIXED_FEERATE"
+            ))
+        );
+        assert_eq!(
+            regtest_forces_fallback_feerate(BitcoinNetwork::Regtest, &pricing, |_| None),
+            Ok(false)
+        );
+        let no_fallback = PricingConfig::from_lookup(|_| None).expect("default pricing");
+        assert_eq!(
+            regtest_forces_fallback_feerate(BitcoinNetwork::Regtest, &no_fallback, enabled),
+            Err(ConfigError::Missing(
+                "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB"
+            ))
+        );
     }
 
     #[test]

@@ -255,6 +255,7 @@ transaction commitments and locally verified evidence.
 | `IMMORTAL_PROVIDER_REORG_SAFETY_BLOCKS` | `6` | Additional confirmation safety window, 1–144 blocks. |
 | `IMMORTAL_PROVIDER_SPREAD_BPS` | `0` | Provider spread, 0–1,000 basis points. |
 | `IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB` | unset | Explicit 1–2,000 sat/vB override when `estimatesmartfee` has no usable estimate. Regtest and the lab set this; production without a live estimate or this override refuses to quote. |
+| `IMMORTAL_PROVIDER_REGTEST_FIXED_FEERATE` | unset | Exact `true` forces the configured fallback feerate even when `estimatesmartfee` is available. It is accepted only on regtest and only with a configured fallback; every other value or network fails startup. The public demo uses it so independently active providers can create amount-identical submarine Quotes for one pre-generated invoice. |
 | `IMMORTAL_PROVIDER_QUOTE_MIN_SAT` | `10000` | Smallest input amount the pricing engine may quote. |
 | `IMMORTAL_PROVIDER_QUOTE_MAX_SAT` | `1000000` | Largest input amount before live capacity clamps the limit, at most 2,100,000,000,000,000 satoshis. |
 | `IMMORTAL_PROVIDER_QUOTE_EXPIRY_SECONDS` | `300` | Quote acceptance window, 1–3,600 seconds, further bounded by RFQ and invoice expiry. |

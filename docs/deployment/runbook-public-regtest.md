@@ -113,7 +113,7 @@ Durable services use `restart: unless-stopped`. After a Docker or host restart,
 run `up` again; bootstrap operations are idempotent and readiness is reproved.
 Bootstrap maintains eight independently reservable confirmed Bitcoin outputs
 per provider. Both public-demo providers use the same disclosed 100-bps spread
-and 20-sat/vB fallback so an amount-bound submarine invoice can receive two
+and regtest-fixed 20-sat/vB feerate so an amount-bound submarine invoice can receive two
 economically comparable signed Quotes. Provider independence remains real;
 the shared price policy is a demo constraint, not a production market rule.
 Public providers additionally honor an explicit browser-preview

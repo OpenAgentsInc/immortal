@@ -105,7 +105,7 @@ pub(crate) struct FundedMode {
     minimum_confirmations: u32,
     reorg_safety_blocks: u32,
     pricing: PricingConfig,
-    lab_forces_fallback_feerate: bool,
+    force_fallback_feerate: bool,
     hold_invoice_expiry_seconds: u32,
     cooperative_signing: bool,
     zero_conf: Option<ZeroConfConfig>,
@@ -123,7 +123,7 @@ pub(crate) struct FundedModePolicy {
     pub minimum_confirmations: u32,
     pub reorg_safety_blocks: u32,
     pub pricing: PricingConfig,
-    pub lab_forces_fallback_feerate: bool,
+    pub force_fallback_feerate: bool,
     pub hold_invoice_expiry_seconds: u32,
     pub zero_conf: Option<ZeroConfConfig>,
 }
@@ -453,7 +453,7 @@ impl FundedMode {
             minimum_confirmations: policy.minimum_confirmations,
             reorg_safety_blocks: policy.reorg_safety_blocks,
             pricing: policy.pricing,
-            lab_forces_fallback_feerate: policy.lab_forces_fallback_feerate,
+            force_fallback_feerate: policy.force_fallback_feerate,
             hold_invoice_expiry_seconds: policy.hold_invoice_expiry_seconds,
             cooperative_signing: policy.cooperative_signing,
             zero_conf: policy.zero_conf,
@@ -633,7 +633,7 @@ impl FundedMode {
         created_at: u64,
     ) -> Result<DerivedQuote, QuoteConstructionError> {
         let session = session_id(rfq)?;
-        let live = if self.lab_forces_fallback_feerate {
+        let live = if self.force_fallback_feerate {
             None
         } else {
             self.handle
@@ -643,7 +643,7 @@ impl FundedMode {
                 )
                 .map_err(|error| format!("could not estimate the Quote feerate: {error}"))?
         };
-        let feerate = quote_feerate(&self.pricing, self.lab_forces_fallback_feerate, live)?;
+        let feerate = quote_feerate(&self.pricing, self.force_fallback_feerate, live)?;
         let profile = record_profile(rfq)?;
         let constraints = profile
             .get("constraints")

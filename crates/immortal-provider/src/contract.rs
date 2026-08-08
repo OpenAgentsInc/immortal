@@ -1464,6 +1464,15 @@ fn environment_contract() -> Value {
             1,
             2000
         ),
+        optional_environment(
+            env_choice(
+                "IMMORTAL_PROVIDER_REGTEST_FIXED_FEERATE",
+                &["funded"],
+                &["true"]
+            ),
+            &["funded"],
+            false
+        ),
         optional_env_integer(
             "IMMORTAL_PROVIDER_QUOTE_MIN_SAT",
             &["funded"],
