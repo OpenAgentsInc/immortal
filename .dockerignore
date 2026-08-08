@@ -7,6 +7,11 @@ nips
 tests
 !tests/fixtures
 deploy
+!deploy/
+deploy/*
+!deploy/join/
+deploy/join/*
+!deploy/join/tls_egress.py
 scripts
 !scripts/dev-work-items.json
 !scripts/support/provider-funded/hold-v0.3.3-immortal-regtest.patch
