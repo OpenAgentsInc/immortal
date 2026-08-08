@@ -696,6 +696,21 @@ check_ready() {
   echo "public-regtest-topology: ready manifest ${manifest}"
 }
 
+reconcile_warm_topology() {
+  # restart: unless-stopped does not order network_mode dependencies after a
+  # host reboot. Reconcile every durable service in dependency order so a
+  # provider that raced its Bitcoin network namespace is started again before
+  # the warm readiness wait.
+  compose up --detach bitcoin-a bitcoin-b relay-a-postgres relay-b-postgres \
+    provider-a-postgres provider-b-postgres
+  compose up --detach relay-a relay-b cln-provider-a cln-provider-b \
+    alert-sink-a alert-sink-b
+  compose up --detach bitcoin-a-rpc-forwarder bitcoin-b-rpc-forwarder \
+    wallet-gateway cln-wallet
+  compose up --detach provider-a provider-b provider-a-egress provider-b-egress
+  compose up --detach relay-a-public relay-b-public
+}
+
 start_topology() {
   initialize
   require_owned_state
@@ -711,6 +726,7 @@ start_topology() {
       sleep 1
       compose up --detach --force-recreate provider-a provider-b
     fi
+    reconcile_warm_topology
     bootstrap
     wait_for "existing persistent topology" readiness_probe
     check_ready

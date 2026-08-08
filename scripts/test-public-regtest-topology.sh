@@ -106,6 +106,10 @@ PY
 grep -Fq 'provider_utxo_target=8' "${runner}"
 grep -Fq 'sendtoaddress "${address}" 0.1' "${runner}"
 grep -A12 'if test -f "${manifest}"' "${runner}" | grep -Fq 'bootstrap'
+grep -A14 'reconcile_warm_topology()' "${runner}" | \
+  grep -Fq 'compose up --detach provider-a provider-b provider-a-egress provider-b-egress'
+grep -A14 'if test -f "${manifest}"' "${runner}" | \
+  grep -Fq 'reconcile_warm_topology'
 grep -A7 'provider-a|provider-b)' "${runner}" | grep -Fq 'sleep 1'
 grep -Fq 'reconcile_public_provider_pricing' "${runner}"
 grep -Fq 'os.fchown(descriptor, metadata.st_uid, metadata.st_gid)' "${runner}"

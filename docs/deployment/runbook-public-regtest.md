@@ -111,6 +111,10 @@ fallbacks; the loop applies the same bounded policies.
 
 Durable services use `restart: unless-stopped`. After a Docker or host restart,
 run `up` again; bootstrap operations are idempotent and readiness is reproved.
+The warm `up` path reconciles every durable service in dependency order before
+waiting for readiness. This is required because a provider can race the
+Bitcoin container whose network namespace it joins during an unordered Docker
+restart; seeing any other running container is not sufficient recovery proof.
 Bootstrap maintains eight independently reservable confirmed Bitcoin outputs
 per provider. Both public-demo providers use the same disclosed 100-bps spread
 and regtest-fixed 20-sat/vB feerate so an amount-bound submarine invoice can receive two
