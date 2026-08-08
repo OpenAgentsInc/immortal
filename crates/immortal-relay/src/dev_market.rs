@@ -53,6 +53,10 @@ pub(crate) struct RelayClient {
 }
 
 pub fn seed(relay_url: &str) -> Result<DevMarketTrace, String> {
+    seed_with_auth_url(relay_url, relay_url)
+}
+
+pub fn seed_with_auth_url(relay_url: &str, auth_relay_url: &str) -> Result<DevMarketTrace, String> {
     let now = unix_now()?;
     let requester = random_signer()?;
     let provider = random_signer()?;
@@ -61,10 +65,10 @@ pub fn seed(relay_url: &str) -> Result<DevMarketTrace, String> {
     let offering_distinct = "local-offering";
 
     let mut requester_reader = connect(relay_url)?;
-    authenticate(&mut requester_reader, &requester, relay_url, now)?;
+    authenticate(&mut requester_reader, &requester, auth_relay_url, now)?;
     subscribe(&mut requester_reader, "requester-mkt", requester.pubkey())?;
     let mut provider_reader = connect(relay_url)?;
-    authenticate(&mut provider_reader, &provider, relay_url, now)?;
+    authenticate(&mut provider_reader, &provider, auth_relay_url, now)?;
     subscribe(&mut provider_reader, "provider-mkt", provider.pubkey())?;
     let mut requester_publisher = connect(relay_url)?;
     let mut provider_publisher = connect(relay_url)?;
@@ -241,7 +245,7 @@ pub fn seed(relay_url: &str) -> Result<DevMarketTrace, String> {
     close_socket(&mut provider_publisher.websocket);
     Ok(DevMarketTrace {
         contract_version: 1,
-        relay_url: relay_url.to_owned(),
+        relay_url: auth_relay_url.to_owned(),
         requester_pubkey: requester.pubkey().to_owned(),
         provider_pubkey: provider.pubkey().to_owned(),
         provider_profile_id: provider_profile.id,

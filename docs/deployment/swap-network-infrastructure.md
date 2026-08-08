@@ -177,17 +177,17 @@ claim needs:
 - **A client surface** people can actually use: the SDK plus at least
   one wallet/web integration.
 
-The public regtest demo currently has two infrastructure boundaries but only
-one operator. Its GCP boundary serves
+The public regtest demo's durable inventory currently has one infrastructure
+boundary and one operator. Its GCP boundary serves
 `wss://relay-a.34-41-78-122.nip.io` and
-`wss://relay-b.34-41-78-122.sslip.io`; a separate development host and
-Tailscale edge serves
-`wss://macbook-pro-m5.tailaeab8f.ts.net:8443`, with its own relay identity,
-Postgres volume, backup set, and monitoring. This survives failure of the GCP
-VM as a demonstration, but it does **not** satisfy the operator-independence
-launch criterion above. NIP-65 users should advertise all relays they actually
-read and write, rotate away from unreachable heads, and avoid inferring
-operator independence from different hostnames.
+`wss://relay-b.34-41-78-122.sslip.io`. Dated conformance records may add a
+separate development host and edge with its own relay identity, Postgres
+volume, backup set, and monitoring. An account-less tunnel is an ephemeral
+demonstration boundary, not durable inventory. Either form remains
+OpenAgents-operated and does **not** satisfy the operator-independence launch
+criterion above. NIP-65 users should advertise only relays they actually read
+and write, rotate away from unreachable heads, and avoid inferring operator
+independence from different hostnames.
 
 Completion of the M12 ledger is replacement *capability*; any public
 replacement claim additionally needs the live deployment evidence —

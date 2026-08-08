@@ -51,7 +51,10 @@ pub async fn import_signed_events() -> Result<(), GatewayError> {
 pub fn dev_market_seed() -> Result<(), GatewayError> {
     let relay_url = std::env::var("IMMORTAL_DEV_RELAY_URL")
         .unwrap_or_else(|_| "ws://127.0.0.1:18080".to_owned());
-    let trace = immortal::dev_market::seed(&relay_url).map_err(GatewayError::Config)?;
+    let auth_relay_url =
+        std::env::var("IMMORTAL_DEV_RELAY_AUTH_URL").unwrap_or_else(|_| relay_url.clone());
+    let trace = immortal::dev_market::seed_with_auth_url(&relay_url, &auth_relay_url)
+        .map_err(GatewayError::Config)?;
     serde_json::to_writer_pretty(std::io::stdout().lock(), &trace).map_err(|error| {
         GatewayError::Internal(format!("could not serialize smoke trace: {error}"))
     })?;

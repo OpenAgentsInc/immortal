@@ -72,19 +72,35 @@ restore test after deployment and at least monthly. A successful restore test
 reports migration and event counts but never database credentials or relay
 secrets.
 
-The current public-regtest relay inventory is:
+The current durable public-regtest relay inventory is:
 
 - `wss://relay-a.34-41-78-122.nip.io` — OpenAgents-operated GCP VM
 - `wss://relay-b.34-41-78-122.sslip.io` — OpenAgents-operated GCP VM
-- `wss://macbook-pro-m5.tailaeab8f.ts.net:8443` — OpenAgents-operated
-  development host, published through Tailscale Funnel
 
-The third relay is independent of the GCP VM, Postgres, and reverse proxy, so
-it provides an infrastructure failure boundary for the public demo. It is not
-operator-independent: all three are currently run by OpenAgents. NIP-65
+An additional OpenAgents development-host relay may be published for a demo
+through a separately recorded Cloudflare or Tailscale edge. Its exact URL and
+uptime class belong in the dated conformance record; an account-less quick
+tunnel is explicitly ephemeral and must not be described as a durable relay.
+That relay is independent of the GCP VM, Postgres, and reverse proxy, so it
+provides an infrastructure failure boundary for a live demo. It is not
+operator-independent: all instances are currently run by OpenAgents. NIP-65
 clients should publish and consume explicit relay lists, retain at least two
 reachable write/read relays, and treat an operator-independent relay as still
 required before making a decentralization claim.
+
+For a local-only conformance driver against a relay configured with a public
+authentication URL, keep transport loopback while signing NIP-42 for the exact
+public authority:
+
+```sh
+IMMORTAL_DEV_RELAY_URL=ws://127.0.0.1:18080 \
+IMMORTAL_DEV_RELAY_AUTH_URL=wss://relay.example \
+  scripts/dev-market-seed.sh
+```
+
+This tests the authenticated wrapped market lane without weakening the
+driver's refusal to open arbitrary network connections. Verify the public TLS
+and WebSocket edge separately.
 
 ## Custody
 
