@@ -43,6 +43,11 @@ grep -Eq '^IMMORTAL_RELAY_SECRET_KEY=[0-9a-f]{64}$' "${state_dir}/relay.env"
 digest="$(jq -r '.mkt.mkt_swp.coordination.conformance_sha256' contract/immortal-contract.json)"
 grep -qx "IMMORTAL_MKT_SWP_COORDINATION_CONFORMANCE_SHA256=${digest}" "${state_dir}/relay.env"
 ! grep -q 'IMMORTAL_MKT_SWP_COORDINATION_ENABLED' "${state_dir}/relay.env"
+project="$(jq -r .compose_project "${state_dir}/ownership.json")"
+/usr/local/bin/docker compose --project-directory . --project-name "${project}" \
+  --env-file "${state_dir}/compose.env" --profile relay -f deploy/join/compose.yaml \
+  config --format json |
+  jq -e --arg root "$(pwd -P)" '.services.relay.build.context == $root' >/dev/null
 
 PATH="${test_root}/bin:${PATH}" scripts/operate-joined-relay.sh status --state-dir "${state_dir}" |
   jq -e '.health == "ready" and .relay_pubkey == ("a" * 64)' >/dev/null

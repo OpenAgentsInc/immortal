@@ -2,7 +2,7 @@ services:
   bitcoin:
     profiles: ["provider"]
     build:
-      context: ../..
+      context: .
       dockerfile: scripts/support/provider-funded/Dockerfile.bitcoin
     command: ["-conf=/run/immortal-private/bitcoin.conf", "-datadir=/var/lib/bitcoin"]
     restart: unless-stopped
@@ -18,7 +18,7 @@ services:
   cln:
     profiles: ["provider"]
     build:
-      context: ../..
+      context: .
       dockerfile: scripts/support/provider-funded/Dockerfile.cln-hold
     command: ["--conf=/run/immortal-private/cln.conf"]
     environment:
@@ -61,7 +61,7 @@ services:
     profiles: ["provider"]
     build:
       context: .
-      dockerfile: Dockerfile.tls-egress
+      dockerfile: deploy/join/Dockerfile.tls-egress
     command:
       - --listen
       - 127.0.0.1:18080
@@ -75,7 +75,7 @@ services:
   provider:
     profiles: ["provider"]
     build:
-      context: ../..
+      context: .
       dockerfile: scripts/support/provider-funded/Dockerfile.provider
       target: provider
     command: ["run"]
@@ -118,7 +118,7 @@ services:
   relay:
     profiles: ["relay"]
     build:
-      context: ../..
+      context: .
       dockerfile: Dockerfile
     env_file:
       - ${IMMORTAL_JOIN_PRIVATE_DIR:?private directory is required}/relay.env
