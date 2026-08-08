@@ -1,5 +1,7 @@
 {
   "schema": "openagents.immortal.public-regtest-acceptance.v1",
+  "status": "superseded",
+  "superseded_reason": "The final browser promotion gate found persisted CHANNELD_NORMAL entries with disconnected peers after host recovery; this record is retained as historical soak and fault evidence, not release acceptance.",
   "recorded_at": 1786157776,
   "network": "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4",
   "revisions": {

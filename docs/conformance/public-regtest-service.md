@@ -101,10 +101,12 @@ funded terminal journeys, fault/restart results, and the explicit
 single-operator/regtest-only claim boundary. Browser proof is intentionally
 not fabricated by this repository's host-side gate.
 
-The first deployed qualification is recorded in
+The first deployed qualification evidence is retained, marked superseded, in
 [`records/2026-08-08-public-regtest-94b5444.json`](records/2026-08-08-public-regtest-94b5444.json).
 It records five overlapping and 50 sequential funded browser journeys, both
 rails, per-session reload replay, zero leaked provider reservations/watch jobs,
 the complete final-revision service and host restart matrix, and external
 exposure checks. The host drill also proved that admission remains fail-closed
-until the documented warm `up` command republishes topology readiness.
+until the documented warm `up` command republishes topology readiness. A later
+promotion gate found that channel database state alone did not prove connected
+peers, so this record must not be used as final release acceptance.

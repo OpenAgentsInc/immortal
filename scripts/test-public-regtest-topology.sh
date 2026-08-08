@@ -112,6 +112,10 @@ grep -A14 'if test -f "${manifest}"' "${runner}" | \
   grep -Fq 'reconcile_warm_topology'
 grep -A7 'provider-a|provider-b)' "${runner}" | grep -Fq 'sleep 1'
 grep -Fq 'reconcile_public_provider_pricing' "${runner}"
+grep -Fq '.peer_connected == true' "${runner}"
+grep -A12 'reconnect_lightning_peers()' "${runner}" | \
+  grep -Fq 'ensure_channel cln-provider-a cln-provider-b'
+grep -A60 'restart_service()' "${runner}" | grep -Fq 'reconnect_lightning_peers'
 grep -Fq 'os.fchown(descriptor, metadata.st_uid, metadata.st_gid)' "${runner}"
 grep -Fq 'for key in sorted(values.keys() - seen)' "${runner}"
 

@@ -65,8 +65,11 @@ sudo env IMMORTAL_PUBLIC_REGTEST_STATE_DIR=/var/lib/immortal-public-regtest \
 
 Readiness fails closed unless both Bitcoin nodes are peered at the same tip,
 both relays and providers are healthy, all three Lightning nodes are synced
-with two normal channels, no provider alert exists, and provider public keys
-are available. `public-ready.json` contains no credentials or raw effects.
+with two connected normal channels, no provider alert exists, and provider
+public keys are available. Bootstrap and single-service restart recovery
+explicitly reconnect the three known Lightning edges; a channel merely loaded
+from the database is not routability evidence. `public-ready.json` contains no
+credentials or raw effects.
 
 ## Gateway and controller
 

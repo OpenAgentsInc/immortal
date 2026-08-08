@@ -471,7 +471,8 @@ cln_ready() {
 }
 
 channel_count() {
-  cln_cli "$1" listpeerchannels | jq '[.channels[] | select(.state == "CHANNELD_NORMAL")] | length'
+  cln_cli "$1" listpeerchannels | jq \
+    '[.channels[] | select(.state == "CHANNELD_NORMAL" and .peer_connected == true)] | length'
 }
 
 channels_ready() {
@@ -482,6 +483,10 @@ open_channel_if_absent() {
   local source="$1" target="$2" target_host="$3" amount="$4" push="$5" target_id
   target_id="$(cln_cli "${target}" getinfo | jq -er .id)"
   if cln_cli "${source}" listpeerchannels "${target_id}" | jq -e '.channels | length > 0' >/dev/null; then
+    if ! cln_cli "${source}" listpeerchannels "${target_id}" | \
+      jq -e 'any(.channels[]; .peer_connected == true)' >/dev/null; then
+      cln_cli "${source}" connect "${target_id}@${target_host}" >/dev/null
+    fi
     return
   fi
   cln_cli "${source}" connect "${target_id}@${target_host}" >/dev/null
@@ -493,6 +498,16 @@ ensure_channel() {
   local source="$1" target="$2" target_host="$3" amount="$4" push="$5"
   wait_for "${source} to ${target} channel" open_channel_if_absent \
     "${source}" "${target}" "${target_host}" "${amount}" "${push}"
+}
+
+reconnect_lightning_peers() {
+  local service
+  for service in cln-provider-a cln-provider-b cln-wallet; do
+    wait_for "${service}" cln_ready "${service}"
+  done
+  ensure_channel cln-provider-a cln-wallet wallet-gateway:19848 2000000 1000000000
+  ensure_channel cln-provider-b cln-wallet wallet-gateway:19848 2000000 1000000000
+  ensure_channel cln-provider-a cln-provider-b bitcoin-b:19847 1000000 500000000
 }
 
 fund_cln_if_empty() {
@@ -803,6 +818,7 @@ restart_service() {
       compose up --detach --force-recreate "${service}"
       ;;
   esac
+  reconnect_lightning_peers
   wait_for "topology after ${service} restart" readiness_probe
   check_ready
 }
