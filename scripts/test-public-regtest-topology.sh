@@ -99,6 +99,8 @@ for role in ("a", "b"):
         raise SystemExit(f"provider {role} does not use the public demo spread")
     if "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB=20\n" not in provider_environment:
         raise SystemExit(f"provider {role} does not use the public demo feerate")
+    if "IMMORTAL_PROVIDER_REGTEST_FIXED_FEERATE=true\n" not in provider_environment:
+        raise SystemExit(f"provider {role} does not pin the public demo feerate")
 PY
 
 grep -Fq 'provider_utxo_target=8' "${runner}"
@@ -107,6 +109,7 @@ grep -A12 'if test -f "${manifest}"' "${runner}" | grep -Fq 'bootstrap'
 grep -A7 'provider-a|provider-b)' "${runner}" | grep -Fq 'sleep 1'
 grep -Fq 'reconcile_public_provider_pricing' "${runner}"
 grep -Fq 'os.fchown(descriptor, metadata.st_uid, metadata.st_gid)' "${runner}"
+grep -Fq 'for key in sorted(values.keys() - seen)' "${runner}"
 
 rendered="$(
   IMMORTAL_PUBLIC_REGTEST_STATE_DIR="${state_dir}" \

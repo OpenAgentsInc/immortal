@@ -240,11 +240,16 @@ for name in sys.argv[1:]:
         "IMMORTAL_PROVIDER_REGTEST_FIXED_FEERATE": "true",
     }
     rewritten = []
+    seen = set()
     for line in lines:
         key = line.partition("=")[0]
+        seen.add(key)
         replacement = f"{key}={values[key]}" if key in values else line
         file_changed |= replacement != line
         rewritten.append(replacement)
+    for key in sorted(values.keys() - seen):
+        rewritten.append(f"{key}={values[key]}")
+        file_changed = True
     if file_changed:
         changed = True
         metadata = path.stat()
