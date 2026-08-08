@@ -48,6 +48,8 @@ project="$(jq -r .compose_project "${state_dir}/ownership.json")"
   --env-file "${state_dir}/compose.env" --profile relay -f deploy/join/compose.yaml \
   config --format json |
   jq -e --arg root "$(pwd -P)" '.services.relay.build.context == $root' >/dev/null
+grep -Fqx 'COPY deploy/join/tls_egress.py /usr/local/libexec/immortal-join-tls-egress' \
+  deploy/join/Dockerfile.tls-egress
 
 PATH="${test_root}/bin:${PATH}" scripts/operate-joined-relay.sh status --state-dir "${state_dir}" |
   jq -e '.health == "ready" and .relay_pubkey == ("a" * 64)' >/dev/null
