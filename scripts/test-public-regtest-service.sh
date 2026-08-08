@@ -30,6 +30,8 @@ grep -Fq 'free_bytes="$((free_kib * 1024))"' "${operator}"
 grep -Fq 'outstanding_value_capacity' "${operator}"
 grep -Fq 'admissions.issubset(receipts)' "${operator}"
 grep -Fq 'wallet-driver public-regtest-dynamic-worker-once >"${diagnostic}" 2>&1' "${operator}"
+grep -Fq 'global_worker_lock="${gateway_state}/dynamic-worker.lock"' "${operator}"
+grep -Fq 'printf '\''%s\n'\'' "${BASHPID}" >"${global_worker_lock}/pid"' "${operator}"
 grep -Fq 'wallet-driver public-regtest-demo-input-once >/dev/null 2>&1' "${operator}"
 grep -Fq 'demo input worker failed (details redacted)' "${operator}"
 test "$(sed -n '/^process_demo_inputs()/,/^}/p' "${operator}" | grep -Fc ') &')" -eq 1

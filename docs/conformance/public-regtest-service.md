@@ -40,11 +40,15 @@ bounded readiness record. It mines at most six blocks in one pass, and only
 when an admitted public effect exists and the private regtest mempool is not
 empty. Miner RPC is never public.
 
-The same loop launches at most one worker per pending capability-bound
-dynamic request. Workers run asynchronously so the controller can continue
-mining, use a session-specific requester state directory, and retain a PID
-lock that is recovered after operator replacement. The worker executes the
-ordinary two-provider protocol path; the loop neither rewrites the request
+The same loop admits multiple pending capability-bound dynamic requests but
+executes their custody-adjacent settlement workers through one global queue.
+Serial execution prevents separate worker containers from selecting the same
+requester wallet input or racing shared Lightning settlement, while the five
+browser sessions remain independently admitted and recoverable. The worker
+runs asynchronously so the controller can continue mining, uses a
+session-specific requester state directory, and retains both global and
+session PID locks that are recovered after operator replacement. It executes
+the ordinary two-provider protocol path; the loop neither rewrites the request
 nor receives a generic wallet/RPC method. Worker stdout and stderr are
 discarded at this boundary so private destinations, invoices, and rail data
 cannot enter the operator's service journal; failures produce only a generic

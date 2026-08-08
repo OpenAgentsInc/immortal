@@ -285,7 +285,16 @@ PY
 }
 
 process_dynamic_requests() {
-  local request session_id worker_lock session_state owner_pid now diagnostic failure_code
+  local request session_id worker_lock global_worker_lock session_state owner_pid now diagnostic failure_code
+  global_worker_lock="${gateway_state}/dynamic-worker.lock"
+  if test -d "${global_worker_lock}"; then
+    owner_pid="$(cat "${global_worker_lock}/pid" 2>/dev/null || true)"
+    if [[ "${owner_pid}" =~ ^[0-9]+$ ]] && kill -0 "${owner_pid}" 2>/dev/null; then
+      return
+    fi
+    rm -f -- "${global_worker_lock}/pid"
+    rmdir "${global_worker_lock}" 2>/dev/null || return
+  fi
   shopt -s nullglob
   for request in "${gateway_state}"/sessions/*/private-dynamic-request.json; do
     session_id="$(basename "$(dirname "${request}")")"
@@ -298,19 +307,28 @@ process_dynamic_requests() {
     jq -e --argjson now "${now}" \
       '.request.expires_at | type == "number" and . > $now' \
       "${request}" >/dev/null 2>&1 || continue
+    if ! mkdir "${global_worker_lock}" 2>/dev/null; then break; fi
     worker_lock="${gateway_state}/sessions/${session_id}/dynamic-worker.lock"
     if test -d "${worker_lock}"; then
       owner_pid="$(cat "${worker_lock}/pid" 2>/dev/null || true)"
       if [[ "${owner_pid}" =~ ^[0-9]+$ ]] && kill -0 "${owner_pid}" 2>/dev/null; then
+        rmdir "${global_worker_lock}" 2>/dev/null || true
         continue
       fi
       rm -f -- "${worker_lock}/pid"
-      rmdir "${worker_lock}" 2>/dev/null || continue
+      if ! rmdir "${worker_lock}" 2>/dev/null; then
+        rmdir "${global_worker_lock}" 2>/dev/null || true
+        continue
+      fi
     fi
-    if ! mkdir "${worker_lock}" 2>/dev/null; then continue; fi
+    if ! mkdir "${worker_lock}" 2>/dev/null; then
+      rmdir "${global_worker_lock}" 2>/dev/null || true
+      continue
+    fi
     install -d -m 0700 "${state_dir}/state/public-sessions/${session_id}"
     (
       printf '%s\n' "${BASHPID}" >"${worker_lock}/pid"
+      printf '%s\n' "${BASHPID}" >"${global_worker_lock}/pid"
       diagnostic="$(mktemp "${state_dir}/dynamic-worker.XXXXXX")"
       if ! "${compose[@]}" --profile acceptance run --rm \
         --user "$(id -u):$(id -g)" \
@@ -324,6 +342,8 @@ process_dynamic_requests() {
       rm -f -- "${diagnostic}"
       rm -f -- "${worker_lock}/pid"
       rmdir "${worker_lock}" 2>/dev/null || true
+      rm -f -- "${global_worker_lock}/pid"
+      rmdir "${global_worker_lock}" 2>/dev/null || true
     ) &
     break
   done
