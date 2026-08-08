@@ -113,6 +113,8 @@ grep -A14 'if test -f "${manifest}"' "${runner}" | \
 grep -A7 'provider-a|provider-b)' "${runner}" | grep -Fq 'sleep 1'
 grep -Fq 'reconcile_public_provider_pricing' "${runner}"
 grep -Fq '.peer_connected == true' "${runner}"
+grep -A20 'topology_services_ready()' "${runner}" | grep -Fq 'miner_wallet_ready'
+grep -A60 'restart_service()' "${runner}" | grep -Fq 'ensure_existing_miner_wallet'
 grep -A12 'reconnect_lightning_peers()' "${runner}" | \
   grep -Fq 'ensure_channel cln-provider-a cln-provider-b'
 grep -A60 'restart_service()' "${runner}" | grep -Fq 'reconnect_lightning_peers'

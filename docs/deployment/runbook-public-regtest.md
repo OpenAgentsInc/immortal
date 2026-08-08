@@ -118,6 +118,9 @@ The warm `up` path reconciles every durable service in dependency order before
 waiting for readiness. This is required because a provider can race the
 Bitcoin container whose network namespace it joins during an unordered Docker
 restart; seeing any other running container is not sufficient recovery proof.
+Readiness also requires the persistent `public-regtest-miner` wallet to be
+loaded. Bitcoin A replacement reloads that existing wallet before admission;
+it never creates a replacement generation during restart recovery.
 Provider health becomes not-ready on every chain poll failure, but the alert
 sink pages only when polling becomes stale or exhausts its bounded retry
 budget. A transient boot-time RPC miss therefore closes admission without

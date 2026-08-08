@@ -521,6 +521,19 @@ fund_cln_if_empty() {
   bitcoin_cli a -rpcwallet=public-regtest-miner sendtoaddress "${address}" 3.0 >/dev/null
 }
 
+miner_wallet_ready() {
+  bitcoin_cli a -rpcwallet=public-regtest-miner getwalletinfo >/dev/null 2>&1
+}
+
+load_existing_miner_wallet() {
+  if miner_wallet_ready; then return; fi
+  bitcoin_cli a loadwallet public-regtest-miner >/dev/null 2>&1
+}
+
+ensure_existing_miner_wallet() {
+  wait_for "public regtest miner wallet" load_existing_miner_wallet
+}
+
 cln_wallet_funded() {
   cln_cli "$1" listfunds | jq -e 'any(.outputs[]; .status == "confirmed")'
 }
@@ -690,6 +703,7 @@ topology_services_ready() {
   test "$(bitcoin_cli a getconnectioncount)" -ge 1 || return 1
   test "$(bitcoin_cli b getconnectioncount)" -ge 1 || return 1
   chains_synced || return 1
+  miner_wallet_ready || return 1
   relay_ready relay-a 18080 >/dev/null || return 1
   relay_ready relay-b 18081 >/dev/null || return 1
   public_port_ready relay-a-public 18080 "${relay_a_port}" || return 1
@@ -860,6 +874,9 @@ restart_service() {
       compose up --detach --force-recreate "${service}"
       ;;
   esac
+  if test "${service}" = bitcoin-a; then
+    ensure_existing_miner_wallet
+  fi
   reconnect_lightning_peers
   wait_for "topology after ${service} restart" readiness_probe
   check_ready
