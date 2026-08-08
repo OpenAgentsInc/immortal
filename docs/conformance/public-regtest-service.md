@@ -110,3 +110,10 @@ exposure checks. The host drill also proved that admission remains fail-closed
 until the documented warm `up` command republishes topology readiness. A later
 promotion gate found that channel database state alone did not prove connected
 peers, so this record must not be used as final release acceptance.
+
+The final release evidence is
+[`records/2026-08-08-public-regtest-907b693.json`](records/2026-08-08-public-regtest-907b693.json).
+It adds connected-peer readiness, persistent miner-wallet readiness after
+Bitcoin replacement, recovered-alert archival, a final-revision nine-service
+and host-reboot matrix, post-reboot two-rail browser proof, compatible immutable
+deployment rollback, and the explicit retained-zero-value-session observation.
