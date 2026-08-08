@@ -314,11 +314,14 @@ initialize_relay() {
   [[ "${relay_port}" =~ ^[0-9]+$ ]] && test "${relay_port}" -ge 1024 && test "${relay_port}" -le 65535 ||
     fail "relay port must be in 1024..65535"
   install -d -m 0700 "${state_dir}"
-  local project revision postgres_password relay_url
+  local project revision postgres_password relay_secret relay_url coordination_digest
   project="immortal-join-$(random_hex 5)"
   revision="$(git rev-parse HEAD)"
   postgres_password="$(random_hex 32)"
+  relay_secret="$(random_hex 32)"
   relay_url="${relay_public_url:-ws://127.0.0.1:${relay_port}}"
+  coordination_digest="$(jq -er '.mkt.mkt_swp.coordination.conformance_sha256' contract/immortal-contract.json)"
+  [[ "${coordination_digest}" =~ ^[0-9a-f]{64}$ ]] || fail "compiled coordination digest is invalid"
   write_marker "${project}" "${revision}"
   write_secret "${state_dir}/relay-postgres-password" "${postgres_password}"
   cat >"${state_dir}/relay.env" <<EOF
@@ -327,7 +330,8 @@ IMMORTAL_BIND_ADDR=0.0.0.0
 IMMORTAL_PORT=8080
 IMMORTAL_RELAY_URL=${relay_url}
 IMMORTAL_AUTH_REQUIRED=true
-IMMORTAL_MKT_SWP_COORDINATION_ENABLED=true
+IMMORTAL_RELAY_SECRET_KEY=${relay_secret}
+IMMORTAL_MKT_SWP_COORDINATION_CONFORMANCE_SHA256=${coordination_digest}
 EOF
   cat >"${state_dir}/compose.env" <<EOF
 IMMORTAL_JOIN_PRIVATE_DIR=${state_dir}

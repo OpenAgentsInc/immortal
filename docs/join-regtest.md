@@ -41,7 +41,8 @@ sudo scripts/join-regtest.sh relay --port 18080 --url wss://relay.example
 ```
 
 This starts `immortal` with its own Postgres, publishes only loopback port
-18080, and runs the NIP-11 self-check it prints:
+18080, generates a fresh relay signing identity, activates the exact compiled
+MKT-SWP coordination digest, and runs the NIP-11 self-check it prints:
 
 ```sh
 curl --fail --silent -H 'Accept: application/nostr+json' http://127.0.0.1:18080/
@@ -49,6 +50,41 @@ curl --fail --silent -H 'Accept: application/nostr+json' http://127.0.0.1:18080/
 
 Front the loopback port with your own TLS proxy (see
 `deploy/public-regtest/Caddyfile.example`) before announcing the wss URL.
+The public NIP-11 document must contain a 64-character relay `pubkey` and the
+`nip-mkt`, `mkt-swp:1`, and `mkt-swp-coordination:1` extensions.
+
+### Relay operations
+
+The joined relay owns one Postgres database. Check both processes and its
+market identity, create a private custom-format backup, and prove that backup
+in a disposable database with:
+
+```sh
+scripts/operate-joined-relay.sh status --state-dir /var/lib/immortal-join
+scripts/operate-joined-relay.sh backup --state-dir /var/lib/immortal-join
+scripts/operate-joined-relay.sh restore-test --state-dir /var/lib/immortal-join
+```
+
+Run `status` from ordinary host monitoring at least every five minutes and
+`backup` daily. The backup command validates each dump before publication,
+keeps mode-0600 files under `STATE/backups`, and retains the newest 14. Run a
+restore test after deployment and at least monthly. A successful restore test
+reports migration and event counts but never database credentials or relay
+secrets.
+
+The current public-regtest relay inventory is:
+
+- `wss://relay-a.34-41-78-122.nip.io` — OpenAgents-operated GCP VM
+- `wss://relay-b.34-41-78-122.sslip.io` — OpenAgents-operated GCP VM
+- `wss://macbook-pro-m5.tailaeab8f.ts.net:8443` — OpenAgents-operated
+  development host, published through Tailscale Funnel
+
+The third relay is independent of the GCP VM, Postgres, and reverse proxy, so
+it provides an infrastructure failure boundary for the public demo. It is not
+operator-independent: all three are currently run by OpenAgents. NIP-65
+clients should publish and consume explicit relay lists, retain at least two
+reachable write/read relays, and treat an operator-independent relay as still
+required before making a decentralization claim.
 
 ## Custody
 
