@@ -331,7 +331,7 @@ process_dynamic_requests() {
 }
 
 process_demo_inputs() {
-  local request session_id worker_lock response
+  local request session_id worker_lock response owner_pid
   shopt -s nullglob
   for request in "${gateway_state}"/sessions/*/demo-input-request.json; do
     session_id="$(basename "$(dirname "${request}")")"
@@ -339,17 +339,28 @@ process_demo_inputs() {
     response="${gateway_state}/sessions/${session_id}/demo-input-response.json"
     test ! -e "${response}" || continue
     worker_lock="${gateway_state}/sessions/${session_id}/demo-input-worker.lock"
+    if test -d "${worker_lock}"; then
+      owner_pid="$(cat "${worker_lock}/pid" 2>/dev/null || true)"
+      if [[ "${owner_pid}" =~ ^[0-9]+$ ]] && kill -0 "${owner_pid}" 2>/dev/null; then
+        continue
+      fi
+      rm -f -- "${worker_lock}/pid"
+      rmdir "${worker_lock}" 2>/dev/null || continue
+    fi
     if ! mkdir "${worker_lock}" 2>/dev/null; then continue; fi
     install -d -m 0700 "${state_dir}/state/public-sessions/${session_id}"
-    if ! "${compose[@]}" --profile acceptance run --rm \
-      --user "$(id -u):$(id -g)" \
-      -e "IMMORTAL_PUBLIC_REGTEST_SESSION_ID=${session_id}" \
-      -e "IMMORTAL_LAB_STATE_DIR=/state/public-sessions/${session_id}" \
-      wallet-driver public-regtest-demo-input-once >/dev/null 2>&1; then
-      echo "public-regtest-operator: demo input worker failed for ${session_id}" >&2
-    fi
-    rmdir "${worker_lock}" 2>/dev/null || true
-    break
+    (
+      printf '%s\n' "${BASHPID}" >"${worker_lock}/pid"
+      if ! "${compose[@]}" --profile acceptance run --rm \
+        --user "$(id -u):$(id -g)" \
+        -e "IMMORTAL_PUBLIC_REGTEST_SESSION_ID=${session_id}" \
+        -e "IMMORTAL_LAB_STATE_DIR=/state/public-sessions/${session_id}" \
+        wallet-driver public-regtest-demo-input-once >/dev/null 2>&1; then
+        echo "public-regtest-operator: demo input worker failed (details redacted)" >&2
+      fi
+      rm -f -- "${worker_lock}/pid"
+      rmdir "${worker_lock}" 2>/dev/null || true
+    ) &
   done
   shopt -u nullglob
 }

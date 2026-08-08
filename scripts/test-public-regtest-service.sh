@@ -30,6 +30,10 @@ grep -Fq 'free_bytes="$((free_kib * 1024))"' "${operator}"
 grep -Fq 'outstanding_value_capacity' "${operator}"
 grep -Fq 'admissions.issubset(receipts)' "${operator}"
 grep -Fq 'wallet-driver public-regtest-dynamic-worker-once >"${diagnostic}" 2>&1' "${operator}"
+grep -Fq 'wallet-driver public-regtest-demo-input-once >/dev/null 2>&1' "${operator}"
+grep -Fq 'demo input worker failed (details redacted)' "${operator}"
+test "$(sed -n '/^process_demo_inputs()/,/^}/p' "${operator}" | grep -Fc ') &')" -eq 1
+! sed -n '/^process_demo_inputs()/,/^}/p' "${operator}" | grep -Fq '    break'
 grep -Fq "grep -Eo 'swp_[a-z0-9_]+'" "${operator}"
 grep -Fq 'failure_code="worker_failed_redacted"' "${operator}"
 test "$(grep -Fc 'dynamic worker failed (${failure_code})' "${operator}")" -eq 1

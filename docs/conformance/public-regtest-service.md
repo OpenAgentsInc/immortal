@@ -60,6 +60,12 @@ The same loop watches capability-owned `demo-input-request.json` records. It
 runs the fixed wallet-driver allocation command inside the private acceptance
 network, writes one mode-0600 response, and never grants the gateway a Docker
 socket, CLN RPC, Bitcoin RPC, wallet seed, or arbitrary method surface.
+Pending allocations run concurrently across isolated session directories up
+to the gateway's sixteen-session admission ceiling. Each allocation has a PID
+lock that survives controller replacement, so a slow container cannot block
+the other four sessions in the public qualification gate and a stale lock is
+recovered without repeating a completed response. Allocation failures emit
+only a generic redacted message, never a session identifier or private input.
 The worker runs as the host state owner's UID:GID. Its only supplemental group
 is the CLN container socket group, so files remain readable by the separate
 gateway process without granting that public process Docker or rail authority.
