@@ -116,6 +116,10 @@ grep -Fq '.peer_connected == true' "${runner}"
 grep -A12 'reconnect_lightning_peers()' "${runner}" | \
   grep -Fq 'ensure_channel cln-provider-a cln-provider-b'
 grep -A60 'restart_service()' "${runner}" | grep -Fq 'reconnect_lightning_peers'
+grep -Fq 'resolve-alert <provider> CONFIRM_RECOVERED_PROVIDER_ALERT' "${runner}"
+grep -A45 'resolve_provider_alert()' "${runner}" | grep -Fq 'topology_services_ready'
+grep -A45 'resolve_provider_alert()' "${runner}" | grep -Fq 'evidence/resolved'
+grep -A45 'resolve_provider_alert()' "${runner}" | grep -Fq 'mv "${alert}" "${destination}"'
 grep -Fq 'os.fchown(descriptor, metadata.st_uid, metadata.st_gid)' "${runner}"
 grep -Fq 'for key in sorted(values.keys() - seen)' "${runner}"
 

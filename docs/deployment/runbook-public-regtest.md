@@ -118,6 +118,10 @@ The warm `up` path reconciles every durable service in dependency order before
 waiting for readiness. This is required because a provider can race the
 Bitcoin container whose network namespace it joins during an unordered Docker
 restart; seeing any other running container is not sufficient recovery proof.
+Provider health becomes not-ready on every chain poll failure, but the alert
+sink pages only when polling becomes stale or exhausts its bounded retry
+budget. A transient boot-time RPC miss therefore closes admission without
+creating a permanent incident file after the chain recovers.
 Bootstrap maintains eight independently reservable confirmed Bitcoin outputs
 per provider. Both public-demo providers use the same disclosed 100-bps spread
 and regtest-fixed 20-sat/vB feerate so an amount-bound submarine invoice can receive two
@@ -198,6 +202,22 @@ provider evidence, stop public TLS, and identify the fault before restoring a
 matching backup. Never delete an admission without its receipt. If custody
 material may have escaped, destroy the generation, rotate every credential,
 rebuild regtest state, and publish a new manifest.
+
+After a provider alert has been investigated and every service-level readiness
+check has recovered, archive the active alert with an explicit acknowledgement:
+
+```sh
+sudo env IMMORTAL_PUBLIC_REGTEST_STATE_DIR=/var/lib/immortal-public-regtest \
+  IMMORTAL_PUBLIC_REGTEST_RELAY_A_URL=wss://relay-a.example \
+  IMMORTAL_PUBLIC_REGTEST_RELAY_B_URL=wss://relay-b.example \
+  scripts/public-regtest-topology.sh resolve-alert provider-a \
+    CONFIRM_RECOVERED_PROVIDER_ALERT
+```
+
+The command refuses while services remain unhealthy, validates the bounded
+alert envelope, and moves it into the private `evidence/resolved` archive. It
+never deletes alert evidence. Readiness is re-evaluated after the move and can
+remain closed if another provider still has an active alert.
 
 ## Stop and destructive reset
 

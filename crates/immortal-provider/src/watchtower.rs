@@ -259,14 +259,15 @@ impl Watchtower {
                 Err(error) => {
                     self.health.mark_not_ready();
                     let failures = self.health.record_chain_failure();
-                    self.send_system_alert("chain_poller_failure", now, failures)
-                        .await;
-                    if now.saturating_sub(last_success) >= self.stale_after.as_secs() {
-                        self.send_system_alert("chain_poller_stale", now, failures)
-                            .await;
+                    let stale = now.saturating_sub(last_success) >= self.stale_after.as_secs();
+                    let delay = backoff.record_failure();
+                    if let Some(alert_type) = chain_failure_alert(stale, delay.is_none()) {
+                        self.send_system_alert(alert_type, now, failures).await;
+                    }
+                    if stale {
                         return Err(WatchtowerError::ChainStale);
                     }
-                    let Some(delay) = backoff.record_failure() else {
+                    let Some(delay) = delay else {
                         return Err(WatchtowerError::PollExhausted);
                     };
                     eprintln!(
@@ -642,6 +643,16 @@ impl Watchtower {
     }
 }
 
+fn chain_failure_alert(stale: bool, exhausted: bool) -> Option<&'static str> {
+    if stale {
+        Some("chain_poller_stale")
+    } else if exhausted {
+        Some("chain_poller_failure")
+    } else {
+        None
+    }
+}
+
 fn decode_job_payload(job: &WatchJob) -> Result<BroadcastWatchPayload, WatchtowerError> {
     let payload: BroadcastWatchPayload = serde_json::from_value(job.public_payload.clone())
         .map_err(|_| WatchtowerError::InvalidPayload("watch payload shape is invalid"))?;
@@ -779,6 +790,17 @@ fn unix_now() -> Result<u64, WatchtowerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transient_chain_failures_degrade_health_without_paging() {
+        assert_eq!(chain_failure_alert(false, false), None);
+        assert_eq!(
+            chain_failure_alert(false, true),
+            Some("chain_poller_failure")
+        );
+        assert_eq!(chain_failure_alert(true, false), Some("chain_poller_stale"));
+        assert_eq!(chain_failure_alert(true, true), Some("chain_poller_stale"));
+    }
     use crate::{
         bitcoind::{BitcoindAuth, BitcoindEndpoint, BitcoindLimits},
         store::{ProviderStoreError, StoreWriteOutcome, WatchJobRequest},

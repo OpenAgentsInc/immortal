@@ -28,6 +28,8 @@ commands:
   ready                        fail unless every topology readiness check passes
   status                       print the bounded public-safe readiness manifest
   restart <service>            replace one allowlisted durable service and recheck
+  resolve-alert <provider> CONFIRM_RECOVERED_PROVIDER_ALERT
+                               archive one recovered provider alert and recheck
   backup <absolute-directory>  stop the topology and back up secrets plus volumes
   down                         stop containers but retain all state and volumes
   reset CONFIRM_PUBLIC_REGTEST_RESET
@@ -684,7 +686,7 @@ os.chmod(path, 0o644)
 PY
 }
 
-readiness_probe() {
+topology_services_ready() {
   test "$(bitcoin_cli a getconnectioncount)" -ge 1 || return 1
   test "$(bitcoin_cli b getconnectioncount)" -ge 1 || return 1
   chains_synced || return 1
@@ -699,6 +701,10 @@ readiness_probe() {
     cln_ready "${service}" >/dev/null || return 1
     test "$(channel_count "${service}")" -ge 2 || return 1
   done
+}
+
+readiness_probe() {
+  topology_services_ready || return 1
   test ! -e "${state_dir}/evidence/provider-a-alert.json" || return 1
   test ! -e "${state_dir}/evidence/provider-b-alert.json" || return 1
 }
@@ -709,6 +715,42 @@ check_ready() {
   readiness_probe || fail "topology is not ready; inspect docker compose logs"
   write_manifest
   echo "public-regtest-topology: ready manifest ${manifest}"
+}
+
+resolve_provider_alert() {
+  require_owned_state
+  require_commands docker jq python3
+  local provider="${1:-}" confirmation="${2:-}" alert archive_dir timestamp destination
+  case "${provider}" in
+    provider-a|provider-b) ;;
+    *) fail "alert provider must be provider-a or provider-b" ;;
+  esac
+  test "${confirmation}" = CONFIRM_RECOVERED_PROVIDER_ALERT || \
+    fail "recovered provider alert confirmation token is required"
+  alert="${state_dir}/evidence/${provider}-alert.json"
+  test -f "${alert}" || fail "provider alert is absent"
+  test ! -L "${alert}" || fail "provider alert must not be a symlink"
+  test "$(wc -c < "${alert}")" -le 65536 || fail "provider alert exceeds its bound"
+  jq -e '
+    type == "object" and
+    .schema == "openagents.immortal.provider-alert.v1" and
+    (.alert_type | type == "string" and length > 0) and
+    ((.session_id == null) or (.session_id | type == "string")) and
+    (.observed_at | type == "number") and
+    (.detail | type == "string") and
+    (keys | sort) == ["alert_type", "detail", "observed_at", "schema", "session_id"]
+  ' "${alert}" >/dev/null || fail "provider alert has an invalid envelope"
+  topology_services_ready || \
+    fail "provider services have not recovered; alert remains active"
+  archive_dir="${state_dir}/evidence/resolved"
+  install -d -m 0700 "${archive_dir}"
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  destination="${archive_dir}/${timestamp}-${provider}-alert.json"
+  test ! -e "${destination}" || fail "provider alert archive destination already exists"
+  mv "${alert}" "${destination}"
+  chmod 0600 "${destination}"
+  check_ready
+  echo "public-regtest-topology: archived recovered ${provider} alert as $(basename "${destination}")"
 }
 
 reconcile_warm_topology() {
@@ -891,6 +933,7 @@ case "${command}" in
   ready) test "$#" -eq 1 || fail "ready takes no arguments"; check_ready ;;
   status) test "$#" -eq 1 || fail "status takes no arguments"; check_ready >/dev/null; cat "${manifest}" ;;
   restart) test "$#" -eq 2 || fail "restart requires one service"; restart_service "$2" ;;
+  resolve-alert) test "$#" -eq 3 || fail "resolve-alert requires provider and confirmation"; resolve_provider_alert "$2" "$3" ;;
   backup) test "$#" -eq 2 || fail "backup requires one destination"; backup_topology "$2" ;;
   down) test "$#" -eq 1 || fail "down takes no arguments"; stop_topology ;;
   reset) test "$#" -eq 2 || fail "reset requires confirmation"; reset_topology "$2" ;;
