@@ -1902,6 +1902,7 @@ fn validate_constraint_extensions(constraints: &Map<String, Value>) -> Result<()
         "invoice_sha256",
         "maximum_total_fee",
         "payment_hash",
+        "reservation_class",
         "requester_public_keys",
         "swap_type",
     ];
@@ -1916,7 +1917,12 @@ fn validate_constraint_extensions(constraints: &Map<String, Value>) -> Result<()
     }
     if SUPPORTED
         .iter()
-        .filter(|member| !matches!(**member, "invoice_sha256" | "destination_commitment_sha256"))
+        .filter(|member| {
+            !matches!(
+                **member,
+                "invoice_sha256" | "destination_commitment_sha256" | "reservation_class"
+            )
+        })
         .any(|member| !constraints.contains_key(*member))
     {
         return Err(error(
@@ -1948,6 +1954,15 @@ fn validate_constraint_extensions(constraints: &Map<String, Value>) -> Result<()
         return Err(error(
             "swp_contract_terms_mismatch",
             "RFQ firm-Quote requirement must be boolean",
+        ));
+    }
+    if constraints
+        .get("reservation_class")
+        .is_some_and(|value| !matches!(value.as_str(), Some("soft" | "hard")))
+    {
+        return Err(error(
+            "swp_unsupported_extension",
+            "RFQ reservation class must be soft or hard",
         ));
     }
     Ok(())
@@ -2258,4 +2273,41 @@ fn script_error(_error: VerificationError) -> QuoteBuildError {
 
 const fn error(code: &'static str, detail: &'static str) -> QuoteBuildError {
     QuoteBuildError::new(code, detail)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::validate_constraint_extensions;
+
+    fn funded_constraints(reservation_class: &str) -> serde_json::Map<String, serde_json::Value> {
+        json!({
+            "allowed_script_modes": ["taproot-musig2-script-exit"],
+            "asset_pair": null,
+            "confirmation_policy": null,
+            "desired_completion_time": null,
+            "destination_commitment_sha256": null,
+            "firm_quote_required": true,
+            "input_amount": null,
+            "invoice_sha256": null,
+            "maximum_total_fee": null,
+            "payment_hash": null,
+            "reservation_class": reservation_class,
+            "requester_public_keys": null,
+            "swap_type": null
+        })
+        .as_object()
+        .expect("fixture object")
+        .clone()
+    }
+
+    #[test]
+    fn funded_constraints_admit_only_explicit_soft_or_hard_reservations() {
+        validate_constraint_extensions(&funded_constraints("soft")).expect("soft preview");
+        validate_constraint_extensions(&funded_constraints("hard")).expect("hard execution");
+        let error = validate_constraint_extensions(&funded_constraints("none"))
+            .expect_err("unsupported reservation class");
+        assert_eq!(error.code, "swp_unsupported_extension");
+    }
 }
