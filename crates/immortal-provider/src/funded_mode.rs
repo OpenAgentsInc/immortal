@@ -6205,9 +6205,10 @@ impl ProviderMode for FundedMode {
         if rfq_reservation_class(&rfq)? == "soft" {
             let session_id = session.config().session_id.clone();
             let mut profile = quote.profile.clone();
-            if matches!(rfq_swap_type(&rfq)?.as_str(), "reverse" | "chain") {
-                profile = self.bind_reverse_funding_template(&session_id, profile)?;
-            }
+            // Exact reverse/chain funding bytes are bound only after the hard
+            // reservation callback selects controlled UTXOs. A soft browser
+            // preview deliberately keeps the already-validated template
+            // unbound and therefore cannot consume or imply those inputs.
             insert_soft_reservation_terms(&mut profile, &session_id, &quote)?;
             return session
                 .soft_quote(
