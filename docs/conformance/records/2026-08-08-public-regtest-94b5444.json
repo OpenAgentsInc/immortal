@@ -1,0 +1,121 @@
+{
+  "schema": "openagents.immortal.public-regtest-acceptance.v1",
+  "recorded_at": 1786157776,
+  "network": "bip122:0f9188f13cb7b2c9e5c72a6b65eeada4",
+  "revisions": {
+    "immortal_release": "94b54440268c69cd72e19ff6f753faa8f59a0682",
+    "funded_soak_immortal": "04e7258e8ee3f5338fa723f92342d138ae357555",
+    "funded_soak_bazaar": "d1facdb421b1ed09ded43fea655ec1d44ba63ef6"
+  },
+  "public_endpoints": {
+    "site": "https://bazaar.openagents.com",
+    "gateway": "https://gateway.34-41-78-122.sslip.io",
+    "relays": [
+      "wss://relay-a.34-41-78-122.nip.io",
+      "wss://relay-b.34-41-78-122.sslip.io"
+    ]
+  },
+  "public_identities": {
+    "provider_pubkeys": [
+      "232aa9c2d3642abf9ba89e4c9f704b018630acfaf3e2c9faa2faa2b708341b18",
+      "2ad9b8e40ab714f4f5230fd721b8600237d24eda9ed5a5af3ed608dd1abcdb59"
+    ],
+    "lightning_node_ids": [
+      "028dfcd173847b832bb0e98d67664d55c7260d0b90974987b72e61c83a4dabe5b4",
+      "03554e7bb595d6ed0d3e897b4407b585b0b809a826e5b81cd7e172ee798a151d64",
+      "0302424c95ba91f9322bdf47a1884ef507a369ad8a39eaee3f386464f4d58d6a6b"
+    ]
+  },
+  "funded_browser_soak": {
+    "started_at": 1786153783,
+    "completed_at": 1786156237,
+    "simultaneous": {
+      "requested": 5,
+      "completed": 5,
+      "reverse": 3,
+      "submarine": 2,
+      "maximum_duration_seconds": 158,
+      "isolated": true
+    },
+    "sequential": {
+      "requested": 50,
+      "completed": 50,
+      "reverse": 25,
+      "submarine": 25,
+      "maximum_duration_seconds": 46,
+      "fresh_browser_contexts": true
+    },
+    "reload_replay_per_session": true,
+    "two_signed_quotes_per_session": true,
+    "approved_browser_authorities_only": true,
+    "gateway_totals_after_soak": {
+      "sessions_created": 88,
+      "active_sessions": 0,
+      "outstanding_sat": 0,
+      "request_errors": 22
+    }
+  },
+  "durable_state_after_soak": {
+    "provider_a_active_or_unresolved_reservations": 0,
+    "provider_b_active_or_unresolved_reservations": 0,
+    "provider_a_pending_or_unresolved_watch_jobs": 0,
+    "provider_b_pending_or_unresolved_watch_jobs": 0
+  },
+  "fault_matrix": {
+    "revision": "94b54440268c69cd72e19ff6f753faa8f59a0682",
+    "passed": [
+      "gateway",
+      "operator",
+      "relay-a",
+      "relay-b",
+      "provider-a",
+      "provider-b",
+      "bitcoin-a",
+      "bitcoin-b",
+      "cln-provider-a",
+      "cln-provider-b",
+      "cln-wallet",
+      "host"
+    ],
+    "host_rebooted_at": "2026-08-08T02:52:10Z",
+    "host_recovery_command": "scripts/public-regtest-topology.sh up",
+    "fail_closed_during_recovery": true,
+    "identities_stable": true,
+    "readiness_recovered": true
+  },
+  "external_exposure": {
+    "open_tcp_ports": [22, 443],
+    "closed_or_filtered_tcp_ports": [
+      80,
+      5432,
+      5433,
+      9735,
+      9736,
+      9737,
+      18080,
+      18081,
+      18443,
+      18444,
+      19846,
+      19847
+    ],
+    "https": "passed",
+    "wss": "passed",
+    "origin_policy": "passed",
+    "security_headers": "passed"
+  },
+  "operational_rehearsals": {
+    "offline_backup_restore": "passed",
+    "owned_generation_reset": "passed",
+    "readiness_fault_gate": "passed",
+    "receipt_material_scan": "passed"
+  },
+  "claims": {
+    "regtest_only": true,
+    "single_operator": true,
+    "independent_operators": false,
+    "mainnet": false,
+    "production_sla": false,
+    "public_miner_or_rpc": false
+  }
+}
