@@ -51,7 +51,8 @@ jq -e '
   .persistence.secret_state_mode == "0700" and
   .persistence.secret_file_mode == "0600" and
   .persistence.owned_reset_required == true and
-  .exposure.public_protocols == ["https", "wss"] and
+  .exposure.public_protocols == ["bitcoin-regtest-p2p", "https", "wss"] and
+  .exposure.public_bitcoin_p2p_endpoint == "operator-host:18444" and
   .exposure.plain_relay_bind == "numeric_ipv4_loopback" and
   .exposure.public_rpc == false and
   .exposure.public_postgres == false and
@@ -152,7 +153,11 @@ published = []
 for service in services.values():
     for port in service.get("ports", []):
         published.append((port.get("host_ip"), int(port.get("target", 0))))
-if sorted(published) != [("127.0.0.1", 18080), ("127.0.0.1", 18081)]:
+if sorted(published) != [
+    ("0.0.0.0", 18444),
+    ("127.0.0.1", 18080),
+    ("127.0.0.1", 18081),
+]:
     raise SystemExit(f"public port allowlist changed: {published}")
 if value.get("networks", {}).get("adversarial", {}).get("internal") is not True:
     raise SystemExit("rail network is no longer internal")
@@ -180,6 +185,8 @@ grep -Fq 'reset CONFIRM_PUBLIC_REGTEST_RESET' "${runner}"
 grep -Fq '127.0.0.1:${IMMORTAL_PUBLIC_REGTEST_RELAY_A_PORT:-18080}:18080' \
   deploy/public-regtest/compose.yaml
 grep -Fq '127.0.0.1:${IMMORTAL_PUBLIC_REGTEST_RELAY_B_PORT:-18081}:18081' \
+  deploy/public-regtest/compose.yaml
+grep -Fq '${IMMORTAL_PUBLIC_REGTEST_BITCOIN_P2P_PORT:-18444}:18444' \
   deploy/public-regtest/compose.yaml
 
 echo "test-public-regtest-topology: contract, private state, Compose exposure, and refusal gates passed"

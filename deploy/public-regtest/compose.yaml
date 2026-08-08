@@ -1,5 +1,7 @@
 services:
   bitcoin-a:
+    ports:
+      - "${IMMORTAL_PUBLIC_REGTEST_BITCOIN_P2P_BIND:-0.0.0.0}:${IMMORTAL_PUBLIC_REGTEST_BITCOIN_P2P_PORT:-18444}:18444"
     restart: unless-stopped
 
   bitcoin-b:

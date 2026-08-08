@@ -14,9 +14,9 @@ proves operation, not production liquidity.
 
 ```sh
 sudo scripts/join-regtest.sh provider \
-  --relays wss://relay-a.example,wss://relay-b.example \
-  --addnode bitcoin.example:18444 \
-  --gateway https://gateway.example \
+  --relays wss://relay-a.34-41-78-122.nip.io,wss://relay-b.34-41-78-122.sslip.io \
+  --addnode 34.41.78.122:18444 \
+  --gateway https://gateway.34-41-78-122.sslip.io \
   --state-dir /var/lib/immortal-join
 ```
 
@@ -33,6 +33,11 @@ decision.
 The faucet refuses non-regtest addresses and enforces per-IP, per-address,
 and queue budgets (2 requests per IP per 10 minutes; 2,000,000 sat per
 address per day; amounts 10,000–1,000,000 sat).
+
+`34.41.78.122:18444` is a Bitcoin Core P2P listener for this disposable
+regtest chain. It exposes no RPC, wallet, mining, or control method; peers
+still verify the regtest genesis and every block themselves. TCP 18443 stays
+closed. This endpoint has no value, mainnet, or production-availability claim.
 
 ## Join as a relay
 

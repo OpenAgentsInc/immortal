@@ -41,7 +41,8 @@
     "backup_requires_stopped_topology": true
   },
   "exposure": {
-    "public_protocols": ["https", "wss"],
+    "public_protocols": ["bitcoin-regtest-p2p", "https", "wss"],
+    "public_bitcoin_p2p_endpoint": "operator-host:18444",
     "plain_relay_bind": "numeric_ipv4_loopback",
     "public_rpc": false,
     "public_postgres": false,

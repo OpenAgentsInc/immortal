@@ -12,6 +12,7 @@ relay_a_url="${IMMORTAL_PUBLIC_REGTEST_RELAY_A_URL:-}"
 relay_b_url="${IMMORTAL_PUBLIC_REGTEST_RELAY_B_URL:-}"
 relay_a_port="${IMMORTAL_PUBLIC_REGTEST_RELAY_A_PORT:-18080}"
 relay_b_port="${IMMORTAL_PUBLIC_REGTEST_RELAY_B_PORT:-18081}"
+bitcoin_p2p_port="${IMMORTAL_PUBLIC_REGTEST_BITCOIN_P2P_PORT:-18444}"
 marker="${state_dir}/ownership.json"
 manifest="${state_dir}/public-ready.json"
 postgres_image="postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193"
@@ -45,6 +46,7 @@ optional:
   IMMORTAL_PUBLIC_REGTEST_STATE_DIR   absolute private state directory
   IMMORTAL_PUBLIC_REGTEST_RELAY_A_PORT loopback proxy port (default 18080)
   IMMORTAL_PUBLIC_REGTEST_RELAY_B_PORT loopback proxy port (default 18081)
+  IMMORTAL_PUBLIC_REGTEST_BITCOIN_P2P_PORT public regtest P2P port (default 18444)
 USAGE
 }
 
@@ -76,7 +78,7 @@ validate_state_path() {
 }
 
 validate_public_configuration() {
-  python3 - "${relay_a_url}" "${relay_b_url}" "${relay_a_port}" "${relay_b_port}" <<'PY'
+  python3 - "${relay_a_url}" "${relay_b_url}" "${relay_a_port}" "${relay_b_port}" "${bitcoin_p2p_port}" <<'PY'
 import sys
 import urllib.parse
 
@@ -96,12 +98,12 @@ for value in urls:
     ):
         raise SystemExit("public relay URL must be an exact wss authority")
 ports = []
-for value in sys.argv[3:5]:
+for value in sys.argv[3:6]:
     if not value.isascii() or not value.isdigit() or not 1024 <= int(value) <= 65535:
         raise SystemExit("plain relay port must be in 1024..65535")
     ports.append(int(value))
-if ports[0] == ports[1]:
-    raise SystemExit("plain relay ports must be distinct")
+if len(set(ports)) != len(ports):
+    raise SystemExit("public and plain relay ports must be distinct")
 PY
 }
 

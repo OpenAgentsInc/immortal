@@ -15,7 +15,9 @@ operator-selected directory with mode `0700`; files use mode `0600`.
 
 The two plain relay ports and capability gateway bind numeric IPv4 loopback.
 Put a TLS reverse proxy on the host and publish only the corresponding `wss://`
-and `https://` authorities. Bitcoin RPC/P2P, Lightning RPC/P2P, Postgres, provider health,
+and `https://` authorities. Publish exactly one Bitcoin **regtest P2P** port
+(default TCP 18444 from `bitcoin-a`) so permissionless joiners can synchronize
+the sandbox chain. Bitcoin RPC, Lightning RPC/P2P, Postgres, provider health,
 plugin, miner, and wallet control traffic stay on the private Compose network.
 The capability gateway is a separate least-authority process and contract.
 Dynamic session execution is qualified by #43. Follow
@@ -32,11 +34,27 @@ The private controller is specified by
 - three distinct DNS names with TLS certificates terminating on this host.
 
 Review `deploy/public-regtest/Caddyfile.example`, replace its example names,
-and ensure the host firewall exposes only TCP 443 (and the operator's SSH
-policy). Do not expose ports `18080` or `18081`; Caddy reaches them on
+and ensure the host firewall exposes only TCP 443, TCP 18444, and the
+operator's SSH policy. Scope 18444 to this instance; it is regtest P2P only.
+Do not expose RPC 18443 or ports `18080`/`18081`; Caddy reaches the latter on
 loopback. The gateway site must overwrite `X-Immortal-Client-IP`; appending or
 trusting a browser-supplied value breaks capability binding. Configure the
 gateway's exact Origin to the Bazaar HTTPS origin; no wildcard alias is valid.
+
+For the current demo host, install a target-scoped GCP ingress rule and prove
+the public/private split from an external machine:
+
+```sh
+gcloud compute firewall-rules create immortal-public-regtest-p2p \
+  --network default --direction INGRESS --action ALLOW \
+  --rules tcp:18444 --source-ranges 0.0.0.0/0 \
+  --target-tags immortal-public-regtest
+nc -vz 34.41.78.122 18444
+nc -vz 34.41.78.122 18443 # must fail
+```
+
+Rollback removes that one firewall rule and runs `up` with the previous
+Compose file; no private state reset is required.
 
 ## Start
 

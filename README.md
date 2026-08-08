@@ -284,10 +284,11 @@ and fail-closed origin/network/method bounds. See
 [`browser-demo-funded.md`](docs/conformance/browser-demo-funded.md). This is
 explicitly unsafe local demo tooling, not a production wallet API.
 For a persistent public regtest sandbox, `scripts/public-regtest-topology.sh`
-keeps two peered Bitcoin nodes, three Lightning nodes, two funded providers,
-and two relay/database boundaries across restarts. Only the relay WebSocket
-ports bind to loopback for an operator TLS proxy; all rail, database, wallet,
-and control authority remains private. See the
+keeps two peered Bitcoin nodes, exposes one regtest-only Bitcoin P2P listener
+for permissionless synchronization, three Lightning nodes, two funded providers,
+and two relay/database boundaries across restarts. The relay WebSocket ports
+bind to loopback for an operator TLS proxy; Bitcoin RPC and all other rail,
+database, wallet, and control authority remains private. See the
 [`public regtest runbook`](docs/deployment/runbook-public-regtest.md).
 The separate `immortal-public-regtest-gateway` process adds the public browser
 boundary without broadening the local adapter: short-lived origin/IP-bound
