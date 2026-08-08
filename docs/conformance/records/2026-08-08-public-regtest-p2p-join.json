@@ -1,0 +1,52 @@
+{
+  "schema": "openagents.immortal.public-regtest-p2p-join.v1",
+  "status": "passed",
+  "recorded_at": "2026-08-08T05:21:16Z",
+  "source_revision": "8884b2f73971fa205558417dcb6d4c7b5eeb4244",
+  "scope": "single-operator public regtest demonstration infrastructure",
+  "public_bitcoin": {
+    "p2p_endpoint": "34.41.78.122:18444",
+    "external_connection": "passed",
+    "rpc_endpoint": "34.41.78.122:18443",
+    "rpc_publicly_reachable": false
+  },
+  "fresh_provider_join": {
+    "elapsed_seconds": 56,
+    "maximum_seconds": 600,
+    "health": "ready",
+    "chain_height": 764,
+    "chain_peers": 1,
+    "faucet_requests_paid": 2,
+    "provider_pubkey": "4abf91baeb62b561288ec27ada3a81edf3855689de593f13792fbec428a20d83",
+    "offering_coordinate": "39601:4abf91baeb62b561288ec27ada3a81edf3855689de593f13792fbec428a20d83:immortal-funded-btc-lightning",
+    "relays": [
+      "wss://relay-a.34-41-78-122.nip.io",
+      "wss://relay-b.34-41-78-122.sslip.io"
+    ],
+    "gateway": "https://gateway.34-41-78-122.sslip.io",
+    "private_material_recorded": false
+  },
+  "bazaar_discovery": {
+    "url": "https://bazaar.openagents.com/network",
+    "provider_count": 3,
+    "ready_provider_count": 3,
+    "joined_provider_label": "4abf91ba · unpinned",
+    "joined_provider_state": "ready",
+    "console_errors": 0
+  },
+  "tests": [
+    "scripts/test-public-regtest-topology.sh",
+    "scripts/test-joined-relay-operations.sh",
+    "docker build -f deploy/join/Dockerfile.tls-egress .",
+    "fresh scripts/join-regtest.sh provider acceptance",
+    "external TCP P2P/RPC exposure probe",
+    "Bazaar production browser discovery check"
+  ],
+  "claims": {
+    "regtest_only": true,
+    "mainnet": false,
+    "real_value": false,
+    "production_sla": false,
+    "public_miner_or_rpc": false
+  }
+}
