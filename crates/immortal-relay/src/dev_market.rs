@@ -71,7 +71,9 @@ pub fn seed_with_auth_url(relay_url: &str, auth_relay_url: &str) -> Result<DevMa
     authenticate(&mut provider_reader, &provider, auth_relay_url, now)?;
     subscribe(&mut provider_reader, "provider-mkt", provider.pubkey())?;
     let mut requester_publisher = connect(relay_url)?;
+    authenticate(&mut requester_publisher, &requester, auth_relay_url, now)?;
     let mut provider_publisher = connect(relay_url)?;
+    authenticate(&mut provider_publisher, &provider, auth_relay_url, now)?;
 
     let provider_profile = provider.sign(
         now,
