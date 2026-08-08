@@ -1,0 +1,77 @@
+{
+  "schema": "openagents.immortal.independent-relay-conformance.v1",
+  "recorded_at": "2026-08-08T04:46:00Z",
+  "source_revision": "de1e3238fcaca4a9e0eeee0ca2ef873733b3a8bd",
+  "claim": {
+    "scope": "public-regtest demonstration infrastructure",
+    "infrastructure_independent_from_primary_gcp_vm": true,
+    "operator_independent": false,
+    "durable_public_edge": false,
+    "statement": "The relay, Postgres volume, host, and Cloudflare edge are separate from the primary GCP VM. The account-less edge has no uptime guarantee and every relay remains OpenAgents-operated."
+  },
+  "relay": {
+    "public_url": "wss://monte-expression-scores-comparisons.trycloudflare.com",
+    "public_edge": "Cloudflare account-less quick tunnel, IAH",
+    "loopback_origin": "127.0.0.1:18082",
+    "relay_pubkey": "94e76b118a2c3afcb40e0487d7802a0f87b2b8b0e017f3cedd2c65aa182705a1",
+    "database": "dedicated Postgres 17 Docker volume",
+    "supported_extensions_checked": [
+      "nip-mkt",
+      "mkt-swp:1",
+      "mkt-swp-coordination:1"
+    ],
+    "public_websocket_challenge": {
+      "frame": "AUTH",
+      "challenge_length": 64
+    }
+  },
+  "comparison_relay": {
+    "public_url": "wss://relay-a.34-41-78-122.nip.io",
+    "supported_extensions_checked": [
+      "nip-mkt",
+      "mkt-swp:1"
+    ]
+  },
+  "wrapped_market_sessions": [
+    {
+      "relay_url": "wss://monte-expression-scores-comparisons.trycloudflare.com",
+      "transport": "loopback transport with exact public NIP-42 authentication URL",
+      "session_id": "2ed59e5fb274c55b09a17723746669a83654f7a369d2829ae8bb9baeb56a6e24",
+      "steps": ["rfq", "quote", "order", "status", "close"],
+      "final_state": "completed",
+      "settlement_claim": "coordination_only"
+    },
+    {
+      "relay_url": "wss://relay-a.34-41-78-122.nip.io",
+      "transport": "certificate-verified loopback TLS egress bridge with exact public NIP-42 authentication URL",
+      "steps": ["rfq", "quote", "order", "status", "close"],
+      "final_state": "completed",
+      "settlement_claim": "coordination_only"
+    }
+  ],
+  "backup_restore": {
+    "backup": "relay-20260808T044405Z.dump",
+    "sha256": "b76aa2bd5fc369b42a8e4d80af6bd3187b09bc0c27a85457828aacd3d664f71a",
+    "restore_result": "passed",
+    "schema_migrations": 14,
+    "nostr_events": 12,
+    "retention": "newest 14 mode-0600 custom-format dumps"
+  },
+  "host_operations": {
+    "health_interval_seconds": 300,
+    "backup_interval_seconds": 86400,
+    "monitor_label": "com.openagents.immortal-independent-relay-monitor",
+    "backup_label": "com.openagents.immortal-independent-relay-backup",
+    "initial_monitor_exit_code": 0,
+    "initial_backup_exit_code": 0,
+    "error_log_bytes": 0
+  },
+  "tests": [
+    "scripts/test-joined-relay-operations.sh",
+    "cargo test -p immortal-relay gateway::wire --lib",
+    "public NIP-11 identity and extension check",
+    "public WebSocket NIP-42 challenge check",
+    "independent wrapped market session on both relay processes",
+    "real Postgres custom-format backup and disposable restore"
+  ]
+}
