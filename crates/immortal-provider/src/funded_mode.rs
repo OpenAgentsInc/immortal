@@ -6202,6 +6202,27 @@ impl ProviderMode for FundedMode {
         let Some(quote) = self.quote(&rfq, created_at)? else {
             return Ok(None);
         };
+        if rfq_reservation_class(&rfq)? == "soft" {
+            let session_id = session.config().session_id.clone();
+            let mut profile = quote.profile.clone();
+            if matches!(rfq_swap_type(&rfq)?.as_str(), "reverse" | "chain") {
+                profile = self.bind_reverse_funding_template(&session_id, profile)?;
+            }
+            insert_soft_reservation_terms(&mut profile, &session_id, &quote)?;
+            return session
+                .soft_quote(
+                    created_at,
+                    &deterministic_id("quote", &session_id),
+                    quote.expiration,
+                    profile,
+                )
+                .map(Some)
+                .map_err(|error| {
+                    QuoteConstructionError::rejected(format!(
+                        "could not construct funded soft Quote: {error}"
+                    ))
+                });
+        }
         let reservation_id = deterministic_id("reservation", &session.config().session_id);
         let capacity_bucket_id = if self
             .liquid
@@ -7599,6 +7620,55 @@ impl ProviderMode for FundedMode {
             _ => Ok(None),
         }
     }
+}
+
+fn rfq_reservation_class(rfq: &Event) -> Result<&str, String> {
+    let profile = record_profile(rfq)?;
+    let constraints = profile
+        .get("constraints")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "funded RFQ has no constraints".to_owned())?;
+    match constraints.get("reservation_class").and_then(Value::as_str) {
+        None | Some("hard") => Ok("hard"),
+        Some("soft") => Ok("soft"),
+        Some(_) => Err("funded RFQ requests an unsupported reservation class".to_owned()),
+    }
+}
+
+fn insert_soft_reservation_terms(
+    profile: &mut Value,
+    session_id: &str,
+    quote: &BuiltFundedQuote,
+) -> Result<(), String> {
+    let body = profile
+        .as_object_mut()
+        .ok_or_else(|| "funded Quote profile is not an object".to_owned())?;
+    if body.contains_key("reservation_terms") {
+        return Err("funded Quote already carries reservation terms".to_owned());
+    }
+    let reservation_id = deterministic_id("soft-reservation", session_id);
+    let capacity_bucket_id = if quote.reserved_asset_id.ends_with(":chain") {
+        format!("btc-{}", &session_id[..16])
+    } else {
+        "lightning-outbound".to_owned()
+    };
+    let capacity_commitment_sha256 = deterministic_id("soft-capacity", session_id);
+    body.insert(
+        "reservation_terms".to_owned(),
+        json!({
+            "reservation_id": reservation_id,
+            "capacity_bucket_id": capacity_bucket_id,
+            "reserved_asset_id": quote.reserved_asset_id,
+            "reserved_amount": quote.reserved_amount_sat.to_string(),
+            "handler_committed_capacity": quote.reserved_amount_sat.to_string(),
+            "reservation_expires_at": quote.expiration,
+            "allocation_sequence": "1",
+            "proof_class": "provider_signed",
+            "proof_ref": format!("immortal-provider-soft:{reservation_id}"),
+            "capacity_commitment_sha256": capacity_commitment_sha256
+        }),
+    );
+    Ok(())
 }
 
 fn bind_reverse_funding_profile(
@@ -9829,7 +9899,7 @@ fn funded_offering(
             ],
             "networks":[network_id],
             "script_modes":["taproot-musig2-script-exit"],
-            "reservation_proof_classes":["utxo_control","lightning_liquidity"],
+            "reservation_proof_classes":["provider_signed","utxo_control","lightning_liquidity"],
             "confirmation_policies":[{
                 "policy_id":"btc-confirmed-no-rbf",
                 "minimum_confirmations":minimum_confirmations.to_string(),
@@ -10281,6 +10351,7 @@ mod tests {
             CapacityBounds, FeerateObservation, PricingConfig, QuoteRequest, QuoteSide,
             ReservationTier, SwapType, funding_feerate_from_priced_vbytes,
         },
+        quote::BuiltFundedQuote,
         relay_actor::QuoteDisposition,
     };
 
@@ -10294,13 +10365,14 @@ mod tests {
         contract_pricing_swap_type, cooperative_provider_step, decode_hex,
         derive_quote_with_capacity_disposition, execute_before_exclusive_deadline,
         extract_hold_invoice, finalized_from_signed_message, funded_cancel_pre_effect,
-        funded_offering, funding_pricing_swap_type, hold_state_decision, latest_status_state,
-        liquid_funding_fee_sat, lower_hex, priced_vbytes_for_rails, quote_feerate,
-        recover_liquid_reverse_refund_before_claim, require_chain_finality,
-        required_chain_confirmations, reverse_invoice_cancellation_action, reverse_spend_decision,
-        settlement_destination_path, sha256, status_transaction_id, status_transaction_reference,
-        terminal_evidence_expectations, unfunded_destination_reservation_evidence_value,
-        validate_cross_domain_held_htlcs, validate_executable_reverse_funding, validate_held_htlcs,
+        funded_offering, funding_pricing_swap_type, hold_state_decision,
+        insert_soft_reservation_terms, latest_status_state, liquid_funding_fee_sat, lower_hex,
+        priced_vbytes_for_rails, quote_feerate, recover_liquid_reverse_refund_before_claim,
+        require_chain_finality, required_chain_confirmations, reverse_invoice_cancellation_action,
+        reverse_spend_decision, rfq_reservation_class, settlement_destination_path, sha256,
+        status_transaction_id, status_transaction_reference, terminal_evidence_expectations,
+        unfunded_destination_reservation_evidence_value, validate_cross_domain_held_htlcs,
+        validate_executable_reverse_funding, validate_held_htlcs,
         validate_liquid_chain_observation, validate_liquid_funding_inputs,
         validate_zero_conf_mempool_entry, worst_case_redeem_vbytes, zero_conf_risk_session_id,
     };
@@ -10316,6 +10388,41 @@ mod tests {
         include_bytes!("../../../tests/fixtures/nipmkt/liquid-rail-v1.json");
     const ZERO_CONF_FIXTURE: &[u8] =
         include_bytes!("../../../tests/fixtures/provider/zero-conf-v1.json");
+
+    #[test]
+    fn browser_preview_requests_get_provider_signed_soft_reservations() {
+        let mut profile = json!({"terms": {}});
+        let quote = BuiltFundedQuote {
+            profile: profile.clone(),
+            expiration: 200,
+            input_amount_sat: 20_000,
+            output_amount_sat: 19_000,
+            reserved_asset_id: "swp:1:bip122:00:btc:chain".to_owned(),
+            reserved_amount_sat: 19_000,
+        };
+        insert_soft_reservation_terms(&mut profile, &"ab".repeat(32), &quote)
+            .expect("soft reservation terms");
+        assert_eq!(
+            profile["reservation_terms"]["proof_class"],
+            "provider_signed"
+        );
+        assert_eq!(profile["reservation_terms"]["reserved_amount"], "19000");
+        assert_eq!(profile["reservation_terms"]["reservation_expires_at"], 200);
+
+        let event = Event {
+            id: String::new(),
+            pubkey: String::new(),
+            created_at: 100,
+            kind: 39_604,
+            tags: Vec::new(),
+            content: json!({
+                "mkt_swp": {"constraints": {"reservation_class": "soft"}}
+            })
+            .to_string(),
+            sig: String::new(),
+        };
+        assert_eq!(rfq_reservation_class(&event), Ok("soft"));
+    }
 
     #[test]
     fn zero_conf_fixture_pins_local_mempool_and_status_policy() {

@@ -116,6 +116,13 @@ per provider. Both public-demo providers use the same disclosed 100-bps spread
 and 20-sat/vB fallback so an amount-bound submarine invoice can receive two
 economically comparable signed Quotes. Provider independence remains real;
 the shared price policy is a demo constraint, not a production market rule.
+Public providers additionally honor an explicit browser-preview
+`reservation_class: soft` constraint. That path signs a complete firm Quote
+with `provider_signed` reservation evidence but does not write a hard capacity
+allocation. The private funded worker omits the constraint and therefore keeps
+the existing fail-closed hard-reservation path. Preview traffic must not appear
+in the durable active-reservation count; only worker execution RFQs may consume
+those eight independently reservable outputs.
 `up` reconciles these two non-secret settings on persistent state and replaces
 both providers across a Nostr timestamp boundary only when they drift. The
 eight outputs per provider leave headroom above the five-session concurrency
