@@ -144,7 +144,7 @@ required = {
     "bitcoin-a", "bitcoin-b", "relay-a", "relay-b", "provider-a", "provider-b",
     "cln-provider-a", "cln-provider-b", "cln-wallet", "wallet-gateway",
     "bitcoin-a-rpc-forwarder", "bitcoin-b-rpc-forwarder",
-    "relay-a-public", "relay-b-public",
+    "relay-a-public", "relay-b-public", "bitcoin-p2p-public",
     "relay-a-postgres", "relay-b-postgres", "provider-a-postgres", "provider-b-postgres",
 }
 if not required.issubset(services):
@@ -165,11 +165,11 @@ if value.get("networks", {}).get("public-edge", {}).get("internal") is True:
     raise SystemExit("public edge network unexpectedly became internal")
 for name, service in services.items():
     if "public-edge" in service.get("networks", {}) and name not in {
-        "relay-a-public", "relay-b-public"
+        "relay-a-public", "relay-b-public", "bitcoin-p2p-public"
     }:
         raise SystemExit(f"private service entered public edge network: {name}")
 PY
-grep -Fq 'relay-a-public relay-b-public wallet-driver' "${runner}"
+grep -Fq 'relay-a-public relay-b-public bitcoin-p2p-public wallet-driver' "${runner}"
 
 invalid_state="${state_dir}.invalid"
 if IMMORTAL_PUBLIC_REGTEST_STATE_DIR="${invalid_state}" \

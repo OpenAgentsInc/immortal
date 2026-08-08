@@ -776,6 +776,7 @@ reconcile_warm_topology() {
   # the warm readiness wait.
   compose up --detach bitcoin-a bitcoin-b relay-a-postgres relay-b-postgres \
     provider-a-postgres provider-b-postgres
+  compose up --detach bitcoin-p2p-public
   compose up --detach relay-a relay-b cln-provider-a cln-provider-b \
     alert-sink-a alert-sink-b
   compose up --detach bitcoin-a-rpc-forwarder bitcoin-b-rpc-forwarder \
@@ -808,9 +809,10 @@ start_topology() {
   compose build bitcoin-a bitcoin-b relay-a relay-b cln-provider-a cln-provider-b \
     cln-wallet provider-a provider-b alert-sink-a alert-sink-b provider-a-egress \
     provider-b-egress bitcoin-a-rpc-forwarder bitcoin-b-rpc-forwarder wallet-gateway \
-    relay-a-public relay-b-public wallet-driver
+    relay-a-public relay-b-public bitcoin-p2p-public wallet-driver
   compose up --detach bitcoin-a bitcoin-b relay-a-postgres relay-b-postgres \
     provider-a-postgres provider-b-postgres
+  compose up --detach bitcoin-p2p-public
   compose up --detach relay-a relay-b cln-provider-a cln-provider-b \
     alert-sink-a alert-sink-b
   compose up --detach bitcoin-a-rpc-forwarder bitcoin-b-rpc-forwarder wallet-gateway cln-wallet
