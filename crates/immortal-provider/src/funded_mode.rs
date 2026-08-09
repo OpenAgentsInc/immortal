@@ -1,6 +1,9 @@
 use std::{
     collections::BTreeMap,
     env,
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -56,9 +59,10 @@ use crate::{
     liquidity::{WalletScanPolicy, discover_wallet_utxos},
     pricing::{
         CapacityBounds, DerivedQuote, FeerateObservation, LIQUID_CLAIM_VBYTES,
-        LIQUID_REFUND_VBYTES, LIQUID_SINGLE_INPUT_FUNDING_VBYTES, PricingConfig, QuoteRequest,
-        QuoteSide, SwapType as PricingSwapType, bitcoin_to_liquid_chain_quote_vbytes,
-        claim_spend_vbytes, derive_quote_with_worst_case_vbytes, feerate_for_quote,
+        LIQUID_REFUND_VBYTES, LIQUID_SINGLE_INPUT_FUNDING_VBYTES, MAX_PRICE_FEED_BYTES,
+        PriceFeedPacket, PricingConfig, QuoteRequest, QuoteSide, SwapType as PricingSwapType,
+        bitcoin_to_liquid_chain_quote_vbytes, claim_spend_vbytes,
+        derive_quote_with_price_feed_and_worst_case_vbytes, feerate_for_quote,
         funding_feerate_from_priced_vbytes, liquid_reverse_quote_vbytes,
         liquid_submarine_quote_vbytes, liquid_to_bitcoin_chain_quote_vbytes, lockup_vbytes,
         refund_spend_vbytes, worst_case_redeem_vbytes,
@@ -105,6 +109,7 @@ pub(crate) struct FundedMode {
     minimum_confirmations: u32,
     reorg_safety_blocks: u32,
     pricing: PricingConfig,
+    price_feed_file: Option<PathBuf>,
     force_fallback_feerate: bool,
     hold_invoice_expiry_seconds: u32,
     cooperative_signing: bool,
@@ -123,11 +128,20 @@ pub(crate) struct FundedModePolicy {
     pub minimum_confirmations: u32,
     pub reorg_safety_blocks: u32,
     pub pricing: PricingConfig,
+    pub price_feed_file: Option<PathBuf>,
     pub force_fallback_feerate: bool,
     pub hold_invoice_expiry_seconds: u32,
     pub zero_conf: Option<ZeroConfConfig>,
 }
 
+struct QuoteDerivationContext<'a> {
+    request: &'a QuoteRequest,
+    created_at: u64,
+    worst_case_vbytes: u64,
+    price_feed: Option<&'a PriceFeedPacket>,
+}
+
+#[cfg(test)]
 fn derive_quote_with_capacity_disposition(
     pricing: &PricingConfig,
     feerate: &FeerateObservation,
@@ -137,13 +151,35 @@ fn derive_quote_with_capacity_disposition(
     created_at: u64,
     worst_case_vbytes: u64,
 ) -> Result<DerivedQuote, QuoteConstructionError> {
-    match derive_quote_with_worst_case_vbytes(
+    derive_quote_with_capacity_disposition_and_price_feed(
         pricing,
         feerate,
         available,
-        request,
-        created_at,
-        worst_case_vbytes,
+        total_capacity,
+        QuoteDerivationContext {
+            request,
+            created_at,
+            worst_case_vbytes,
+            price_feed: None,
+        },
+    )
+}
+
+fn derive_quote_with_capacity_disposition_and_price_feed(
+    pricing: &PricingConfig,
+    feerate: &FeerateObservation,
+    available: &CapacityBounds,
+    total_capacity: u64,
+    context: QuoteDerivationContext<'_>,
+) -> Result<DerivedQuote, QuoteConstructionError> {
+    match derive_quote_with_price_feed_and_worst_case_vbytes(
+        pricing,
+        feerate,
+        available,
+        context.request,
+        context.created_at,
+        context.worst_case_vbytes,
+        context.price_feed,
     ) {
         Ok(quote) => Ok(quote),
         Err(error) => {
@@ -152,13 +188,14 @@ fn derive_quote_with_capacity_disposition(
                     capacity_bucket_id: available.capacity_bucket_id.clone(),
                     available_capacity: total_capacity.to_string(),
                 };
-                if derive_quote_with_worst_case_vbytes(
+                if derive_quote_with_price_feed_and_worst_case_vbytes(
                     pricing,
                     feerate,
                     &total,
-                    request,
-                    created_at,
-                    worst_case_vbytes,
+                    context.request,
+                    context.created_at,
+                    context.worst_case_vbytes,
+                    context.price_feed,
                 )
                 .is_ok()
                 {
@@ -182,6 +219,54 @@ fn quote_feerate(
         .flatten()
         .map(|sat_per_vb| (sat_per_vb, "bitcoind-estimatesmartfee-2"));
     feerate_for_quote(pricing, live).map_err(|error| error.to_string())
+}
+
+fn load_price_feed_file(path: &Path) -> Result<PriceFeedPacket, String> {
+    if !path.is_absolute() {
+        return Err("path is not absolute".to_owned());
+    }
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|_| "metadata is unavailable".to_owned())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("path is not a regular nonsymlink file".to_owned());
+    }
+    let length = usize::try_from(metadata.len()).map_err(|_| "size is invalid".to_owned())?;
+    if length == 0 || length > MAX_PRICE_FEED_BYTES {
+        return Err("size is outside the provider bound".to_owned());
+    }
+    let mut file = File::open(path).map_err(|_| "file could not be opened".to_owned())?;
+    let opened = file
+        .metadata()
+        .map_err(|_| "opened-file metadata is unavailable".to_owned())?;
+    if !opened.is_file()
+        || opened.len() != metadata.len()
+        || !same_price_feed_file(&metadata, &opened)
+    {
+        return Err("file changed before opening".to_owned());
+    }
+    let maximum_bytes = u64::try_from(MAX_PRICE_FEED_BYTES)
+        .map_err(|_| "provider byte bound is invalid".to_owned())?;
+    let mut bytes = Vec::with_capacity(length);
+    file.by_ref()
+        .take(maximum_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| "file could not be read".to_owned())?;
+    if bytes.len() != length {
+        return Err("file changed while reading".to_owned());
+    }
+    PriceFeedPacket::from_json_bytes(&bytes).map_err(|error| error.to_string())
+}
+
+#[cfg(unix)]
+fn same_price_feed_file(first: &std::fs::Metadata, second: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    first.dev() == second.dev() && first.ino() == second.ino()
+}
+
+#[cfg(not(unix))]
+fn same_price_feed_file(_first: &std::fs::Metadata, _second: &std::fs::Metadata) -> bool {
+    true
 }
 
 #[derive(Clone)]
@@ -453,6 +538,7 @@ impl FundedMode {
             minimum_confirmations: policy.minimum_confirmations,
             reorg_safety_blocks: policy.reorg_safety_blocks,
             pricing: policy.pricing,
+            price_feed_file: policy.price_feed_file,
             force_fallback_feerate: policy.force_fallback_feerate,
             hold_invoice_expiry_seconds: policy.hold_invoice_expiry_seconds,
             cooperative_signing: policy.cooperative_signing,
@@ -663,15 +749,37 @@ impl FundedMode {
             &self.network_id,
             self.liquid.as_ref(),
         )?;
-        derive_quote_with_capacity_disposition(
+        let price_feed = match self.price_feed_file.as_deref() {
+            Some(path) => match load_price_feed_file(path) {
+                Ok(packet) => Some(packet),
+                Err(error) => {
+                    eprintln!(
+                        "immortal-provider: price-feed file unavailable; using static pricing: {error}"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        let derived = derive_quote_with_capacity_disposition_and_price_feed(
             &self.pricing,
             &feerate,
             &capacity,
             total_capacity,
-            &request,
-            created_at,
-            worst_case_vbytes,
-        )
+            QuoteDerivationContext {
+                request: &request,
+                created_at,
+                worst_case_vbytes,
+                price_feed: price_feed.as_ref(),
+            },
+        )?;
+        if let Some(fallback) = &derived.price_feed_fallback {
+            eprintln!(
+                "immortal-provider: price-feed packet rejected; using static pricing: {}",
+                fallback.reason
+            );
+        }
+        Ok(derived)
     }
 
     fn quote_capacity(
@@ -10367,11 +10475,12 @@ mod tests {
         derive_quote_with_capacity_disposition, execute_before_exclusive_deadline,
         extract_hold_invoice, finalized_from_signed_message, funded_cancel_pre_effect,
         funded_offering, funding_pricing_swap_type, hold_state_decision,
-        insert_soft_reservation_terms, latest_status_state, liquid_funding_fee_sat, lower_hex,
-        priced_vbytes_for_rails, quote_feerate, recover_liquid_reverse_refund_before_claim,
-        require_chain_finality, required_chain_confirmations, reverse_invoice_cancellation_action,
-        reverse_spend_decision, rfq_reservation_class, settlement_destination_path, sha256,
-        status_transaction_id, status_transaction_reference, terminal_evidence_expectations,
+        insert_soft_reservation_terms, latest_status_state, liquid_funding_fee_sat,
+        load_price_feed_file, lower_hex, priced_vbytes_for_rails, quote_feerate,
+        recover_liquid_reverse_refund_before_claim, require_chain_finality,
+        required_chain_confirmations, reverse_invoice_cancellation_action, reverse_spend_decision,
+        rfq_reservation_class, settlement_destination_path, sha256, status_transaction_id,
+        status_transaction_reference, terminal_evidence_expectations,
         unfunded_destination_reservation_evidence_value, validate_cross_domain_held_htlcs,
         validate_executable_reverse_funding, validate_held_htlcs,
         validate_liquid_chain_observation, validate_liquid_funding_inputs,
@@ -10389,6 +10498,27 @@ mod tests {
         include_bytes!("../../../tests/fixtures/nipmkt/liquid-rail-v1.json");
     const ZERO_CONF_FIXTURE: &[u8] =
         include_bytes!("../../../tests/fixtures/provider/zero-conf-v1.json");
+
+    #[test]
+    fn price_feed_loader_reads_the_pinned_regular_file() -> Result<(), Box<dyn std::error::Error>> {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/provider/price-feed-v1.json");
+        let fixture: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+        let packet_path = std::env::temp_dir().join(format!(
+            "immortal-provider-price-feed-{}-{}.json",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("unnamed")
+        ));
+        let packet_bytes = serde_json::to_vec(&fixture["fresh_packet"])?;
+        std::fs::write(&packet_path, packet_bytes)?;
+        let loaded = load_price_feed_file(&packet_path);
+        let removal = std::fs::remove_file(&packet_path);
+        removal?;
+        let loaded = loaded?;
+        assert_eq!(loaded.source.venue, "lnmarkets");
+        assert_eq!(loaded.source.environment, "signet");
+        Ok(())
+    }
 
     #[test]
     fn browser_preview_requests_get_provider_signed_soft_reservations() {

@@ -1,0 +1,60 @@
+{
+  "schema": "openagents.immortal.provider-price-feed-fixtures.v1",
+  "source": {
+    "issue": "OpenAgentsInc/immortal#47",
+    "pricing_specification": "docs/protocol/provider-price-feed.md"
+  },
+  "fresh_packet": {
+    "schema": "openagents.immortal.provider-price-feed.v1",
+    "source": {
+      "venue": "lnmarkets",
+      "environment": "signet",
+      "instrument": "btc_usd"
+    },
+    "index_price_usd_cents": "6471550",
+    "realized_volatility_bps": "10000",
+    "realized_volatility_window_seconds": 86400,
+    "observed_at": 1785859200,
+    "max_age_seconds": 30
+  },
+  "quote_input": {
+    "config": {
+      "spread_bps": 25,
+      "fallback_feerate_sat_per_vb": 2,
+      "min_swap_sat": 10000,
+      "max_swap_sat": 1000000,
+      "quote_expiry_seconds": 300,
+      "reservation_tier": "soft",
+      "lightning_routing_fee_ppm": 1000
+    },
+    "feerate": {
+      "kind": "live",
+      "sat_per_vb": 10,
+      "source": "bitcoind-estimatesmartfee-2"
+    },
+    "capacity": {
+      "capacity_bucket_id": "bucket-1",
+      "available_capacity": "500000"
+    },
+    "request": {
+      "swap_type": "submarine",
+      "side": "input",
+      "amount": "100000"
+    },
+    "created_at": 1785859210
+  },
+  "fresh_expect": {
+    "fee_bps": "50",
+    "provider_fee": "500",
+    "output_amount": "97850",
+    "input_value_usd_cents": "6471",
+    "output_value_usd_cents": "6332"
+  },
+  "stale_at": 1785859231,
+  "stale_expect": {
+    "fee_bps": "25",
+    "provider_fee": "250",
+    "output_amount": "98100",
+    "fallback_reason": "packet is stale"
+  }
+}

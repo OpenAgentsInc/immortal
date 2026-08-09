@@ -254,6 +254,7 @@ transaction commitments and locally verified evidence.
 | `IMMORTAL_PROVIDER_MINIMUM_CONFIRMATIONS` | `1` | Base finality requirement, 1–144 confirmations. |
 | `IMMORTAL_PROVIDER_REORG_SAFETY_BLOCKS` | `6` | Additional confirmation safety window, 1–144 blocks. |
 | `IMMORTAL_PROVIDER_SPREAD_BPS` | `0` | Provider spread, 0–1,000 basis points. |
+| `IMMORTAL_PROVIDER_PRICE_FEED_FILE` | unset | Absolute path to a bounded regular nonsymlink JSON file in the `openagents.immortal.provider-price-feed.v1` shape. The file is public market data and must contain no venue credential or user data. A missing, invalid, or stale packet uses the static spread and does not stop quoting. |
 | `IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB` | unset | Explicit 1–2,000 sat/vB override when `estimatesmartfee` has no usable estimate. Regtest and the lab set this; production without a live estimate or this override refuses to quote. |
 | `IMMORTAL_PROVIDER_REGTEST_FIXED_FEERATE` | unset | Exact `true` forces the configured fallback feerate even when `estimatesmartfee` is available. It is accepted only on regtest and only with a configured fallback; every other value or network fails startup. The public demo uses it so independently active providers can create amount-identical submarine Quotes for one pre-generated invoice. |
 | `IMMORTAL_PROVIDER_QUOTE_MIN_SAT` | `10000` | Smallest input amount the pricing engine may quote. |

@@ -180,6 +180,7 @@ fn provider_contract_exports_closed_nonzero_runtime_limits() {
             "boltz_compatibility",
             "direct_recovery",
             "health",
+            "price_feed",
             "quote",
             "rail_rpc",
             "relay_actor",
@@ -193,6 +194,15 @@ fn provider_contract_exports_closed_nonzero_runtime_limits() {
     assert_eq!(limits["direct_recovery"]["request_wraps"], 32);
     assert_eq!(limits["direct_recovery"]["response_wraps"], 512);
     assert_eq!(limits["rail_rpc"]["arkd"]["command_bytes"], 4_194_304);
+    assert_eq!(limits["price_feed"]["file_bytes"], 16_384);
+    assert_eq!(
+        contract["operations"]["pricing"]["venue_network_access"],
+        false
+    );
+    assert_eq!(
+        contract["operations"]["pricing"]["invalid_or_stale_action"],
+        "static_spread_fallback"
+    );
     assert_eq!(
         contract["identity"]["commands"],
         json!(["run", "address", "ark-transfer", "contract", "--no-spend"])

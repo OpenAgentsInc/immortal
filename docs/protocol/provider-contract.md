@@ -68,6 +68,12 @@ no relay-unit dependency or forced-stop timeout.
 The adversarial regtest profile additionally pins quote pricing to the
 configured fallback feerate and requires that setting; production remains
 live-estimate-first.
+The optional provider-local price feed is pinned by `price-feed-v1.json` and
+`docs/protocol/provider-price-feed.md`. The provider reads only a bounded
+regular nonsymlink file, performs no venue network request, accepts no exchange
+credential, and falls back to its static spread for missing, invalid, or stale
+data. Fresh input can adjust the provider spread and add integer USD valuation
+metadata. It does not populate the MKT-SWP Quote `price_feed` member.
 The MuSig2 capability flags describe the available submarine signer/runtime;
 `musig2_key_path_enabled_by_default=false` records the production opt-in. The
 Liquid capability flags similarly describe the optional provider/client

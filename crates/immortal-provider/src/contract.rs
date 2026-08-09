@@ -17,6 +17,9 @@ const FUNDED_SMOKE_FIXTURE: &[u8] =
     include_bytes!("../../../tests/fixtures/provider/funded-smoke-v1.json");
 const PRICING_FIXTURE_PATH: &str = "tests/fixtures/nipmkt/swp-pricing-v1.json";
 const PRICING_FIXTURE: &[u8] = include_bytes!("../../../tests/fixtures/nipmkt/swp-pricing-v1.json");
+const PRICE_FEED_FIXTURE_PATH: &str = "tests/fixtures/provider/price-feed-v1.json";
+const PRICE_FEED_FIXTURE: &[u8] =
+    include_bytes!("../../../tests/fixtures/provider/price-feed-v1.json");
 const COOPERATIVE_RUNTIME_FIXTURE_PATH: &str =
     "tests/fixtures/nipmkt/swp-provider-cooperative-runtime-v1.json";
 const COOPERATIVE_RUNTIME_FIXTURE: &[u8] =
@@ -413,6 +416,16 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 "custody_access":false,
                 "output":"canonical_provider_contract_v1"
             },
+            "pricing":{
+                "price_feed_enabled_by":"IMMORTAL_PROVIDER_PRICE_FEED_FILE",
+                "price_feed_schema":crate::pricing::PRICE_FEED_SCHEMA,
+                "transport":"operator_local_regular_nonsymlink_file",
+                "venue_network_access":false,
+                "exchange_credentials":false,
+                "invalid_or_stale_action":"static_spread_fallback",
+                "quote_price_feed_member":"null",
+                "usd_valuation_rounding":"floor_cents"
+            },
             "ark_transfer":{
                 "command":"ark-transfer",
                 "available_in":"regtest_lab_only",
@@ -541,6 +554,7 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
                 fixture_entry(SETTLEMENT_FIXTURE_PATH, SETTLEMENT_FIXTURE),
                 fixture_entry(FUNDED_SMOKE_FIXTURE_PATH, FUNDED_SMOKE_FIXTURE),
                 fixture_entry(PRICING_FIXTURE_PATH, PRICING_FIXTURE),
+                fixture_entry(PRICE_FEED_FIXTURE_PATH, PRICE_FEED_FIXTURE),
                 fixture_entry(COOPERATIVE_RUNTIME_FIXTURE_PATH, COOPERATIVE_RUNTIME_FIXTURE),
                 fixture_entry(LND_FIXTURE_PATH, LND_FIXTURE),
                 fixture_entry(BOLTZ_API_FIXTURE_PATH, BOLTZ_API_FIXTURE),
@@ -680,6 +694,12 @@ fn limits_contract() -> Value {
             "validity_seconds_maximum":crate::pricing::MAX_QUOTE_EXPIRY_SECONDS,
             "lightning_routing_fee_ppm_maximum":crate::pricing::MAX_LIGHTNING_ROUTING_FEE_PPM
         },
+        "price_feed":{
+            "file_bytes":crate::pricing::MAX_PRICE_FEED_BYTES,
+            "maximum_age_seconds":crate::pricing::MAX_PRICE_FEED_AGE_SECONDS,
+            "index_price_usd_cents_maximum":crate::pricing::MAX_INDEX_PRICE_USD_CENTS,
+            "realized_volatility_bps_maximum":crate::pricing::MAX_REALIZED_VOLATILITY_BPS
+        },
         "zero_conf":{
             "input_outpoints":256,
             "maximum_swap_sat":2100000000000000_u64,
@@ -765,6 +785,12 @@ fn limits_contract() -> Value {
             "swap_sat_maximum":2100000000000000_u64,
             "validity_seconds_maximum":3600,
             "lightning_routing_fee_ppm_maximum":100000
+        },
+        "price_feed":{
+            "file_bytes":16384,
+            "maximum_age_seconds":3600,
+            "index_price_usd_cents_maximum":10000000000_u64,
+            "realized_volatility_bps_maximum":100000
         },
         "zero_conf":{
             "input_outpoints":256,
@@ -924,6 +950,7 @@ fn validate_limits(value: &Value) -> Result<(), ProviderContractError> {
         "direct_recovery",
         "boltz_compatibility",
         "quote",
+        "price_feed",
         "zero_conf",
     ]);
     if limits.keys().map(String::as_str).collect::<BTreeSet<_>>() != expected_sections
@@ -1458,6 +1485,15 @@ fn environment_contract() -> Value {
             2100000000000000_u64
         ),
         optional_env_integer("IMMORTAL_PROVIDER_SPREAD_BPS", &["funded"], 0, 1000),
+        optional_env_string(
+            "IMMORTAL_PROVIDER_PRICE_FEED_FILE",
+            &["funded"],
+            1,
+            4096,
+            false,
+            Some("absolute_regular_non_symlink_public_json_file"),
+            false
+        ),
         optional_env_integer_without_default(
             "IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB",
             &["funded"],

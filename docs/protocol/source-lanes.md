@@ -666,6 +666,24 @@ signed miner budget. Bitcoin/Lightning-only Quotes keep `price_feed` null; no
 outbound price-feed authority is adopted. The deterministic pricing corpus is
 bound by both the M11 fixture manifest and the provider contract.
 
+## Provider-local price-feed decision (2026-08-09)
+
+Issue #47 changes no source specification, event kind, relay admission rule,
+or NIP-11 advertisement. It adds a provider-local public-data packet with a
+closed source identity, integer BTC/USD index, realized-volatility window,
+observation time, and staleness bound. The funded provider may read that
+packet from an operator-selected absolute regular nonsymlink file. No HTTP
+client, venue credential, user data, or outbound network authority enters an
+Immortal crate.
+
+Fresh data scales the configured spread around a 5,000-basis-point volatility
+reference and records integer USD-cent valuations. Missing, malformed,
+future-dated, or stale data uses the existing static spread. The miner-fee
+floor, routing budget, asset units, amount equation, reservation, capacity,
+and settlement rules do not change. MKT-SWP exact price-feed pinning remains
+separate: the signed Quote member stays `null`, so the requester is not asked
+to trust a provider-local source it cannot reproduce.
+
 ## M12 adversarial timeout-profile decision (2026-08-05)
 
 Issue #18 changes no source specification, event kind, relay admission rule,

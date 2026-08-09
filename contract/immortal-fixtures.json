@@ -133,8 +133,8 @@
     },
     {
       "path": "tests/fixtures/lab/public-regtest-topology-v1.json",
-      "sha256": "09d8d2abf2b94c28535877841061b6d063b85f1bb2c17c52acd8c42e75370098",
-      "bytes": 2215,
+      "sha256": "dd1f47fdfb53dd436cbe13c21e7aedaf75d800bab9d55f212cf209cfa0ca5d52",
+      "bytes": 2296,
       "scope": "client"
     },
     {

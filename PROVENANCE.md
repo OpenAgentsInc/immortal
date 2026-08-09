@@ -28,6 +28,20 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-09 — Codex 5.6 Sol, provider-local price feed / issue #47
+
+- Added a bounded, versioned provider-local price-feed packet and a safe local
+  file seam. The provider applies fresh index-price and realized-volatility
+  observations through pure integer pricing, reports the applied inputs in its
+  derived Quote record, and falls back to the existing static policy when the
+  file is missing, malformed, stale, or outside the defined bounds.
+- Kept exchange access, credentials, network I/O, and polling outside Immortal.
+  The feed changes only the provider-fee spread and the resulting output
+  amount; it does not enter the MKT-SWP wire `price_feed` member or alter miner,
+  routing, capacity, reservation, custody, and settlement calculations. Added
+  no dependency, service, database schema, event kind, relay behavior, custody
+  authority, remote target, workflow, or billed automation.
+
 ### 2026-08-06 — Codex 5.6 Sol, two-provider no-spend demo / issue #35
 
 - Added one ownership-checked foreground launcher for a disposable loopback

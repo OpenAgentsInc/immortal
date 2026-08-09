@@ -3,8 +3,9 @@
 //!
 //! This module decides *what number goes in a Quote*. It is pure and
 //! reproducible: the same [`PricingConfig`], [`FeerateObservation`],
-//! [`CapacityBounds`], and [`QuoteRequest`] always derive the same
-//! [`DerivedQuote`]. It performs no I/O, no clock reads, and no rail calls.
+//! [`CapacityBounds`], [`QuoteRequest`], and optional [`PriceFeedPacket`]
+//! always derive the same [`DerivedQuote`]. It performs no I/O, no clock
+//! reads, and no rail calls.
 //!
 //! # Integration point
 //!
@@ -27,11 +28,12 @@
 //! The remaining Quote terms (asset pair, payment hash, legs, timeout
 //! ladder, verifier inputs, recovery, cancellation, evidence requirements)
 //! stay with the embedding: they bind rail facts this module does not own.
-//! MKT-SWP §3.4 exact price-feed pinning stays deferred with TLS;
-//! Bitcoin/Lightning-only quoting needs no external feed. The hook is the
-//! `price_feed` Quote member, which v1 validators require to be `null`; a
-//! future Liquid/LND packet replaces that member without changing this
-//! module's fee arithmetic.
+//! MKT-SWP §3.4 exact price-feed pinning remains a separate wire concern.
+//! [`PriceFeedPacket`] is a provider-local pricing input supplied by an
+//! operator-controlled file. It never becomes the Quote `price_feed` member,
+//! which v1 validators still require to be `null`. A fresh packet adjusts the
+//! provider spread and records USD valuation metadata. Missing, invalid, or
+//! stale input uses the static spread path. Miner-fee arithmetic is unchanged.
 //!
 //! # Environment contract
 //!
@@ -41,6 +43,7 @@
 //! | Variable | Default | Meaning |
 //! | --- | --- | --- |
 //! | `IMMORTAL_PROVIDER_SPREAD_BPS` | `0` | Provider spread in basis points, `0..=1000`. Becomes the Quote `fee_bps`; the spread component is `floor(input * spread_bps / 10000)`. |
+//! | `IMMORTAL_PROVIDER_PRICE_FEED_FILE` | unset | Absolute path to the optional bounded public JSON packet specified in `docs/protocol/provider-price-feed.md`. The funded provider reads it per Quote outside this module. Missing, invalid, or stale data uses the static spread. |
 //! | `IMMORTAL_PROVIDER_FALLBACK_FEERATE_SAT_PER_VB` | unset | Explicit fallback feerate, `1..=2000` sat/vB, for regtest/lab use where `estimatesmartfee` has no fee history. **No default exists.** With no live estimate and this unset, quoting refuses; it never silently invents a feerate. |
 //! | `IMMORTAL_PROVIDER_QUOTE_MIN_SAT` | `10000` | Absolute minimum quotable input amount in satoshis, positive. |
 //! | `IMMORTAL_PROVIDER_QUOTE_MAX_SAT` | `1000000` | Absolute maximum quotable input amount in satoshis, `>= min`, `<= 2100000000000000`. |
@@ -78,6 +81,13 @@ pub(crate) const MAX_SPREAD_BPS: u64 = 1_000;
 pub(crate) const MAX_FEERATE_SAT_PER_VB: u64 = 2_000;
 pub(crate) const MAX_QUOTE_EXPIRY_SECONDS: u64 = 3_600;
 pub(crate) const MAX_LIGHTNING_ROUTING_FEE_PPM: u64 = 100_000;
+pub const PRICE_FEED_SCHEMA: &str = "openagents.immortal.provider-price-feed.v1";
+pub const MAX_PRICE_FEED_BYTES: usize = 16_384;
+pub const MAX_PRICE_FEED_AGE_SECONDS: u64 = 3_600;
+pub const MAX_REALIZED_VOLATILITY_BPS: u64 = 100_000;
+pub const MAX_INDEX_PRICE_USD_CENTS: u64 = 10_000_000_000;
+const REFERENCE_REALIZED_VOLATILITY_BPS: u64 = 5_000;
+const SATOSHIS_PER_BITCOIN: u64 = 100_000_000;
 pub const LIQUID_SINGLE_INPUT_FUNDING_VBYTES: u64 = 1_700;
 pub const LIQUID_CLAIM_VBYTES: u64 = 300;
 pub const LIQUID_REFUND_VBYTES: u64 = 300;
@@ -561,6 +571,191 @@ pub enum QuoteSide {
     Output,
 }
 
+/// Stable identity for a public market-data source. Every member uses a
+/// lowercase machine identifier so a sidecar and provider compare the same
+/// bytes without URL or display-name normalization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriceFeedSource {
+    pub venue: String,
+    pub environment: String,
+    pub instrument: String,
+}
+
+/// Provider-local public market-data input. Decimal quantities are strings
+/// to keep the file and pricing calculation independent of floating point.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriceFeedPacket {
+    pub schema: String,
+    pub source: PriceFeedSource,
+    pub index_price_usd_cents: String,
+    pub realized_volatility_bps: String,
+    pub realized_volatility_window_seconds: u64,
+    pub observed_at: u64,
+    pub max_age_seconds: u64,
+}
+
+/// Audit metadata retained with a quote derived from a fresh feed packet.
+/// This is provider-local metadata, not the MKT-SWP wire `price_feed` pin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriceFeedApplication {
+    pub source: PriceFeedSource,
+    pub index_price_usd_cents: String,
+    pub realized_volatility_bps: String,
+    pub realized_volatility_window_seconds: u64,
+    pub observed_at: u64,
+    pub max_age_seconds: u64,
+    pub static_spread_bps: String,
+    pub effective_spread_bps: String,
+    pub input_value_usd_cents: String,
+    pub output_value_usd_cents: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriceFeedFallback {
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PriceFeedValidationError(pub String);
+
+impl std::fmt::Display for PriceFeedValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "price feed validation error: {}", self.0)
+    }
+}
+
+impl std::error::Error for PriceFeedValidationError {}
+
+fn price_feed_error(detail: impl Into<String>) -> PriceFeedValidationError {
+    PriceFeedValidationError(detail.into())
+}
+
+fn machine_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
+        })
+}
+
+fn canonical_feed_quantity(
+    value: &str,
+    label: &str,
+    maximum: u64,
+) -> Result<u64, PriceFeedValidationError> {
+    if value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.len() > 1 && value.starts_with('0'))
+    {
+        return Err(price_feed_error(format!(
+            "{label} is not a canonical decimal string"
+        )));
+    }
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|_| price_feed_error(format!("{label} exceeds u64")))?;
+    if parsed > maximum {
+        return Err(price_feed_error(format!("{label} exceeds its bound")));
+    }
+    Ok(parsed)
+}
+
+impl PriceFeedPacket {
+    pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, PriceFeedValidationError> {
+        if bytes.is_empty() || bytes.len() > MAX_PRICE_FEED_BYTES {
+            return Err(price_feed_error(
+                "packet size is outside the provider bound",
+            ));
+        }
+        serde_json::from_slice(bytes)
+            .map_err(|_| price_feed_error("packet is not strict JSON in the v1 shape"))
+    }
+
+    pub fn validate_at(
+        &self,
+        observed_at: u64,
+    ) -> Result<ValidatedPriceFeed, PriceFeedValidationError> {
+        if self.schema != PRICE_FEED_SCHEMA {
+            return Err(price_feed_error("packet schema is unsupported"));
+        }
+        if !machine_identifier(&self.source.venue)
+            || !machine_identifier(&self.source.environment)
+            || !machine_identifier(&self.source.instrument)
+        {
+            return Err(price_feed_error("source identity is invalid"));
+        }
+        let index_price_usd_cents = canonical_feed_quantity(
+            &self.index_price_usd_cents,
+            "index price",
+            MAX_INDEX_PRICE_USD_CENTS,
+        )?;
+        if index_price_usd_cents == 0 {
+            return Err(price_feed_error("index price must be positive"));
+        }
+        let realized_volatility_bps = canonical_feed_quantity(
+            &self.realized_volatility_bps,
+            "realized volatility",
+            MAX_REALIZED_VOLATILITY_BPS,
+        )?;
+        if self.realized_volatility_window_seconds == 0
+            || self.realized_volatility_window_seconds > 604_800
+        {
+            return Err(price_feed_error(
+                "realized volatility window must be between 1 and 604800 seconds",
+            ));
+        }
+        if self.observed_at == 0 || self.observed_at > observed_at {
+            return Err(price_feed_error("observation time is invalid"));
+        }
+        if !(1..=MAX_PRICE_FEED_AGE_SECONDS).contains(&self.max_age_seconds) {
+            return Err(price_feed_error(
+                "maximum age must be between 1 and 3600 seconds",
+            ));
+        }
+        let expires_at = self
+            .observed_at
+            .checked_add(self.max_age_seconds)
+            .ok_or_else(|| price_feed_error("staleness timestamp overflows"))?;
+        if observed_at > expires_at {
+            return Err(price_feed_error("packet is stale"));
+        }
+        Ok(ValidatedPriceFeed {
+            packet: self.clone(),
+            index_price_usd_cents,
+            realized_volatility_bps,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedPriceFeed {
+    packet: PriceFeedPacket,
+    index_price_usd_cents: u64,
+    realized_volatility_bps: u64,
+}
+
+impl ValidatedPriceFeed {
+    fn effective_spread_bps(&self, static_spread_bps: u64) -> u64 {
+        let adjusted = u128::from(static_spread_bps) * u128::from(self.realized_volatility_bps)
+            / u128::from(REFERENCE_REALIZED_VOLATILITY_BPS);
+        u64::try_from(adjusted)
+            .unwrap_or(u64::MAX)
+            .min(MAX_SPREAD_BPS)
+    }
+
+    fn usd_value_cents(&self, amount_sat: u64) -> Result<u64, SwapClientError> {
+        u64::try_from(
+            u128::from(amount_sat) * u128::from(self.index_price_usd_cents)
+                / u128::from(SATOSHIS_PER_BITCOIN),
+        )
+        .map_err(|_| provider_error("swp_invalid_amount", "USD quote valuation overflows"))
+    }
+}
+
 /// One quote request: pair shape, side, and canonical satoshi amount.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -609,6 +804,10 @@ pub struct DerivedQuote {
     pub worst_case_vbytes: u64,
     pub amount_equation: String,
     pub rounding: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_feed_application: Option<PriceFeedApplication>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_feed_fallback: Option<PriceFeedFallback>,
 }
 
 impl DerivedQuote {
@@ -861,6 +1060,79 @@ pub fn derive_quote(
     )
 }
 
+/// Derive a quote with an optional provider-local market-data packet. A
+/// missing, invalid, or stale packet produces the same static result as
+/// [`derive_quote`]. A fresh packet adjusts only the provider spread and adds
+/// deterministic USD valuation metadata.
+pub fn derive_quote_with_price_feed(
+    config: &PricingConfig,
+    feerate: &FeerateObservation,
+    capacity: &CapacityBounds,
+    request: &QuoteRequest,
+    created_at: u64,
+    price_feed: Option<&PriceFeedPacket>,
+) -> Result<DerivedQuote, SwapClientError> {
+    derive_quote_with_price_feed_and_worst_case_vbytes(
+        config,
+        feerate,
+        capacity,
+        request,
+        created_at,
+        worst_case_redeem_vbytes(request.swap_type),
+        price_feed,
+    )
+}
+
+pub fn derive_quote_with_price_feed_and_worst_case_vbytes(
+    config: &PricingConfig,
+    feerate: &FeerateObservation,
+    capacity: &CapacityBounds,
+    request: &QuoteRequest,
+    created_at: u64,
+    worst_case_vbytes: u64,
+    price_feed: Option<&PriceFeedPacket>,
+) -> Result<DerivedQuote, SwapClientError> {
+    let (validated_feed, fallback) = match price_feed {
+        Some(packet) => match packet.validate_at(created_at) {
+            Ok(feed) => (Some(feed), None),
+            Err(error) => (None, Some(PriceFeedFallback { reason: error.0 })),
+        },
+        None => (None, None),
+    };
+    let mut effective_config = config.clone();
+    if let Some(feed) = &validated_feed {
+        effective_config.spread_bps = feed.effective_spread_bps(config.spread_bps);
+    }
+    let mut derived = derive_quote_with_worst_case_vbytes(
+        &effective_config,
+        feerate,
+        capacity,
+        request,
+        created_at,
+        worst_case_vbytes,
+    )?;
+    if let Some(feed) = validated_feed {
+        let input_amount = canonical_sat(&derived.input_amount, "derived input amount")?;
+        let output_amount = canonical_sat(&derived.output_amount, "derived output amount")?;
+        let input_value_usd_cents = feed.usd_value_cents(input_amount)?.to_string();
+        let output_value_usd_cents = feed.usd_value_cents(output_amount)?.to_string();
+        derived.price_feed_application = Some(PriceFeedApplication {
+            source: feed.packet.source,
+            index_price_usd_cents: feed.packet.index_price_usd_cents,
+            realized_volatility_bps: feed.packet.realized_volatility_bps,
+            realized_volatility_window_seconds: feed.packet.realized_volatility_window_seconds,
+            observed_at: feed.packet.observed_at,
+            max_age_seconds: feed.packet.max_age_seconds,
+            static_spread_bps: config.spread_bps.to_string(),
+            effective_spread_bps: effective_config.spread_bps.to_string(),
+            input_value_usd_cents,
+            output_value_usd_cents,
+        });
+    }
+    derived.price_feed_fallback = fallback;
+    Ok(derived)
+}
+
 pub fn derive_quote_with_worst_case_vbytes(
     config: &PricingConfig,
     feerate: &FeerateObservation,
@@ -974,6 +1246,8 @@ pub fn derive_quote_with_worst_case_vbytes(
         worst_case_vbytes,
         amount_equation: "input_minus_provider_and_quoted_fees".to_owned(),
         rounding: "floor_output_sats".to_owned(),
+        price_feed_application: None,
+        price_feed_fallback: None,
     })
 }
 

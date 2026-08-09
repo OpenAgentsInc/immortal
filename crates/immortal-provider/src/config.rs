@@ -104,6 +104,7 @@ pub struct FundedProviderConfig {
     pub minimum_confirmations: u32,
     pub reorg_safety_blocks: u32,
     pub pricing: PricingConfig,
+    pub price_feed_file: Option<PathBuf>,
     pub force_fallback_feerate: bool,
     pub hold_invoice_expiry_seconds: u32,
     pub cooperative_signing: bool,
@@ -174,6 +175,7 @@ impl fmt::Debug for FundedProviderConfig {
             .field("minimum_confirmations", &self.minimum_confirmations)
             .field("reorg_safety_blocks", &self.reorg_safety_blocks)
             .field("pricing", &self.pricing)
+            .field("price_feed_file", &self.price_feed_file)
             .field("force_fallback_feerate", &self.force_fallback_feerate)
             .field(
                 "hold_invoice_expiry_seconds",
@@ -264,6 +266,7 @@ impl FundedProviderConfig {
             MIN_CONFIRMATIONS..=MAX_CONFIRMATIONS,
         )?;
         let mut pricing = PricingConfig::from_env().map_err(ConfigError::Pricing)?;
+        let price_feed_file = price_feed_file_from_lookup(optional)?;
         let force_fallback_feerate = lab_forces_fallback_feerate(lab_timeout_profile, &pricing)?
             || regtest_forces_fallback_feerate(network, &pricing, optional)?;
         let hold_invoice_expiry_seconds = match lab_timeout_profile {
@@ -296,6 +299,7 @@ impl FundedProviderConfig {
             minimum_confirmations,
             reorg_safety_blocks,
             pricing,
+            price_feed_file,
             force_fallback_feerate,
             hold_invoice_expiry_seconds,
             cooperative_signing,
@@ -307,6 +311,22 @@ impl FundedProviderConfig {
     pub fn database_url(&self) -> &str {
         &self.database_url.0
     }
+}
+
+fn price_feed_file_from_lookup(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<Option<PathBuf>, ConfigError> {
+    let Some(value) = lookup("IMMORTAL_PROVIDER_PRICE_FEED_FILE") else {
+        return Ok(None);
+    };
+    if value.is_empty() || value.len() > 4_096 {
+        return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_PRICE_FEED_FILE"));
+    }
+    let path = PathBuf::from(value);
+    if !path.is_absolute() {
+        return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_PRICE_FEED_FILE"));
+    }
+    Ok(Some(path))
 }
 
 fn arkd_from_lookup(
@@ -737,6 +757,27 @@ mod tests {
     fn network_parser_has_no_implicit_default() {
         assert_eq!(parse_network("regtest"), Ok(BitcoinNetwork::Regtest));
         assert!(parse_network("bitcoin").is_err());
+    }
+
+    #[test]
+    fn price_feed_file_is_optional_and_requires_an_absolute_path() {
+        assert_eq!(price_feed_file_from_lookup(|_| None), Ok(None));
+        assert_eq!(
+            price_feed_file_from_lookup(|name| {
+                (name == "IMMORTAL_PROVIDER_PRICE_FEED_FILE")
+                    .then(|| "/run/immortal/provider-price-feed.json".to_owned())
+            }),
+            Ok(Some(PathBuf::from(
+                "/run/immortal/provider-price-feed.json"
+            )))
+        );
+        assert_eq!(
+            price_feed_file_from_lookup(|name| {
+                (name == "IMMORTAL_PROVIDER_PRICE_FEED_FILE")
+                    .then(|| "provider-price-feed.json".to_owned())
+            }),
+            Err(ConfigError::Invalid("IMMORTAL_PROVIDER_PRICE_FEED_FILE"))
+        );
     }
 
     #[test]

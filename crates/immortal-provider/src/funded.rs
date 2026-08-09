@@ -225,6 +225,7 @@ async fn run_async() -> Result<(), FundedError> {
     let minimum_confirmations = config.minimum_confirmations;
     let reorg_safety_blocks = config.reorg_safety_blocks;
     let pricing = config.pricing;
+    let price_feed_file = config.price_feed_file;
     let force_fallback_feerate = config.force_fallback_feerate;
     let hold_invoice_expiry_seconds = config.hold_invoice_expiry_seconds;
     let cooperative_signing = config.cooperative_signing;
@@ -246,6 +247,7 @@ async fn run_async() -> Result<(), FundedError> {
             minimum_confirmations,
             reorg_safety_blocks,
             pricing,
+            price_feed_file,
             force_fallback_feerate,
             hold_invoice_expiry_seconds,
             zero_conf,
