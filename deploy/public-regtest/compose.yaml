@@ -141,11 +141,15 @@ services:
       - "0"
     environment:
       IMMORTAL_PUBLIC_REGTEST_GATEWAY_STATE_DIR: /gateway
-      IMMORTAL_PUBLIC_REGTEST_TOPOLOGY_MANIFEST: /state/public-ready.json
+      IMMORTAL_PUBLIC_REGTEST_TOPOLOGY_MANIFEST: /run/immortal-public-regtest/public-ready.json
     volumes:
       - type: bind
         source: ${IMMORTAL_PUBLIC_REGTEST_GATEWAY_STATE_DIR:?gateway state is required}
         target: /gateway
+      - type: bind
+        source: ${IMMORTAL_ADVERSARIAL_PRIVATE_DIR:?private directory is required}/public-ready.json
+        target: /run/immortal-public-regtest/public-ready.json
+        read_only: true
 
   keyless-executor:
     profiles: ["acceptance"]
