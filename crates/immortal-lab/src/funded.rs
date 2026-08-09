@@ -1202,22 +1202,20 @@ pub fn run_public_dynamic_worker_once() -> Result<Value, String> {
             updated_at: unix_now()?,
         },
     )?;
-    let provider_pubkeys = environments
-        .iter()
-        .enumerate()
-        .map(|(index, environment)| {
-            verify_health(&environment.health_url)?;
-            discover_provider(
-                &environment.relay_url,
-                &environment.requester,
-                JOURNEY_TIMEOUT,
-            )
-            .map_err(|_| format!("swp_public_provider_discovery_lane_{index}_failed"))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    if provider_pubkeys.len() != 2 || provider_pubkeys[0] == provider_pubkeys[1] {
-        return Err("public dynamic worker did not discover two distinct providers".to_owned());
+    let provider_pubkeys = public_regtest_provider_pubkeys()?;
+    for (index, (environment, provider_pubkey)) in
+        environments.iter().zip(provider_pubkeys.iter()).enumerate()
+    {
+        verify_health(&environment.health_url)?;
+        discover_expected_provider(
+            &environment.relay_url,
+            &environment.requester,
+            provider_pubkey,
+            JOURNEY_TIMEOUT,
+        )
+        .map_err(|_| format!("swp_public_provider_discovery_lane_{index}_failed"))?;
     }
+    let provider_pubkeys = provider_pubkeys.to_vec();
     let result = match validated.request.swap_type {
         DynamicSwapType::Submarine => run_dynamic_submarine_topology(
             &runtime,
@@ -1327,8 +1325,7 @@ fn public_worker_error_code(error: &str) -> String {
         .split(|character: char| {
             !character.is_ascii_lowercase() && !character.is_ascii_digit() && character != '_'
         })
-        .filter(|part| part.starts_with("swp_"))
-        .last()
+        .rfind(|part| part.starts_with("swp_"))
         .unwrap_or("swp_public_worker_failed")
         .to_owned()
 }
@@ -1393,8 +1390,8 @@ pub fn run_public_demo_input_once() -> Result<Value, String> {
         expires_at,
     };
     immortal_public_regtest_gateway::record_demo_input_response(&response)?;
-    Ok(serde_json::to_value(response)
-        .map_err(|error| format!("could not encode public demo input: {error}"))?)
+    serde_json::to_value(response)
+        .map_err(|error| format!("could not encode public demo input: {error}"))
 }
 
 fn wait_dynamic_provider_height_sync(
@@ -13487,22 +13484,45 @@ fn discover_provider(
     discover_provider_offering(relay_url, requester, timeout).map(|event| event.pubkey)
 }
 
+fn discover_expected_provider(
+    relay_url: &str,
+    requester: &MarketSigner,
+    provider_pubkey: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    require_lower_hex_32(provider_pubkey, "expected provider public key")?;
+    discover_provider_offering_for(relay_url, requester, Some(provider_pubkey), timeout).map(|_| ())
+}
+
 fn discover_provider_offering(
     relay_url: &str,
     requester: &MarketSigner,
+    timeout: Duration,
+) -> Result<Event, String> {
+    discover_provider_offering_for(relay_url, requester, None, timeout)
+}
+
+fn discover_provider_offering_for(
+    relay_url: &str,
+    requester: &MarketSigner,
+    expected_provider_pubkey: Option<&str>,
     timeout: Duration,
 ) -> Result<Event, String> {
     let deadline = Instant::now() + timeout;
     loop {
         let mut relay = connect(relay_url)?;
         authenticate(&mut relay, requester, relay_url, unix_now()?)?;
+        let mut filter = json!({
+            "kinds":[39601],
+            "#d":[OFFERING_ID],
+            "limit":8
+        });
+        if let Some(provider_pubkey) = expected_provider_pubkey {
+            filter["authors"] = json!([provider_pubkey]);
+        }
         send_json(
             &mut relay.websocket,
-            json!(["REQ", "funded-provider-discovery", {
-                "kinds":[39601],
-                "#d":[OFFERING_ID],
-                "limit":8
-            }]),
+            json!(["REQ", "funded-provider-discovery", filter]),
         )?;
         while Instant::now() < deadline {
             let Some(message) = read_json_until(&mut relay.websocket, deadline)? else {
@@ -13520,7 +13540,10 @@ fn discover_provider_offering(
             };
             let event: Event = serde_json::from_value(value.clone())
                 .map_err(|error| format!("provider discovery event is invalid: {error}"))?;
-            if event.kind == 39_601 && event.tag_values("d").any(|value| value == OFFERING_ID) {
+            if event.kind == 39_601
+                && event.tag_values("d").any(|value| value == OFFERING_ID)
+                && expected_provider_pubkey.is_none_or(|pubkey| event.pubkey == pubkey)
+            {
                 event
                     .validate_structure()
                     .and_then(|()| event.validate_crypto())
@@ -13535,6 +13558,62 @@ fn discover_provider_offering(
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+}
+
+fn public_regtest_provider_pubkeys() -> Result<[String; 2], String> {
+    let path = PathBuf::from(required_environment(
+        "IMMORTAL_PUBLIC_REGTEST_TOPOLOGY_MANIFEST",
+    )?);
+    let bytes = std::fs::read(&path)
+        .map_err(|error| format!("could not read public regtest topology manifest: {error}"))?;
+    if bytes.is_empty() || bytes.len() > 64 * 1024 {
+        return Err("public regtest topology manifest is empty or too large".to_owned());
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| "public regtest topology manifest is not UTF-8".to_owned())?;
+    let manifest = parse_unique_json(text, "public regtest topology manifest")?;
+    provider_pubkeys_from_public_manifest(&manifest)
+}
+
+fn provider_pubkeys_from_public_manifest(manifest: &Value) -> Result<[String; 2], String> {
+    if manifest.get("schema").and_then(Value::as_str)
+        != Some("openagents.immortal.public-regtest-ready.v1")
+        || manifest.get("network").and_then(Value::as_str) != Some(NETWORK_ID)
+    {
+        return Err("public regtest topology manifest has another contract".to_owned());
+    }
+    let providers = manifest
+        .get("providers")
+        .and_then(Value::as_array)
+        .filter(|providers| providers.len() == 2)
+        .ok_or_else(|| "public regtest topology manifest must have two providers".to_owned())?;
+    let mut provider_a = None;
+    let mut provider_b = None;
+    for provider in providers {
+        let role = provider
+            .get("role")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "public regtest provider role is missing".to_owned())?;
+        let pubkey = provider
+            .get("pubkey")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "public regtest provider public key is missing".to_owned())?;
+        require_lower_hex_32(pubkey, "public regtest provider public key")?;
+        let slot = match role {
+            "provider-a" => &mut provider_a,
+            "provider-b" => &mut provider_b,
+            _ => return Err("public regtest provider role is not supported".to_owned()),
+        };
+        if slot.replace(pubkey.to_owned()).is_some() {
+            return Err("public regtest provider role is duplicated".to_owned());
+        }
+    }
+    let provider_a = provider_a.ok_or_else(|| "public regtest provider A is missing".to_owned())?;
+    let provider_b = provider_b.ok_or_else(|| "public regtest provider B is missing".to_owned())?;
+    if provider_a == provider_b {
+        return Err("public regtest providers must be distinct".to_owned());
+    }
+    Ok([provider_a, provider_b])
 }
 
 fn verify_health(url: &str) -> Result<(), String> {
@@ -13695,7 +13774,7 @@ fn resolve_funded_relay_authentication_url(
     auth_value: &str,
 ) -> Result<String, String> {
     let connection_urls = crate::relay::parse_topology_relay_urls(connection_value)?;
-    let authentication_urls = crate::relay::parse_topology_relay_auth_urls(&auth_value)?;
+    let authentication_urls = crate::relay::parse_topology_relay_auth_urls(auth_value)?;
     let index = connection_urls
         .iter()
         .position(|candidate| candidate == relay_url)
@@ -14994,6 +15073,35 @@ mod tests {
                 .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
         }));
         assert!(first.iter().all(|name| name.len() == 32));
+    }
+
+    #[test]
+    fn public_worker_pins_each_lane_to_the_topology_provider() {
+        let provider_a = "11".repeat(32);
+        let provider_b = "22".repeat(32);
+        let manifest = json!({
+            "schema":"openagents.immortal.public-regtest-ready.v1",
+            "network":NETWORK_ID,
+            "providers":[
+                {"role":"provider-b","pubkey":provider_b},
+                {"role":"provider-a","pubkey":provider_a},
+            ],
+        });
+        assert_eq!(
+            provider_pubkeys_from_public_manifest(&manifest),
+            Ok([provider_a, provider_b])
+        );
+
+        let with_unpinned_provider = json!({
+            "schema":"openagents.immortal.public-regtest-ready.v1",
+            "network":NETWORK_ID,
+            "providers":[
+                {"role":"provider-a","pubkey":"11".repeat(32)},
+                {"role":"provider-b","pubkey":"22".repeat(32)},
+                {"role":"joined-provider","pubkey":"33".repeat(32)},
+            ],
+        });
+        assert!(provider_pubkeys_from_public_manifest(&with_unpinned_provider).is_err());
     }
 
     #[test]
