@@ -399,6 +399,7 @@ struct GatewayConfig {
     root: PathBuf,
     bind: SocketAddr,
     origin: String,
+    service_access: Option<ServiceAccess>,
     signer: RelaySigner,
     lifetime_seconds: u64,
     effect_timeout: Duration,
@@ -408,12 +409,19 @@ struct GatewayConfig {
     metrics: Arc<GatewayMetrics>,
 }
 
+#[derive(Clone)]
+struct ServiceAccess {
+    origin: String,
+    token_digest: String,
+}
+
 #[derive(Debug)]
 struct HttpRequest {
     method: String,
     path: String,
     origin: Option<String>,
     authorization: Option<String>,
+    service_authorization: Option<String>,
     client_ip: IpAddr,
     content_type: Option<String>,
     body: Vec<u8>,
@@ -577,14 +585,16 @@ fn route_request(
         }
         return route_faucet_request(stream, request, config);
     }
-    if request.origin.as_deref() != Some(config.origin.as_str()) {
-        return Err(HttpError::new(403, "origin_refused"));
-    }
+    let service_caller = authorize_session_origin(request, config)?;
+    let response_origin = request
+        .origin
+        .as_deref()
+        .ok_or_else(|| HttpError::new(403, "origin_refused"))?;
     if request.method == "OPTIONS" {
         if request.path == "/v1/public-regtest/sessions"
             || parse_session_path(&request.path).is_some()
         {
-            write_json_response(stream, 204, &config.origin, &Value::Null)?;
+            write_json_response(stream, 204, response_origin, &Value::Null)?;
             return Ok((None, None, "preflight"));
         }
         return Err(HttpError::new(404, "unknown_endpoint"));
@@ -592,13 +602,14 @@ fn route_request(
     if request.method == "POST" && request.path == "/v1/public-regtest/sessions" {
         require_json(request)?;
         let input: CreateSessionRequest = parse_closed_json(&request.body, "session create")?;
-        let response = create_session(config, request.client_ip, input)?;
+        let response =
+            create_session(config, request.client_ip, response_origin.to_owned(), input)?;
         config
             .metrics
             .sessions_created_total
             .fetch_add(1, Ordering::Relaxed);
         let session_id = response.signed_manifest.manifest.sandbox_session_id.clone();
-        write_serialized_response(stream, 201, &config.origin, &response)?;
+        write_serialized_response(stream, 201, response_origin, &response)?;
         return Ok((Some(session_id), None, "session_created"));
     }
     let Some((session_id, suffix)) = parse_session_path(&request.path) else {
@@ -610,10 +621,14 @@ fn route_request(
     let mut session = load_session(&config.root, session_id)
         .map_err(|_| HttpError::new(500, "session_state_unavailable"))?
         .ok_or_else(|| HttpError::new(404, "session_not_found"))?;
+    if session.origin != response_origin {
+        return Err(HttpError::new(403, "origin_refused"));
+    }
     authorize_session(
         &mut session,
         capability,
         request.client_ip,
+        !service_caller,
         unix_now_http()?,
     )?;
     charge_session(&mut session, unix_now_http()?)?;
@@ -625,7 +640,7 @@ fn route_request(
             let signed = signed_manifest(config, &session)
                 .map_err(|_| HttpError::new(500, "manifest_unavailable"))?;
             lock.release();
-            write_serialized_response(stream, 200, &config.origin, &signed)?;
+            write_serialized_response(stream, 200, response_origin, &signed)?;
             Ok((Some(session_id.to_owned()), None, "session_read"))
         }
         ("DELETE", "") => {
@@ -633,7 +648,7 @@ fn route_request(
             store_session(&config.root, &session)
                 .map_err(|_| HttpError::new(500, "session_state_unavailable"))?;
             lock.release();
-            write_json_response(stream, 200, &config.origin, &json!({"revoked":true}))?;
+            write_json_response(stream, 200, response_origin, &json!({"revoked":true}))?;
             Ok((Some(session_id.to_owned()), None, "session_revoked"))
         }
         ("POST", "/effects") => {
@@ -650,7 +665,7 @@ fn route_request(
                     .receipts_replayed_total
                     .fetch_add(1, Ordering::Relaxed);
                 lock.release();
-                write_serialized_response(stream, 200, &config.origin, &receipt)?;
+                write_serialized_response(stream, 200, response_origin, &receipt)?;
                 return Ok((
                     Some(session_id.to_owned()),
                     Some(effect_id),
@@ -674,7 +689,7 @@ fn route_request(
                 if let Some(receipt) = load_receipt(&config.root, session_id, &effect_id)
                     .map_err(|_| HttpError::new(500, "receipt_unavailable"))?
                 {
-                    write_serialized_response(stream, 200, &config.origin, &receipt)?;
+                    write_serialized_response(stream, 200, response_origin, &receipt)?;
                     return Ok((
                         Some(session_id.to_owned()),
                         Some(effect_id),
@@ -710,7 +725,7 @@ fn route_request(
             write_json_response(
                 stream,
                 202,
-                &config.origin,
+                response_origin,
                 &json!({
                     "schema":DYNAMIC_SUBMISSION_SCHEMA,
                     "sandbox_session_id":session_id,
@@ -751,7 +766,7 @@ fn route_request(
                 {
                     validate_demo_input_response(&input, &output)
                         .map_err(|_| HttpError::new(500, "demo_input_unavailable"))?;
-                    write_serialized_response(stream, 200, &config.origin, &output)?;
+                    write_serialized_response(stream, 200, response_origin, &output)?;
                     return Ok((Some(session_id.to_owned()), None, "demo_input_issued"));
                 }
                 if Instant::now() >= deadline {
@@ -762,6 +777,41 @@ fn route_request(
         }
         _ => Err(HttpError::new(404, "unknown_endpoint")),
     }
+}
+
+fn authorize_session_origin(
+    request: &HttpRequest,
+    config: &GatewayConfig,
+) -> Result<bool, HttpError> {
+    let Some(origin) = request.origin.as_deref() else {
+        return Err(HttpError::new(403, "origin_refused"));
+    };
+    if origin == config.origin {
+        if request.service_authorization.is_some() {
+            return Err(HttpError::new(403, "service_authorization_refused"));
+        }
+        return Ok(false);
+    }
+    let Some(service_access) = config.service_access.as_ref() else {
+        return Err(HttpError::new(403, "origin_refused"));
+    };
+    if origin != service_access.origin {
+        return Err(HttpError::new(403, "origin_refused"));
+    }
+    let token = request
+        .service_authorization
+        .as_deref()
+        .and_then(|value| value.strip_prefix("ImmortalService "))
+        .ok_or_else(|| HttpError::new(401, "service_authorization_refused"))?;
+    if token.len() != 64
+        || !constant_time_equal(
+            digest_text(token).as_bytes(),
+            service_access.token_digest.as_bytes(),
+        )
+    {
+        return Err(HttpError::new(401, "service_authorization_refused"));
+    }
+    Ok(true)
 }
 
 fn route_operational_request(
@@ -1202,6 +1252,7 @@ fn service_counts(root: &Path, now: u64) -> Result<(usize, u64), String> {
 fn create_session(
     config: &GatewayConfig,
     client_ip: IpAddr,
+    origin: String,
     input: CreateSessionRequest,
 ) -> Result<CreateSessionResponse, HttpError> {
     validate_create(&input)?;
@@ -1229,7 +1280,7 @@ fn create_session(
         sandbox_session_id: sandbox_session_id.clone(),
         requester_identity: input.requester_identity,
         client_ip: client_ip.to_string(),
-        origin: config.origin.clone(),
+        origin,
         capability_digest: digest_text(&capability),
         issued_at: now,
         expires_at: now + config.lifetime_seconds,
@@ -1970,12 +2021,13 @@ fn authorize_session(
     session: &mut StoredSession,
     capability: &str,
     client_ip: IpAddr,
+    enforce_client_ip: bool,
     now: u64,
 ) -> Result<(), HttpError> {
     if capability.len() != 64 || digest_text(capability) != session.capability_digest {
         return Err(HttpError::new(401, "capability_refused"));
     }
-    if session.client_ip != client_ip.to_string() {
+    if enforce_client_ip && session.client_ip != client_ip.to_string() {
         return Err(HttpError::new(403, "client_ip_refused"));
     }
     if session.revoked_at.is_some() {
@@ -2106,6 +2158,7 @@ fn read_http_request(stream: &mut TcpStream, peer: SocketAddr) -> Result<HttpReq
         path: parts[1].to_owned(),
         origin: headers.get("origin").cloned(),
         authorization: headers.get("authorization").cloned(),
+        service_authorization: headers.get("x-immortal-service-authorization").cloned(),
         client_ip,
         content_type: headers.get("content-type").cloned(),
         body,
@@ -2219,7 +2272,7 @@ fn write_bytes_response(
         _ => return Err(HttpError::new(500, "internal_error")),
     };
     let response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: {origin}\r\nVary: Origin\r\nAccess-Control-Allow-Headers: Authorization, Content-Type, X-Immortal-Client-IP\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: {origin}\r\nVary: Origin\r\nAccess-Control-Allow-Headers: Authorization, Content-Type, X-Immortal-Client-IP, X-Immortal-Service-Authorization\r\nAccess-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream
@@ -2289,6 +2342,30 @@ impl GatewayConfig {
         }
         let origin = required_env("IMMORTAL_PUBLIC_REGTEST_ORIGIN")?;
         validate_https_origin(&origin)?;
+        let service_origin = std::env::var("IMMORTAL_PUBLIC_REGTEST_SERVICE_ORIGIN").ok();
+        let service_token_file = std::env::var("IMMORTAL_PUBLIC_REGTEST_SERVICE_TOKEN_FILE").ok();
+        let service_access = match (service_origin, service_token_file) {
+            (None, None) => None,
+            (Some(service_origin), Some(service_token_file)) => {
+                validate_https_origin(&service_origin)?;
+                if service_origin == origin {
+                    return Err(
+                        "public regtest service origin must differ from the browser origin"
+                            .to_owned(),
+                    );
+                }
+                Some(ServiceAccess {
+                    origin: service_origin,
+                    token_digest: load_service_token_digest(Path::new(&service_token_file))?,
+                })
+            }
+            _ => {
+                return Err(
+                    "public regtest service origin and token file must be configured together"
+                        .to_owned(),
+                );
+            }
+        };
         let key_path = PathBuf::from(required_env("IMMORTAL_PUBLIC_REGTEST_SIGNING_KEY_FILE")?);
         let signer = load_signer(&key_path)?;
         let lifetime_seconds = bounded_env(
@@ -2329,6 +2406,7 @@ impl GatewayConfig {
             root,
             bind,
             origin,
+            service_access,
             signer,
             lifetime_seconds,
             effect_timeout,
@@ -2428,6 +2506,25 @@ fn load_signer(path: &Path) -> Result<RelaySigner, String> {
         .map_err(|_| "public regtest signing key is invalid".to_owned())
 }
 
+fn load_service_token_digest(path: &Path) -> Result<String, String> {
+    if !path.is_absolute() {
+        return Err("public regtest service token path must be absolute".to_owned());
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("could not inspect gateway service token: {error}"))?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.mode() & 0o077 != 0
+    {
+        return Err("public regtest service token must be a private regular file".to_owned());
+    }
+    let secret = fs::read_to_string(path)
+        .map_err(|error| format!("could not read gateway service token: {error}"))?;
+    let secret = secret.trim();
+    validate_lower_hex_32(secret, "gateway service token")?;
+    Ok(digest_text(secret))
+}
+
 fn validate_https_origin(origin: &str) -> Result<(), String> {
     let authority = origin
         .strip_prefix("https://")
@@ -2472,6 +2569,18 @@ fn required_lower_hex_env(name: &str) -> Result<String, String> {
     let value = required_env(name)?;
     validate_lower_hex_32(&value, name)?;
     Ok(value)
+}
+
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
 }
 
 fn validate_lower_hex_32(value: &str, label: &str) -> Result<(), String> {
@@ -2877,6 +2986,7 @@ mod tests {
             root,
             bind: "127.0.0.1:19337".parse().unwrap(),
             origin: "https://demo.example".to_owned(),
+            service_access: None,
             signer: RelaySigner::from_secret_hex(&"01".repeat(32)).unwrap(),
             lifetime_seconds: 300,
             effect_timeout: Duration::from_secs(1),
@@ -3048,21 +3158,81 @@ mod tests {
             journey: None,
         };
         let ip = "198.51.100.10".parse().unwrap();
-        assert!(authorize_session(&mut session, &capability, ip, 19).is_ok());
-        assert!(authorize_session(&mut session, &"dd".repeat(32), ip, 19).is_err());
+        assert!(authorize_session(&mut session, &capability, ip, true, 19).is_ok());
+        assert!(authorize_session(&mut session, &"dd".repeat(32), ip, true, 19).is_err());
         assert!(
             authorize_session(
                 &mut session,
                 &capability,
                 "198.51.100.11".parse().unwrap(),
+                true,
                 19
             )
             .is_err()
         );
-        assert!(authorize_session(&mut session, &capability, ip, 20).is_err());
+        assert!(authorize_session(&mut session, &capability, ip, true, 20).is_err());
         session.expires_at = 30;
         session.revoked_at = Some(19);
-        assert!(authorize_session(&mut session, &capability, ip, 20).is_err());
+        assert!(authorize_session(&mut session, &capability, ip, true, 20).is_err());
+    }
+
+    #[test]
+    fn service_origin_requires_its_token_and_uses_capability_instead_of_client_ip() {
+        let token = "ab".repeat(32);
+        let mut config = service_config();
+        config.service_access = Some(ServiceAccess {
+            origin: "https://api.example".to_owned(),
+            token_digest: digest_text(&token),
+        });
+        let request = HttpRequest {
+            method: "POST".to_owned(),
+            path: "/v1/public-regtest/sessions".to_owned(),
+            origin: Some("https://api.example".to_owned()),
+            authorization: None,
+            service_authorization: Some(format!("ImmortalService {token}")),
+            client_ip: "198.51.100.20".parse().expect("client IP"),
+            content_type: Some("application/json".to_owned()),
+            body: Vec::new(),
+        };
+        assert_eq!(authorize_session_origin(&request, &config).ok(), Some(true));
+
+        let mut missing_token = request;
+        missing_token.service_authorization = None;
+        assert_eq!(
+            authorize_session_origin(&missing_token, &config)
+                .expect_err("missing service token")
+                .code,
+            "service_authorization_refused"
+        );
+
+        let capability = "cd".repeat(32);
+        let mut session = StoredSession {
+            schema: SESSION_SCHEMA.to_owned(),
+            sandbox_session_id: "ef".repeat(32),
+            requester_identity: "01".repeat(32),
+            client_ip: "198.51.100.20".to_owned(),
+            origin: "https://api.example".to_owned(),
+            capability_digest: digest_text(&capability),
+            issued_at: 10,
+            expires_at: 30,
+            revoked_at: None,
+            request_window_started_at: 10,
+            request_count: 0,
+            authorizations: vec![],
+            dynamic_request: None,
+            requester_engine_identity: None,
+            journey: None,
+        };
+        assert!(
+            authorize_session(
+                &mut session,
+                &capability,
+                "203.0.113.30".parse().expect("changed service IP"),
+                false,
+                20,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -3079,6 +3249,7 @@ mod tests {
             root: root.clone(),
             bind: "127.0.0.1:19337".parse().unwrap(),
             origin: "https://demo.example".to_owned(),
+            service_access: None,
             signer: RelaySigner::from_secret_hex(&"01".repeat(32)).unwrap(),
             lifetime_seconds: 300,
             effect_timeout: Duration::from_secs(1),
@@ -3142,6 +3313,7 @@ mod tests {
                 create_session(
                     &config,
                     format!("198.51.100.{number}").parse().unwrap(),
+                    config.origin.clone(),
                     CreateSessionRequest {
                         schema: CREATE_SCHEMA.to_owned(),
                         requester_identity: "11".repeat(32),
@@ -3165,6 +3337,7 @@ mod tests {
                 format!("203.0.113.{}", number.saturating_add(1))
                     .parse()
                     .unwrap(),
+                config.origin.clone(),
                 CreateSessionRequest {
                     schema: CREATE_SCHEMA.to_owned(),
                     requester_identity: "22".repeat(32),

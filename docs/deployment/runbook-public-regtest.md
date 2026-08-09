@@ -39,7 +39,8 @@ operator's SSH policy. Scope 18444 to this instance; it is regtest P2P only.
 Do not expose RPC 18443 or ports `18080`/`18081`; Caddy reaches the latter on
 loopback. The gateway site must overwrite `X-Immortal-Client-IP`; appending or
 trusting a browser-supplied value breaks capability binding. Configure the
-gateway's exact Origin to the Bazaar HTTPS origin; no wildcard alias is valid.
+gateway browser Origin to the Bazaar HTTPS origin; no wildcard alias is valid.
+The optional API Origin is a separate exact value with its own service token.
 
 For the current demo host, install a target-scoped GCP ingress rule and prove
 the public/private split from an external machine:
@@ -103,9 +104,10 @@ sudo -u immortal-regtest env \
   scripts/public-regtest-operator.sh loop
 ```
 
-Install and review the templates in `deploy/public-regtest/`: copy
-`gateway.env.example`, replace every placeholder, install the gateway binary,
-then install both `.service` units. The operator account has Docker authority
+Install and review the templates in `deploy/public-regtest/`. Copy
+`gateway.env.example` and replace every placeholder. Create the service token
+as a mode-0600 file when the OpenAgents API uses this gateway. Install the
+gateway binary, then install both `.service` units. The operator account has Docker authority
 and is therefore custody-adjacent; the gateway account deliberately does not.
 The loop notices one fixed `private-dynamic-request.json` at a time and runs
 `public-regtest-dynamic-worker-once` inside the private wallet-driver network

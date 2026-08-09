@@ -1,16 +1,24 @@
 # Public-regtest capability gateway
 
 `immortal-public-regtest-gateway` is the public HTTP boundary between an
-untrusted Bazaar browser and the private funded-regtest worker. It is a new
-mode; the loopback-only `browser-demo-adapter` remains unchanged.
+untrusted Bazaar browser, the OpenAgents API, and the private funded-regtest
+worker. It is a new mode; the loopback-only `browser-demo-adapter` remains
+unchanged.
 
 ## Authority boundary
 
 The gateway binds only to numeric IPv4 loopback and is published through an
-operator TLS proxy. It accepts one configured exact `https://` Origin. The
+operator TLS proxy. It accepts one configured browser Origin. It can also
+accept one configured API Origin with a service token. The
 proxy must overwrite `X-Immortal-Client-IP` with the numeric peer address;
 the gateway refuses a non-loopback proxy peer, a missing/ambiguous header, or
 a capability replayed from another client address.
+
+The browser Origin keeps the exact client address binding. The API Origin
+must send `X-Immortal-Service-Authorization` with each session request. The
+service token replaces the client address binding for this Origin. The random
+session capability and session Origin remain mandatory. The gateway stores
+only the SHA-256 digest of the service token.
 
 The public runtime image and crate contain only the closed gateway entrypoint
 plus shared pure protocol primitives. The crate dependency graph has
@@ -125,6 +133,8 @@ Required gateway environment:
 IMMORTAL_PUBLIC_REGTEST_GATEWAY_STATE_DIR=/var/lib/immortal-public-regtest-gateway
 IMMORTAL_PUBLIC_REGTEST_GATEWAY_BIND=127.0.0.1:19337
 IMMORTAL_PUBLIC_REGTEST_ORIGIN=https://bazaar.example
+IMMORTAL_PUBLIC_REGTEST_SERVICE_ORIGIN=https://api.openagents.com
+IMMORTAL_PUBLIC_REGTEST_SERVICE_TOKEN_FILE=/run/immortal-private/gateway-service-token
 IMMORTAL_PUBLIC_REGTEST_SIGNING_KEY_FILE=/run/immortal-private/gateway-signing-key
 IMMORTAL_PUBLIC_REGTEST_SOURCE_REVISION=<40-lower-hex-git-commit>
 IMMORTAL_PUBLIC_REGTEST_REQUESTER_CONTRACT_DIGEST=<64-lower-hex>
@@ -134,6 +144,8 @@ IMMORTAL_PUBLIC_REGTEST_PROVIDER_SET=<provider-a-pubkey>,<provider-b-pubkey>
 Optional bounded controls are
 `IMMORTAL_PUBLIC_REGTEST_SESSION_LIFETIME_SECONDS` (1–3,600; default 900)
 and `IMMORTAL_PUBLIC_REGTEST_EFFECT_TIMEOUT_SECONDS` (1–900; default 180).
+The two service variables are optional as one pair. The service token file
+must be an absolute, mode-0600 regular file.
 Use the gateway block in `deploy/public-regtest/Caddyfile.example` and expose
 only TLS, never port 19337.
 
