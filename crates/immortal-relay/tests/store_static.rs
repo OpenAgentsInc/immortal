@@ -158,6 +158,19 @@ fn mkt_swp_hardening_migration_keeps_revision_two_private_and_immutable() {
 }
 
 #[test]
+fn mkt_swp_receipt_migration_keeps_receipts_private_and_immutable() {
+    let sql = include_str!("../../../migrations/0016_mkt_swp_receipt.sql");
+    for required in [
+        "kind BETWEEN 39604 AND 39613",
+        "WHERE kind = 39613",
+        "DELETE FROM replaceable_head",
+        "ALTER TABLE nostr_event DROP COLUMN search_vector",
+    ] {
+        assert!(sql.contains(required), "migration is missing {required:?}");
+    }
+}
+
+#[test]
 fn mkt_swp_coordination_migration_is_bounded_and_noncustodial() {
     let sql = include_str!("../../../migrations/0011_mkt_swp_coordination.sql");
     for required in [
@@ -202,7 +215,7 @@ fn mkt_gateway_query_acl_hides_private_rows_and_requires_one_wrap_recipient() {
     let statements = include_str!("../src/store/statements.rs");
     assert_eq!(
         statements
-            .matches("e.kind NOT BETWEEN 39604 AND 39612")
+            .matches("e.kind NOT BETWEEN 39604 AND 39613")
             .count(),
         2
     );

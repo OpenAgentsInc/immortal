@@ -1,10 +1,12 @@
 use immortal_core::domain::{
-    Event, MKT_HARDENING_PROTOCOL_REVISION, MKT_HARDENING_SCHEMA, MKT_ORDER_KIND, MKT_STATUS_KIND,
-    MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_REDRIVE_KIND, Tag,
+    Event, MKT_CLOSE_KIND, MKT_HARDENING_PROTOCOL_REVISION, MKT_HARDENING_SCHEMA, MKT_ORDER_KIND,
+    MKT_QUOTE_KIND, MKT_STATUS_KIND, MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION,
+    MKT_SWP_REDRIVE_KIND, MktReceiptFee, MktReceiptLeg, Tag,
 };
 use immortal_provider::{
     EffectAttemptClaim, IntentAckSigningRequest, IntentAdmission, ProviderHardeningErrorCode,
-    ProviderIntentJournal,
+    ProviderIntentJournal, ReceiptEmission, SettlementReceiptClaim,
+    SettlementReceiptEmissionRequest, SettlementReceiptSigningRequest,
 };
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 use serde_json::json;
@@ -58,9 +60,11 @@ fn provider_acknowledges_once_replays_exactly_and_redrives_read_only() {
         IntentAdmission::Replay {
             acknowledgment: replayed,
             outcomes,
+            receipts,
         } => {
             assert_eq!(replayed, acknowledgment);
             assert!(outcomes.is_empty());
+            assert!(receipts.is_empty());
         }
         IntentAdmission::New { .. } => panic!("exact bytes must replay"),
     }
@@ -210,6 +214,143 @@ fn failed_persistence_rolls_back_ack_admission() {
     ));
 }
 
+#[test]
+fn terminal_receipt_is_persisted_once_replayed_and_redriven_exactly() {
+    let provider = signer(2);
+    let requester = signer(1);
+    let quote = signed_quote(&provider, &requester.pubkey);
+    let order = signed_order_for_quote(&requester, &provider.pubkey, &quote.id);
+    let mut journal =
+        ProviderIntentJournal::new(provider.pubkey.clone(), SESSION).expect("provider journal");
+    let acknowledgment = match journal
+        .admit_with_ack(
+            order.clone(),
+            1_000,
+            |request| Ok(provider.sign_request(request)),
+            |_| Ok(()),
+        )
+        .expect("admit Order")
+    {
+        IntentAdmission::New { acknowledgment } => acknowledgment,
+        IntentAdmission::Replay { .. } => panic!("new Order replayed"),
+    };
+    let close = signed_close(&provider, &requester.pubkey, &order.id);
+    journal
+        .record_outcome(&order.id, close.clone(), |_| Ok(()))
+        .expect("record Close");
+
+    let claim = receipt_claim();
+    let mut signs = 0;
+    let mut persists = 0;
+    let receipt = match journal
+        .emit_receipt_with_sign(
+            SettlementReceiptEmissionRequest {
+                order_event_id: order.id.clone(),
+                outcome_event_id: close.id.clone(),
+                quote: quote.clone(),
+                client_confirmation: None,
+                claim: claim.clone(),
+                created_at: 1_101,
+            },
+            |request| {
+                signs += 1;
+                Ok(provider.sign_receipt_request(request))
+            },
+            |_| {
+                persists += 1;
+                Ok(())
+            },
+        )
+        .expect("emit terminal receipt")
+    {
+        ReceiptEmission::New { receipt } => receipt,
+        ReceiptEmission::Replay { .. } => panic!("first receipt replayed"),
+    };
+    assert_eq!(signs, 1);
+    assert_eq!(persists, 1);
+
+    assert_eq!(
+        journal
+            .emit_receipt_with_sign(
+                SettlementReceiptEmissionRequest {
+                    order_event_id: order.id.clone(),
+                    outcome_event_id: close.id.clone(),
+                    quote: quote.clone(),
+                    client_confirmation: None,
+                    claim: claim.clone(),
+                    created_at: 1_200,
+                },
+                |_| panic!("exact receipt replay must not sign"),
+                |_| panic!("exact receipt replay must not persist"),
+            )
+            .expect("exact receipt replay"),
+        ReceiptEmission::Replay {
+            receipt: receipt.clone()
+        }
+    );
+
+    let mut changed = claim;
+    changed.legs[0].gross_amount = "100001".to_owned();
+    let conflict = journal
+        .emit_receipt_with_sign(
+            SettlementReceiptEmissionRequest {
+                order_event_id: order.id.clone(),
+                outcome_event_id: close.id.clone(),
+                quote: quote.clone(),
+                client_confirmation: None,
+                claim: changed,
+                created_at: 1_201,
+            },
+            |_| panic!("conflicting receipt must not sign"),
+            |_| panic!("conflicting receipt must not persist"),
+        )
+        .expect_err("changed terminal claim must conflict");
+    assert_eq!(
+        conflict.code,
+        ProviderHardeningErrorCode::IdempotencyConflict
+    );
+
+    match journal
+        .admit_with_ack(
+            order.clone(),
+            1_200,
+            |_| panic!("Order replay must not sign"),
+            |_| panic!("Order replay must not persist"),
+        )
+        .expect("Order replay")
+    {
+        IntentAdmission::Replay { receipts, .. } => assert_eq!(receipts, vec![receipt.clone()]),
+        IntentAdmission::New { .. } => panic!("existing Order was new"),
+    }
+
+    let redrive = signed_redrive(
+        &requester,
+        &provider.pubkey,
+        &order.id,
+        &acknowledgment.id,
+        &close.id,
+    );
+    journal
+        .admit_with_ack(
+            redrive.clone(),
+            1_010,
+            |request| Ok(provider.sign_request(request)),
+            |_| Ok(()),
+        )
+        .expect("admit Re-drive");
+    assert_eq!(
+        journal.restate(&redrive.id).unwrap().receipts,
+        vec![receipt]
+    );
+
+    let snapshot = journal.snapshot_bytes().unwrap();
+    let restored = ProviderIntentJournal::restore(&snapshot).expect("restore receipt journal");
+    assert_eq!(
+        restored.restate(&redrive.id).unwrap().receipts,
+        journal.restate(&redrive.id).unwrap().receipts
+    );
+}
+
 #[derive(Clone)]
 struct Signer {
     secret_byte: u8,
@@ -218,6 +359,21 @@ struct Signer {
 
 impl Signer {
     fn sign_request(&self, request: &IntentAckSigningRequest) -> Event {
+        sign(
+            self.secret_byte,
+            Event {
+                id: request.expected_event_id.clone(),
+                pubkey: request.pubkey.clone(),
+                created_at: request.created_at,
+                kind: request.kind,
+                tags: request.tags.clone(),
+                content: request.content.clone(),
+                sig: String::new(),
+            },
+        )
+    }
+
+    fn sign_receipt_request(&self, request: &SettlementReceiptSigningRequest) -> Event {
         sign(
             self.secret_byte,
             Event {
@@ -288,6 +444,37 @@ fn signed_order(
                 "mkt_swp": {}
             })
             .to_string(),
+            sig: String::new(),
+        },
+    )
+}
+
+fn signed_order_for_quote(requester: &Signer, provider_pubkey: &str, quote_id: &str) -> Event {
+    let mut order = signed_order(requester, provider_pubkey, "a", "c", 1_000);
+    for tag in &mut order.tags {
+        if tag.as_slice().get(3).map(String::as_str) == Some("quote") {
+            tag.0[1] = quote_id.to_owned();
+        }
+    }
+    sign(requester.secret_byte, order)
+}
+
+fn signed_quote(provider: &Signer, requester_pubkey: &str) -> Event {
+    sign(
+        provider.secret_byte,
+        Event {
+            id: String::new(),
+            pubkey: provider.pubkey.clone(),
+            created_at: 990,
+            kind: MKT_QUOTE_KIND,
+            tags: vec![
+                pair("d", &"6".repeat(64)),
+                pair("session", SESSION),
+                profile(),
+                counterparty(requester_pubkey, "requester"),
+                pair("alt", "MKT-SWP Quote"),
+            ],
+            content: v1_content(),
             sig: String::new(),
         },
     )
@@ -374,6 +561,75 @@ fn signed_outcome(provider: &Signer, requester_pubkey: &str, order_id: &str) -> 
             sig: String::new(),
         },
     )
+}
+
+fn signed_close(provider: &Signer, requester_pubkey: &str, order_id: &str) -> Event {
+    sign(
+        provider.secret_byte,
+        Event {
+            id: String::new(),
+            pubkey: provider.pubkey.clone(),
+            created_at: 1_100,
+            kind: MKT_CLOSE_KIND,
+            tags: vec![
+                pair("d", &"8".repeat(64)),
+                pair("session", SESSION),
+                profile(),
+                counterparty(requester_pubkey, "requester"),
+                pair("alt", "MKT-SWP Close"),
+                reference(order_id, "order"),
+                pair("outcome", "completed"),
+                pair("terminal_at", "1100"),
+            ],
+            content: v1_content(),
+            sig: String::new(),
+        },
+    )
+}
+
+fn receipt_claim() -> SettlementReceiptClaim {
+    SettlementReceiptClaim {
+        failure_code: None,
+        started_at: 1_000,
+        finished_at: 1_100,
+        legs: vec![
+            MktReceiptLeg {
+                leg_id: "source".to_owned(),
+                asset_id: "swp:1:bip122:00000000000000000000000000000000:btc:chain".to_owned(),
+                rail: "bitcoin".to_owned(),
+                direction: "provider-receives".to_owned(),
+                gross_amount: "100000".to_owned(),
+                net_amount: "100000".to_owned(),
+            },
+            MktReceiptLeg {
+                leg_id: "destination".to_owned(),
+                asset_id: "swp:1:bip122:00000000000000000000000000000000:btc:lightning".to_owned(),
+                rail: "lightning".to_owned(),
+                direction: "provider-sends".to_owned(),
+                gross_amount: "99000".to_owned(),
+                net_amount: "99000".to_owned(),
+            },
+        ],
+        fees: vec![MktReceiptFee {
+            fee_id: "provider-fee".to_owned(),
+            asset_id: "swp:1:bip122:00000000000000000000000000000000:btc:chain".to_owned(),
+            rail: "bitcoin".to_owned(),
+            amount: "1000".to_owned(),
+            payer_role: "requester".to_owned(),
+            recipient_role: "provider".to_owned(),
+        }],
+    }
+}
+
+fn v1_content() -> String {
+    json!({
+        "schema": "openagents.mkt.v1",
+        "profile": MKT_SWP_PROFILE_ID,
+        "profile_version": MKT_SWP_PROFILE_VERSION,
+        "session_id": SESSION,
+        "mkt_swp": {}
+    })
+    .to_string()
 }
 
 fn sign(secret_byte: u8, mut event: Event) -> Event {

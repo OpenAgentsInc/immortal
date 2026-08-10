@@ -421,8 +421,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/immutability.json",
-      "sha256": "bd5f2b68ba0e8b9d5bd97fe37a0c9472336809be19fe55772e82203750182c75",
-      "bytes": 895,
+      "sha256": "e1998afcf05e2a831f48bb10520ae3612183bc70fd4c60fb7969b4d8d2f596ff",
+      "bytes": 902,
       "scope": "relay"
     },
     {
@@ -469,8 +469,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/relay-closing.json",
-      "sha256": "77ffd7a8ec13e90783b3cc2896fbb0f2e63ed11cf2dc031952e0518d4be4ec4c",
-      "bytes": 6926,
+      "sha256": "c88952b369c09fd46834f966d99ef5ce36f0e0b94976939909a226d62752e2e6",
+      "bytes": 7041,
       "scope": "relay_and_client"
     },
     {

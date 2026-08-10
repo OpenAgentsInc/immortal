@@ -4,7 +4,10 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use immortal::{
-    domain::{Event, Filter, Tag},
+    domain::{
+        Event, Filter, MKT_RECEIPT_SCHEMA, MKT_RECEIPT_VERSION, MktReceiptFee, MktReceiptLeg,
+        MktSettlementReceipt, Tag, canonical_mkt_receipt_content, mkt_receipt_id,
+    },
     store::{AdmissionOutcome, AdmissionRejection, NotificationListener, Store, StoreError},
 };
 use secp256k1::{Keypair, Secp256k1, SecretKey};
@@ -30,13 +33,13 @@ async fn m2_store_contract_against_postgres() {
     let (initial_store, report) = Store::connect_with_report(&database_url).await.unwrap();
     assert_eq!(
         report.applied_versions,
-        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     );
     drop(initial_store);
     seed_pre_gateway_and_swp_rows(&database_url).await;
 
     let (mut store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![9, 10, 12, 13, 14, 15]);
+    assert_eq!(report.applied_versions, vec![9, 10, 12, 13, 14, 15, 16]);
     assert_pre_adoption_rows_are_private_immutable_and_preserved(&database_url).await;
     assert!(store.is_current());
 
@@ -245,6 +248,7 @@ ALTER TABLE nostr_indexed_tag
     );
 DELETE FROM schema_migrations WHERE version = 14;
 DELETE FROM schema_migrations WHERE version = 15;
+DELETE FROM schema_migrations WHERE version = 16;
 "#,
         )
         .await
@@ -713,7 +717,7 @@ fn mkt_pfi_policy_event(secret_byte: u8, created_at: u64, version: &str, country
 }
 
 async fn mkt_immutable_admission(database_url: &str, store: &mut Store) {
-    for (offset, kind) in (39_604..=39_612).chain([39_620, 39_650]).enumerate() {
+    for (offset, kind) in (39_604..=39_613).chain([39_620, 39_650]).enumerate() {
         let identifier = format!("{:064x}", offset + 1);
         let first = signed_event(
             20,
@@ -834,7 +838,7 @@ async fn mkt_immutable_admission(database_url: &str, store: &mut Store) {
     let driver = tokio::spawn(connection);
     let private_heads = client
         .query_one(
-            "SELECT count(*) FROM replaceable_head WHERE kind BETWEEN 39604 AND 39612",
+            "SELECT count(*) FROM replaceable_head WHERE kind BETWEEN 39604 AND 39613",
             &[],
         )
         .await
@@ -1408,7 +1412,73 @@ fn signed_event(
     let secret = SecretKey::from_byte_array([secret_byte; 32]).unwrap();
     let keypair = Keypair::from_secret_key(&secp, &secret);
     let pubkey = keypair.x_only_public_key().0.to_string();
-    let content = if kind == 39_611 {
+    let content = if kind == 39_613 {
+        let session = format!("{secret_byte:02x}").repeat(32);
+        let mut receipt = MktSettlementReceipt {
+            schema: MKT_RECEIPT_SCHEMA.to_owned(),
+            version: MKT_RECEIPT_VERSION,
+            receipt_id: String::new(),
+            intent_event_id: "3".repeat(64),
+            acknowledgment_event_id: "4".repeat(64),
+            quote_event_id: "5".repeat(64),
+            outcome_event_id: "6".repeat(64),
+            client_confirmation_event_id: None,
+            outcome: "completed".to_owned(),
+            failure_code: None,
+            started_at: 900,
+            finished_at: 1_000,
+            legs: vec![MktReceiptLeg {
+                leg_id: "source".to_owned(),
+                asset_id: "swp:1:bip122:00000000000000000000000000000000:btc:chain".to_owned(),
+                rail: "bitcoin".to_owned(),
+                direction: "provider-receives".to_owned(),
+                gross_amount: "1000".to_owned(),
+                net_amount: "1000".to_owned(),
+            }],
+            fees: Vec::<MktReceiptFee>::new(),
+        };
+        receipt.receipt_id = mkt_receipt_id(&receipt).unwrap();
+        tags.retain(|tag| tag.name() != Some("d"));
+        tags.extend([
+            Tag::new(vec!["d".into(), receipt.receipt_id.clone()]),
+            Tag::new(vec!["session".into(), session.clone()]),
+            Tag::new(vec!["profile".into(), "mkt-swp".into(), "1".into()]),
+            Tag::new(vec![
+                "p".into(),
+                "c".repeat(64),
+                String::new(),
+                "requester".into(),
+            ]),
+            Tag::new(vec!["alt".into(), "MKT-SWP Settlement Receipt".into()]),
+            Tag::new(vec![
+                "e".into(),
+                receipt.intent_event_id.clone(),
+                String::new(),
+                "intent".into(),
+            ]),
+            Tag::new(vec![
+                "e".into(),
+                receipt.acknowledgment_event_id.clone(),
+                String::new(),
+                "ack".into(),
+            ]),
+            Tag::new(vec![
+                "e".into(),
+                receipt.quote_event_id.clone(),
+                String::new(),
+                "quote".into(),
+            ]),
+            Tag::new(vec![
+                "e".into(),
+                receipt.outcome_event_id.clone(),
+                String::new(),
+                "outcome".into(),
+            ]),
+            Tag::new(vec!["outcome".into(), "completed".into()]),
+            Tag::new(vec!["receipt".into(), "1".into()]),
+        ]);
+        canonical_mkt_receipt_content(&session, &receipt).unwrap()
+    } else if kind == 39_611 {
         let session = format!("{secret_byte:02x}").repeat(32);
         let idempotency_key = tags
             .iter()

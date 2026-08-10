@@ -34,11 +34,13 @@ use crate::{
         MKT_PFI_PROFILE_ID, MKT_PFI_PROFILE_VERSION, MKT_PFI_QUALIFICATION_POLICY_KIND,
         MKT_PROFILE_DESCRIPTOR_KIND, MKT_PROVIDER_PROFILE_KIND, MKT_PROVIDER_STATUSES,
         MKT_PUBLIC_RECEIPT_KIND, MKT_PUBLIC_RECEIPT_OUTCOMES, MKT_QUOTE_CLASSES, MKT_QUOTE_KIND,
-        MKT_RELAY_PROFILES, MKT_RESERVATION_CLASSES, MKT_RFQ_KIND, MKT_STATUS_KIND,
-        MKT_STATUS_STATES, MKT_SWP_INTENT_ACK_KIND, MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION,
-        MKT_SWP_REDRIVE_KIND, MKT_SWP_SWAP_CONTRACT_KIND, OPENAGENTS_ISSUE_PROJECTION_KIND,
-        OPENAGENTS_OUTCOME_RECORD_KIND, OPENAGENTS_WORK_EVENT_KIND, OPENAGENTS_WORK_OBJECTIVE_KIND,
-        OPENAGENTS_WORK_RECORD_KIND,
+        MKT_RECEIPT_FAILURE_CODES, MKT_RECEIPT_MAX_FEES, MKT_RECEIPT_MAX_LEGS,
+        MKT_RECEIPT_OUTCOMES, MKT_RECEIPT_SCHEMA, MKT_RECEIPT_VERSION, MKT_RELAY_PROFILES,
+        MKT_RESERVATION_CLASSES, MKT_RFQ_KIND, MKT_STATUS_KIND, MKT_STATUS_STATES,
+        MKT_SWP_INTENT_ACK_KIND, MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_REDRIVE_KIND,
+        MKT_SWP_SETTLEMENT_RECEIPT_KIND, MKT_SWP_SWAP_CONTRACT_KIND,
+        OPENAGENTS_ISSUE_PROJECTION_KIND, OPENAGENTS_OUTCOME_RECORD_KIND,
+        OPENAGENTS_WORK_EVENT_KIND, OPENAGENTS_WORK_OBJECTIVE_KIND, OPENAGENTS_WORK_RECORD_KIND,
     },
     gateway::{
         GatewayLimits, MKT_GIFT_WRAP_RECIPIENT_RATE_EXCEEDED, MKT_PRIVATE_REQUIRES_GIFT_WRAP,
@@ -137,6 +139,7 @@ pub struct MktLimits {
 pub struct MktGrammar {
     pub schema: &'static str,
     pub hardening: MktHardeningGrammar,
+    pub receipt: MktReceiptGrammar,
     pub executable_profiles: Vec<ExecutableProfile>,
     pub relay_profiles: Vec<RelayProfile>,
     pub mkt_swp: MktSwpGrammar,
@@ -149,6 +152,23 @@ pub struct MktGrammar {
     pub identifiers: BTreeMap<&'static str, IdentifierGrammar>,
     pub content_envelope: Vec<&'static str>,
     pub opaque_transport: OpaqueTransport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MktReceiptGrammar {
+    pub schema: &'static str,
+    pub version: u64,
+    pub kind: u16,
+    pub maximum_legs: usize,
+    pub maximum_fees: usize,
+    pub outcomes: Vec<&'static str>,
+    pub failure_codes: Vec<&'static str>,
+    pub canonicalization: &'static str,
+    pub receipt_id: &'static str,
+    pub chain: Vec<&'static str>,
+    pub verification_result: Vec<&'static str>,
+    pub external_authority: &'static str,
+    pub fixture: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -754,6 +774,13 @@ fn mkt_kinds() -> Vec<KindDescriptor> {
             "client_and_internal_store",
         ),
         (
+            MKT_SWP_SETTLEMENT_RECEIPT_KIND,
+            "mkt_swp_settlement_receipt",
+            "private_wrapped",
+            "exact_signed_coordinate",
+            "client_and_internal_store",
+        ),
+        (
             MKT_PFI_QUALIFICATION_POLICY_KIND,
             "mkt_pfi_qualification_policy",
             "public_head",
@@ -1119,6 +1146,21 @@ fn mkt_grammar() -> MktGrammar {
             single_attempt_law: "durable_ack_before_effect; at_most_one_external_effect_attempt; exact_replay_returns_exact_durable_records; redrive_is_read_only",
             response_key_authority: "transport_only; requester_identity_signature_remains_authority",
             fixture: "tests/fixtures/nipmkt/hardening-v2.json",
+        },
+        receipt: MktReceiptGrammar {
+            schema: MKT_RECEIPT_SCHEMA,
+            version: MKT_RECEIPT_VERSION,
+            kind: MKT_SWP_SETTLEMENT_RECEIPT_KIND,
+            maximum_legs: MKT_RECEIPT_MAX_LEGS,
+            maximum_fees: MKT_RECEIPT_MAX_FEES,
+            outcomes: MKT_RECEIPT_OUTCOMES.to_vec(),
+            failure_codes: MKT_RECEIPT_FAILURE_CODES.to_vec(),
+            canonicalization: "rfc8785_closed_nonnegative_integer_profile",
+            receipt_id: "lower_sha256_of_canonical_receipt_object_without_receipt_id",
+            chain: vec!["quote", "intent", "acknowledgment", "outcome", "receipt"],
+            verification_result: vec!["valid", "incomplete", "invalid"],
+            external_authority: "provider_signed_claim_only; native_rail_evidence_required_for_verified_settlement",
+            fixture: "tests/fixtures/nipmkt/receipt-v1.json",
         },
         executable_profiles: MKT_EXECUTABLE_PROFILES
             .iter()

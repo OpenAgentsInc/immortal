@@ -79,7 +79,7 @@ fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
     assert_eq!(
         fixture["bare_private"]["kinds"],
         serde_json::json!([
-            39604, 39605, 39606, 39607, 39608, 39609, 39610, 39611, 39612, 39640
+            39604, 39605, 39606, 39607, 39608, 39609, 39610, 39611, 39612, 39613, 39640
         ])
     );
     assert_eq!(
@@ -105,7 +105,7 @@ fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
             assert_eq!(EventClass::from_kind(kind), EventClass::Addressable);
             assert_eq!(
                 is_mkt_private_kind(kind),
-                (39_604..=39_612).contains(&kind)
+                (39_604..=39_613).contains(&kind)
                     || kind == 39_620
                     || kind == 39_640
                     || kind == 39_650
@@ -115,6 +115,10 @@ fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
     assert_eq!(
         fixture["classification"][3]["allocation"],
         "private_mkt_swp_hardening"
+    );
+    assert_eq!(
+        fixture["classification"][4]["allocation"],
+        "private_mkt_swp_receipt"
     );
 }
 

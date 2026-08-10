@@ -28,6 +28,17 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-09 — Codex 5.6 Sol, signed settlement receipts / issue #49
+
+- Added the canonical private `openagents.mkt.receipt.v1` Settlement Receipt,
+  binding exact Order, acknowledgment, Quote, terminal Close, bounded atomic
+  amounts/rails/fees/times/outcome, and optional requester confirmation.
+- Added typed event-only chain verification, durable provider emission/exact
+  replay/Re-drive restore, and relay kind-39613 privacy, immutability, storage,
+  contract, fixture, and migration coverage.
+- Added no dependency, database, custody authority, external settlement
+  overclaim, third-party Nostr crate, workflow, or billed automation.
+
 ### 2026-08-09 — Codex 5.6 Sol, NIP-MKT protocol revision / issue #48
 
 - Added the explicit `openagents.mkt.v2` MKT-SWP intent failure contract:

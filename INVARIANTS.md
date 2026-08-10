@@ -27,3 +27,7 @@
   with the signed identity event.
 - Re-drive is read-only. Missing history stays explicitly missing; no relay or
   provider synthesizes event history from current mutable state.
+- A revision-2 terminal Order has one canonical provider-signed Settlement
+  Receipt. Its exact Order, acknowledgment, Quote, Close, amounts, rails, fees,
+  times, outcome, and optional requester confirmation are event-verifiable;
+  external settlement remains bounded by native rail evidence.

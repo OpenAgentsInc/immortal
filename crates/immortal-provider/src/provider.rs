@@ -70,7 +70,8 @@ pub mod no_spend;
 
 pub use network_hardening::{
     EffectAttemptClaim, IntentAckSigningRequest, IntentAdmission, ProviderHardeningError,
-    ProviderHardeningErrorCode, ProviderIntentJournal, RedriveRestatement,
+    ProviderHardeningErrorCode, ProviderIntentJournal, ReceiptEmission, RedriveRestatement,
+    SettlementReceiptClaim, SettlementReceiptEmissionRequest, SettlementReceiptSigningRequest,
 };
 pub use session::{
     MktPublicSigningRequest, ProviderDiscoveryFactory, ProviderEffectKind, ProviderEffectReceipt,

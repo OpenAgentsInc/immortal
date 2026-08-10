@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, fmt};
 
 use serde::{
-    Deserialize, Deserializer,
+    Deserialize, Deserializer, Serialize,
     de::{Error as _, MapAccess, SeqAccess, Visitor},
 };
 use serde_json::{Map, Value};
@@ -23,6 +23,7 @@ pub const MKT_CLOSE_KIND: u16 = 39_609;
 pub const MKT_SWP_SWAP_CONTRACT_KIND: u16 = 39_610;
 pub const MKT_SWP_INTENT_ACK_KIND: u16 = 39_611;
 pub const MKT_SWP_REDRIVE_KIND: u16 = 39_612;
+pub const MKT_SWP_SETTLEMENT_RECEIPT_KIND: u16 = 39_613;
 pub const MKT_SWP_PROFILE_ID: &str = "mkt-swp";
 pub const MKT_SWP_PROFILE_VERSION: u64 = 1;
 pub const MKT_PFI_QUALIFICATION_POLICY_KIND: u16 = 39_630;
@@ -186,6 +187,29 @@ pub const MKT_HARDENING_ERROR_CODES: &[&str] = &[
     "mkt-v2-unsupported-revision",
     "mkt-v2-intent-invalid",
 ];
+pub const MKT_RECEIPT_SCHEMA: &str = "openagents.mkt.receipt.v1";
+pub const MKT_RECEIPT_VERSION: u64 = 1;
+pub const MKT_RECEIPT_MAX_LEGS: usize = 8;
+pub const MKT_RECEIPT_MAX_FEES: usize = 16;
+pub const MKT_RECEIPT_OUTCOMES: &[&str] = &[
+    "completed",
+    "cancelled",
+    "expired",
+    "failed",
+    "refunded",
+    "disputed",
+    "unresolved",
+];
+pub const MKT_RECEIPT_FAILURE_CODES: &[&str] = &[
+    "rail-failed",
+    "expired",
+    "cancelled",
+    "refunded",
+    "verification-failed",
+    "provider-internal",
+    "disputed",
+    "unresolved",
+];
 pub const MKT_PROVIDER_STATUSES: &[&str] = &["active", "paused", "retired"];
 pub const MKT_OFFERING_STATUSES: &[&str] = &["active", "paused", "exhausted", "retired"];
 pub const MKT_DESCRIPTOR_STATUSES: &[&str] = &["draft", "active", "deprecated", "withdrawn"];
@@ -260,6 +284,76 @@ pub struct MktHardeningRecord {
     pub accepted_at: Option<u64>,
     pub error_code: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MktSettlementReceipt {
+    pub schema: String,
+    pub version: u64,
+    pub receipt_id: String,
+    pub intent_event_id: String,
+    pub acknowledgment_event_id: String,
+    pub quote_event_id: String,
+    pub outcome_event_id: String,
+    pub client_confirmation_event_id: Option<String>,
+    pub outcome: String,
+    pub failure_code: Option<String>,
+    pub started_at: u64,
+    pub finished_at: u64,
+    pub legs: Vec<MktReceiptLeg>,
+    pub fees: Vec<MktReceiptFee>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MktReceiptLeg {
+    pub leg_id: String,
+    pub asset_id: String,
+    pub rail: String,
+    pub direction: String,
+    pub gross_amount: String,
+    pub net_amount: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MktReceiptFee {
+    pub fee_id: String,
+    pub asset_id: String,
+    pub rail: String,
+    pub amount: String,
+    pub payer_role: String,
+    pub recipient_role: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MktReceiptChainErrorCode {
+    Incomplete,
+    Invalid,
+}
+
+impl MktReceiptChainErrorCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Incomplete => "mkt_receipt_chain_incomplete",
+            Self::Invalid => "mkt_receipt_chain_invalid",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MktReceiptChainError {
+    pub code: MktReceiptChainErrorCode,
+    pub detail: String,
+}
+
+impl fmt::Display for MktReceiptChainError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.code.as_str(), self.detail)
+    }
+}
+
+impl std::error::Error for MktReceiptChainError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MktHardeningErrorCode {
@@ -442,17 +536,20 @@ fn validate_mkt_private_syntax(event: &Event) -> Result<MktPrivateEnvelope, Stri
             ));
         }
     }
-    if matches!(event.kind, MKT_SWP_INTENT_ACK_KIND | MKT_SWP_REDRIVE_KIND) {
+    if matches!(
+        event.kind,
+        MKT_SWP_INTENT_ACK_KIND | MKT_SWP_REDRIVE_KIND | MKT_SWP_SETTLEMENT_RECEIPT_KIND
+    ) {
         if *profile_id != MKT_SWP_PROFILE_ID {
             return Err(swp_error(
                 "swp_unsupported_profile",
-                "kind 39611-39612 requires profile mkt-swp",
+                "kind 39611-39613 requires profile mkt-swp",
             ));
         }
         if *profile_version != MKT_SWP_PROFILE_VERSION {
             return Err(swp_error(
                 "swp_unsupported_version",
-                "kind 39611-39612 requires MKT-SWP version 1",
+                "kind 39611-39613 requires MKT-SWP version 1",
             ));
         }
     }
@@ -526,7 +623,10 @@ fn validate_mkt_private_syntax(event: &Event) -> Result<MktPrivateEnvelope, Stri
             if *profile_id != MKT_SWP_PROFILE_ID
                 || !matches!(
                     event.kind,
-                    MKT_ORDER_KIND | MKT_SWP_INTENT_ACK_KIND | MKT_SWP_REDRIVE_KIND
+                    MKT_ORDER_KIND
+                        | MKT_SWP_INTENT_ACK_KIND
+                        | MKT_SWP_REDRIVE_KIND
+                        | MKT_SWP_SETTLEMENT_RECEIPT_KIND
                 )
             {
                 return Err(
@@ -542,11 +642,13 @@ fn validate_mkt_private_syntax(event: &Event) -> Result<MktPrivateEnvelope, Stri
             );
         }
     };
-    if matches!(event.kind, MKT_SWP_INTENT_ACK_KIND | MKT_SWP_REDRIVE_KIND)
-        && protocol_revision != MKT_HARDENING_PROTOCOL_REVISION
+    if matches!(
+        event.kind,
+        MKT_SWP_INTENT_ACK_KIND | MKT_SWP_REDRIVE_KIND | MKT_SWP_SETTLEMENT_RECEIPT_KIND
+    ) && protocol_revision != MKT_HARDENING_PROTOCOL_REVISION
     {
         return Err(
-            "mkt-v2-unsupported-revision: kind 39611-39612 requires protocol revision 2".to_owned(),
+            "mkt-v2-unsupported-revision: kind 39611-39613 requires protocol revision 2".to_owned(),
         );
     }
     require_json_string(&body, "profile", profile_id)?;
@@ -601,7 +703,10 @@ pub fn validate_mkt_private_with_profiles(
     {
         validate_mkt_swp_visible_private(event, &envelope)
             .map_err(|detail| validation_error(MktValidationCode::TagGrammar, detail))?;
-        if envelope.protocol_revision == MKT_HARDENING_PROTOCOL_REVISION {
+        if event.kind == MKT_SWP_SETTLEMENT_RECEIPT_KIND {
+            validate_mkt_receipt_event(event, &envelope)
+                .map_err(|detail| validation_error(MktValidationCode::TagGrammar, detail))?;
+        } else if envelope.protocol_revision == MKT_HARDENING_PROTOCOL_REVISION {
             validate_mkt_hardening_event(event, &envelope, None).map_err(|error| {
                 validation_error(MktValidationCode::TagGrammar, error.to_string())
             })?;
@@ -763,6 +868,7 @@ pub const fn is_mkt_private_kind(kind: u16) -> bool {
             | MKT_SWP_SWAP_CONTRACT_KIND
             | MKT_SWP_INTENT_ACK_KIND
             | MKT_SWP_REDRIVE_KIND
+            | MKT_SWP_SETTLEMENT_RECEIPT_KIND
             | MKT_P2P_RESOLUTION_KIND
             | MKT_MINT_ROUTE_CONTRACT_KIND
             | MKT_LSP_SERVICE_CONTRACT_KIND
@@ -5056,7 +5162,10 @@ fn validate_mkt_swp_visible_private(
     envelope: &MktPrivateEnvelope,
 ) -> Result<(), String> {
     reject_swp_secret_material(&Value::Object(envelope.body.clone()))?;
-    if matches!(event.kind, MKT_SWP_INTENT_ACK_KIND | MKT_SWP_REDRIVE_KIND) {
+    if matches!(
+        event.kind,
+        MKT_SWP_INTENT_ACK_KIND | MKT_SWP_REDRIVE_KIND | MKT_SWP_SETTLEMENT_RECEIPT_KIND
+    ) {
         return Ok(());
     }
     let profile = envelope
@@ -6046,6 +6155,574 @@ fn validate_mkt_hardening_ack(
     })
 }
 
+pub fn mkt_receipt_id(receipt: &MktSettlementReceipt) -> Result<String, String> {
+    let mut value = serde_json::to_value(receipt)
+        .map_err(|error| format!("mkt receipt serialization failed: {error}"))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "mkt receipt must serialize as an object".to_owned())?;
+    object.remove("receipt_id");
+    let mut canonical = Vec::new();
+    write_mkt_canonical_json(&value, &mut canonical)?;
+    Ok(Sha256::digest(&canonical)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+pub fn canonical_mkt_receipt_content(
+    session_id: &str,
+    receipt: &MktSettlementReceipt,
+) -> Result<String, String> {
+    lower_hex_32(session_id, "receipt session id")?;
+    let value = serde_json::json!({
+        "schema": MKT_HARDENING_SCHEMA,
+        "protocol_rev": MKT_HARDENING_PROTOCOL_REVISION,
+        "profile": MKT_SWP_PROFILE_ID,
+        "profile_version": MKT_SWP_PROFILE_VERSION,
+        "session_id": session_id,
+        "receipt": receipt,
+    });
+    let mut canonical = Vec::new();
+    write_mkt_canonical_json(&value, &mut canonical)?;
+    String::from_utf8(canonical)
+        .map_err(|_| "canonical mkt receipt unexpectedly produced invalid UTF-8".to_owned())
+}
+
+pub fn validate_mkt_receipt_event(
+    event: &Event,
+    envelope: &MktPrivateEnvelope,
+) -> Result<MktSettlementReceipt, String> {
+    if event.kind != MKT_SWP_SETTLEMENT_RECEIPT_KIND
+        || envelope.schema != MKT_HARDENING_SCHEMA
+        || envelope.protocol_revision != MKT_HARDENING_PROTOCOL_REVISION
+        || envelope.profile_id != MKT_SWP_PROFILE_ID
+        || envelope.profile_version != MKT_SWP_PROFILE_VERSION
+    {
+        return Err(
+            "mkt_receipt_unsupported_version: receipt requires MKT-SWP revision 2".to_owned(),
+        );
+    }
+    receipt_closed(
+        &envelope.body,
+        &[
+            "schema",
+            "protocol_rev",
+            "profile",
+            "profile_version",
+            "session_id",
+            "receipt",
+        ],
+        "outer content",
+    )?;
+    let receipt_value = envelope
+        .body
+        .get("receipt")
+        .cloned()
+        .ok_or_else(|| "mkt_receipt_invalid: content requires receipt object".to_owned())?;
+    let receipt: MktSettlementReceipt = serde_json::from_value(receipt_value).map_err(|error| {
+        format!("mkt_receipt_invalid: receipt is not a closed version-1 object: {error}")
+    })?;
+    validate_receipt_claim(&receipt)?;
+
+    if event.content != canonical_mkt_receipt_content(&envelope.session_id, &receipt)? {
+        return Err("mkt_receipt_noncanonical: content is not canonical JSON".to_owned());
+    }
+    if hardening_tag(event, "d")? != receipt.receipt_id {
+        return Err("mkt_receipt_digest_mismatch: d does not equal receipt_id".to_owned());
+    }
+    if hardening_tag(event, "receipt")? != MKT_RECEIPT_VERSION.to_string() {
+        return Err("mkt_receipt_unsupported_version: receipt tag must be 1".to_owned());
+    }
+    if hardening_tag(event, "outcome")? != receipt.outcome {
+        return Err("mkt_receipt_invalid: outcome tag does not agree with content".to_owned());
+    }
+    if hardening_tag(event, "alt")? != "MKT-SWP Settlement Receipt" {
+        return Err("mkt_receipt_invalid: alt tag is not the receipt protocol label".to_owned());
+    }
+    receipt_reference(event, "intent", true, Some(&receipt.intent_event_id))?;
+    receipt_reference(event, "ack", true, Some(&receipt.acknowledgment_event_id))?;
+    receipt_reference(event, "quote", true, Some(&receipt.quote_event_id))?;
+    receipt_reference(event, "outcome", true, Some(&receipt.outcome_event_id))?;
+    receipt_reference(
+        event,
+        "client-confirmation",
+        false,
+        receipt.client_confirmation_event_id.as_deref(),
+    )?;
+
+    let counterparties = event
+        .tags
+        .iter()
+        .filter(|tag| tag.name() == Some("p"))
+        .collect::<Vec<_>>();
+    if counterparties.len() != 1
+        || counterparties[0].as_slice().len() != 4
+        || counterparties[0].as_slice().get(3).map(String::as_str) != Some("requester")
+        || counterparties[0].as_slice().get(1).map(String::as_str) == Some(event.pubkey.as_str())
+    {
+        return Err(
+            "mkt_receipt_invalid: receipt requires one distinct requester counterparty".to_owned(),
+        );
+    }
+    Ok(receipt)
+}
+
+pub fn verify_mkt_receipt_chain(
+    receipt_event: &Event,
+    intent: &Event,
+    acknowledgment: &Event,
+    quote: &Event,
+    outcome: &Event,
+    client_confirmation: Option<&Event>,
+) -> Result<MktSettlementReceipt, MktReceiptChainError> {
+    verify_mkt_receipt_chain_inner(
+        receipt_event,
+        intent,
+        acknowledgment,
+        quote,
+        outcome,
+        client_confirmation,
+    )
+    .map_err(|detail| {
+        let code = if detail.starts_with("mkt_receipt_chain_incomplete:") {
+            MktReceiptChainErrorCode::Incomplete
+        } else {
+            MktReceiptChainErrorCode::Invalid
+        };
+        MktReceiptChainError { code, detail }
+    })
+}
+
+pub fn verify_mkt_receipt_chain_parts(
+    receipt_event: &Event,
+    intent: Option<&Event>,
+    acknowledgment: Option<&Event>,
+    quote: Option<&Event>,
+    outcome: Option<&Event>,
+    client_confirmation: Option<&Event>,
+) -> Result<MktSettlementReceipt, MktReceiptChainError> {
+    fn required<'a>(
+        event: Option<&'a Event>,
+        name: &str,
+    ) -> Result<&'a Event, MktReceiptChainError> {
+        event.ok_or_else(|| MktReceiptChainError {
+            code: MktReceiptChainErrorCode::Incomplete,
+            detail: format!("missing signed {name} event"),
+        })
+    }
+    verify_mkt_receipt_chain(
+        receipt_event,
+        required(intent, "intent")?,
+        required(acknowledgment, "acknowledgment")?,
+        required(quote, "quote")?,
+        required(outcome, "outcome")?,
+        client_confirmation,
+    )
+}
+
+fn verify_mkt_receipt_chain_inner(
+    receipt_event: &Event,
+    intent: &Event,
+    acknowledgment: &Event,
+    quote: &Event,
+    outcome: &Event,
+    client_confirmation: Option<&Event>,
+) -> Result<MktSettlementReceipt, String> {
+    for (name, event) in [
+        ("receipt", receipt_event),
+        ("intent", intent),
+        ("acknowledgment", acknowledgment),
+        ("quote", quote),
+        ("outcome", outcome),
+    ] {
+        validate_receipt_chain_signature(name, event)?;
+    }
+    if intent.kind != MKT_ORDER_KIND
+        || acknowledgment.kind != MKT_SWP_INTENT_ACK_KIND
+        || quote.kind != MKT_QUOTE_KIND
+        || outcome.kind != MKT_CLOSE_KIND
+    {
+        return Err(
+            "mkt_receipt_chain_invalid: chain requires Order, Ack, Quote, and terminal Close"
+                .to_owned(),
+        );
+    }
+    let support = MktProfileSupport {
+        profile_id: MKT_SWP_PROFILE_ID,
+        version: MKT_SWP_PROFILE_VERSION,
+        critical_members: &[],
+        understood_members: &[],
+    };
+    let receipt_envelope = validate_mkt_private_with_profiles(receipt_event, &[support])
+        .map_err(|error| format!("mkt_receipt_chain_invalid: receipt: {error}"))?;
+    let intent_envelope = validate_mkt_private_with_profiles(intent, &[support])
+        .map_err(|error| format!("mkt_receipt_chain_invalid: intent: {error}"))?;
+    let acknowledgment_envelope = validate_mkt_private_with_profiles(acknowledgment, &[support])
+        .map_err(|error| format!("mkt_receipt_chain_invalid: acknowledgment: {error}"))?;
+    let quote_envelope = validate_mkt_private_with_profiles(quote, &[support])
+        .map_err(|error| format!("mkt_receipt_chain_invalid: quote: {error}"))?;
+    let outcome_envelope = validate_mkt_private_with_profiles(outcome, &[support])
+        .map_err(|error| format!("mkt_receipt_chain_invalid: outcome: {error}"))?;
+    let receipt = validate_mkt_receipt_event(receipt_event, &receipt_envelope)?;
+
+    if receipt.intent_event_id != intent.id
+        || receipt.acknowledgment_event_id != acknowledgment.id
+        || receipt.quote_event_id != quote.id
+        || receipt.outcome_event_id != outcome.id
+    {
+        return Err(
+            "mkt_receipt_chain_invalid: receipt event IDs do not match the chain".to_owned(),
+        );
+    }
+    if receipt_event.pubkey != acknowledgment.pubkey || receipt_event.pubkey != quote.pubkey {
+        return Err(
+            "mkt_receipt_chain_invalid: receipt, acknowledgment, and quote require one provider author"
+                .to_owned(),
+        );
+    }
+    if role_pubkey(receipt_event, "requester")? != intent.pubkey
+        || role_pubkey(acknowledgment, "requester")? != intent.pubkey
+    {
+        return Err(
+            "mkt_receipt_chain_invalid: requester counterparty does not match Order author"
+                .to_owned(),
+        );
+    }
+    if receipt_reference_value(intent, "quote")? != quote.id
+        || receipt_reference_value(acknowledgment, "intent")? != intent.id
+        || receipt_reference_value(outcome, "order")? != intent.id
+    {
+        return Err("mkt_receipt_chain_invalid: a causal reference is broken".to_owned());
+    }
+    if hardening_tag(acknowledgment, "ack")? != "accepted"
+        || hardening_tag(outcome, "outcome")? != receipt.outcome
+    {
+        return Err(
+            "mkt_receipt_chain_invalid: Ack disposition or Close outcome does not agree".to_owned(),
+        );
+    }
+    let session = receipt_envelope.session_id.as_str();
+    if [
+        intent_envelope.session_id.as_str(),
+        acknowledgment_envelope.session_id.as_str(),
+        quote_envelope.session_id.as_str(),
+        outcome_envelope.session_id.as_str(),
+    ]
+    .iter()
+    .any(|candidate| *candidate != session)
+    {
+        return Err("mkt_receipt_chain_invalid: session IDs do not agree".to_owned());
+    }
+
+    match (
+        receipt.client_confirmation_event_id.as_deref(),
+        client_confirmation,
+    ) {
+        (None, None) => {}
+        (Some(expected), Some(event)) => {
+            validate_receipt_chain_signature("client confirmation", event)?;
+            if event.id != expected
+                || event.pubkey != intent.pubkey
+                || receipt_reference_value(event, "order")? != intent.id
+            {
+                return Err(
+                    "mkt_receipt_chain_invalid: requester confirmation is not bound to the Order"
+                        .to_owned(),
+                );
+            }
+        }
+        _ => {
+            return Err(
+                "mkt_receipt_chain_incomplete: requester confirmation link is missing or unexpected"
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(receipt)
+}
+
+fn validate_receipt_claim(receipt: &MktSettlementReceipt) -> Result<(), String> {
+    if receipt.schema != MKT_RECEIPT_SCHEMA || receipt.version != MKT_RECEIPT_VERSION {
+        return Err(
+            "mkt_receipt_unsupported_version: receipt schema/version is unsupported".to_owned(),
+        );
+    }
+    for (name, value) in [
+        ("receipt_id", receipt.receipt_id.as_str()),
+        ("intent_event_id", receipt.intent_event_id.as_str()),
+        (
+            "acknowledgment_event_id",
+            receipt.acknowledgment_event_id.as_str(),
+        ),
+        ("quote_event_id", receipt.quote_event_id.as_str()),
+        ("outcome_event_id", receipt.outcome_event_id.as_str()),
+    ] {
+        lower_hex_32(value, &format!("receipt {name}"))?;
+    }
+    if let Some(value) = receipt.client_confirmation_event_id.as_deref() {
+        lower_hex_32(value, "receipt client_confirmation_event_id")?;
+    }
+    require_enum(
+        receipt.outcome.as_str(),
+        MKT_RECEIPT_OUTCOMES,
+        "receipt outcome",
+    )?;
+    match (receipt.outcome.as_str(), receipt.failure_code.as_deref()) {
+        ("completed", None) => {}
+        ("completed", Some(_)) => {
+            return Err(
+                "mkt_receipt_invalid: completed receipt failure_code must be null".to_owned(),
+            );
+        }
+        (_, Some(code)) if MKT_RECEIPT_FAILURE_CODES.contains(&code) => {}
+        _ => {
+            return Err(
+                "mkt_receipt_invalid: non-completed receipt requires a typed failure_code"
+                    .to_owned(),
+            );
+        }
+    }
+    if receipt.started_at > receipt.finished_at {
+        return Err("mkt_receipt_invalid: finished_at precedes started_at".to_owned());
+    }
+    if receipt.legs.is_empty() || receipt.legs.len() > MKT_RECEIPT_MAX_LEGS {
+        return Err("mkt_receipt_bounds: receipt requires 1..=8 legs".to_owned());
+    }
+    if receipt.fees.len() > MKT_RECEIPT_MAX_FEES {
+        return Err("mkt_receipt_bounds: receipt exceeds 16 fees".to_owned());
+    }
+    let mut leg_ids = BTreeSet::new();
+    for leg in &receipt.legs {
+        validate_identifier(&leg.leg_id, "receipt leg id")?;
+        if !leg_ids.insert(leg.leg_id.as_str()) {
+            return Err("mkt_receipt_invalid: duplicate receipt leg id".to_owned());
+        }
+        validate_receipt_asset_rail(&leg.asset_id, &leg.rail)?;
+        require_enum(
+            &leg.direction,
+            &["provider-receives", "provider-sends"],
+            "receipt leg direction",
+        )?;
+        canonical_decimal(&leg.gross_amount, false, "receipt gross_amount")?;
+        canonical_decimal(&leg.net_amount, false, "receipt net_amount")?;
+    }
+    let mut fee_ids = BTreeSet::new();
+    for fee in &receipt.fees {
+        validate_identifier(&fee.fee_id, "receipt fee id")?;
+        if !fee_ids.insert(fee.fee_id.as_str()) {
+            return Err("mkt_receipt_invalid: duplicate receipt fee id".to_owned());
+        }
+        validate_receipt_asset_rail(&fee.asset_id, &fee.rail)?;
+        canonical_decimal(&fee.amount, false, "receipt fee amount")?;
+        require_enum(
+            &fee.payer_role,
+            &["requester", "provider", "external"],
+            "receipt fee payer role",
+        )?;
+        require_enum(
+            &fee.recipient_role,
+            &["requester", "provider", "external"],
+            "receipt fee recipient role",
+        )?;
+    }
+    let value = serde_json::to_value(receipt)
+        .map_err(|error| format!("mkt_receipt_invalid: serialization failed: {error}"))?;
+    reject_receipt_material(&value)?;
+    if mkt_receipt_id(receipt)? != receipt.receipt_id {
+        return Err(
+            "mkt_receipt_digest_mismatch: receipt_id does not bind the canonical claim".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_receipt_asset_rail(asset_id: &str, rail: &str) -> Result<(), String> {
+    let (_, asset_rail) = validate_swp_asset_id(asset_id)?;
+    let expected = if asset_rail == "chain" {
+        "bitcoin"
+    } else {
+        asset_rail
+    };
+    if rail != expected {
+        return Err("mkt_receipt_invalid: asset and rail do not agree".to_owned());
+    }
+    Ok(())
+}
+
+fn receipt_closed(
+    object: &Map<String, Value>,
+    allowed: &[&str],
+    subject: &str,
+) -> Result<(), String> {
+    if object.len() != allowed.len() || object.keys().any(|name| !allowed.contains(&name.as_str()))
+    {
+        return Err(format!("mkt_receipt_invalid: {subject} is not closed"));
+    }
+    Ok(())
+}
+
+fn receipt_reference(
+    event: &Event,
+    marker: &str,
+    required: bool,
+    expected: Option<&str>,
+) -> Result<(), String> {
+    let references = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().get(3).map(String::as_str) == Some(marker))
+        .collect::<Vec<_>>();
+    let expected_count = usize::from(required || expected.is_some());
+    if references.len() != expected_count {
+        return Err(format!(
+            "mkt_receipt_invalid: receipt requires {expected_count} {marker} reference"
+        ));
+    }
+    if let Some(expected) = expected {
+        let values = references[0].as_slice();
+        if values.len() != 4 || values.get(1).map(String::as_str) != Some(expected) {
+            return Err(format!(
+                "mkt_receipt_invalid: {marker} reference does not agree with content"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn receipt_reference_value<'a>(event: &'a Event, marker: &str) -> Result<&'a str, String> {
+    let references = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().get(3).map(String::as_str) == Some(marker))
+        .collect::<Vec<_>>();
+    if references.len() != 1 || references[0].as_slice().len() < 4 {
+        return Err(format!(
+            "mkt_receipt_chain_invalid: expected one {marker} reference"
+        ));
+    }
+    references[0]
+        .as_slice()
+        .get(1)
+        .map(String::as_str)
+        .ok_or_else(|| format!("mkt_receipt_chain_invalid: {marker} reference has no value"))
+}
+
+fn role_pubkey<'a>(event: &'a Event, role: &str) -> Result<&'a str, String> {
+    let tags = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().get(3).map(String::as_str) == Some(role))
+        .collect::<Vec<_>>();
+    if tags.len() != 1 || tags[0].as_slice().len() != 4 {
+        return Err(format!(
+            "mkt_receipt_chain_invalid: expected one {role} counterparty"
+        ));
+    }
+    tags[0]
+        .as_slice()
+        .get(1)
+        .map(String::as_str)
+        .ok_or_else(|| format!("mkt_receipt_chain_invalid: {role} counterparty has no pubkey"))
+}
+
+fn validate_receipt_chain_signature(name: &str, event: &Event) -> Result<(), String> {
+    event
+        .validate_structure()
+        .and_then(|()| event.validate_crypto())
+        .map_err(|error| format!("mkt_receipt_chain_invalid: {name} signature: {error}"))
+}
+
+fn reject_receipt_material(value: &Value) -> Result<(), String> {
+    match value {
+        Value::Object(object) => {
+            for (name, child) in object {
+                let normalized = name.to_ascii_lowercase().replace(['-', '_'], "");
+                if matches!(
+                    normalized.as_str(),
+                    "seed"
+                        | "mnemonic"
+                        | "privatekey"
+                        | "claimprivatekey"
+                        | "refundprivatekey"
+                        | "preimage"
+                        | "macaroon"
+                        | "nwc"
+                        | "nwcstring"
+                        | "invoice"
+                        | "paymenthash"
+                        | "rawtransaction"
+                        | "transactionhex"
+                        | "address"
+                        | "script"
+                        | "route"
+                ) {
+                    return Err(format!(
+                        "mkt_receipt_custody_forbidden: forbidden receipt member {name:?}"
+                    ));
+                }
+                reject_receipt_material(child)?;
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                reject_receipt_material(child)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn write_mkt_canonical_json(value: &Value, output: &mut Vec<u8>) -> Result<(), String> {
+    match value {
+        Value::Null => output.extend_from_slice(b"null"),
+        Value::Bool(value) => output.extend_from_slice(if *value { b"true" } else { b"false" }),
+        Value::Number(number) => {
+            if number.as_u64().is_none() {
+                return Err(
+                    "mkt_receipt_noncanonical: only non-negative integers are admitted".to_owned(),
+                );
+            }
+            output.extend_from_slice(number.to_string().as_bytes());
+        }
+        Value::String(value) => output.extend_from_slice(
+            serde_json::to_string(value)
+                .map_err(|error| format!("mkt receipt string encoding failed: {error}"))?
+                .as_bytes(),
+        ),
+        Value::Array(values) => {
+            output.push(b'[');
+            for (index, child) in values.iter().enumerate() {
+                if index > 0 {
+                    output.push(b',');
+                }
+                write_mkt_canonical_json(child, output)?;
+            }
+            output.push(b']');
+        }
+        Value::Object(object) => {
+            output.push(b'{');
+            let mut names = object.keys().collect::<Vec<_>>();
+            names.sort();
+            for (index, name) in names.into_iter().enumerate() {
+                if index > 0 {
+                    output.push(b',');
+                }
+                output.extend_from_slice(
+                    serde_json::to_string(name)
+                        .map_err(|error| format!("mkt receipt key encoding failed: {error}"))?
+                        .as_bytes(),
+                );
+                output.push(b':');
+                write_mkt_canonical_json(&object[name], output)?;
+            }
+            output.push(b'}');
+        }
+    }
+    Ok(())
+}
+
 fn hardening_error(code: MktHardeningErrorCode, detail: impl Into<String>) -> MktHardeningError {
     MktHardeningError {
         code,
@@ -6193,10 +6870,11 @@ fn validate_references(
         let swp_cancel_marker = matches!(marker, "cancel-request" | "cancel-accept")
             && profile_id == MKT_SWP_PROFILE_ID
             && profile_version == MKT_SWP_PROFILE_VERSION;
-        let hardening_marker = matches!(marker, "intent" | "ack")
-            && profile_id == MKT_SWP_PROFILE_ID
-            && profile_version == MKT_SWP_PROFILE_VERSION
-            && protocol_revision == MKT_HARDENING_PROTOCOL_REVISION;
+        let hardening_marker =
+            matches!(marker, "intent" | "ack" | "outcome" | "client-confirmation")
+                && profile_id == MKT_SWP_PROFILE_ID
+                && profile_version == MKT_SWP_PROFILE_VERSION
+                && protocol_revision == MKT_HARDENING_PROTOCOL_REVISION;
         if values.len() < 4
             || !(common_marker || swp_contract_marker || swp_cancel_marker || hardening_marker)
         {

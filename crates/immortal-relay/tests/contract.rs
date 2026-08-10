@@ -4,8 +4,9 @@ use immortal::{
     contract::{CONTRACT_SCHEMA, CONTRACT_VERSION, FIXTURE_MANIFEST_PATH, contract, contract_json},
     domain::{
         EventClass, MKT_CANCEL_ACTIONS, MKT_EXECUTABLE_PROFILES, MKT_HARDENING_PROTOCOL_REVISION,
-        MKT_HARDENING_SCHEMA, MKT_OUTCOMES, MKT_QUOTE_CLASSES, MKT_RESERVATION_CLASSES,
-        MKT_STATUS_STATES, MKT_SWP_INTENT_ACK_KIND, MKT_SWP_REDRIVE_KIND,
+        MKT_HARDENING_SCHEMA, MKT_OUTCOMES, MKT_QUOTE_CLASSES, MKT_RECEIPT_SCHEMA,
+        MKT_RECEIPT_VERSION, MKT_RESERVATION_CLASSES, MKT_STATUS_STATES, MKT_SWP_INTENT_ACK_KIND,
+        MKT_SWP_REDRIVE_KIND, MKT_SWP_SETTLEMENT_RECEIPT_KIND,
     },
     gateway::{GatewayLimits, MKT_PRIVATE_REQUIRES_GIFT_WRAP},
 };
@@ -27,7 +28,7 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     assert_eq!(descriptor.identity.contract_version, CONTRACT_VERSION);
     assert_eq!(descriptor.fixture_manifest, FIXTURE_MANIFEST_PATH);
     assert_eq!(descriptor.identity.nips.len(), 3);
-    assert_eq!(descriptor.kinds.len(), 22);
+    assert_eq!(descriptor.kinds.len(), 23);
     assert!(descriptor.kinds.iter().any(|kind| {
         kind.kind == 32_170 && kind.identifier == "NIP-WK" && kind.enforcement_scope == "relay"
     }));
@@ -62,6 +63,9 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
         MKT_SWP_INTENT_ACK_KIND
     );
     assert_eq!(descriptor.mkt.hardening.redrive_kind, MKT_SWP_REDRIVE_KIND);
+    assert_eq!(descriptor.mkt.receipt.schema, MKT_RECEIPT_SCHEMA);
+    assert_eq!(descriptor.mkt.receipt.version, MKT_RECEIPT_VERSION);
+    assert_eq!(descriptor.mkt.receipt.kind, MKT_SWP_SETTLEMENT_RECEIPT_KIND);
     assert_eq!(descriptor.mkt.mkt_swp.upstream_fixture_cases, 70);
     assert!(
         descriptor

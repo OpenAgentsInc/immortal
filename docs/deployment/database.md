@@ -113,7 +113,8 @@ heads, inserts the event and indexed tags, applies deletion tombstones and
 deletes superseded rows, updates the head, allocates `ingest_seq`, and calls
 `pg_notify`. A stored result is returned only after commit.
 
-Kinds `39604-39610` use a distinct path inside that transaction. An existing
+Private MKT kinds `39604-39613`, `39620`, `39640`, and `39650` use a distinct
+path inside that transaction. An existing
 durable coordinate is checked before generic duplicate, expiration,
 tombstone, and policy decisions: an exact event-ID-and-signature replay
 returns the prior successful duplicate result, while any changed ID or

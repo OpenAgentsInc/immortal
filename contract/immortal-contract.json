@@ -387,6 +387,16 @@
       "enforcement_scope": "client_and_internal_store"
     },
     {
+      "kind": 39613,
+      "lane": "openagents",
+      "identifier": "NIP-MKT",
+      "name": "mkt_swp_settlement_receipt",
+      "classification": "addressable",
+      "publication": "private_wrapped",
+      "immutability": "exact_signed_coordinate",
+      "enforcement_scope": "client_and_internal_store"
+    },
+    {
       "kind": 39630,
       "lane": "openagents",
       "identifier": "NIP-MKT",
@@ -639,6 +649,48 @@
       "single_attempt_law": "durable_ack_before_effect; at_most_one_external_effect_attempt; exact_replay_returns_exact_durable_records; redrive_is_read_only",
       "response_key_authority": "transport_only; requester_identity_signature_remains_authority",
       "fixture": "tests/fixtures/nipmkt/hardening-v2.json"
+    },
+    "receipt": {
+      "schema": "openagents.mkt.receipt.v1",
+      "version": 1,
+      "kind": 39613,
+      "maximum_legs": 8,
+      "maximum_fees": 16,
+      "outcomes": [
+        "completed",
+        "cancelled",
+        "expired",
+        "failed",
+        "refunded",
+        "disputed",
+        "unresolved"
+      ],
+      "failure_codes": [
+        "rail-failed",
+        "expired",
+        "cancelled",
+        "refunded",
+        "verification-failed",
+        "provider-internal",
+        "disputed",
+        "unresolved"
+      ],
+      "canonicalization": "rfc8785_closed_nonnegative_integer_profile",
+      "receipt_id": "lower_sha256_of_canonical_receipt_object_without_receipt_id",
+      "chain": [
+        "quote",
+        "intent",
+        "acknowledgment",
+        "outcome",
+        "receipt"
+      ],
+      "verification_result": [
+        "valid",
+        "incomplete",
+        "invalid"
+      ],
+      "external_authority": "provider_signed_claim_only; native_rail_evidence_required_for_verified_settlement",
+      "fixture": "tests/fixtures/nipmkt/receipt-v1.json"
     },
     "executable_profiles": [],
     "relay_profiles": [
