@@ -27,7 +27,9 @@ external authorities.
 | `39650` | MKT-LSP v1 LSP Service Contract | addressable with an immutable-coordinate override | bare publication refused; signed record travels inside kind-1059 gift wraps |
 | `39611-39612` | MKT-SWP Intent Acknowledgment and Re-drive Intent | addressable with an immutable-coordinate override | bare publication refused; signed records travel inside kind-1059 gift wraps |
 | `39613` | MKT-SWP Settlement Receipt | addressable with an immutable-coordinate override | canonical provider-signed private receipt; bare publication refused; signed record travels inside kind-1059 gift wraps |
-| `39614-39619`, `39621-39629`, `39631-39639`, `39641-39649`, `39651-39699` | reserved profile allocation block | addressable | unallocated by this runtime packet |
+| `39614` | MKT-SWP Provider Key Rotation | addressable | public, canonical digest `d`, immutable generation |
+| `39615` | MKT-SWP Provider Relay Set | addressable | public, canonical digest `d`, immutable generation |
+| `39616-39619`, `39621-39629`, `39631-39639`, `39641-39649`, `39651-39699` | reserved profile allocation block | addressable | unallocated by this runtime packet |
 
 The public heads use ordinary NIP-01 replacement ordering. The thirteen adopted
 private kinds bind `(pubkey, kind, d)` to one exact event ID and signature in the

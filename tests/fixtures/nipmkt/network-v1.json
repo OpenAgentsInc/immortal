@@ -1,0 +1,43 @@
+{
+  "schema": "openagents.mkt.network-conformance.v1",
+  "version": 1,
+  "relay_set": {
+    "kind": 39615,
+    "schema": "openagents.mkt.relay-set.v1",
+    "minimum_relays": 2,
+    "maximum_relays": 8,
+    "maximum_chain_generations": 64,
+    "publication": "public_immutable_digest"
+  },
+  "key_rotation": {
+    "kind": 39614,
+    "schema": "openagents.mkt.key-rotation.v1",
+    "maximum_chain_generations": 64,
+    "publication": "public_immutable_digest"
+  },
+  "chain_results": ["complete", "incomplete", "invalid", "ambiguous"],
+  "cases": [
+    "canonical-relay-set",
+    "canonical-key-rotation",
+    "relay-set-id-binds-content",
+    "rotation-id-binds-content",
+    "invalid-relay-origin",
+    "duplicate-relay-origin",
+    "invalid-relay-threshold",
+    "missing-relay-set-predecessor-is-incomplete",
+    "missing-rotation-predecessor-is-incomplete",
+    "generation-gap-is-incomplete",
+    "relay-set-successor-fork-is-ambiguous",
+    "rotation-successor-fork-is-ambiguous",
+    "old-key-valid-before-effective-time",
+    "old-key-invalid-at-effective-time",
+    "new-key-invalid-before-effective-time",
+    "new-key-valid-at-effective-time",
+    "mid-session-provider-rotation",
+    "exact-event-id-deduplicated",
+    "same-id-different-bytes-invalid",
+    "idempotency-scope-stable-across-rotation",
+    "publish-with-one-relay-down",
+    "subscribe-with-one-relay-down"
+  ]
+}

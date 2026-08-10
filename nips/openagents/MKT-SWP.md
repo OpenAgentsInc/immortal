@@ -39,12 +39,18 @@ name, or matching version number is insufficient.
 
 ### 1.1 Kind allocation
 
-MKT-SWP owns the profile family `39610-39619` and allocates exactly one kind:
+MKT-SWP owns the profile family `39610-39619`. The original profile allocates
+kind 39610; later revision documents allocate the remaining listed kinds:
 
 | Kind        | Type                    | Description                          | Publication                        |
 | ----------- | ----------------------- | ------------------------------------ | ---------------------------------- |
 | 39610       | Addressable, unique `d` | Swap Contract                        | private signed record, NIP-59 only |
-| 39611-39619 | —                       | Reserved for later MKT-SWP revisions | unallocated                        |
+| 39611       | Addressable, unique `d` | Intent Acknowledgment                | private signed record, NIP-59 only |
+| 39612       | Addressable, unique `d` | Re-drive Intent                      | private signed record, NIP-59 only |
+| 39613       | Addressable, unique `d` | Settlement Receipt                  | private signed record, NIP-59 only |
+| 39614       | Addressable, derived `d`| Provider Key Rotation                | public, immutable digest           |
+| 39615       | Addressable, derived `d`| Provider Relay Set                   | public, immutable digest           |
+| 39616-39619 | —                       | Reserved for later revisions         | unallocated                        |
 
 The Swap Contract is the immutable, bilateral pre-funding commitment described
 in Section 4.5. It binds the accepted Order to exact per-leg rail terms,
@@ -53,12 +59,14 @@ pre-derived exit-package commitment. A Quote cannot serve this role because
 the requester has not accepted it and both parties' final exit-package
 commitments may not exist when the provider signs the Quote.
 
-No other new kind is needed. A separate pair head would duplicate the
+The original profile needed no other kind. A separate pair head would duplicate the
 Offering. A reservation record would split the Quote's atomic commitment. A
 swap-progress record would duplicate Status. An evidence event would duplicate
 typed evidence references and the external verifier's native receipt. Future
 revisions MUST repeat the three-lane and registry collision review before
-assigning an exact kind from `39611-39619`.
+assigning another exact kind from `39616-39619`. Kinds 39611-39612 are defined
+by NIP-MKT-HARDENING, kind 39613 by NIP-MKT-RECEIPT, and public kinds
+39614-39615 by NIP-MKT-NETWORK.
 
 The v1 family review found no collision at these exact source revisions:
 
@@ -2489,6 +2497,12 @@ evidence.
 - Kept arbitrary third-party range-proof and surjection-proof verification
   outside v1 claims.
 
+**Network hardening addendum (2026-08-09)**
+
+- NIP-MKT-NETWORK version 1 allocated public immutable-digest kinds 39614 and
+  39615 to provider key rotation and relay-set snapshots.
+- Kinds 39616-39619 remain unallocated.
+
 **v1 draft correction (2026-08-04)**
 
 - Defined `hold_expiry_height` and `H_hold_expiry` as the signed minimum
@@ -2504,5 +2518,5 @@ evidence.
   verification, lifecycle, timeouts, reservation proofs, evidence, recovery,
   loss accounting, privacy, errors, and fixtures.
 - Reserved the EVM-leg field vocabulary without enabling EVM execution.
-- Assigned `kind:39610` to the private immutable Swap Contract and reserved
-  `39611-39619` for later collision-reviewed revisions.
+- Assigned `kind:39610` to the private immutable Swap Contract and initially
+  reserved `39611-39619` for later collision-reviewed revisions.

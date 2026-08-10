@@ -139,6 +139,26 @@ fn nipmkt_receipt_fixture_pins_the_versioned_event_only_contract() {
 }
 
 #[test]
+fn nipmkt_network_fixture_pins_the_versioned_event_only_contract() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nipmkt/network-v1.json"
+    ))
+    .expect("network fixture");
+    assert_eq!(fixture["version"], 1);
+    assert_eq!(fixture["relay_set"]["kind"], 39_615);
+    assert_eq!(
+        fixture["relay_set"]["schema"],
+        "openagents.mkt.relay-set.v1"
+    );
+    assert_eq!(fixture["key_rotation"]["kind"], 39_614);
+    assert_eq!(
+        fixture["key_rotation"]["schema"],
+        "openagents.mkt.key-rotation.v1"
+    );
+    assert_eq!(fixture["cases"].as_array().expect("cases").len(), 22);
+}
+
+#[test]
 fn nipmkt_client_only_manifest_is_structured_and_explicitly_not_relay_enforced() {
     let fixture = client_fixture();
     assert_eq!(fixture["source"]["commit"], MKT_BASE_COMMIT);

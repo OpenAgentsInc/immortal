@@ -149,7 +149,9 @@ This NIP reserves these collision-reviewed addressable kinds:
 | 39611       | Addressable, unique `d`  | MKT-SWP Intent Acknowledgment              | private signed record, NIP-59 only |
 | 39612       | Addressable, unique `d`  | MKT-SWP Re-drive Intent                    | private signed record, NIP-59 only |
 | 39613       | Addressable, unique `d`  | MKT-SWP Settlement Receipt                 | private signed record, NIP-59 only |
-| 39614-39619 | —                        | Reserved for later MKT-SWP revisions      | unallocated                        |
+| 39614       | Addressable, derived `d` | MKT-SWP Provider Key Rotation              | public, immutable digest           |
+| 39615       | Addressable, derived `d` | MKT-SWP Provider Relay Set                 | public, immutable digest           |
+| 39616-39619 | —                        | Reserved for later MKT-SWP revisions      | unallocated                        |
 | 39620       | Addressable, unique `d`  | MKT-P2P Resolution                        | private signed record, NIP-59 only |
 | 39621-39629 | —                        | Reserved for later MKT-P2P revisions      | unallocated                        |
 | 39630       | Addressable head         | MKT-PFI Qualification Policy              | public, no PII                     |
@@ -172,13 +174,17 @@ head.
 Public heads, including `kind:39630`, intentionally use stable `d` values and
 NIP-01 replacement. MKT-INTENT derives `d` from its canonical content so a
 changed public intent cannot replace prior terms under the same address.
+MKT-NETWORK kinds `39614` and `39615` also derive unique `d` values from
+canonical content and retain every signed generation rather than replacing a
+stable head.
 Private profile kinds `39610-39613`, `39620`, `39640`, and `39650` inherit the
 unique-`d`, immutable-by-contract, and NIP-59-only rules from the base private
 records.
 
-Kinds `39611` and `39612` are allocated by NIP-MKT-HARDENING revision 2, and
-kind `39613` by NIP-MKT-RECEIPT version 1, from the already reviewed MKT-SWP
-revision block. They do not broaden the reserved `39600-39699` range.
+Kinds `39611` and `39612` are allocated by NIP-MKT-HARDENING revision 2,
+kind `39613` by NIP-MKT-RECEIPT version 1, and public kinds `39614` and `39615`
+by NIP-MKT-NETWORK version 1 from the already reviewed MKT-SWP revision block.
+They do not broaden the reserved `39600-39699` range.
 
 The `39600-39699` block was unused by the pinned official, Block, and
 OpenAgents lanes and by the official registry-of-kinds `schema.yaml` when
@@ -550,6 +556,13 @@ requester confirmation without claiming external settlement authority. The
 existing kind-39603 Public Market Receipt remains a redacted optional
 projection.
 
+### Relay set and provider key rotation (`kind:39614-39615`)
+
+NIP-MKT-NETWORK version 1 defines immutable public relay-set snapshots and an
+old-key-signed provider rotation chain. Clients merge exact signed bytes by
+event ID across the effective relay set and select the provider signing key by
+event creation time. Missing generations are incomplete and forks fail closed.
+
 ## State, replay, and recovery
 
 ```text
@@ -799,6 +812,9 @@ authority.
 - [Nostr registry of event kinds](https://github.com/nostr-protocol/registry-of-kinds)
 - [`NIP90-MIGRATION.md`](NIP90-MIGRATION.md)
 - [`MKT-SWP.md`](MKT-SWP.md)
+- [`MKT-HARDENING.md`](MKT-HARDENING.md)
+- [`MKT-RECEIPT.md`](MKT-RECEIPT.md)
+- [`MKT-NETWORK.md`](MKT-NETWORK.md)
 - [`MKT-PFI.md`](MKT-PFI.md)
 - [`MKT-P2P.md`](MKT-P2P.md)
 - [`MKT-MINT.md`](MKT-MINT.md)
@@ -810,6 +826,15 @@ authority.
 - `docs/teardowns/2026-08-04-ark-solver-mostro-cashu-rails-teardown.md`
 
 ## Changelog
+
+**v0.4 (2026-08-09)**
+
+- Allocated public immutable-digest `kind:39614` to provider key rotation and
+  `kind:39615` to provider relay-set snapshots.
+- Defined event-only generation-chain verification, active-key selection by
+  event creation time, multi-relay exact-byte fanout, event-ID deduplication,
+  and typed degraded operation in NIP-MKT-NETWORK version 1.
+- Retained kinds `39616-39619` as unallocated.
 
 **v0.3 (2026-08-04)**
 

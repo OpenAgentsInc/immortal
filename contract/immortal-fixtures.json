@@ -444,6 +444,12 @@
       "scope": "relay_and_client"
     },
     {
+      "path": "tests/fixtures/nipmkt/network-v1.json",
+      "sha256": "d18130f78e652899651581219f1e74690b700c908210f662a6f84c3fa7c6c2a5",
+      "bytes": 1390,
+      "scope": "relay_and_client"
+    },
+    {
       "path": "tests/fixtures/nipmkt/p2p-profile-v1.json",
       "sha256": "31b06aa659feddf015c95aad0dc46a2dcdc4283238ac7c4b2d6959635ad5a279",
       "bytes": 12318,

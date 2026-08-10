@@ -117,8 +117,9 @@ verify-before-fund rules; reservation proof classes; timeout ladders; external
 evidence and finality authorities; and coordinator-independent claim/refund
 exits. Private immutable `kind:39610` binds the accepted Order, exact rail
 verifier inputs, and exit-package commitments without carrying seeds,
-preimages, private keys, or node credentials. The remaining `39611-39619`
-family is unallocated.
+preimages, private keys, or node credentials. Revision documents allocate
+private kinds 39611-39613 to hardening/receipts and public immutable-digest
+kinds 39614-39615 to key rotation/relay sets; 39616-39619 remain unallocated.
 
 ### MKT-PFI — Credentialed Provider and Fiat Interfaces
 
