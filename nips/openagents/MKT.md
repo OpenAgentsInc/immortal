@@ -148,7 +148,8 @@ This NIP reserves these collision-reviewed addressable kinds:
 | 39610       | Addressable, unique `d`  | MKT-SWP Swap Contract                     | private signed record, NIP-59 only |
 | 39611       | Addressable, unique `d`  | MKT-SWP Intent Acknowledgment              | private signed record, NIP-59 only |
 | 39612       | Addressable, unique `d`  | MKT-SWP Re-drive Intent                    | private signed record, NIP-59 only |
-| 39613-39619 | —                        | Reserved for later MKT-SWP revisions      | unallocated                        |
+| 39613       | Addressable, unique `d`  | MKT-SWP Settlement Receipt                 | private signed record, NIP-59 only |
+| 39614-39619 | —                        | Reserved for later MKT-SWP revisions      | unallocated                        |
 | 39620       | Addressable, unique `d`  | MKT-P2P Resolution                        | private signed record, NIP-59 only |
 | 39621-39629 | —                        | Reserved for later MKT-P2P revisions      | unallocated                        |
 | 39630       | Addressable head         | MKT-PFI Qualification Policy              | public, no PII                     |
@@ -171,13 +172,13 @@ head.
 Public heads, including `kind:39630`, intentionally use stable `d` values and
 NIP-01 replacement. MKT-INTENT derives `d` from its canonical content so a
 changed public intent cannot replace prior terms under the same address.
-Private profile kinds `39610-39612`, `39620`, `39640`, and `39650` inherit the
+Private profile kinds `39610-39613`, `39620`, `39640`, and `39650` inherit the
 unique-`d`, immutable-by-contract, and NIP-59-only rules from the base private
 records.
 
-Kinds `39611` and `39612` are allocated by NIP-MKT-HARDENING revision 2 from
-the already reviewed MKT-SWP revision block. They do not broaden the reserved
-`39600-39699` range.
+Kinds `39611` and `39612` are allocated by NIP-MKT-HARDENING revision 2, and
+kind `39613` by NIP-MKT-RECEIPT version 1, from the already reviewed MKT-SWP
+revision block. They do not broaden the reserved `39600-39699` range.
 
 The `39600-39699` block was unused by the pinned official, Block, and
 OpenAgents lanes and by the official registry-of-kinds `schema.yaml` when
@@ -539,6 +540,15 @@ NIP-MKT-HARDENING revision 2 defines the exact schemas, idempotency scope,
 nonce window, typed errors, response-encryption key, and timeout behavior for
 these MKT-SWP private records. An acknowledgment is distinct from Status and
 Close. A re-drive restates exact signed history and never retries an effect.
+
+### Settlement Receipt (`kind:39613`)
+
+NIP-MKT-RECEIPT version 1 defines the canonical private provider receipt for
+a terminal revision-2 Order. It binds the intent, acknowledgment, quote,
+Close, amounts, rails, fees, times, outcome, typed failure code, and optional
+requester confirmation without claiming external settlement authority. The
+existing kind-39603 Public Market Receipt remains a redacted optional
+projection.
 
 ## State, replay, and recovery
 

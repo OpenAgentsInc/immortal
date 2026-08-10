@@ -2365,10 +2365,18 @@ The optional response-encryption pubkey changes NIP-59 response delivery, not
 the participant identities, bilateral contract, funding authorization,
 signer map, custody boundary, evidence authority, or settlement authority.
 
+For a terminal revision-2 Order, the provider emits the canonical private
+kind-39613 Settlement Receipt defined by
+[NIP-MKT-RECEIPT](MKT-RECEIPT.md). Its event-only reference chain is
+verifiable without trusting the relay. Its amounts, fees, times, and outcome
+remain signer claims unless independently backed by the profile's native rail
+evidence.
+
 ## References
 
 - [NIP-MKT](MKT.md)
 - [NIP-MKT-HARDENING](MKT-HARDENING.md)
+- [NIP-MKT-RECEIPT](MKT-RECEIPT.md)
 - BIP-122 chain references
 - BIP-341 and BIP-342 Taproot and tapscript
 - BIP-174 PSBT and BIP-370 PSBT v2
@@ -2384,6 +2392,12 @@ signer map, custody boundary, evidence authority, or settlement authority.
 - [Arkade, solver, Mostro, Cashu, and WDK teardown](../teardowns/2026-08-04-ark-solver-mostro-cashu-rails-teardown.md)
 
 ## Changelog
+
+**v1 signed settlement receipt adoption (2026-08-09)**
+
+- Adopted the canonical private kind-39613 provider Settlement Receipt for
+  terminal revision-2 Orders, with event-only chain verification and an
+  honest external-settlement evidence boundary.
 
 **v1 protocol revision-2 hardening adoption (2026-08-09)**
 

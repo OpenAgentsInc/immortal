@@ -119,6 +119,22 @@ fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
 }
 
 #[test]
+fn nipmkt_receipt_fixture_pins_the_versioned_event_only_contract() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/nipmkt/receipt-v1.json"
+    ))
+    .expect("receipt fixture");
+    assert_eq!(fixture["wire_envelope"], "openagents.mkt.v2");
+    assert_eq!(fixture["protocol_revision"], 2);
+    assert_eq!(fixture["receipt_schema"], "openagents.mkt.receipt.v1");
+    assert_eq!(fixture["receipt_version"], 1);
+    assert_eq!(fixture["kind"], 39_613);
+    assert_eq!(fixture["maximum_legs"], 8);
+    assert_eq!(fixture["maximum_fees"], 16);
+    assert_eq!(fixture["cases"].as_array().expect("cases").len(), 20);
+}
+
+#[test]
 fn nipmkt_client_only_manifest_is_structured_and_explicitly_not_relay_enforced() {
     let fixture = client_fixture();
     assert_eq!(fixture["source"]["commit"], MKT_BASE_COMMIT);

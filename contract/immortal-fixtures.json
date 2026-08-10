@@ -415,8 +415,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/hardening-v2.json",
-      "sha256": "6519174bd8f5105c9f795b6cd0ee522f829a19a077e2a322509258f4e9cb3f41",
-      "bytes": 810,
+      "sha256": "34aca41ae2e7da5e00f3ee8979b3a63ad561817146d2cc5c2fa1c2b8390b3657",
+      "bytes": 809,
       "scope": "relay_and_client"
     },
     {
@@ -460,6 +460,12 @@
       "sha256": "750601fb8ebbc126b496d18e899a3c7eb1690bf1ced4fce7abcdd0cd74aca79b",
       "bytes": 5881,
       "scope": "relay"
+    },
+    {
+      "path": "tests/fixtures/nipmkt/receipt-v1.json",
+      "sha256": "bb5d24bdf8c29751245d23af3c5df0de04a003fc936d5c1e1a81647ac8a701b5",
+      "bytes": 1315,
+      "scope": "relay_and_client"
     },
     {
       "path": "tests/fixtures/nipmkt/relay-closing.json",
