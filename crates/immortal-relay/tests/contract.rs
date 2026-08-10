@@ -3,8 +3,9 @@ use std::{collections::BTreeSet, fs, path::Path, process::Command};
 use immortal::{
     contract::{CONTRACT_SCHEMA, CONTRACT_VERSION, FIXTURE_MANIFEST_PATH, contract, contract_json},
     domain::{
-        EventClass, MKT_CANCEL_ACTIONS, MKT_EXECUTABLE_PROFILES, MKT_OUTCOMES, MKT_QUOTE_CLASSES,
-        MKT_RESERVATION_CLASSES, MKT_STATUS_STATES,
+        EventClass, MKT_CANCEL_ACTIONS, MKT_EXECUTABLE_PROFILES, MKT_HARDENING_PROTOCOL_REVISION,
+        MKT_HARDENING_SCHEMA, MKT_OUTCOMES, MKT_QUOTE_CLASSES, MKT_RESERVATION_CLASSES,
+        MKT_STATUS_STATES, MKT_SWP_INTENT_ACK_KIND, MKT_SWP_REDRIVE_KIND,
     },
     gateway::{GatewayLimits, MKT_PRIVATE_REQUIRES_GIFT_WRAP},
 };
@@ -26,7 +27,7 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     assert_eq!(descriptor.identity.contract_version, CONTRACT_VERSION);
     assert_eq!(descriptor.fixture_manifest, FIXTURE_MANIFEST_PATH);
     assert_eq!(descriptor.identity.nips.len(), 3);
-    assert_eq!(descriptor.kinds.len(), 20);
+    assert_eq!(descriptor.kinds.len(), 22);
     assert!(descriptor.kinds.iter().any(|kind| {
         kind.kind == 32_170 && kind.identifier == "NIP-WK" && kind.enforcement_scope == "relay"
     }));
@@ -51,6 +52,16 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     assert_eq!(descriptor.mkt.relay_profiles[3].id, "mkt-p2p");
     assert_eq!(descriptor.mkt.relay_profiles[4].id, "mkt-lsp");
     assert_eq!(descriptor.mkt.mkt_swp.swap_contract_kind, 39_610);
+    assert_eq!(descriptor.mkt.hardening.schema, MKT_HARDENING_SCHEMA);
+    assert_eq!(
+        descriptor.mkt.hardening.protocol_revision,
+        MKT_HARDENING_PROTOCOL_REVISION
+    );
+    assert_eq!(
+        descriptor.mkt.hardening.acknowledgment_kind,
+        MKT_SWP_INTENT_ACK_KIND
+    );
+    assert_eq!(descriptor.mkt.hardening.redrive_kind, MKT_SWP_REDRIVE_KIND);
     assert_eq!(descriptor.mkt.mkt_swp.upstream_fixture_cases, 70);
     assert!(
         descriptor

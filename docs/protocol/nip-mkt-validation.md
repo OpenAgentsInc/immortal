@@ -25,7 +25,8 @@ external authorities.
 | `39630` | MKT-PFI v1 Qualification Policy | addressable | public replacement head, admitted only after closed-shape, digest, and public-privacy validation |
 | `39640` | MKT-MINT v1 Mint Route Contract | addressable with an immutable-coordinate override | bare publication refused; signed record travels inside kind-1059 gift wraps |
 | `39650` | MKT-LSP v1 LSP Service Contract | addressable with an immutable-coordinate override | bare publication refused; signed record travels inside kind-1059 gift wraps |
-| `39611-39619`, `39621-39629`, `39631-39639`, `39641-39649`, `39651-39699` | reserved profile allocation block | addressable | unallocated by this runtime packet |
+| `39611-39612` | MKT-SWP Intent Acknowledgment and Re-drive Intent | addressable with an immutable-coordinate override | bare publication refused; signed records travel inside kind-1059 gift wraps |
+| `39613-39619`, `39621-39629`, `39631-39639`, `39641-39649`, `39651-39699` | reserved profile allocation block | addressable | unallocated by this runtime packet |
 
 The public heads use ordinary NIP-01 replacement ordering. The ten adopted
 private kinds bind `(pubkey, kind, d)` to one exact event ID and signature in the
@@ -40,7 +41,7 @@ created by an older release or legacy import.
 | Surface | What Immortal can validate |
 | --- | --- |
 | Public kinds `39600-39603` | Required discovery tags, identifier/version grammar, enums, content byte limits, duplicate-free JSON-object content, and common collection caps. The private session envelope does not apply to public content. |
-| Visible/internal signed kinds `39604-39610`, `39620`, and `39650` | The store enforces immutable-coordinate replay, then the profile-neutral common tags, envelope agreement, duplicate-free JSON at every nesting depth, compact serialized size, references, and collection caps. Kind `39610` is bound to exactly `mkt-swp` v1, kind `39620` to exactly `mkt-p2p` v1, and kind `39650` to exactly `mkt-lsp` v1. Existing immutable bindings are checked first so validator upgrades cannot change a prior replay result. The gateway separately measures the exact raw EVENT-object bytes before deserialization. Gateway acceptance policy is defined separately and does not belong to the durable/internal store contract. |
+| Visible/internal signed kinds `39604-39612`, `39620`, and `39650` | The store enforces immutable-coordinate replay, then the profile-neutral common tags, envelope agreement, duplicate-free JSON at every nesting depth, compact serialized size, references, and collection caps. Kind `39610` is bound to exactly `mkt-swp` v1; kinds `39611-39612` bind the `openagents.mkt.v2`/`protocol_rev:2` MKT-SWP hardening grammar; kind `39620` binds `mkt-p2p` v1; and kind `39650` binds `mkt-lsp` v1. Existing immutable bindings are checked first so validator upgrades cannot change a prior replay result. The gateway separately measures the exact raw EVENT-object bytes before deserialization. Gateway acceptance policy is defined separately and does not belong to the durable/internal store contract. |
 | MKT-SWP Offering and authorized visible record | The profile validator checks public Offering network/asset IDs, side networks and ordered rail pairs against the advertised networks/swap types, canonical decimal amounts, explicit side-disable semantics, fee bounds, script/proof/confirmation classes, evidence class/rail compatibility, receipt outcomes and named-field privacy tripwires, Swap Contract tag/body digest agreement, complementary counterparty roles, and the v1 null/absent EVM extension rule. Custody-member scanning covers the complete parsed profile envelope. It checks digest shape and `x`/body equality; RFC 8785 recomputation and bilateral semantic agreement belong to the client or configured handler. |
 | MKT-PFI Qualification Policy and Offering | The validator checks the public `39630` policy's exact profile/version/status/version/published/digest/alt tags, exact content-byte SHA-256, closed nested requirement and retention shapes, ISO jurisdiction and bounded identifier/URL rules, and recursively named PII/bearer tripwires. Offerings bind canonical ISO-4217/CAIP-19 asset IDs to the market digest, policy address/event pins, enabled direction tags, atomic-unit limits, fee cap, risk and rail sets, jurisdictions, and closed public custody labels. |
 | MKT-PFI authorized visible record | After an authorized endpoint decrypts an inner record, the profile validator permits only commitments for credential presentations and bounded non-bearer evidence references. It applies closed shapes to named credential commitment, evidence, dispute, and recourse objects and rejects unknown risk/evidence classes. It does not fetch or verify the credential, external evidence, rail action, guarantee, reserve, dispute, or settlement. |
@@ -72,7 +73,7 @@ independent outer material for the counterparty and the sender's recovery
 copy. The committed NIP-44 vector and NIP-MKT client transport fixture are part
 of the exported SDK conformance manifest.
 
-The public gateway refuses bare `39604-39610`, `39620`, `39640`, and `39650`
+The public gateway refuses bare `39604-39612`, `39620`, `39640`, and `39650`
 publication with the stable reason
 `restricted: mkt-private-requires-gift-wrap` before database, keyed-rate,
 or store work, after consuming only the generic IP attempt budget. The internal
@@ -107,6 +108,11 @@ The stable MKT gateway reasons are:
   coordinate; and
 - `rate-limited: gift-wrap recipient rate exceeded` for recipient quota
   exhaustion.
+
+Revision-2 inner validation adds typed hardening errors for idempotency-key
+conflict, nonce replay/window, unsupported revision, and invalid intent. The
+transport relay cannot emit these for opaque wraps; the authorized provider
+does.
 
 Gift-wrap REQ and COUNT filter refusals retain the existing NIP-42 strings:
 `auth-required: gift-wrap reads require recipient authentication` and

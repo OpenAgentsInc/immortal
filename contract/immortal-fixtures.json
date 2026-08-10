@@ -414,9 +414,15 @@
       "scope": "client"
     },
     {
+      "path": "tests/fixtures/nipmkt/hardening-v2.json",
+      "sha256": "6519174bd8f5105c9f795b6cd0ee522f829a19a077e2a322509258f4e9cb3f41",
+      "bytes": 810,
+      "scope": "relay_and_client"
+    },
+    {
       "path": "tests/fixtures/nipmkt/immutability.json",
-      "sha256": "16eb76f7594be1fc94cc164c30672a4a792cf3cc7e695efc0a42cd47c0d45bd7",
-      "bytes": 881,
+      "sha256": "bd5f2b68ba0e8b9d5bd97fe37a0c9472336809be19fe55772e82203750182c75",
+      "bytes": 895,
       "scope": "relay"
     },
     {
@@ -457,8 +463,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/relay-closing.json",
-      "sha256": "1eff2012464e97858ade49b68f92e7b0f91bbef93d24df10fd6d7d2849787967",
-      "bytes": 6802,
+      "sha256": "77ffd7a8ec13e90783b3cc2896fbb0f2e63ed11cf2dc031952e0518d4be4ec4c",
+      "bytes": 6926,
       "scope": "relay_and_client"
     },
     {

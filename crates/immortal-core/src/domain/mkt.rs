@@ -21,6 +21,8 @@ pub const MKT_STATUS_KIND: u16 = 39_607;
 pub const MKT_CANCEL_KIND: u16 = 39_608;
 pub const MKT_CLOSE_KIND: u16 = 39_609;
 pub const MKT_SWP_SWAP_CONTRACT_KIND: u16 = 39_610;
+pub const MKT_SWP_INTENT_ACK_KIND: u16 = 39_611;
+pub const MKT_SWP_REDRIVE_KIND: u16 = 39_612;
 pub const MKT_SWP_PROFILE_ID: &str = "mkt-swp";
 pub const MKT_SWP_PROFILE_VERSION: u64 = 1;
 pub const MKT_PFI_QUALIFICATION_POLICY_KIND: u16 = 39_630;
@@ -169,6 +171,21 @@ pub const MKT_MAX_HINTS: usize = 8;
 pub const MKT_IDENTIFIER_MAX_BYTES: usize = 64;
 pub const MKT_IDENTIFIER_PATTERN: &str = "[a-z0-9][a-z0-9._-]*";
 pub const MKT_ENVELOPE_SCHEMA: &str = "openagents.mkt.v1";
+pub const MKT_HARDENING_SCHEMA: &str = "openagents.mkt.v2";
+pub const MKT_HARDENING_PROTOCOL_REVISION: u64 = 2;
+pub const MKT_HARDENING_NONCE_PAST_SECONDS: u64 = 300;
+pub const MKT_HARDENING_NONCE_FUTURE_SECONDS: u64 = 60;
+pub const MKT_HARDENING_NONCE_RETENTION_SECONDS: u64 = 86_400;
+pub const MKT_HARDENING_ACK_DEADLINE_MAX_SECONDS: u64 = 60;
+pub const MKT_HARDENING_OUTCOME_DEADLINE_MAX_SECONDS: u64 = 86_400;
+pub const MKT_HARDENING_ACK_DISPOSITIONS: &[&str] = &["accepted", "rejected"];
+pub const MKT_HARDENING_ERROR_CODES: &[&str] = &[
+    "mkt-v2-idempotency-conflict",
+    "mkt-v2-replay",
+    "mkt-v2-nonce-window",
+    "mkt-v2-unsupported-revision",
+    "mkt-v2-intent-invalid",
+];
 pub const MKT_PROVIDER_STATUSES: &[&str] = &["active", "paused", "retired"];
 pub const MKT_OFFERING_STATUSES: &[&str] = &["active", "paused", "exhausted", "retired"];
 pub const MKT_DESCRIPTOR_STATUSES: &[&str] = &["draft", "active", "deprecated", "withdrawn"];
@@ -211,11 +228,69 @@ pub const MKT_PUBLIC_RECEIPT_OUTCOMES: &[&str] = &[
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MktPrivateEnvelope {
+    pub schema: String,
+    pub protocol_revision: u64,
     pub profile_id: String,
     pub profile_version: u64,
     pub session_id: String,
     pub body: Map<String, Value>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MktHardeningRecordKind {
+    EffectfulIntent,
+    Acknowledgment,
+    RedriveIntent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MktHardeningRecord {
+    pub kind: MktHardeningRecordKind,
+    pub idempotency_key: String,
+    pub nonce: Option<String>,
+    pub nonce_at: Option<u64>,
+    pub response_pubkey: String,
+    pub ack_deadline_seconds: Option<u64>,
+    pub outcome_deadline_seconds: Option<u64>,
+    pub intent_event_id: Option<String>,
+    pub order_event_id: Option<String>,
+    pub ack_event_id: Option<String>,
+    pub last_known_event_id: Option<String>,
+    pub disposition: Option<String>,
+    pub accepted_at: Option<u64>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MktHardeningErrorCode {
+    InvalidIntent,
+    NonceWindow,
+    UnsupportedRevision,
+}
+
+impl MktHardeningErrorCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidIntent => "mkt-v2-intent-invalid",
+            Self::NonceWindow => "mkt-v2-nonce-window",
+            Self::UnsupportedRevision => "mkt-v2-unsupported-revision",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MktHardeningError {
+    pub code: MktHardeningErrorCode,
+    pub detail: String,
+}
+
+impl fmt::Display for MktHardeningError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.code.as_str(), self.detail)
+    }
+}
+
+impl std::error::Error for MktHardeningError {}
 
 #[derive(Debug, Clone, Copy)]
 pub struct MktProfileSupport<'a> {
@@ -367,6 +442,20 @@ fn validate_mkt_private_syntax(event: &Event) -> Result<MktPrivateEnvelope, Stri
             ));
         }
     }
+    if matches!(event.kind, MKT_SWP_INTENT_ACK_KIND | MKT_SWP_REDRIVE_KIND) {
+        if *profile_id != MKT_SWP_PROFILE_ID {
+            return Err(swp_error(
+                "swp_unsupported_profile",
+                "kind 39611-39612 requires profile mkt-swp",
+            ));
+        }
+        if *profile_version != MKT_SWP_PROFILE_VERSION {
+            return Err(swp_error(
+                "swp_unsupported_version",
+                "kind 39611-39612 requires MKT-SWP version 1",
+            ));
+        }
+    }
     if event.kind == MKT_P2P_RESOLUTION_KIND {
         if *profile_id != MKT_P2P_PROFILE_ID {
             return Err(p2p_error(
@@ -414,18 +503,60 @@ fn validate_mkt_private_syntax(event: &Event) -> Result<MktPrivateEnvelope, Stri
         return Err("private MKT alt must be a nonempty bounded description".to_owned());
     }
     validate_counterparties(event)?;
-    validate_references(event, profile_id, *profile_version)?;
 
     let value = parse_unique_json(&event.content, "private MKT content")?;
     let Value::Object(body) = value else {
         return Err("private MKT content must be a JSON object".to_owned());
     };
-    require_json_string(&body, "schema", MKT_ENVELOPE_SCHEMA)?;
+    let schema = body
+        .get("schema")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "private MKT content requires string member schema".to_owned())?;
+    let protocol_revision = match schema {
+        MKT_ENVELOPE_SCHEMA => 1,
+        MKT_HARDENING_SCHEMA => {
+            if body.get("protocol_rev").and_then(Value::as_u64)
+                != Some(MKT_HARDENING_PROTOCOL_REVISION)
+            {
+                return Err(
+                    "mkt-v2-unsupported-revision: revision-2 content requires protocol_rev 2"
+                        .to_owned(),
+                );
+            }
+            if *profile_id != MKT_SWP_PROFILE_ID
+                || !matches!(
+                    event.kind,
+                    MKT_ORDER_KIND | MKT_SWP_INTENT_ACK_KIND | MKT_SWP_REDRIVE_KIND
+                )
+            {
+                return Err(
+                    "mkt-v2-unsupported-revision: schema openagents.mkt.v2 is not admitted for this profile or kind"
+                        .to_owned(),
+                );
+            }
+            MKT_HARDENING_PROTOCOL_REVISION
+        }
+        _ => {
+            return Err(
+                "mkt-v2-unsupported-revision: private MKT content schema is unsupported".to_owned(),
+            );
+        }
+    };
+    if matches!(event.kind, MKT_SWP_INTENT_ACK_KIND | MKT_SWP_REDRIVE_KIND)
+        && protocol_revision != MKT_HARDENING_PROTOCOL_REVISION
+    {
+        return Err(
+            "mkt-v2-unsupported-revision: kind 39611-39612 requires protocol revision 2".to_owned(),
+        );
+    }
     require_json_string(&body, "profile", profile_id)?;
     require_json_u64(&body, "profile_version", *profile_version)?;
     require_json_string(&body, "session_id", session)?;
+    validate_references(event, profile_id, *profile_version, protocol_revision)?;
 
     Ok(MktPrivateEnvelope {
+        schema: schema.to_owned(),
+        protocol_revision,
         profile_id: (*profile_id).to_owned(),
         profile_version: *profile_version,
         session_id: session.to_owned(),
@@ -470,6 +601,11 @@ pub fn validate_mkt_private_with_profiles(
     {
         validate_mkt_swp_visible_private(event, &envelope)
             .map_err(|detail| validation_error(MktValidationCode::TagGrammar, detail))?;
+        if envelope.protocol_revision == MKT_HARDENING_PROTOCOL_REVISION {
+            validate_mkt_hardening_event(event, &envelope, None).map_err(|error| {
+                validation_error(MktValidationCode::TagGrammar, error.to_string())
+            })?;
+        }
     }
     if envelope.profile_id == MKT_PFI_PROFILE_ID
         && envelope.profile_version == MKT_PFI_PROFILE_VERSION
@@ -581,6 +717,7 @@ fn classify_syntax_error(detail: String) -> MktValidationError {
     {
         MktValidationCode::UnsupportedProfile
     } else if detail.starts_with("swp_unsupported_version")
+        || detail.starts_with("mkt-v2-unsupported-revision")
         || detail.starts_with("mkt_mint_unsupported_version")
         || detail.starts_with("mkt_p2p_unsupported_version")
         || detail.contains("kind 39650 requires MKT-LSP version 1")
@@ -624,6 +761,8 @@ pub const fn is_mkt_private_kind(kind: u16) -> bool {
             | MKT_CANCEL_KIND
             | MKT_CLOSE_KIND
             | MKT_SWP_SWAP_CONTRACT_KIND
+            | MKT_SWP_INTENT_ACK_KIND
+            | MKT_SWP_REDRIVE_KIND
             | MKT_P2P_RESOLUTION_KIND
             | MKT_MINT_ROUTE_CONTRACT_KIND
             | MKT_LSP_SERVICE_CONTRACT_KIND
@@ -4917,6 +5056,9 @@ fn validate_mkt_swp_visible_private(
     envelope: &MktPrivateEnvelope,
 ) -> Result<(), String> {
     reject_swp_secret_material(&Value::Object(envelope.body.clone()))?;
+    if matches!(event.kind, MKT_SWP_INTENT_ACK_KIND | MKT_SWP_REDRIVE_KIND) {
+        return Ok(());
+    }
     let profile = envelope
         .body
         .get("mkt_swp")
@@ -5603,10 +5745,432 @@ fn validate_counterparties(event: &Event) -> Result<(), String> {
     Ok(())
 }
 
+pub fn validate_mkt_hardening_event(
+    event: &Event,
+    envelope: &MktPrivateEnvelope,
+    observed_at: Option<u64>,
+) -> Result<MktHardeningRecord, MktHardeningError> {
+    if envelope.schema != MKT_HARDENING_SCHEMA
+        || envelope.protocol_revision != MKT_HARDENING_PROTOCOL_REVISION
+        || envelope.profile_id != MKT_SWP_PROFILE_ID
+        || envelope.profile_version != MKT_SWP_PROFILE_VERSION
+    {
+        return Err(hardening_error(
+            MktHardeningErrorCode::UnsupportedRevision,
+            "record does not select the adopted MKT-SWP revision-2 envelope",
+        ));
+    }
+    if !matches!(
+        event.kind,
+        MKT_ORDER_KIND | MKT_SWP_INTENT_ACK_KIND | MKT_SWP_REDRIVE_KIND
+    ) {
+        return Err(hardening_error(
+            MktHardeningErrorCode::UnsupportedRevision,
+            "record kind has no revision-2 hardening grammar",
+        ));
+    }
+
+    if event.kind == MKT_SWP_INTENT_ACK_KIND {
+        return validate_mkt_hardening_ack(event, envelope);
+    }
+
+    let expected_intent_type = if event.kind == MKT_ORDER_KIND {
+        "effectful"
+    } else {
+        "redrive"
+    };
+    hardening_tag(event, "intent")
+        .and_then(|value| {
+            if value == expected_intent_type {
+                Ok(())
+            } else {
+                Err(format!(
+                    "intent tag must be {expected_intent_type:?} for this kind"
+                ))
+            }
+        })
+        .map_err(|detail| hardening_error(MktHardeningErrorCode::InvalidIntent, detail))?;
+    let idempotency_key = hardening_tag(event, "d")
+        .and_then(|value| {
+            lower_hex_32(value, "revision-2 idempotency key")?;
+            Ok(value.to_owned())
+        })
+        .map_err(|detail| hardening_error(MktHardeningErrorCode::InvalidIntent, detail))?;
+    let nonce = hardening_tag(event, "nonce")
+        .and_then(|value| {
+            lower_hex_32(value, "revision-2 nonce")?;
+            Ok(value.to_owned())
+        })
+        .map_err(|detail| hardening_error(MktHardeningErrorCode::InvalidIntent, detail))?;
+    let nonce_at = hardening_tag(event, "nonce_at")
+        .and_then(|value| canonical_decimal(value, false, "revision-2 nonce_at"))
+        .map_err(|detail| hardening_error(MktHardeningErrorCode::InvalidIntent, detail))?;
+    if let Some(observed_at) = observed_at
+        && (observed_at > nonce_at.saturating_add(MKT_HARDENING_NONCE_PAST_SECONDS)
+            || nonce_at > observed_at.saturating_add(MKT_HARDENING_NONCE_FUTURE_SECONDS))
+    {
+        return Err(hardening_error(
+            MktHardeningErrorCode::NonceWindow,
+            "intent nonce_at is outside the accepted observation window",
+        ));
+    }
+    let response_tags = event
+        .tags
+        .iter()
+        .filter(|tag| tag.name() == Some("response"))
+        .collect::<Vec<_>>();
+    if response_tags.len() > 1
+        || response_tags
+            .first()
+            .is_some_and(|tag| tag.as_slice().len() != 2)
+    {
+        return Err(hardening_error(
+            MktHardeningErrorCode::InvalidIntent,
+            "intent accepts at most one two-element response tag",
+        ));
+    }
+    let response_pubkey = response_tags
+        .first()
+        .and_then(|tag| tag.value())
+        .unwrap_or(&event.pubkey)
+        .to_owned();
+    lower_hex_32(&response_pubkey, "revision-2 response pubkey")
+        .map_err(|detail| hardening_error(MktHardeningErrorCode::InvalidIntent, detail))?;
+
+    let intent = envelope
+        .body
+        .get("intent")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            hardening_error(
+                MktHardeningErrorCode::InvalidIntent,
+                "revision-2 intent content requires an intent object",
+            )
+        })?;
+    let allowed = if event.kind == MKT_ORDER_KIND {
+        &[
+            "idempotency_key",
+            "nonce",
+            "nonce_at",
+            "response_pubkey",
+            "ack_deadline_seconds",
+            "outcome_deadline_seconds",
+        ][..]
+    } else {
+        &[
+            "idempotency_key",
+            "nonce",
+            "nonce_at",
+            "response_pubkey",
+            "ack_deadline_seconds",
+            "outcome_deadline_seconds",
+            "order_event_id",
+            "ack_event_id",
+            "last_known_event_id",
+        ][..]
+    };
+    hardening_closed(intent, allowed, "intent")?;
+    hardening_body_string(intent, "idempotency_key", &idempotency_key)?;
+    hardening_body_string(intent, "nonce", &nonce)?;
+    hardening_body_u64(intent, "nonce_at", nonce_at)?;
+    hardening_body_string(intent, "response_pubkey", &response_pubkey)?;
+    let ack_deadline_seconds = hardening_required_u64(intent, "ack_deadline_seconds")?;
+    if !(1..=MKT_HARDENING_ACK_DEADLINE_MAX_SECONDS).contains(&ack_deadline_seconds) {
+        return Err(hardening_error(
+            MktHardeningErrorCode::InvalidIntent,
+            "ack_deadline_seconds is outside 1..=60",
+        ));
+    }
+    let outcome_deadline_seconds = hardening_required_u64(intent, "outcome_deadline_seconds")?;
+    if outcome_deadline_seconds < ack_deadline_seconds
+        || outcome_deadline_seconds > MKT_HARDENING_OUTCOME_DEADLINE_MAX_SECONDS
+    {
+        return Err(hardening_error(
+            MktHardeningErrorCode::InvalidIntent,
+            "outcome_deadline_seconds is outside its signed bounds",
+        ));
+    }
+
+    let (order_event_id, ack_event_id, last_known_event_id) = if event.kind == MKT_SWP_REDRIVE_KIND
+    {
+        let order_event_id = hardening_reference(event, "order", true)?.ok_or_else(|| {
+            hardening_error(
+                MktHardeningErrorCode::InvalidIntent,
+                "re-drive requires one Order reference",
+            )
+        })?;
+        let ack_event_id = hardening_reference(event, "ack", true)?.ok_or_else(|| {
+            hardening_error(
+                MktHardeningErrorCode::InvalidIntent,
+                "re-drive requires one acknowledgment reference",
+            )
+        })?;
+        let status = hardening_reference(event, "status", false)?;
+        let close = hardening_reference(event, "close", false)?;
+        if status.is_some() && close.is_some() {
+            return Err(hardening_error(
+                MktHardeningErrorCode::InvalidIntent,
+                "re-drive accepts at most one last-known Status or Close",
+            ));
+        }
+        let last_known = status.or(close);
+        hardening_body_string(intent, "order_event_id", &order_event_id)?;
+        hardening_body_string(intent, "ack_event_id", &ack_event_id)?;
+        match (intent.get("last_known_event_id"), last_known.as_deref()) {
+            (Some(Value::Null), None) => {}
+            (Some(Value::String(body)), Some(tag)) if body == tag => {}
+            _ => {
+                return Err(hardening_error(
+                    MktHardeningErrorCode::InvalidIntent,
+                    "last_known_event_id does not agree with the Status or Close reference",
+                ));
+            }
+        }
+        (Some(order_event_id), Some(ack_event_id), last_known)
+    } else {
+        (None, None, None)
+    };
+
+    Ok(MktHardeningRecord {
+        kind: if event.kind == MKT_ORDER_KIND {
+            MktHardeningRecordKind::EffectfulIntent
+        } else {
+            MktHardeningRecordKind::RedriveIntent
+        },
+        idempotency_key,
+        nonce: Some(nonce),
+        nonce_at: Some(nonce_at),
+        response_pubkey,
+        ack_deadline_seconds: Some(ack_deadline_seconds),
+        outcome_deadline_seconds: Some(outcome_deadline_seconds),
+        intent_event_id: None,
+        order_event_id,
+        ack_event_id,
+        last_known_event_id,
+        disposition: None,
+        accepted_at: None,
+        error_code: None,
+    })
+}
+
+fn validate_mkt_hardening_ack(
+    event: &Event,
+    envelope: &MktPrivateEnvelope,
+) -> Result<MktHardeningRecord, MktHardeningError> {
+    let intent_event_id = hardening_reference(event, "intent", true)?.ok_or_else(|| {
+        hardening_error(
+            MktHardeningErrorCode::InvalidIntent,
+            "acknowledgment requires one intent reference",
+        )
+    })?;
+    let disposition = hardening_tag(event, "ack")
+        .and_then(|value| {
+            if MKT_HARDENING_ACK_DISPOSITIONS.contains(&value) {
+                Ok(value.to_owned())
+            } else {
+                Err("acknowledgment disposition is invalid".to_owned())
+            }
+        })
+        .map_err(|detail| hardening_error(MktHardeningErrorCode::InvalidIntent, detail))?;
+    let response_pubkey = hardening_tag(event, "response")
+        .and_then(|value| {
+            lower_hex_32(value, "acknowledgment response pubkey")?;
+            Ok(value.to_owned())
+        })
+        .map_err(|detail| hardening_error(MktHardeningErrorCode::InvalidIntent, detail))?;
+    let ack = envelope
+        .body
+        .get("ack")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            hardening_error(
+                MktHardeningErrorCode::InvalidIntent,
+                "acknowledgment content requires an ack object",
+            )
+        })?;
+    hardening_closed(
+        ack,
+        &[
+            "intent_event_id",
+            "idempotency_key",
+            "disposition",
+            "accepted_at",
+            "error_code",
+        ],
+        "ack",
+    )?;
+    hardening_body_string(ack, "intent_event_id", &intent_event_id)?;
+    let idempotency_key = hardening_required_string(ack, "idempotency_key")?.to_owned();
+    lower_hex_32(&idempotency_key, "acknowledgment idempotency key")
+        .map_err(|detail| hardening_error(MktHardeningErrorCode::InvalidIntent, detail))?;
+    hardening_body_string(ack, "disposition", &disposition)?;
+    let accepted_at = hardening_required_u64(ack, "accepted_at")?;
+    let error_code = match ack.get("error_code") {
+        Some(Value::Null) if disposition == "accepted" => None,
+        Some(Value::String(code))
+            if disposition == "rejected" && MKT_HARDENING_ERROR_CODES.contains(&code.as_str()) =>
+        {
+            Some(code.clone())
+        }
+        _ => {
+            return Err(hardening_error(
+                MktHardeningErrorCode::InvalidIntent,
+                "acknowledgment error_code does not agree with its disposition",
+            ));
+        }
+    };
+    let expiration = hardening_tag(event, "expiration")
+        .and_then(|value| canonical_decimal(value, false, "acknowledgment expiration"))
+        .map_err(|detail| hardening_error(MktHardeningErrorCode::InvalidIntent, detail))?;
+    if expiration < accepted_at {
+        return Err(hardening_error(
+            MktHardeningErrorCode::InvalidIntent,
+            "acknowledgment expires before it was accepted",
+        ));
+    }
+    Ok(MktHardeningRecord {
+        kind: MktHardeningRecordKind::Acknowledgment,
+        idempotency_key,
+        nonce: None,
+        nonce_at: None,
+        response_pubkey,
+        ack_deadline_seconds: None,
+        outcome_deadline_seconds: None,
+        intent_event_id: Some(intent_event_id),
+        order_event_id: None,
+        ack_event_id: None,
+        last_known_event_id: None,
+        disposition: Some(disposition),
+        accepted_at: Some(accepted_at),
+        error_code,
+    })
+}
+
+fn hardening_error(code: MktHardeningErrorCode, detail: impl Into<String>) -> MktHardeningError {
+    MktHardeningError {
+        code,
+        detail: detail.into(),
+    }
+}
+
+fn hardening_tag<'a>(event: &'a Event, name: &str) -> Result<&'a str, String> {
+    single_value(event, name, "revision-2 MKT-SWP record")
+}
+
+fn hardening_reference(
+    event: &Event,
+    marker: &str,
+    required: bool,
+) -> Result<Option<String>, MktHardeningError> {
+    let references = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().get(3).map(String::as_str) == Some(marker))
+        .collect::<Vec<_>>();
+    if references.len() > 1 || required && references.len() != 1 {
+        return Err(hardening_error(
+            MktHardeningErrorCode::InvalidIntent,
+            format!(
+                "record requires {} {marker} reference",
+                if required { "one" } else { "at most one" }
+            ),
+        ));
+    }
+    let Some(reference) = references.first() else {
+        return Ok(None);
+    };
+    let value = reference
+        .as_slice()
+        .get(1)
+        .ok_or_else(|| {
+            hardening_error(
+                MktHardeningErrorCode::InvalidIntent,
+                format!("{marker} reference has no event id"),
+            )
+        })?
+        .to_owned();
+    lower_hex_32(&value, "revision-2 event reference")
+        .map_err(|detail| hardening_error(MktHardeningErrorCode::InvalidIntent, detail))?;
+    Ok(Some(value))
+}
+
+fn hardening_closed(
+    object: &Map<String, Value>,
+    allowed: &[&str],
+    subject: &str,
+) -> Result<(), MktHardeningError> {
+    if let Some(name) = object.keys().find(|name| !allowed.contains(&name.as_str())) {
+        return Err(hardening_error(
+            MktHardeningErrorCode::InvalidIntent,
+            format!("revision-2 {subject} has unknown member {name:?}"),
+        ));
+    }
+    if object.len() != allowed.len() {
+        return Err(hardening_error(
+            MktHardeningErrorCode::InvalidIntent,
+            format!("revision-2 {subject} is missing a required member"),
+        ));
+    }
+    Ok(())
+}
+
+fn hardening_required_string<'a>(
+    object: &'a Map<String, Value>,
+    name: &str,
+) -> Result<&'a str, MktHardeningError> {
+    object.get(name).and_then(Value::as_str).ok_or_else(|| {
+        hardening_error(
+            MktHardeningErrorCode::InvalidIntent,
+            format!("revision-2 content requires string member {name}"),
+        )
+    })
+}
+
+fn hardening_required_u64(
+    object: &Map<String, Value>,
+    name: &str,
+) -> Result<u64, MktHardeningError> {
+    object.get(name).and_then(Value::as_u64).ok_or_else(|| {
+        hardening_error(
+            MktHardeningErrorCode::InvalidIntent,
+            format!("revision-2 content requires unsigned integer member {name}"),
+        )
+    })
+}
+
+fn hardening_body_string(
+    object: &Map<String, Value>,
+    name: &str,
+    expected: &str,
+) -> Result<(), MktHardeningError> {
+    if hardening_required_string(object, name)? != expected {
+        return Err(hardening_error(
+            MktHardeningErrorCode::InvalidIntent,
+            format!("revision-2 content member {name} does not agree with its tag"),
+        ));
+    }
+    Ok(())
+}
+
+fn hardening_body_u64(
+    object: &Map<String, Value>,
+    name: &str,
+    expected: u64,
+) -> Result<(), MktHardeningError> {
+    if hardening_required_u64(object, name)? != expected {
+        return Err(hardening_error(
+            MktHardeningErrorCode::InvalidIntent,
+            format!("revision-2 content member {name} does not agree with its tag"),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_references(
     event: &Event,
     profile_id: &str,
     profile_version: u64,
+    protocol_revision: u64,
 ) -> Result<(), String> {
     for tag in event.tags.iter().filter(|tag| tag.name() == Some("e")) {
         let values = tag.as_slice();
@@ -5629,7 +6193,13 @@ fn validate_references(
         let swp_cancel_marker = matches!(marker, "cancel-request" | "cancel-accept")
             && profile_id == MKT_SWP_PROFILE_ID
             && profile_version == MKT_SWP_PROFILE_VERSION;
-        if values.len() < 4 || !(common_marker || swp_contract_marker || swp_cancel_marker) {
+        let hardening_marker = matches!(marker, "intent" | "ack")
+            && profile_id == MKT_SWP_PROFILE_ID
+            && profile_version == MKT_SWP_PROFILE_VERSION
+            && protocol_revision == MKT_HARDENING_PROTOCOL_REVISION;
+        if values.len() < 4
+            || !(common_marker || swp_contract_marker || swp_cancel_marker || hardening_marker)
+        {
             return Err("private MKT e tag has an unknown or missing marker".to_owned());
         }
         lower_hex_32(&values[1], "private MKT event reference")?;

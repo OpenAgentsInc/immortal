@@ -367,6 +367,26 @@
       "enforcement_scope": "client_and_internal_store"
     },
     {
+      "kind": 39611,
+      "lane": "openagents",
+      "identifier": "NIP-MKT",
+      "name": "mkt_swp_intent_acknowledgment",
+      "classification": "addressable",
+      "publication": "private_wrapped",
+      "immutability": "exact_signed_coordinate",
+      "enforcement_scope": "client_and_internal_store"
+    },
+    {
+      "kind": 39612,
+      "lane": "openagents",
+      "identifier": "NIP-MKT",
+      "name": "mkt_swp_redrive_intent",
+      "classification": "addressable",
+      "publication": "private_wrapped",
+      "immutability": "exact_signed_coordinate",
+      "enforcement_scope": "client_and_internal_store"
+    },
+    {
       "kind": 39630,
       "lane": "openagents",
       "identifier": "NIP-MKT",
@@ -593,6 +613,33 @@
   },
   "mkt": {
     "schema": "openagents.mkt.v1",
+    "hardening": {
+      "schema": "openagents.mkt.v2",
+      "protocol_revision": 2,
+      "effectful_intent_kind": 39606,
+      "acknowledgment_kind": 39611,
+      "redrive_kind": 39612,
+      "nonce_past_seconds": 300,
+      "nonce_future_seconds": 60,
+      "nonce_retention_seconds": 86400,
+      "acknowledgment_deadline_max_seconds": 60,
+      "outcome_deadline_max_seconds": 86400,
+      "acknowledgment_dispositions": [
+        "accepted",
+        "rejected"
+      ],
+      "error_codes": [
+        "mkt-v2-idempotency-conflict",
+        "mkt-v2-replay",
+        "mkt-v2-nonce-window",
+        "mkt-v2-unsupported-revision",
+        "mkt-v2-intent-invalid"
+      ],
+      "idempotency_scope": "provider_identity_requester_identity_profile_id_idempotency_key",
+      "single_attempt_law": "durable_ack_before_effect; at_most_one_external_effect_attempt; exact_replay_returns_exact_durable_records; redrive_is_read_only",
+      "response_key_authority": "transport_only; requester_identity_signature_remains_authority",
+      "fixture": "tests/fixtures/nipmkt/hardening-v2.json"
+    },
     "executable_profiles": [],
     "relay_profiles": [
       {

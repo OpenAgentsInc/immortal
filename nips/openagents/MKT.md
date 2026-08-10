@@ -146,7 +146,9 @@ This NIP reserves these collision-reviewed addressable kinds:
 | 39608       | Addressable, unique `d`  | Cancel                                    | private signed record              |
 | 39609       | Addressable, unique `d`  | Close                                     | private signed record              |
 | 39610       | Addressable, unique `d`  | MKT-SWP Swap Contract                     | private signed record, NIP-59 only |
-| 39611-39619 | —                        | Reserved for later MKT-SWP revisions      | unallocated                        |
+| 39611       | Addressable, unique `d`  | MKT-SWP Intent Acknowledgment              | private signed record, NIP-59 only |
+| 39612       | Addressable, unique `d`  | MKT-SWP Re-drive Intent                    | private signed record, NIP-59 only |
+| 39613-39619 | —                        | Reserved for later MKT-SWP revisions      | unallocated                        |
 | 39620       | Addressable, unique `d`  | MKT-P2P Resolution                        | private signed record, NIP-59 only |
 | 39621-39629 | —                        | Reserved for later MKT-P2P revisions      | unallocated                        |
 | 39630       | Addressable head         | MKT-PFI Qualification Policy              | public, no PII                     |
@@ -169,9 +171,13 @@ head.
 Public heads, including `kind:39630`, intentionally use stable `d` values and
 NIP-01 replacement. MKT-INTENT derives `d` from its canonical content so a
 changed public intent cannot replace prior terms under the same address.
-Private profile kinds `39610`, `39620`, `39640`, and `39650` inherit the
+Private profile kinds `39610-39612`, `39620`, `39640`, and `39650` inherit the
 unique-`d`, immutable-by-contract, and NIP-59-only rules from the base private
 records.
+
+Kinds `39611` and `39612` are allocated by NIP-MKT-HARDENING revision 2 from
+the already reviewed MKT-SWP revision block. They do not broaden the reserved
+`39600-39699` range.
 
 The `39600-39699` block was unused by the pinned official, Block, and
 OpenAgents lanes and by the official registry-of-kinds `schema.yaml` when
@@ -227,6 +233,10 @@ references use `e` tags whose fourth element is `rfq`, `quote`, `order`,
 `previous`, `status`, `cancel`, `close`, `evidence`, or `settlement`. An
 Offering reference uses an `a` tag marked `offering`. Relay hints are
 recommendations, never authorities.
+
+NIP-MKT-HARDENING revision-2 records additionally admit `intent` and `ack`
+references. The selected wire revision is explicit in content; a v2 record is
+never interpreted under the v1 envelope.
 
 ### Content
 
@@ -340,7 +350,8 @@ not create settlement authority.
 
 ## Private signed-record transport
 
-RFQ through Close are fully signed Nostr events, so exact bytes and authors
+RFQ through Close plus the revision-2 Acknowledgment and Re-drive records are
+fully signed Nostr events, so exact bytes and authors
 can be verified independently. They MUST NOT be published bare to a public
 relay. The default transport embeds each signed record inside a NIP-59 rumor
 and gift-wraps it separately to every recipient and to the sender for
@@ -352,7 +363,8 @@ agreed an authenticated restricted relay out of band. Persistent negotiations
 use `kind:1059`; ephemeral `kind:21059` is insufficient for offline delivery
 and recovery.
 
-For signed record `R` of kind `39604-39609`, sender `S`, and recipient `P`:
+For signed record `R` of a supported private MKT kind, sender `S`, and
+recipient `P`:
 
 1. Construct, hash, and sign `R` normally under `S`. Retain its exact compact
    JSON serialization.
@@ -521,17 +533,30 @@ Close does not move funds and is not an NIP-OC Accepted Outcome, owner
 Disposition, refund, or settlement receipt. Clients display the narrowest
 rung that exact evidence proves.
 
+### Acknowledgment and re-drive (`kind:39611-39612`)
+
+NIP-MKT-HARDENING revision 2 defines the exact schemas, idempotency scope,
+nonce window, typed errors, response-encryption key, and timeout behavior for
+these MKT-SWP private records. An acknowledgment is distinct from Status and
+Close. A re-drive restates exact signed history and never retries an effect.
+
 ## State, replay, and recovery
 
 ```text
 Provider Profile + Offering
           -> RFQ -> Quote -> Order
+          -> Intent Acknowledgment
           -> Status(0..n) / Cancel
           -> Close
 ```
 
 This is not a universal settlement state machine. Profiles own branches and
 external transitions.
+
+For a revision-2 Order, a missing acknowledgment is resolved only by exact
+signed-intent replay. After an accepted acknowledgment, a missing outcome is
+resolved by a typed Re-drive Intent. Neither timeout authorizes a second
+external-effect attempt.
 
 ### Idempotency
 

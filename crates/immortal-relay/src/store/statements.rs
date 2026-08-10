@@ -153,7 +153,7 @@ WHERE ($1::text[] IS NULL OR e.id = ANY($1))
   AND ($5::bigint IS NULL OR e.created_at <= $5)
   AND (e.expires_at IS NULL OR e.expires_at > $7)
   AND e.ingest_seq <= $9
-  AND e.kind NOT BETWEEN 39604 AND 39610
+  AND e.kind NOT BETWEEN 39604 AND 39612
   AND e.kind <> 39620
   AND e.kind <> 39650
   AND (
@@ -246,7 +246,7 @@ WHERE ($1::text[] IS NULL OR e.id = ANY($1))
             )
       )
   )
-  AND e.kind NOT BETWEEN 39604 AND 39610
+  AND e.kind NOT BETWEEN 39604 AND 39612
   AND e.kind <> 39620
   AND e.kind <> 39650
   AND (

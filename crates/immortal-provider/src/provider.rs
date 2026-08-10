@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod network_hardening;
 pub mod pricing;
 pub mod session;
 
@@ -67,6 +68,10 @@ pub mod watchtower;
 #[cfg(all(feature = "no-spend", not(target_arch = "wasm32")))]
 pub mod no_spend;
 
+pub use network_hardening::{
+    EffectAttemptClaim, IntentAckSigningRequest, IntentAdmission, ProviderHardeningError,
+    ProviderHardeningErrorCode, ProviderIntentJournal, RedriveRestatement,
+};
 pub use session::{
     MktPublicSigningRequest, ProviderDiscoveryFactory, ProviderEffectKind, ProviderEffectReceipt,
     ProviderEffectRequest, ProviderSession, ReservationConfirmation, ReservationReleaseCause,

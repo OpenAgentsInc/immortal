@@ -1,0 +1,31 @@
+{
+  "schema": "openagents.mkt-swp.hardening-conformance.v1",
+  "wire_schema": "openagents.mkt.v2",
+  "protocol_revision": 2,
+  "kinds": {
+    "order": 39606,
+    "acknowledgment": 39611,
+    "redrive": 39612
+  },
+  "nonce_window": {
+    "past_seconds": 300,
+    "future_seconds": 60,
+    "retention_seconds": 86400
+  },
+  "deadlines": {
+    "ack_maximum_seconds": 60,
+    "outcome_maximum_seconds": 86400
+  },
+  "cases": [
+    "accepted-effectful-intent",
+    "exact-duplicate-replays-original-ack",
+    "changed-bytes-idempotency-conflict",
+    "different-intent-nonce-replay",
+    "stale-nonce-refused",
+    "future-nonce-refused",
+    "response-key-is-not-identity-authority",
+    "missing-ack-retries-exact-intent",
+    "missing-outcome-uses-typed-redrive",
+    "redrive-is-read-only-after-restore"
+  ]
+}

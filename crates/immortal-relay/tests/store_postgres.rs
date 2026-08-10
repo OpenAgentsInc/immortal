@@ -30,13 +30,13 @@ async fn m2_store_contract_against_postgres() {
     let (initial_store, report) = Store::connect_with_report(&database_url).await.unwrap();
     assert_eq!(
         report.applied_versions,
-        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     );
     drop(initial_store);
     seed_pre_gateway_and_swp_rows(&database_url).await;
 
     let (mut store, report) = Store::connect_with_report(&database_url).await.unwrap();
-    assert_eq!(report.applied_versions, vec![9, 10, 12, 13, 14]);
+    assert_eq!(report.applied_versions, vec![9, 10, 12, 13, 14, 15]);
     assert_pre_adoption_rows_are_private_immutable_and_preserved(&database_url).await;
     assert!(store.is_current());
 
@@ -244,6 +244,7 @@ ALTER TABLE nostr_indexed_tag
         octet_length(tag_name) = 1 AND tag_name ~ '^[A-Za-z]$'
     );
 DELETE FROM schema_migrations WHERE version = 14;
+DELETE FROM schema_migrations WHERE version = 15;
 "#,
         )
         .await
@@ -712,7 +713,7 @@ fn mkt_pfi_policy_event(secret_byte: u8, created_at: u64, version: &str, country
 }
 
 async fn mkt_immutable_admission(database_url: &str, store: &mut Store) {
-    for (offset, kind) in (39_604..=39_610).chain([39_620, 39_650]).enumerate() {
+    for (offset, kind) in (39_604..=39_612).chain([39_620, 39_650]).enumerate() {
         let identifier = format!("{:064x}", offset + 1);
         let first = signed_event(
             20,
@@ -833,7 +834,7 @@ async fn mkt_immutable_admission(database_url: &str, store: &mut Store) {
     let driver = tokio::spawn(connection);
     let private_heads = client
         .query_one(
-            "SELECT count(*) FROM replaceable_head WHERE kind BETWEEN 39604 AND 39610",
+            "SELECT count(*) FROM replaceable_head WHERE kind BETWEEN 39604 AND 39612",
             &[],
         )
         .await
@@ -1407,7 +1408,106 @@ fn signed_event(
     let secret = SecretKey::from_byte_array([secret_byte; 32]).unwrap();
     let keypair = Keypair::from_secret_key(&secp, &secret);
     let pubkey = keypair.x_only_public_key().0.to_string();
-    let content = if kind == 39_610 {
+    let content = if kind == 39_611 {
+        let session = format!("{secret_byte:02x}").repeat(32);
+        let idempotency_key = tags
+            .iter()
+            .find(|tag| tag.name() == Some("d"))
+            .and_then(|tag| tag.0.get(1))
+            .cloned()
+            .unwrap();
+        tags.extend([
+            Tag::new(vec!["session".into(), session.clone()]),
+            Tag::new(vec!["profile".into(), "mkt-swp".into(), "1".into()]),
+            Tag::new(vec![
+                "p".into(),
+                "c".repeat(64),
+                String::new(),
+                "requester".into(),
+            ]),
+            Tag::new(vec!["alt".into(), "MKT-SWP Intent Acknowledgment".into()]),
+            Tag::new(vec![
+                "e".into(),
+                "3".repeat(64),
+                String::new(),
+                "intent".into(),
+            ]),
+            Tag::new(vec!["ack".into(), "accepted".into()]),
+            Tag::new(vec!["response".into(), "c".repeat(64)]),
+            Tag::new(vec!["expiration".into(), "20000".into()]),
+        ]);
+        serde_json::json!({
+            "schema": "openagents.mkt.v2",
+            "protocol_rev": 2,
+            "profile": "mkt-swp",
+            "profile_version": 1,
+            "session_id": session,
+            "ack": {
+                "intent_event_id": "3".repeat(64),
+                "idempotency_key": idempotency_key,
+                "disposition": "accepted",
+                "accepted_at": created_at,
+                "error_code": null
+            }
+        })
+        .to_string()
+    } else if kind == 39_612 {
+        let session = format!("{secret_byte:02x}").repeat(32);
+        let idempotency_key = tags
+            .iter()
+            .find(|tag| tag.name() == Some("d"))
+            .and_then(|tag| tag.0.get(1))
+            .cloned()
+            .unwrap();
+        let nonce = "6".repeat(64);
+        let nonce_at = created_at.to_string();
+        tags.extend([
+            Tag::new(vec!["session".into(), session.clone()]),
+            Tag::new(vec!["profile".into(), "mkt-swp".into(), "1".into()]),
+            Tag::new(vec![
+                "p".into(),
+                "c".repeat(64),
+                String::new(),
+                "provider".into(),
+            ]),
+            Tag::new(vec!["alt".into(), "MKT-SWP Re-drive Intent".into()]),
+            Tag::new(vec!["intent".into(), "redrive".into()]),
+            Tag::new(vec!["nonce".into(), nonce.clone()]),
+            Tag::new(vec!["nonce_at".into(), nonce_at.clone()]),
+            Tag::new(vec!["response".into(), "c".repeat(64)]),
+            Tag::new(vec![
+                "e".into(),
+                "3".repeat(64),
+                String::new(),
+                "order".into(),
+            ]),
+            Tag::new(vec![
+                "e".into(),
+                "4".repeat(64),
+                String::new(),
+                "ack".into(),
+            ]),
+        ]);
+        serde_json::json!({
+            "schema": "openagents.mkt.v2",
+            "protocol_rev": 2,
+            "profile": "mkt-swp",
+            "profile_version": 1,
+            "session_id": session,
+            "intent": {
+                "idempotency_key": idempotency_key,
+                "nonce": nonce,
+                "nonce_at": created_at,
+                "response_pubkey": "c".repeat(64),
+                "ack_deadline_seconds": 30,
+                "outcome_deadline_seconds": 300,
+                "order_event_id": "3".repeat(64),
+                "ack_event_id": "4".repeat(64),
+                "last_known_event_id": null
+            }
+        })
+        .to_string()
+    } else if kind == 39_610 {
         let session = format!("{secret_byte:02x}").repeat(32);
         let digest = "5".repeat(64);
         tags.extend([

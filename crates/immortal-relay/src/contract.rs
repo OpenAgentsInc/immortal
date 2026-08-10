@@ -10,7 +10,11 @@ use crate::{
     },
     domain::{
         EventClass, MKT_CANCEL_ACTIONS, MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_DESCRIPTOR_STATUSES,
-        MKT_ENVELOPE_SCHEMA, MKT_EXECUTABLE_PROFILES, MKT_IDENTIFIER_MAX_BYTES,
+        MKT_ENVELOPE_SCHEMA, MKT_EXECUTABLE_PROFILES, MKT_HARDENING_ACK_DEADLINE_MAX_SECONDS,
+        MKT_HARDENING_ACK_DISPOSITIONS, MKT_HARDENING_ERROR_CODES,
+        MKT_HARDENING_NONCE_FUTURE_SECONDS, MKT_HARDENING_NONCE_PAST_SECONDS,
+        MKT_HARDENING_NONCE_RETENTION_SECONDS, MKT_HARDENING_OUTCOME_DEADLINE_MAX_SECONDS,
+        MKT_HARDENING_PROTOCOL_REVISION, MKT_HARDENING_SCHEMA, MKT_IDENTIFIER_MAX_BYTES,
         MKT_IDENTIFIER_PATTERN, MKT_LSP_CUSTODY_CLASS, MKT_LSP_HARD_RESERVATION_PROOF_CLASSES,
         MKT_LSP_PAYMENT_METHODS, MKT_LSP_PROFILE_ID, MKT_LSP_PROFILE_VERSION,
         MKT_LSP_RESERVATION_PROOF_CLASSES, MKT_LSP_SERVICE_CONTRACT_ALT,
@@ -31,9 +35,10 @@ use crate::{
         MKT_PROFILE_DESCRIPTOR_KIND, MKT_PROVIDER_PROFILE_KIND, MKT_PROVIDER_STATUSES,
         MKT_PUBLIC_RECEIPT_KIND, MKT_PUBLIC_RECEIPT_OUTCOMES, MKT_QUOTE_CLASSES, MKT_QUOTE_KIND,
         MKT_RELAY_PROFILES, MKT_RESERVATION_CLASSES, MKT_RFQ_KIND, MKT_STATUS_KIND,
-        MKT_STATUS_STATES, MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND,
-        OPENAGENTS_ISSUE_PROJECTION_KIND, OPENAGENTS_OUTCOME_RECORD_KIND,
-        OPENAGENTS_WORK_EVENT_KIND, OPENAGENTS_WORK_OBJECTIVE_KIND, OPENAGENTS_WORK_RECORD_KIND,
+        MKT_STATUS_STATES, MKT_SWP_INTENT_ACK_KIND, MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION,
+        MKT_SWP_REDRIVE_KIND, MKT_SWP_SWAP_CONTRACT_KIND, OPENAGENTS_ISSUE_PROJECTION_KIND,
+        OPENAGENTS_OUTCOME_RECORD_KIND, OPENAGENTS_WORK_EVENT_KIND, OPENAGENTS_WORK_OBJECTIVE_KIND,
+        OPENAGENTS_WORK_RECORD_KIND,
     },
     gateway::{
         GatewayLimits, MKT_GIFT_WRAP_RECIPIENT_RATE_EXCEEDED, MKT_PRIVATE_REQUIRES_GIFT_WRAP,
@@ -131,6 +136,7 @@ pub struct MktLimits {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MktGrammar {
     pub schema: &'static str,
+    pub hardening: MktHardeningGrammar,
     pub executable_profiles: Vec<ExecutableProfile>,
     pub relay_profiles: Vec<RelayProfile>,
     pub mkt_swp: MktSwpGrammar,
@@ -143,6 +149,26 @@ pub struct MktGrammar {
     pub identifiers: BTreeMap<&'static str, IdentifierGrammar>,
     pub content_envelope: Vec<&'static str>,
     pub opaque_transport: OpaqueTransport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MktHardeningGrammar {
+    pub schema: &'static str,
+    pub protocol_revision: u64,
+    pub effectful_intent_kind: u16,
+    pub acknowledgment_kind: u16,
+    pub redrive_kind: u16,
+    pub nonce_past_seconds: u64,
+    pub nonce_future_seconds: u64,
+    pub nonce_retention_seconds: u64,
+    pub acknowledgment_deadline_max_seconds: u64,
+    pub outcome_deadline_max_seconds: u64,
+    pub acknowledgment_dispositions: Vec<&'static str>,
+    pub error_codes: Vec<&'static str>,
+    pub idempotency_scope: &'static str,
+    pub single_attempt_law: &'static str,
+    pub response_key_authority: &'static str,
+    pub fixture: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -714,6 +740,20 @@ fn mkt_kinds() -> Vec<KindDescriptor> {
             "client_and_internal_store",
         ),
         (
+            MKT_SWP_INTENT_ACK_KIND,
+            "mkt_swp_intent_acknowledgment",
+            "private_wrapped",
+            "exact_signed_coordinate",
+            "client_and_internal_store",
+        ),
+        (
+            MKT_SWP_REDRIVE_KIND,
+            "mkt_swp_redrive_intent",
+            "private_wrapped",
+            "exact_signed_coordinate",
+            "client_and_internal_store",
+        ),
+        (
             MKT_PFI_QUALIFICATION_POLICY_KIND,
             "mkt_pfi_qualification_policy",
             "public_head",
@@ -1062,6 +1102,24 @@ fn mkt_grammar() -> MktGrammar {
 
     MktGrammar {
         schema: MKT_ENVELOPE_SCHEMA,
+        hardening: MktHardeningGrammar {
+            schema: MKT_HARDENING_SCHEMA,
+            protocol_revision: MKT_HARDENING_PROTOCOL_REVISION,
+            effectful_intent_kind: MKT_ORDER_KIND,
+            acknowledgment_kind: MKT_SWP_INTENT_ACK_KIND,
+            redrive_kind: MKT_SWP_REDRIVE_KIND,
+            nonce_past_seconds: MKT_HARDENING_NONCE_PAST_SECONDS,
+            nonce_future_seconds: MKT_HARDENING_NONCE_FUTURE_SECONDS,
+            nonce_retention_seconds: MKT_HARDENING_NONCE_RETENTION_SECONDS,
+            acknowledgment_deadline_max_seconds: MKT_HARDENING_ACK_DEADLINE_MAX_SECONDS,
+            outcome_deadline_max_seconds: MKT_HARDENING_OUTCOME_DEADLINE_MAX_SECONDS,
+            acknowledgment_dispositions: MKT_HARDENING_ACK_DISPOSITIONS.to_vec(),
+            error_codes: MKT_HARDENING_ERROR_CODES.to_vec(),
+            idempotency_scope: "provider_identity_requester_identity_profile_id_idempotency_key",
+            single_attempt_law: "durable_ack_before_effect; at_most_one_external_effect_attempt; exact_replay_returns_exact_durable_records; redrive_is_read_only",
+            response_key_authority: "transport_only; requester_identity_signature_remains_authority",
+            fixture: "tests/fixtures/nipmkt/hardening-v2.json",
+        },
         executable_profiles: MKT_EXECUTABLE_PROFILES
             .iter()
             .map(|(id, version)| ExecutableProfile {

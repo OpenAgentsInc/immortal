@@ -141,7 +141,11 @@ extension lane is also active for agent ownership/authentication, observer
 and turn traffic, private agent data, reminders, projects,
 identity/DM/workspace commands, and relay state. NIP-MKT now provides public
 discovery, immutable internal validation, private wrapped transport, and a
-complete relay/client conformance boundary, and M11's deterministic contract
+complete relay/client conformance boundary. Its revision-2 MKT-SWP network
+failure contract adds provider-signed acknowledgments, durable idempotent
+Orders, bounded nonce replay protection, response-only throwaway keys, and a
+typed read-only re-drive path without changing custody or settlement
+authority. M11's deterministic contract
 export (`immortal contract`, `scripts/export-contract.sh`) is the generation
 source for downstream SDKs. M12 now includes the owned Bitcoin/Lightning
 verification primitives and the relay-observable MKT-SWP, MKT-PFI, MKT-P2P,

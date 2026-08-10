@@ -2347,9 +2347,28 @@ encrypted VTXO graph, infer spendability from an operator response, or claim
 Bitcoin settlement before the exit or cooperative spend reaches the signed
 Bitcoin finality threshold.
 
+## Revision-2 intent failure semantics
+
+An implementation MAY adopt [NIP-MKT-HARDENING](MKT-HARDENING.md) for
+effectful MKT-SWP Orders. Adoption is explicit: the Order uses
+`schema:openagents.mkt.v2`, `protocol_rev:2`, the signed intent metadata, and
+the provider returns a kind-39611 Intent Acknowledgment before attempting an
+external effect. A revision-1 Order does not silently gain this contract.
+
+The MKT-SWP effect identifier remains bound to the exact Order event ID and
+the revision-2 idempotency scope. Exact Order replay, NIP-59 redelivery,
+provider restart, missing acknowledgment, and kind-39612 Re-drive cannot
+create a second reserve, wallet, Lightning, chain, or settlement attempt.
+Re-drive returns exact durable acknowledgment and outcome records only.
+
+The optional response-encryption pubkey changes NIP-59 response delivery, not
+the participant identities, bilateral contract, funding authorization,
+signer map, custody boundary, evidence authority, or settlement authority.
+
 ## References
 
 - [NIP-MKT](MKT.md)
+- [NIP-MKT-HARDENING](MKT-HARDENING.md)
 - BIP-122 chain references
 - BIP-341 and BIP-342 Taproot and tapscript
 - BIP-174 PSBT and BIP-370 PSBT v2
@@ -2365,6 +2384,14 @@ Bitcoin finality threshold.
 - [Arkade, solver, Mostro, Cashu, and WDK teardown](../teardowns/2026-08-04-ark-solver-mostro-cashu-rails-teardown.md)
 
 ## Changelog
+
+**v1 protocol revision-2 hardening adoption (2026-08-09)**
+
+- Adopted explicit acknowledged Orders, durable idempotency and nonce replay
+  protection, typed read-only re-drive, and proxy-receiver response keys from
+  NIP-MKT-HARDENING without changing MKT-SWP settlement authority.
+- Retained revision-1 compatibility as a separate, weaker failure contract;
+  no old client silently receives revision-2 semantics.
 
 **v1 Ark settlement rail extension (2026-08-06)**
 

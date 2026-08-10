@@ -28,6 +28,19 @@ Codex's first implementation commit is `8c22cc2`, M1 domain):
 
 ## Active work log
 
+### 2026-08-09 — Codex 5.6 Sol, NIP-MKT protocol revision / issue #48
+
+- Added the explicit `openagents.mkt.v2` MKT-SWP intent failure contract:
+  provider-signed acknowledgments, scoped client idempotency keys, bounded
+  nonce replay protection, typed read-only re-drive, signed timeout behavior,
+  and response-encryption keys that receive no identity authority.
+- Added private immutable kind 39611/39612 relay admission and privacy, plus a
+  bounded provider intent journal that persists exact acknowledgments before
+  exposing one durable external-effect attempt claim. Exact replay and restart
+  return original signed records; re-drive cannot claim an effect.
+- Added no dependency, service, database, custody authority, natural-language
+  wire state, third-party Nostr crate, workflow, or billed automation.
+
 ### 2026-08-09 — Codex 5.6 Sol, provider-local price feed / issue #47
 
 - Added a bounded, versioned provider-local price-feed packet and a safe local
