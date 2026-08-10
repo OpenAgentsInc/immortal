@@ -16,7 +16,7 @@ use immortal_core::{
     domain::{
         Event, MKT_CANCEL_KIND, MKT_CLOSE_KIND, MKT_ORDER_KIND, MKT_QUOTE_KIND, MKT_RFQ_KIND,
         MKT_STATUS_KIND, MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_SWAP_CONTRACT_KIND,
-        MktProfileSupport,
+        MktEventIdAdmission, MktEventIdDeduplicator, MktProfileSupport,
     },
     market::{MarketSigner, WrapMaterial, unwrap_mkt_record, wrap_mkt_record},
 };
@@ -212,6 +212,21 @@ struct RelayClient {
     challenge: String,
 }
 
+struct RelayReader {
+    relay_url: String,
+    client: RelayClient,
+}
+
+struct RelayPublisher {
+    relay_url: String,
+    client: RelayClient,
+}
+
+struct RelayPublisherSet {
+    publishers: Vec<RelayPublisher>,
+    publish_minimum: usize,
+}
+
 struct RelayHistory {
     wraps: Vec<Event>,
     truncated: bool,
@@ -228,13 +243,13 @@ enum SessionAdvance {
 }
 
 enum DeliveryTarget<'a> {
-    Relay(&'a mut RelayClient),
+    Relay(&'a mut RelayPublisherSet),
     DurableRecovery,
 }
 
 struct RelayActor<M> {
-    relay_url: String,
-    relay_auth_url: String,
+    relay_urls: Vec<String>,
+    relay_auth_urls: Vec<String>,
     signer: MarketSigner,
     offering_address: String,
     sessions: BTreeMap<String, SessionActor>,
@@ -244,20 +259,27 @@ struct RelayActor<M> {
 }
 
 pub(crate) fn run_with_mode<M: ProviderMode>(
-    relay_url: String,
-    relay_auth_url: String,
+    relay_urls: Vec<String>,
+    relay_auth_urls: Vec<String>,
     signer: MarketSigner,
     mode: M,
     direct_recovery_bind: Option<SocketAddr>,
     health: Arc<ProviderHealth>,
 ) -> Result<(), String> {
+    if relay_urls.is_empty()
+        || relay_urls.len() > 8
+        || relay_urls.len() != relay_auth_urls.len()
+        || relay_urls.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err("provider relay set must contain 1..=8 distinct sorted endpoints".to_owned());
+    }
     let offering_address = format!("39601:{}:{}", signer.pubkey(), mode.offering_id());
     let direct_recovery = direct_recovery_bind
         .map(DirectRecoveryListener::bind)
         .transpose()?;
     let mut actor = RelayActor {
-        relay_url,
-        relay_auth_url,
+        relay_urls,
+        relay_auth_urls,
         signer,
         offering_address,
         sessions: BTreeMap::new(),
@@ -358,30 +380,84 @@ impl<M: ProviderMode> RelayActor<M> {
 
     fn run_connection(&mut self) -> Result<(), String> {
         let now = unix_now()?;
-        let mut reader = connect(&self.relay_url, self.mode.mode_name())?;
-        authenticate(&mut reader, &self.signer, &self.relay_auth_url, now)?;
-        let mut publisher = connect(&self.relay_url, self.mode.mode_name())?;
-        authenticate(&mut publisher, &self.signer, &self.relay_auth_url, now)?;
+        let mut readers = Vec::new();
+        let mut publishers = Vec::new();
+        let mut merged_history = BTreeMap::<String, Event>::new();
+        let mut history_truncated = false;
+        for (relay_url, relay_auth_url) in self.relay_urls.iter().zip(self.relay_auth_urls.iter()) {
+            let endpoint = (|| -> Result<(RelayReader, RelayPublisher, RelayHistory), String> {
+                let mut reader = connect(relay_url, self.mode.mode_name())?;
+                authenticate(&mut reader, &self.signer, relay_auth_url, now)?;
+                subscribe(&mut reader, self.signer.pubkey())?;
+                let history = read_history(&mut reader)?;
+                reader
+                    .websocket
+                    .get_mut()
+                    .set_read_timeout(Some(Duration::from_millis(200)))
+                    .map_err(|error| format!("could not set relay polling timeout: {error}"))?;
+                let mut publisher = connect(relay_url, self.mode.mode_name())?;
+                authenticate(&mut publisher, &self.signer, relay_auth_url, now)?;
+                Ok((
+                    RelayReader {
+                        relay_url: relay_url.clone(),
+                        client: reader,
+                    },
+                    RelayPublisher {
+                        relay_url: relay_url.clone(),
+                        client: publisher,
+                    },
+                    history,
+                ))
+            })();
+            match endpoint {
+                Ok((reader, publisher, history)) => {
+                    history_truncated |= history.truncated;
+                    merge_relay_history(&mut merged_history, history.wraps)?;
+                    readers.push(reader);
+                    publishers.push(publisher);
+                }
+                Err(error) => {
+                    eprintln!("immortal-provider: relay endpoint degraded url={relay_url}: {error}")
+                }
+            }
+        }
+        if readers.is_empty() || publishers.is_empty() {
+            return Err("no provider relay endpoint reached read/write readiness".to_owned());
+        }
+        let mut publisher = RelayPublisherSet {
+            publishers,
+            publish_minimum: 1,
+        };
         let mut drain_announced = self.health.is_draining();
         self.publish_discovery_state(
             &mut publisher,
             now,
             if drain_announced { "paused" } else { "active" },
         )?;
-        subscribe(&mut reader, self.signer.pubkey())?;
-
-        let history = read_history(&mut reader)?;
-        self.rebuild(history)?;
+        let mut deduplicator = MktEventIdDeduplicator::default();
+        for wrap in merged_history.values() {
+            deduplicator
+                .observe(wrap)
+                .map_err(|error| error.to_string())?;
+        }
+        self.rebuild(RelayHistory {
+            wraps: merged_history.into_values().collect(),
+            truncated: history_truncated,
+        })?;
         self.republish_provider_history(&mut publisher)?;
         self.advance_all(&mut publisher)?;
         println!(
-            "immortal-provider: {} ready relay={} pubkey={} recovered_sessions={}",
+            "immortal-provider: {} ready relays={}/{} pubkey={} recovered_sessions={}",
             self.mode.mode_name(),
-            self.relay_url,
+            readers.len(),
+            self.relay_urls.len(),
             self.signer.pubkey(),
             self.sessions.len()
         );
 
+        let mut reader_index = 0_usize;
+        let mut next_tick = Instant::now();
+        let mut reconnects = BTreeMap::<String, (usize, Instant)>::new();
         loop {
             if self.health.is_draining() && !drain_announced {
                 self.publish_discovery_state(&mut publisher, unix_now()?, "paused")?;
@@ -391,28 +467,163 @@ impl<M: ProviderMode> RelayActor<M> {
                 return Ok(());
             }
             self.poll_direct_recovery()?;
-            match read_json(&mut reader.websocket) {
+            if readers.is_empty() {
+                return Err("all provider relay subscriptions are unavailable".to_owned());
+            }
+            if reader_index >= readers.len() {
+                reader_index = 0;
+            }
+            match read_json(&mut readers[reader_index].client.websocket) {
                 Ok(message) => {
                     if let Some(wrap) = subscription_event(&message)? {
-                        self.receive_wrap(wrap, &mut publisher)?;
+                        match deduplicator
+                            .observe(&wrap)
+                            .map_err(|error| error.to_string())?
+                        {
+                            MktEventIdAdmission::New => {
+                                self.receive_wrap(wrap, &mut publisher)?;
+                            }
+                            MktEventIdAdmission::Duplicate => {}
+                        }
                     }
+                    reader_index = (reader_index + 1) % readers.len();
                 }
                 Err(ReadError::Idle) => {
-                    self.mode.tick()?;
-                    self.advance_all(&mut publisher)?;
-                    reader
+                    reader_index = (reader_index + 1) % readers.len();
+                }
+                Err(ReadError::Closed(error)) => {
+                    let failed = readers.remove(reader_index);
+                    eprintln!(
+                        "immortal-provider: relay subscription degraded url={}: {error}",
+                        failed.relay_url
+                    );
+                    reconnects.insert(failed.relay_url, (0, Instant::now()));
+                }
+            }
+            if Instant::now() >= next_tick {
+                let endpoints = self
+                    .relay_urls
+                    .iter()
+                    .cloned()
+                    .zip(self.relay_auth_urls.iter().cloned())
+                    .collect::<Vec<_>>();
+                for (relay_url, relay_auth_url) in endpoints {
+                    let missing_reader =
+                        !readers.iter().any(|reader| reader.relay_url == relay_url);
+                    let missing_publisher = !publisher
+                        .publishers
+                        .iter()
+                        .any(|candidate| candidate.relay_url == relay_url);
+                    if !missing_reader && !missing_publisher {
+                        reconnects.remove(&relay_url);
+                        continue;
+                    }
+                    let (failures, retry_at) = reconnects
+                        .get(&relay_url)
+                        .copied()
+                        .unwrap_or((0, Instant::now()));
+                    if Instant::now() < retry_at {
+                        continue;
+                    }
+                    match self.reconnect_relay_endpoint(
+                        &relay_url,
+                        &relay_auth_url,
+                        missing_reader,
+                        missing_publisher,
+                        &mut readers,
+                        &mut publisher,
+                        &mut deduplicator,
+                    ) {
+                        Ok(()) => {
+                            reconnects.remove(&relay_url);
+                            println!("immortal-provider: relay endpoint recovered url={relay_url}");
+                        }
+                        Err(error) => {
+                            let failures = failures.saturating_add(1);
+                            let exponent = u32::try_from(failures.saturating_sub(1).min(5))
+                                .map_err(|_| "relay-set reconnect counter overflowed".to_owned())?;
+                            let retry_at = Instant::now() + Duration::from_secs(1_u64 << exponent);
+                            reconnects.insert(relay_url.clone(), (failures, retry_at));
+                            eprintln!(
+                                "immortal-provider: relay endpoint remains degraded url={relay_url}: {error}"
+                            );
+                        }
+                    }
+                }
+                self.mode.tick()?;
+                self.advance_all(&mut publisher)?;
+                for reader in &mut readers {
+                    if let Err(error) = reader
+                        .client
                         .websocket
                         .send(Message::Ping(Vec::new().into()))
-                        .map_err(|error| format!("could not send relay heartbeat: {error}"))?;
+                    {
+                        eprintln!(
+                            "immortal-provider: relay heartbeat degraded url={}: {error}",
+                            reader.relay_url
+                        );
+                    }
                 }
-                Err(ReadError::Closed(error)) => return Err(error),
+                next_tick = Instant::now() + Duration::from_secs(1);
             }
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn reconnect_relay_endpoint(
+        &mut self,
+        relay_url: &str,
+        relay_auth_url: &str,
+        missing_reader: bool,
+        missing_publisher: bool,
+        readers: &mut Vec<RelayReader>,
+        publishers: &mut RelayPublisherSet,
+        deduplicator: &mut MktEventIdDeduplicator,
+    ) -> Result<(), String> {
+        let now = unix_now()?;
+        if missing_publisher {
+            let mut client = connect(relay_url, self.mode.mode_name())?;
+            authenticate(&mut client, &self.signer, relay_auth_url, now)?;
+            publishers.publishers.push(RelayPublisher {
+                relay_url: relay_url.to_owned(),
+                client,
+            });
+        }
+        if missing_reader {
+            let mut client = connect(relay_url, self.mode.mode_name())?;
+            authenticate(&mut client, &self.signer, relay_auth_url, now)?;
+            subscribe(&mut client, self.signer.pubkey())?;
+            let history = read_history(&mut client)?;
+            if history.truncated {
+                return Err(format!(
+                    "relay reconnect history exceeded {MAX_HISTORY_WRAPS} wraps"
+                ));
+            }
+            for wrap in history.wraps {
+                match deduplicator
+                    .observe(&wrap)
+                    .map_err(|error| error.to_string())?
+                {
+                    MktEventIdAdmission::New => self.receive_wrap(wrap, publishers)?,
+                    MktEventIdAdmission::Duplicate => {}
+                }
+            }
+            client
+                .websocket
+                .get_mut()
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .map_err(|error| format!("could not set relay polling timeout: {error}"))?;
+            readers.push(RelayReader {
+                relay_url: relay_url.to_owned(),
+                client,
+            });
+        }
+        Ok(())
+    }
+
     fn publish_discovery_state(
         &self,
-        publisher: &mut RelayClient,
+        publisher: &mut RelayPublisherSet,
         created_at: u64,
         state: &str,
     ) -> Result<(), String> {
@@ -665,7 +876,11 @@ impl<M: ProviderMode> RelayActor<M> {
         Ok(Some(actor))
     }
 
-    fn receive_wrap(&mut self, wrap: Event, publisher: &mut RelayClient) -> Result<(), String> {
+    fn receive_wrap(
+        &mut self,
+        wrap: Event,
+        publisher: &mut RelayPublisherSet,
+    ) -> Result<(), String> {
         let delivered = match unwrap_mkt_record(&wrap, &self.signer, &swp_profiles()) {
             Ok(delivered) => delivered,
             Err(error) => {
@@ -979,7 +1194,7 @@ impl<M: ProviderMode> RelayActor<M> {
         })
     }
 
-    fn republish_provider_history(&self, publisher: &mut RelayClient) -> Result<(), String> {
+    fn republish_provider_history(&self, publisher: &mut RelayPublisherSet) -> Result<(), String> {
         for actor in self.sessions.values() {
             for record in actor
                 .session
@@ -993,7 +1208,7 @@ impl<M: ProviderMode> RelayActor<M> {
         Ok(())
     }
 
-    fn advance_all(&mut self, publisher: &mut RelayClient) -> Result<(), String> {
+    fn advance_all(&mut self, publisher: &mut RelayPublisherSet) -> Result<(), String> {
         self.prune_stalled_sessions(unix_now()?)?;
         let sessions = self.sessions.keys().cloned().collect::<Vec<_>>();
         for session_id in sessions {
@@ -1174,7 +1389,7 @@ impl<M: ProviderMode> RelayActor<M> {
         &self,
         record: &Event,
         requester_pubkey: &str,
-        publisher: &mut RelayClient,
+        publisher: &mut RelayPublisherSet,
     ) -> Result<(), String> {
         let raw = serde_json::to_vec(record)
             .map_err(|error| format!("could not serialize provider record: {error}"))?;
@@ -1192,7 +1407,7 @@ impl<M: ProviderMode> RelayActor<M> {
         &self,
         record: &Event,
         requester_pubkey: &str,
-        publisher: &mut RelayClient,
+        publisher: &mut RelayPublisherSet,
     ) -> Result<(), String> {
         let raw = serde_json::to_vec(record)
             .map_err(|error| format!("could not serialize provider record: {error}"))?;
@@ -1329,9 +1544,56 @@ fn subscription_event(message: &Value) -> Result<Option<Event>, String> {
     Ok(Some(event))
 }
 
-fn publish(client: &mut RelayClient, event: &Event) -> Result<(), String> {
+fn publish(publishers: &mut RelayPublisherSet, event: &Event) -> Result<(), String> {
+    let mut accepted = 0_usize;
+    let mut index = 0_usize;
+    while index < publishers.publishers.len() {
+        match publish_one(&mut publishers.publishers[index].client, event) {
+            Ok(()) => {
+                accepted = accepted.saturating_add(1);
+                index = index.saturating_add(1);
+            }
+            Err(error) => {
+                let failed = publishers.publishers.remove(index);
+                eprintln!(
+                    "immortal-provider: relay publisher degraded url={}: {error}",
+                    failed.relay_url
+                );
+            }
+        }
+    }
+    if accepted < publishers.publish_minimum {
+        return Err(format!(
+            "provider publication reached {accepted} relays, below minimum {}",
+            publishers.publish_minimum
+        ));
+    }
+    Ok(())
+}
+
+fn publish_one(client: &mut RelayClient, event: &Event) -> Result<(), String> {
     send_json(&mut client.websocket, json!(["EVENT", event]))?;
     expect_ok(&mut client.websocket, &event.id)
+}
+
+fn merge_relay_history(
+    merged: &mut BTreeMap<String, Event>,
+    wraps: Vec<Event>,
+) -> Result<(), String> {
+    for wrap in wraps {
+        match merged.get(&wrap.id) {
+            Some(stored) if stored == &wrap => {}
+            Some(_) => {
+                return Err(
+                    "same relay history event ID arrived with different signed bytes".to_owned(),
+                );
+            }
+            None => {
+                merged.insert(wrap.id.clone(), wrap);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn expect_ok(websocket: &mut RelaySocket, event_id: &str) -> Result<(), String> {
@@ -1884,8 +2146,8 @@ mod tests {
         let signer = MarketSigner::from_secret_bytes([41; 32]).expect("test signer");
         let offering_address = format!("39601:{}:recovery-test", signer.pubkey());
         let mut without_history = RelayActor {
-            relay_url: "ws://127.0.0.1:1".to_owned(),
-            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
+            relay_urls: vec!["ws://127.0.0.1:1".to_owned()],
+            relay_auth_urls: vec!["ws://127.0.0.1:1".to_owned()],
             signer: signer.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),
@@ -1910,8 +2172,8 @@ mod tests {
         assert!(error.contains("without durable prior history"));
 
         let mut with_history = RelayActor {
-            relay_url: "ws://127.0.0.1:1".to_owned(),
-            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
+            relay_urls: vec!["ws://127.0.0.1:1".to_owned()],
+            relay_auth_urls: vec!["ws://127.0.0.1:1".to_owned()],
             signer,
             offering_address,
             sessions: BTreeMap::new(),
@@ -1971,8 +2233,8 @@ mod tests {
             ))
             .expect("signed RFQ");
         let mut actor = RelayActor {
-            relay_url: "ws://127.0.0.1:1".to_owned(),
-            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
+            relay_urls: vec!["ws://127.0.0.1:1".to_owned()],
+            relay_auth_urls: vec!["ws://127.0.0.1:1".to_owned()],
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
@@ -2003,8 +2265,8 @@ mod tests {
         let offering_address = format!("39601:{}:recovery-test", provider.pubkey());
         let event = provider.sign(100, MKT_STATUS_KIND, Vec::new(), "{}".to_owned());
         let mut actor = RelayActor {
-            relay_url: "ws://127.0.0.1:1".to_owned(),
-            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
+            relay_urls: vec!["ws://127.0.0.1:1".to_owned()],
+            relay_auth_urls: vec!["ws://127.0.0.1:1".to_owned()],
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
@@ -2082,8 +2344,8 @@ mod tests {
             "{}".to_owned(),
         );
         let actor = RelayActor {
-            relay_url: "ws://127.0.0.1:1".to_owned(),
-            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
+            relay_urls: vec!["ws://127.0.0.1:1".to_owned()],
+            relay_auth_urls: vec!["ws://127.0.0.1:1".to_owned()],
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
@@ -2202,8 +2464,8 @@ mod tests {
         .expect("wrap RFQ")
         .event;
         let mut actor = RelayActor {
-            relay_url: "ws://127.0.0.1:1".to_owned(),
-            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
+            relay_urls: vec!["ws://127.0.0.1:1".to_owned()],
+            relay_auth_urls: vec!["ws://127.0.0.1:1".to_owned()],
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
@@ -2254,6 +2516,24 @@ mod tests {
             insert_recovery_record(&mut records, conflicting)
                 .expect_err("changed signed bytes must conflict")
                 .contains("conflicting signed bytes")
+        );
+    }
+
+    #[test]
+    fn multi_relay_history_deduplicates_exact_ids_and_rejects_conflicting_bytes() {
+        let signer = MarketSigner::from_secret_bytes([43; 32]).expect("test signer");
+        let event = signer.sign(1, 1_059, Vec::new(), "ciphertext".to_owned());
+        let mut merged = BTreeMap::new();
+        merge_relay_history(&mut merged, vec![event.clone()]).expect("first relay");
+        merge_relay_history(&mut merged, vec![event.clone()]).expect("second relay replay");
+        assert_eq!(merged.len(), 1);
+
+        let mut conflicting = event;
+        conflicting.sig = "00".repeat(64);
+        assert!(
+            merge_relay_history(&mut merged, vec![conflicting])
+                .expect_err("changed bytes for one ID")
+                .contains("different signed bytes")
         );
     }
 
@@ -2359,8 +2639,8 @@ mod tests {
             })
             .collect();
         let mut actor = RelayActor {
-            relay_url: "ws://127.0.0.1:1".to_owned(),
-            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
+            relay_urls: vec!["ws://127.0.0.1:1".to_owned()],
+            relay_auth_urls: vec!["ws://127.0.0.1:1".to_owned()],
             signer: provider.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),
@@ -2385,8 +2665,8 @@ mod tests {
         assert!(error.contains("active session bound 12"));
 
         let mut pruned = RelayActor {
-            relay_url: "ws://127.0.0.1:1".to_owned(),
-            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
+            relay_urls: vec!["ws://127.0.0.1:1".to_owned()],
+            relay_auth_urls: vec!["ws://127.0.0.1:1".to_owned()],
             signer: provider.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),
@@ -2411,8 +2691,8 @@ mod tests {
         assert!(pruned.sessions.is_empty());
 
         let mut rejected = RelayActor {
-            relay_url: "ws://127.0.0.1:1".to_owned(),
-            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
+            relay_urls: vec!["ws://127.0.0.1:1".to_owned()],
+            relay_auth_urls: vec!["ws://127.0.0.1:1".to_owned()],
             signer: provider,
             offering_address,
             sessions: BTreeMap::new(),
@@ -2431,8 +2711,8 @@ mod tests {
         let drain_health = Arc::new(ProviderHealth::default());
         drain_health.begin_drain();
         let mut draining = RelayActor {
-            relay_url: "ws://127.0.0.1:1".to_owned(),
-            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
+            relay_urls: vec!["ws://127.0.0.1:1".to_owned()],
+            relay_auth_urls: vec!["ws://127.0.0.1:1".to_owned()],
             signer: rejected.signer.clone(),
             offering_address: rejected.offering_address.clone(),
             sessions: BTreeMap::new(),
@@ -2482,8 +2762,8 @@ mod tests {
                 .expect("fixture content JSON");
         let now = unix_now().expect("current time");
         let mut actor = RelayActor {
-            relay_url: "ws://127.0.0.1:1".to_owned(),
-            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
+            relay_urls: vec!["ws://127.0.0.1:1".to_owned()],
+            relay_auth_urls: vec!["ws://127.0.0.1:1".to_owned()],
             signer: provider.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),
@@ -2623,8 +2903,8 @@ mod tests {
             .expect("signed hard Quote");
 
         let actor = |reservation_confirmation| RelayActor {
-            relay_url: "ws://127.0.0.1:1".to_owned(),
-            relay_auth_url: "ws://127.0.0.1:1".to_owned(),
+            relay_urls: vec!["ws://127.0.0.1:1".to_owned()],
+            relay_auth_urls: vec!["ws://127.0.0.1:1".to_owned()],
             signer: provider.clone(),
             offering_address: offering_address.clone(),
             sessions: BTreeMap::new(),

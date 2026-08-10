@@ -405,6 +405,20 @@ pub fn provider_contract_value() -> Result<Value, ProviderContractError> {
             "variables":environment_contract()
         },
         "operations":{
+            "market_network":{
+                "relay_set_environment":"IMMORTAL_PROVIDER_RELAY_URLS",
+                "relay_environment_alternatives":["IMMORTAL_PROVIDER_RELAY_URLS","IMMORTAL_PROVIDER_RELAY_URL"],
+                "relay_set_minimum":2,
+                "relay_set_maximum":8,
+                "publish_minimum":1,
+                "read_minimum":1,
+                "publish_exact_signed_bytes":true,
+                "subscribe_all":true,
+                "deduplicate_by_event_id":true,
+                "independent_bounded_reconnect":true,
+                "transport_scope":"loopback_plaintext_only",
+                "public_relay_access":"operator_owned_proxy"
+            },
             "address":{
                 "requires":["bitcoin_network","wallet_seed_file"],
                 "database_access":false,
@@ -1162,21 +1176,40 @@ fn environment_contract() -> Value {
             true,
             None
         ),
-        env_string(
+        optional_env_string(
             "IMMORTAL_PROVIDER_RELAY_URL",
             &["funded", "no_spend"],
             1,
             2048,
             false,
-            Some("loopback_plaintext_websocket_url")
+            Some("loopback_plaintext_websocket_url"),
+            false
+        ),
+        optional_env_string(
+            "IMMORTAL_PROVIDER_RELAY_URLS",
+            &["funded", "no_spend"],
+            1,
+            16391,
+            false,
+            Some("sorted_csv_2_to_8_loopback_plaintext_websocket_urls"),
+            false
         ),
         optional_env_string(
             "IMMORTAL_PROVIDER_RELAY_AUTH_URL",
-            &["funded"],
+            &["funded", "no_spend"],
             1,
             2048,
             false,
             Some("exact_websocket_authority"),
+            false
+        ),
+        optional_env_string(
+            "IMMORTAL_PROVIDER_RELAY_AUTH_URLS",
+            &["funded", "no_spend"],
+            1,
+            16391,
+            false,
+            Some("csv_exact_websocket_authorities_matching_relay_count"),
             false
         ),
         env_string(

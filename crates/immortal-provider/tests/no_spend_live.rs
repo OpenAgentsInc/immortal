@@ -44,13 +44,15 @@ struct ProviderProcess {
 
 impl ProviderProcess {
     fn start(relay_url: &str) -> Result<Self, String> {
+        let mut relay_urls = ["ws://127.0.0.1:1".to_owned(), relay_url.to_owned()];
+        relay_urls.sort();
         let mut child = Command::new(env!("CARGO_BIN_EXE_immortal-provider"))
             .arg("--no-spend")
             .env(
                 "IMMORTAL_PROVIDER_IDENTITY_SECRET",
                 format!("{PROVIDER_SECRET_BYTE:02x}").repeat(32),
             )
-            .env("IMMORTAL_PROVIDER_RELAY_URL", relay_url)
+            .env("IMMORTAL_PROVIDER_RELAY_URLS", relay_urls.join(","))
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()

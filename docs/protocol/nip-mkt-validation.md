@@ -31,19 +31,22 @@ external authorities.
 | `39615` | MKT-SWP Provider Relay Set | addressable | public, canonical digest `d`, immutable generation |
 | `39616-39619`, `39621-39629`, `39631-39639`, `39641-39649`, `39651-39699` | reserved profile allocation block | addressable | unallocated by this runtime packet |
 
-The public heads use ordinary NIP-01 replacement ordering. The thirteen adopted
-private kinds bind `(pubkey, kind, d)` to one exact event ID and signature in the
-internal store: exact replay is idempotent, while changed bytes fail with
-`invalid: idempotency-conflict`. Deletion and expiration never release that
-binding. This internal path supports trusted import and future in-binary
-handlers; generic gateway reads hide every bare private row, including rows
-created by an older release or legacy import.
+The public heads in `39600-39603` and `39630` use ordinary NIP-01 replacement
+ordering. Public network events `39614-39615` instead derive a unique `d` from
+each canonical body, so every signed generation remains independently
+addressable. The thirteen adopted private kinds bind `(pubkey, kind, d)` to one
+exact event ID and signature in the internal store: exact replay is idempotent,
+while changed bytes fail with `invalid: idempotency-conflict`. Deletion and
+expiration never release that binding. This internal path supports trusted
+import and future in-binary handlers; generic gateway reads hide every bare
+private row, including rows created by an older release or legacy import.
 
 ## Observable validation surfaces
 
 | Surface | What Immortal can validate |
 | --- | --- |
 | Public kinds `39600-39603` | Required discovery tags, identifier/version grammar, enums, content byte limits, duplicate-free JSON-object content, and common collection caps. The private session envelope does not apply to public content. |
+| Public network kinds `39614-39615` | The validator checks exact kind-specific tags, closed version-1 canonical JSON, the content-derived `d`, stable provider identity, generation/effective-time bounds, rotation signer and successor-key shape, canonical `wss` relay origins, sorted distinct relay sets, and read/publication thresholds. Bodies are capped at 8 KiB. Chain verification separately reports incomplete, invalid, or ambiguous history, bounds each chain to 64 generations, and selects provider signers by event creation time. |
 | Visible/internal signed kinds `39604-39613`, `39620`, and `39650` | The store enforces immutable-coordinate replay, then the profile-neutral common tags, envelope agreement, duplicate-free JSON at every nesting depth, compact serialized size, references, and collection caps. Kind `39610` is bound to exactly `mkt-swp` v1; kinds `39611-39612` bind the `openagents.mkt.v2`/`protocol_rev:2` MKT-SWP hardening grammar; kind `39613` binds the canonical `openagents.mkt.receipt.v1` receipt grammar; kind `39620` binds `mkt-p2p` v1; and kind `39650` binds `mkt-lsp` v1. Existing immutable bindings are checked first so validator upgrades cannot change a prior replay result. The gateway separately measures the exact raw EVENT-object bytes before deserialization. Gateway acceptance policy is defined separately and does not belong to the durable/internal store contract. |
 | MKT-SWP Offering and authorized visible record | The profile validator checks public Offering network/asset IDs, side networks and ordered rail pairs against the advertised networks/swap types, canonical decimal amounts, explicit side-disable semantics, fee bounds, script/proof/confirmation classes, evidence class/rail compatibility, receipt outcomes and named-field privacy tripwires, Swap Contract tag/body digest agreement, complementary counterparty roles, and the v1 null/absent EVM extension rule. Custody-member scanning covers the complete parsed profile envelope. It checks digest shape and `x`/body equality; RFC 8785 recomputation and bilateral semantic agreement belong to the client or configured handler. |
 | MKT-PFI Qualification Policy and Offering | The validator checks the public `39630` policy's exact profile/version/status/version/published/digest/alt tags, exact content-byte SHA-256, closed nested requirement and retention shapes, ISO jurisdiction and bounded identifier/URL rules, and recursively named PII/bearer tripwires. Offerings bind canonical ISO-4217/CAIP-19 asset IDs to the market digest, policy address/event pins, enabled direction tags, atomic-unit limits, fee cap, risk and rail sets, jurisdictions, and closed public custody labels. |

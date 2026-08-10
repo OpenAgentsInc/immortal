@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use serde::{
     Deserialize, Deserializer, Serialize,
@@ -24,8 +27,18 @@ pub const MKT_SWP_SWAP_CONTRACT_KIND: u16 = 39_610;
 pub const MKT_SWP_INTENT_ACK_KIND: u16 = 39_611;
 pub const MKT_SWP_REDRIVE_KIND: u16 = 39_612;
 pub const MKT_SWP_SETTLEMENT_RECEIPT_KIND: u16 = 39_613;
+pub const MKT_SWP_KEY_ROTATION_KIND: u16 = 39_614;
+pub const MKT_SWP_RELAY_SET_KIND: u16 = 39_615;
 pub const MKT_SWP_PROFILE_ID: &str = "mkt-swp";
 pub const MKT_SWP_PROFILE_VERSION: u64 = 1;
+pub const MKT_KEY_ROTATION_SCHEMA: &str = "openagents.mkt.key-rotation.v1";
+pub const MKT_RELAY_SET_SCHEMA: &str = "openagents.mkt.relay-set.v1";
+pub const MKT_NETWORK_VERSION: u64 = 1;
+pub const MKT_NETWORK_MAX_CHAIN_GENERATIONS: usize = 64;
+pub const MKT_NETWORK_MIN_RELAYS: usize = 2;
+pub const MKT_NETWORK_MAX_RELAYS: usize = 8;
+pub const MKT_NETWORK_MAX_CONTENT_BYTES: usize = 8 * 1024;
+pub const MKT_NETWORK_MAX_MERGED_EVENTS: usize = 4_096;
 pub const MKT_PFI_QUALIFICATION_POLICY_KIND: u16 = 39_630;
 pub const MKT_PFI_PROFILE_ID: &str = "mkt-pfi";
 pub const MKT_PFI_PROFILE_VERSION: u64 = 1;
@@ -326,6 +339,196 @@ pub struct MktReceiptFee {
     pub recipient_role: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MktKeyRotation {
+    pub schema: String,
+    pub version: u64,
+    pub rotation_id: String,
+    pub provider_id: String,
+    pub generation: u64,
+    pub previous_rotation_event_id: Option<String>,
+    pub old_pubkey: String,
+    pub new_pubkey: String,
+    pub effective_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MktRelaySet {
+    pub schema: String,
+    pub version: u64,
+    pub relay_set_id: String,
+    pub provider_id: String,
+    pub generation: u64,
+    pub previous_relay_set_event_id: Option<String>,
+    pub effective_at: u64,
+    pub relays: Vec<String>,
+    pub publish_minimum: usize,
+    pub read_minimum: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MktNetworkChainErrorCode {
+    Incomplete,
+    Invalid,
+    Ambiguous,
+}
+
+impl MktNetworkChainErrorCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Incomplete => "mkt_network_chain_incomplete",
+            Self::Invalid => "mkt_network_chain_invalid",
+            Self::Ambiguous => "mkt_network_chain_ambiguous",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MktNetworkChainError {
+    pub code: MktNetworkChainErrorCode,
+    pub detail: String,
+}
+
+impl fmt::Display for MktNetworkChainError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.code.as_str(), self.detail)
+    }
+}
+
+impl std::error::Error for MktNetworkChainError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MktProviderKeyChain {
+    provider_id: String,
+    rotations: Vec<(Event, MktKeyRotation)>,
+}
+
+impl MktProviderKeyChain {
+    pub fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
+    pub fn rotations(&self) -> impl Iterator<Item = (&Event, &MktKeyRotation)> {
+        self.rotations.iter().map(|(event, claim)| (event, claim))
+    }
+
+    pub fn active_pubkey_at(&self, created_at: u64) -> &str {
+        self.rotations
+            .iter()
+            .rev()
+            .find(|(_, rotation)| rotation.effective_at <= created_at)
+            .map_or(self.provider_id.as_str(), |(_, rotation)| {
+                rotation.new_pubkey.as_str()
+            })
+    }
+
+    pub fn validate_provider_event(&self, event: &Event) -> Result<(), MktNetworkChainError> {
+        event
+            .validate_structure()
+            .and_then(|()| event.validate_crypto())
+            .map_err(|error| {
+                network_error(
+                    MktNetworkChainErrorCode::Invalid,
+                    format!("provider event signature is invalid: {error}"),
+                )
+            })?;
+        let expected = self.active_pubkey_at(event.created_at);
+        if event.pubkey != expected {
+            return Err(network_error(
+                MktNetworkChainErrorCode::Invalid,
+                format!(
+                    "provider event at {} requires signer {expected}, got {}",
+                    event.created_at, event.pubkey
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MktRelaySetChain {
+    provider_id: String,
+    relay_sets: Vec<(Event, MktRelaySet)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MktEventIdAdmission {
+    New,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MktEventIdDeduplicator {
+    events: BTreeMap<String, Event>,
+    maximum_events: usize,
+}
+
+impl Default for MktEventIdDeduplicator {
+    fn default() -> Self {
+        Self::new(MKT_NETWORK_MAX_MERGED_EVENTS)
+    }
+}
+
+impl MktEventIdDeduplicator {
+    pub fn new(maximum_events: usize) -> Self {
+        Self {
+            events: BTreeMap::new(),
+            maximum_events: maximum_events.min(MKT_NETWORK_MAX_MERGED_EVENTS),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    pub fn observe(&mut self, event: &Event) -> Result<MktEventIdAdmission, MktNetworkChainError> {
+        validate_network_signature(event)?;
+        if let Some(stored) = self.events.get(&event.id) {
+            return if stored == event {
+                Ok(MktEventIdAdmission::Duplicate)
+            } else {
+                Err(network_error(
+                    MktNetworkChainErrorCode::Invalid,
+                    "same event ID arrived with different signed bytes",
+                ))
+            };
+        }
+        if self.events.len() >= self.maximum_events {
+            return Err(network_error(
+                MktNetworkChainErrorCode::Invalid,
+                "event-ID deduplicator reached its configured bound",
+            ));
+        }
+        self.events.insert(event.id.clone(), event.clone());
+        Ok(MktEventIdAdmission::New)
+    }
+}
+
+impl MktRelaySetChain {
+    pub fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
+    pub fn relay_sets(&self) -> impl Iterator<Item = (&Event, &MktRelaySet)> {
+        self.relay_sets.iter().map(|(event, claim)| (event, claim))
+    }
+
+    pub fn effective_at(&self, observed_at: u64) -> Option<&MktRelaySet> {
+        self.relay_sets
+            .iter()
+            .rev()
+            .find(|(_, relay_set)| relay_set.effective_at <= observed_at)
+            .map(|(_, relay_set)| relay_set)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MktReceiptChainErrorCode {
     Incomplete,
@@ -472,10 +675,17 @@ impl MktValidatedPrivateRecord {
 
 pub fn validate_mkt_public_event(event: &Event) -> Result<(), String> {
     if (MKT_PROVIDER_PROFILE_KIND..=MKT_PUBLIC_RECEIPT_KIND).contains(&event.kind)
+        || event.kind == MKT_SWP_KEY_ROTATION_KIND
+        || event.kind == MKT_SWP_RELAY_SET_KIND
         || event.kind == MKT_PFI_QUALIFICATION_POLICY_KIND
     {
         validate_collection_bounds(event)?;
-        let maximum = if event.kind == MKT_PUBLIC_RECEIPT_KIND {
+        let maximum = if matches!(
+            event.kind,
+            MKT_SWP_KEY_ROTATION_KIND | MKT_SWP_RELAY_SET_KIND
+        ) {
+            MKT_NETWORK_MAX_CONTENT_BYTES
+        } else if event.kind == MKT_PUBLIC_RECEIPT_KIND {
             MKT_MAX_RECEIPT_CONTENT_BYTES
         } else {
             MKT_MAX_DISCOVERY_CONTENT_BYTES
@@ -491,6 +701,8 @@ pub fn validate_mkt_public_event(event: &Event) -> Result<(), String> {
         MKT_OFFERING_KIND => validate_offering(event),
         MKT_PROFILE_DESCRIPTOR_KIND => validate_profile_descriptor(event),
         MKT_PUBLIC_RECEIPT_KIND => validate_public_receipt(event),
+        MKT_SWP_KEY_ROTATION_KIND => validate_mkt_key_rotation_event(event).map(|_| ()),
+        MKT_SWP_RELAY_SET_KIND => validate_mkt_relay_set_event(event).map(|_| ()),
         MKT_PFI_QUALIFICATION_POLICY_KIND => validate_mkt_pfi_qualification_policy(event),
         _ => Ok(()),
     }
@@ -6189,6 +6401,460 @@ pub fn canonical_mkt_receipt_content(
         .map_err(|_| "canonical mkt receipt unexpectedly produced invalid UTF-8".to_owned())
 }
 
+pub fn mkt_key_rotation_id(rotation: &MktKeyRotation) -> Result<String, String> {
+    mkt_network_content_id(rotation, "rotation_id", "key rotation")
+}
+
+pub fn canonical_mkt_key_rotation_content(rotation: &MktKeyRotation) -> Result<String, String> {
+    canonical_mkt_network_content(rotation, "key rotation")
+}
+
+pub fn mkt_relay_set_id(relay_set: &MktRelaySet) -> Result<String, String> {
+    mkt_network_content_id(relay_set, "relay_set_id", "relay set")
+}
+
+pub fn canonical_mkt_relay_set_content(relay_set: &MktRelaySet) -> Result<String, String> {
+    canonical_mkt_network_content(relay_set, "relay set")
+}
+
+fn mkt_network_content_id<T: Serialize>(
+    claim: &T,
+    id_member: &str,
+    subject: &str,
+) -> Result<String, String> {
+    let mut value = serde_json::to_value(claim)
+        .map_err(|error| format!("mkt network {subject} serialization failed: {error}"))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| format!("mkt network {subject} must serialize as an object"))?;
+    object.remove(id_member);
+    let mut canonical = Vec::new();
+    write_mkt_canonical_json(&value, &mut canonical)?;
+    Ok(sha256_hex(&canonical))
+}
+
+fn canonical_mkt_network_content<T: Serialize>(claim: &T, subject: &str) -> Result<String, String> {
+    let value = serde_json::to_value(claim)
+        .map_err(|error| format!("mkt network {subject} serialization failed: {error}"))?;
+    let mut canonical = Vec::new();
+    write_mkt_canonical_json(&value, &mut canonical)?;
+    String::from_utf8(canonical)
+        .map_err(|_| format!("canonical mkt network {subject} produced invalid UTF-8"))
+}
+
+pub fn validate_mkt_key_rotation_event(event: &Event) -> Result<MktKeyRotation, String> {
+    if event.kind != MKT_SWP_KEY_ROTATION_KIND {
+        return Err("mkt_network_invalid: key rotation requires kind 39614".to_owned());
+    }
+    validate_content_bound(event, MKT_NETWORK_MAX_CONTENT_BYTES, "MKT key rotation")?;
+    let value = parse_unique_json(&event.content, "MKT key rotation content")?;
+    let rotation: MktKeyRotation = serde_json::from_value(value).map_err(|error| {
+        format!("mkt_network_invalid: key rotation is not a closed version-1 object: {error}")
+    })?;
+    if rotation.schema != MKT_KEY_ROTATION_SCHEMA || rotation.version != MKT_NETWORK_VERSION {
+        return Err("mkt_network_unsupported_version: key rotation schema/version".to_owned());
+    }
+    for (name, value) in [
+        ("rotation_id", rotation.rotation_id.as_str()),
+        ("provider_id", rotation.provider_id.as_str()),
+        ("old_pubkey", rotation.old_pubkey.as_str()),
+        ("new_pubkey", rotation.new_pubkey.as_str()),
+    ] {
+        lower_hex_32(value, &format!("key rotation {name}"))?;
+    }
+    if rotation.generation == 0 || rotation.generation as usize > MKT_NETWORK_MAX_CHAIN_GENERATIONS
+    {
+        return Err("mkt_network_bounds: key rotation generation must be 1..=64".to_owned());
+    }
+    if rotation.old_pubkey == rotation.new_pubkey {
+        return Err("mkt_network_invalid: rotation successor must differ from old key".to_owned());
+    }
+    if event.pubkey != rotation.old_pubkey {
+        return Err("mkt_network_invalid: rotation must be authored by old_pubkey".to_owned());
+    }
+    if event.created_at > rotation.effective_at {
+        return Err("mkt_network_invalid: rotation was signed after its effective time".to_owned());
+    }
+    if event.content != canonical_mkt_key_rotation_content(&rotation)? {
+        return Err("mkt_network_noncanonical: key rotation content".to_owned());
+    }
+    if mkt_key_rotation_id(&rotation)? != rotation.rotation_id {
+        return Err("mkt_network_digest_mismatch: rotation_id".to_owned());
+    }
+    network_tag_equals(event, "d", &rotation.rotation_id, "key rotation")?;
+    network_tag_equals(event, "provider", &rotation.provider_id, "key rotation")?;
+    network_tag_equals(
+        event,
+        "generation",
+        &rotation.generation.to_string(),
+        "key rotation",
+    )?;
+    network_tag_equals(
+        event,
+        "effective_at",
+        &rotation.effective_at.to_string(),
+        "key rotation",
+    )?;
+    network_tag_equals(event, "alt", "MKT Provider Key Rotation", "key rotation")?;
+    let successors = event
+        .tags
+        .iter()
+        .filter(|tag| tag.name() == Some("p"))
+        .collect::<Vec<_>>();
+    if successors.len() != 1
+        || successors[0].as_slice() != ["p", rotation.new_pubkey.as_str(), "", "successor"]
+    {
+        return Err("mkt_network_invalid: rotation requires exact successor p tag".to_owned());
+    }
+    network_predecessor(
+        event,
+        "previous-rotation",
+        rotation.previous_rotation_event_id.as_deref(),
+        rotation.generation,
+    )?;
+    if rotation.generation == 1 && rotation.provider_id != rotation.old_pubkey {
+        return Err(
+            "mkt_network_invalid: first rotation old key must equal provider_id".to_owned(),
+        );
+    }
+    Ok(rotation)
+}
+
+pub fn validate_mkt_relay_set_event(event: &Event) -> Result<MktRelaySet, String> {
+    if event.kind != MKT_SWP_RELAY_SET_KIND {
+        return Err("mkt_network_invalid: relay set requires kind 39615".to_owned());
+    }
+    validate_content_bound(event, MKT_NETWORK_MAX_CONTENT_BYTES, "MKT relay set")?;
+    let value = parse_unique_json(&event.content, "MKT relay set content")?;
+    let relay_set: MktRelaySet = serde_json::from_value(value).map_err(|error| {
+        format!("mkt_network_invalid: relay set is not a closed version-1 object: {error}")
+    })?;
+    if relay_set.schema != MKT_RELAY_SET_SCHEMA || relay_set.version != MKT_NETWORK_VERSION {
+        return Err("mkt_network_unsupported_version: relay set schema/version".to_owned());
+    }
+    lower_hex_32(&relay_set.relay_set_id, "relay_set_id")?;
+    lower_hex_32(&relay_set.provider_id, "relay-set provider_id")?;
+    if relay_set.generation == 0
+        || relay_set.generation as usize > MKT_NETWORK_MAX_CHAIN_GENERATIONS
+    {
+        return Err("mkt_network_bounds: relay-set generation must be 1..=64".to_owned());
+    }
+    if event.created_at > relay_set.effective_at {
+        return Err(
+            "mkt_network_invalid: relay set was signed after its effective time".to_owned(),
+        );
+    }
+    if !(MKT_NETWORK_MIN_RELAYS..=MKT_NETWORK_MAX_RELAYS).contains(&relay_set.relays.len()) {
+        return Err("mkt_network_bounds: relay set requires 2..=8 relays".to_owned());
+    }
+    let mut previous = None;
+    for relay in &relay_set.relays {
+        validate_mkt_relay_origin(relay)?;
+        if previous.is_some_and(|value: &str| value >= relay.as_str()) {
+            return Err(
+                "mkt_network_invalid: relay origins must be distinct and byte-sorted".to_owned(),
+            );
+        }
+        previous = Some(relay.as_str());
+    }
+    for (name, minimum) in [
+        ("publish_minimum", relay_set.publish_minimum),
+        ("read_minimum", relay_set.read_minimum),
+    ] {
+        if minimum == 0 || minimum > relay_set.relays.len() {
+            return Err(format!(
+                "mkt_network_invalid: {name} must be within the relay set"
+            ));
+        }
+    }
+    if event.content != canonical_mkt_relay_set_content(&relay_set)? {
+        return Err("mkt_network_noncanonical: relay set content".to_owned());
+    }
+    if mkt_relay_set_id(&relay_set)? != relay_set.relay_set_id {
+        return Err("mkt_network_digest_mismatch: relay_set_id".to_owned());
+    }
+    network_tag_equals(event, "d", &relay_set.relay_set_id, "relay set")?;
+    network_tag_equals(event, "provider", &relay_set.provider_id, "relay set")?;
+    network_tag_equals(
+        event,
+        "generation",
+        &relay_set.generation.to_string(),
+        "relay set",
+    )?;
+    network_tag_equals(
+        event,
+        "effective_at",
+        &relay_set.effective_at.to_string(),
+        "relay set",
+    )?;
+    network_tag_equals(event, "alt", "MKT Provider Relay Set", "relay set")?;
+    network_predecessor(
+        event,
+        "previous-relay-set",
+        relay_set.previous_relay_set_event_id.as_deref(),
+        relay_set.generation,
+    )?;
+    Ok(relay_set)
+}
+
+pub fn validate_mkt_relay_origin(value: &str) -> Result<(), String> {
+    if value.len() > 2_048
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii() || byte.is_ascii_control() || byte.is_ascii_whitespace())
+        || !value.starts_with("wss://")
+    {
+        return Err("mkt_network_invalid: relay origin must be bounded canonical wss".to_owned());
+    }
+    let authority = &value[6..];
+    if authority.is_empty()
+        || authority.contains(['/', '?', '#', '@', '[', ']'])
+        || authority != authority.to_ascii_lowercase()
+    {
+        return Err("mkt_network_invalid: relay origin must contain only an authority".to_owned());
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    if host.is_empty()
+        || host.starts_with('.')
+        || host.ends_with('.')
+        || host.split('.').any(|label| {
+            label.is_empty()
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || label.bytes().any(|byte| {
+                    !byte.is_ascii_lowercase() && !byte.is_ascii_digit() && byte != b'-'
+                })
+        })
+        || host
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return Err("mkt_network_invalid: relay origin host is not canonical DNS".to_owned());
+    }
+    if let Some(port) = port {
+        let parsed = port
+            .parse::<u16>()
+            .map_err(|_| "mkt_network_invalid: relay port is invalid".to_owned())?;
+        if parsed == 0 || port != parsed.to_string() {
+            return Err("mkt_network_invalid: relay port is not canonical".to_owned());
+        }
+    }
+    Ok(())
+}
+
+pub fn verify_mkt_key_rotation_chain(
+    provider_id: &str,
+    events: &[Event],
+) -> Result<MktProviderKeyChain, MktNetworkChainError> {
+    lower_hex_32(provider_id, "provider_id")
+        .map_err(|detail| network_error(MktNetworkChainErrorCode::Invalid, detail))?;
+    if events.len() > MKT_NETWORK_MAX_CHAIN_GENERATIONS {
+        return Err(network_error(
+            MktNetworkChainErrorCode::Invalid,
+            "rotation chain exceeds 64 supplied events",
+        ));
+    }
+    let mut by_generation = BTreeMap::<u64, (Event, MktKeyRotation)>::new();
+    for event in events {
+        validate_network_signature(event)?;
+        let rotation = validate_mkt_key_rotation_event(event)
+            .map_err(|detail| network_error(MktNetworkChainErrorCode::Invalid, detail))?;
+        if rotation.provider_id != provider_id {
+            return Err(network_error(
+                MktNetworkChainErrorCode::Invalid,
+                "rotation provider_id does not match the trusted provider",
+            ));
+        }
+        if let Some((prior_event, _)) = by_generation.get(&rotation.generation) {
+            if prior_event == event {
+                continue;
+            }
+            return Err(network_error(
+                MktNetworkChainErrorCode::Ambiguous,
+                format!("competing rotation generation {}", rotation.generation),
+            ));
+        }
+        by_generation.insert(rotation.generation, (event.clone(), rotation));
+    }
+    let mut rotations: Vec<(Event, MktKeyRotation)> = Vec::with_capacity(by_generation.len());
+    for expected in 1..=u64::try_from(by_generation.len()).unwrap_or(u64::MAX) {
+        let Some((event, rotation)) = by_generation.remove(&expected) else {
+            return Err(network_error(
+                MktNetworkChainErrorCode::Incomplete,
+                format!("missing rotation generation {expected}"),
+            ));
+        };
+        if let Some((previous_event, previous)) = rotations.last() {
+            if rotation.previous_rotation_event_id.as_deref() != Some(previous_event.id.as_str())
+                || rotation.old_pubkey != previous.new_pubkey
+                || rotation.effective_at <= previous.effective_at
+            {
+                return Err(network_error(
+                    MktNetworkChainErrorCode::Invalid,
+                    format!("rotation generation {expected} breaks its predecessor chain"),
+                ));
+            }
+        } else if rotation.previous_rotation_event_id.is_some()
+            || rotation.old_pubkey != provider_id
+        {
+            return Err(network_error(
+                MktNetworkChainErrorCode::Invalid,
+                "first rotation does not begin at provider_id",
+            ));
+        }
+        rotations.push((event, rotation));
+    }
+    Ok(MktProviderKeyChain {
+        provider_id: provider_id.to_owned(),
+        rotations,
+    })
+}
+
+pub fn verify_mkt_relay_set_chain(
+    provider_id: &str,
+    events: &[Event],
+    key_chain: &MktProviderKeyChain,
+) -> Result<MktRelaySetChain, MktNetworkChainError> {
+    if provider_id != key_chain.provider_id() {
+        return Err(network_error(
+            MktNetworkChainErrorCode::Invalid,
+            "relay-set and key-chain provider identities differ",
+        ));
+    }
+    if events.is_empty() {
+        return Err(network_error(
+            MktNetworkChainErrorCode::Incomplete,
+            "missing relay-set generation 1",
+        ));
+    }
+    if events.len() > MKT_NETWORK_MAX_CHAIN_GENERATIONS {
+        return Err(network_error(
+            MktNetworkChainErrorCode::Invalid,
+            "relay-set chain exceeds 64 supplied events",
+        ));
+    }
+    let mut by_generation = BTreeMap::<u64, (Event, MktRelaySet)>::new();
+    for event in events {
+        key_chain.validate_provider_event(event)?;
+        let relay_set = validate_mkt_relay_set_event(event)
+            .map_err(|detail| network_error(MktNetworkChainErrorCode::Invalid, detail))?;
+        if relay_set.provider_id != provider_id {
+            return Err(network_error(
+                MktNetworkChainErrorCode::Invalid,
+                "relay-set provider_id does not match the trusted provider",
+            ));
+        }
+        if let Some((prior_event, _)) = by_generation.get(&relay_set.generation) {
+            if prior_event == event {
+                continue;
+            }
+            return Err(network_error(
+                MktNetworkChainErrorCode::Ambiguous,
+                format!("competing relay-set generation {}", relay_set.generation),
+            ));
+        }
+        by_generation.insert(relay_set.generation, (event.clone(), relay_set));
+    }
+    let mut relay_sets: Vec<(Event, MktRelaySet)> = Vec::with_capacity(by_generation.len());
+    for expected in 1..=u64::try_from(by_generation.len()).unwrap_or(u64::MAX) {
+        let Some((event, relay_set)) = by_generation.remove(&expected) else {
+            return Err(network_error(
+                MktNetworkChainErrorCode::Incomplete,
+                format!("missing relay-set generation {expected}"),
+            ));
+        };
+        if let Some((previous_event, previous)) = relay_sets.last() {
+            if relay_set.previous_relay_set_event_id.as_deref() != Some(previous_event.id.as_str())
+                || relay_set.effective_at <= previous.effective_at
+            {
+                return Err(network_error(
+                    MktNetworkChainErrorCode::Invalid,
+                    format!("relay-set generation {expected} breaks its predecessor chain"),
+                ));
+            }
+        } else if relay_set.previous_relay_set_event_id.is_some() {
+            return Err(network_error(
+                MktNetworkChainErrorCode::Invalid,
+                "first relay set has a predecessor",
+            ));
+        }
+        relay_sets.push((event, relay_set));
+    }
+    Ok(MktRelaySetChain {
+        provider_id: provider_id.to_owned(),
+        relay_sets,
+    })
+}
+
+fn validate_network_signature(event: &Event) -> Result<(), MktNetworkChainError> {
+    event
+        .validate_structure()
+        .and_then(|()| event.validate_crypto())
+        .map_err(|error| {
+            network_error(
+                MktNetworkChainErrorCode::Invalid,
+                format!("network event signature is invalid: {error}"),
+            )
+        })
+}
+
+fn network_tag_equals(
+    event: &Event,
+    name: &str,
+    expected: &str,
+    subject: &str,
+) -> Result<(), String> {
+    let tags = event
+        .tags
+        .iter()
+        .filter(|tag| tag.name() == Some(name))
+        .collect::<Vec<_>>();
+    if tags.len() != 1 || tags[0].as_slice() != [name, expected] {
+        return Err(format!(
+            "mkt_network_invalid: {subject} requires exact {name} tag"
+        ));
+    }
+    Ok(())
+}
+
+fn network_predecessor(
+    event: &Event,
+    marker: &str,
+    expected: Option<&str>,
+    generation: u64,
+) -> Result<(), String> {
+    let tags = event
+        .tags
+        .iter()
+        .filter(|tag| tag.as_slice().get(3).map(String::as_str) == Some(marker))
+        .collect::<Vec<_>>();
+    match (generation, expected, tags.as_slice()) {
+        (1, None, []) => Ok(()),
+        (1, _, _) => Err(format!(
+            "mkt_network_invalid: generation one cannot have {marker}"
+        )),
+        (_, Some(expected), [tag]) if tag.as_slice() == ["e", expected, "", marker] => {
+            lower_hex_32(expected, "network predecessor event id")
+        }
+        _ => Err(format!(
+            "mkt_network_invalid: generation {generation} requires exact {marker}"
+        )),
+    }
+}
+
+fn network_error(
+    code: MktNetworkChainErrorCode,
+    detail: impl Into<String>,
+) -> MktNetworkChainError {
+    MktNetworkChainError {
+        code,
+        detail: detail.into(),
+    }
+}
+
 pub fn validate_mkt_receipt_event(
     event: &Event,
     envelope: &MktPrivateEnvelope,
@@ -6283,15 +6949,30 @@ pub fn verify_mkt_receipt_chain(
         quote,
         outcome,
         client_confirmation,
+        None,
     )
-    .map_err(|detail| {
-        let code = if detail.starts_with("mkt_receipt_chain_incomplete:") {
-            MktReceiptChainErrorCode::Incomplete
-        } else {
-            MktReceiptChainErrorCode::Invalid
-        };
-        MktReceiptChainError { code, detail }
-    })
+    .map_err(receipt_chain_error)
+}
+
+pub fn verify_mkt_receipt_chain_with_provider_keys(
+    receipt_event: &Event,
+    intent: &Event,
+    acknowledgment: &Event,
+    quote: &Event,
+    outcome: &Event,
+    client_confirmation: Option<&Event>,
+    provider_keys: &MktProviderKeyChain,
+) -> Result<MktSettlementReceipt, MktReceiptChainError> {
+    verify_mkt_receipt_chain_inner(
+        receipt_event,
+        intent,
+        acknowledgment,
+        quote,
+        outcome,
+        client_confirmation,
+        Some(provider_keys),
+    )
+    .map_err(receipt_chain_error)
 }
 
 pub fn verify_mkt_receipt_chain_parts(
@@ -6321,6 +7002,35 @@ pub fn verify_mkt_receipt_chain_parts(
     )
 }
 
+pub fn verify_mkt_receipt_chain_parts_with_provider_keys(
+    receipt_event: &Event,
+    intent: Option<&Event>,
+    acknowledgment: Option<&Event>,
+    quote: Option<&Event>,
+    outcome: Option<&Event>,
+    client_confirmation: Option<&Event>,
+    provider_keys: &MktProviderKeyChain,
+) -> Result<MktSettlementReceipt, MktReceiptChainError> {
+    fn required<'a>(
+        event: Option<&'a Event>,
+        name: &str,
+    ) -> Result<&'a Event, MktReceiptChainError> {
+        event.ok_or_else(|| MktReceiptChainError {
+            code: MktReceiptChainErrorCode::Incomplete,
+            detail: format!("missing signed {name} event"),
+        })
+    }
+    verify_mkt_receipt_chain_with_provider_keys(
+        receipt_event,
+        required(intent, "intent")?,
+        required(acknowledgment, "acknowledgment")?,
+        required(quote, "quote")?,
+        required(outcome, "outcome")?,
+        client_confirmation,
+        provider_keys,
+    )
+}
+
 fn verify_mkt_receipt_chain_inner(
     receipt_event: &Event,
     intent: &Event,
@@ -6328,6 +7038,7 @@ fn verify_mkt_receipt_chain_inner(
     quote: &Event,
     outcome: &Event,
     client_confirmation: Option<&Event>,
+    provider_keys: Option<&MktProviderKeyChain>,
 ) -> Result<MktSettlementReceipt, String> {
     for (name, event) in [
         ("receipt", receipt_event),
@@ -6375,7 +7086,20 @@ fn verify_mkt_receipt_chain_inner(
             "mkt_receipt_chain_invalid: receipt event IDs do not match the chain".to_owned(),
         );
     }
-    if receipt_event.pubkey != acknowledgment.pubkey || receipt_event.pubkey != quote.pubkey {
+    if let Some(provider_keys) = provider_keys {
+        for (name, event) in [
+            ("quote", quote),
+            ("acknowledgment", acknowledgment),
+            ("receipt", receipt_event),
+        ] {
+            provider_keys
+                .validate_provider_event(event)
+                .map_err(|error| {
+                    format!("mkt_receipt_chain_invalid: {name} provider rotation: {error}")
+                })?;
+        }
+    } else if receipt_event.pubkey != acknowledgment.pubkey || receipt_event.pubkey != quote.pubkey
+    {
         return Err(
             "mkt_receipt_chain_invalid: receipt, acknowledgment, and quote require one provider author"
                 .to_owned(),
@@ -6440,6 +7164,15 @@ fn verify_mkt_receipt_chain_inner(
         }
     }
     Ok(receipt)
+}
+
+fn receipt_chain_error(detail: String) -> MktReceiptChainError {
+    let code = if detail.starts_with("mkt_receipt_chain_incomplete:") {
+        MktReceiptChainErrorCode::Incomplete
+    } else {
+        MktReceiptChainErrorCode::Invalid
+    };
+    MktReceiptChainError { code, detail }
 }
 
 fn validate_receipt_claim(receipt: &MktSettlementReceipt) -> Result<(), String> {

@@ -37,7 +37,8 @@ use crate::{
         MKT_RECEIPT_FAILURE_CODES, MKT_RECEIPT_MAX_FEES, MKT_RECEIPT_MAX_LEGS,
         MKT_RECEIPT_OUTCOMES, MKT_RECEIPT_SCHEMA, MKT_RECEIPT_VERSION, MKT_RELAY_PROFILES,
         MKT_RESERVATION_CLASSES, MKT_RFQ_KIND, MKT_STATUS_KIND, MKT_STATUS_STATES,
-        MKT_SWP_INTENT_ACK_KIND, MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION, MKT_SWP_REDRIVE_KIND,
+        MKT_SWP_INTENT_ACK_KIND, MKT_SWP_KEY_ROTATION_KIND, MKT_SWP_PROFILE_ID,
+        MKT_SWP_PROFILE_VERSION, MKT_SWP_REDRIVE_KIND, MKT_SWP_RELAY_SET_KIND,
         MKT_SWP_SETTLEMENT_RECEIPT_KIND, MKT_SWP_SWAP_CONTRACT_KIND,
         OPENAGENTS_ISSUE_PROJECTION_KIND, OPENAGENTS_OUTCOME_RECORD_KIND,
         OPENAGENTS_WORK_EVENT_KIND, OPENAGENTS_WORK_OBJECTIVE_KIND, OPENAGENTS_WORK_RECORD_KIND,
@@ -781,6 +782,20 @@ fn mkt_kinds() -> Vec<KindDescriptor> {
             "client_and_internal_store",
         ),
         (
+            MKT_SWP_KEY_ROTATION_KIND,
+            "mkt_swp_provider_key_rotation",
+            "public_immutable_digest",
+            "content_derived_address",
+            "relay_and_client",
+        ),
+        (
+            MKT_SWP_RELAY_SET_KIND,
+            "mkt_swp_provider_relay_set",
+            "public_immutable_digest",
+            "content_derived_address",
+            "relay_and_client",
+        ),
+        (
             MKT_PFI_QUALIFICATION_POLICY_KIND,
             "mkt_pfi_qualification_policy",
             "public_head",
@@ -1025,6 +1040,21 @@ fn mkt_grammar() -> MktGrammar {
         vec![
             "d", "session", "profile", "p", "alt", "order e", "quote e", "x", "role",
         ],
+    );
+    required_tags.insert(
+        "mkt_swp_provider_key_rotation",
+        vec![
+            "d",
+            "provider",
+            "generation",
+            "effective_at",
+            "successor p",
+            "alt",
+        ],
+    );
+    required_tags.insert(
+        "mkt_swp_provider_relay_set",
+        vec!["d", "provider", "generation", "effective_at", "alt"],
     );
     required_tags.insert(
         "mkt_pfi_qualification_policy",

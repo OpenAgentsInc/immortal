@@ -1,11 +1,14 @@
 use immortal_core::domain::{
-    Event, MKT_CLOSE_KIND, MKT_HARDENING_PROTOCOL_REVISION, MKT_HARDENING_SCHEMA, MKT_ORDER_KIND,
-    MKT_QUOTE_KIND, MKT_RECEIPT_SCHEMA, MKT_RECEIPT_VERSION, MKT_STATUS_KIND,
-    MKT_SWP_INTENT_ACK_KIND, MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION,
-    MKT_SWP_SETTLEMENT_RECEIPT_KIND, MktProfileSupport, MktReceiptChainErrorCode, MktReceiptFee,
-    MktReceiptLeg, MktSettlementReceipt, Tag, canonical_mkt_receipt_content, mkt_receipt_id,
-    validate_mkt_private_with_profiles, validate_mkt_receipt_event, verify_mkt_receipt_chain,
-    verify_mkt_receipt_chain_parts,
+    Event, MKT_CLOSE_KIND, MKT_HARDENING_PROTOCOL_REVISION, MKT_HARDENING_SCHEMA,
+    MKT_KEY_ROTATION_SCHEMA, MKT_NETWORK_VERSION, MKT_ORDER_KIND, MKT_QUOTE_KIND,
+    MKT_RECEIPT_SCHEMA, MKT_RECEIPT_VERSION, MKT_STATUS_KIND, MKT_SWP_INTENT_ACK_KIND,
+    MKT_SWP_KEY_ROTATION_KIND, MKT_SWP_PROFILE_ID, MKT_SWP_PROFILE_VERSION,
+    MKT_SWP_SETTLEMENT_RECEIPT_KIND, MktKeyRotation, MktProfileSupport, MktReceiptChainErrorCode,
+    MktReceiptFee, MktReceiptLeg, MktSettlementReceipt, Tag, canonical_mkt_key_rotation_content,
+    canonical_mkt_receipt_content, mkt_key_rotation_id, mkt_receipt_id,
+    validate_mkt_private_with_profiles, validate_mkt_receipt_event, verify_mkt_key_rotation_chain,
+    verify_mkt_receipt_chain, verify_mkt_receipt_chain_parts,
+    verify_mkt_receipt_chain_with_provider_keys,
 };
 use secp256k1::{Keypair, Secp256k1, SecretKey};
 use serde_json::{Value, json};
@@ -146,6 +149,37 @@ fn receipt_chain_refuses_wrong_provider_and_broken_causality() {
     )
     .expect_err("broken Close causality");
     assert_eq!(error.code, MktReceiptChainErrorCode::Invalid);
+}
+
+#[test]
+fn receipt_chain_honors_provider_rotation_mid_session() {
+    let mut chain = chain(None);
+    let rotation = key_rotation(2, 3, 1_050, 1_095);
+    let provider_keys = verify_mkt_key_rotation_chain(&pubkey(2), &[rotation]).unwrap();
+    resign(&mut chain.receipt, 3);
+
+    verify_mkt_receipt_chain_with_provider_keys(
+        &chain.receipt,
+        &chain.intent,
+        &chain.acknowledgment,
+        &chain.quote,
+        &chain.outcome,
+        None,
+        &provider_keys,
+    )
+    .expect("provider rotation across receipt chain");
+    assert!(
+        verify_mkt_receipt_chain(
+            &chain.receipt,
+            &chain.intent,
+            &chain.acknowledgment,
+            &chain.quote,
+            &chain.outcome,
+            None,
+        )
+        .is_err(),
+        "the legacy same-key verifier remains intentionally strict"
+    );
 }
 
 struct Chain {
@@ -333,6 +367,41 @@ fn receipt(requester: &str, claim: &MktSettlementReceipt) -> Event {
         MKT_SWP_SETTLEMENT_RECEIPT_KIND,
         tags,
         Value::String(canonical_mkt_receipt_content(SESSION, claim).unwrap()),
+    )
+}
+
+fn key_rotation(old_secret: u8, new_secret: u8, created_at: u64, effective_at: u64) -> Event {
+    let provider_id = pubkey(old_secret);
+    let mut claim = MktKeyRotation {
+        schema: MKT_KEY_ROTATION_SCHEMA.to_owned(),
+        version: MKT_NETWORK_VERSION,
+        rotation_id: String::new(),
+        provider_id: provider_id.clone(),
+        generation: 1,
+        previous_rotation_event_id: None,
+        old_pubkey: provider_id.clone(),
+        new_pubkey: pubkey(new_secret),
+        effective_at,
+    };
+    claim.rotation_id = mkt_key_rotation_id(&claim).unwrap();
+    signed(
+        old_secret,
+        created_at,
+        MKT_SWP_KEY_ROTATION_KIND,
+        vec![
+            pair("d", &claim.rotation_id),
+            pair("provider", &provider_id),
+            pair("generation", "1"),
+            pair("effective_at", &effective_at.to_string()),
+            pair("alt", "MKT Provider Key Rotation"),
+            Tag::new(vec![
+                "p".to_owned(),
+                claim.new_pubkey.clone(),
+                String::new(),
+                "successor".to_owned(),
+            ]),
+        ],
+        Value::String(canonical_mkt_key_rotation_content(&claim).unwrap()),
     )
 }
 

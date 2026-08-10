@@ -397,6 +397,26 @@
       "enforcement_scope": "client_and_internal_store"
     },
     {
+      "kind": 39614,
+      "lane": "openagents",
+      "identifier": "NIP-MKT",
+      "name": "mkt_swp_provider_key_rotation",
+      "classification": "addressable",
+      "publication": "public_immutable_digest",
+      "immutability": "content_derived_address",
+      "enforcement_scope": "relay_and_client"
+    },
+    {
+      "kind": 39615,
+      "lane": "openagents",
+      "identifier": "NIP-MKT",
+      "name": "mkt_swp_provider_relay_set",
+      "classification": "addressable",
+      "publication": "public_immutable_digest",
+      "immutability": "content_derived_address",
+      "enforcement_scope": "relay_and_client"
+    },
+    {
       "kind": 39630,
       "lane": "openagents",
       "identifier": "NIP-MKT",
@@ -1406,6 +1426,21 @@
         "version",
         "published_at",
         "x",
+        "alt"
+      ],
+      "mkt_swp_provider_key_rotation": [
+        "d",
+        "provider",
+        "generation",
+        "effective_at",
+        "successor p",
+        "alt"
+      ],
+      "mkt_swp_provider_relay_set": [
+        "d",
+        "provider",
+        "generation",
+        "effective_at",
         "alt"
       ],
       "mkt_swp_swap_contract": [

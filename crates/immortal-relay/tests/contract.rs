@@ -6,7 +6,8 @@ use immortal::{
         EventClass, MKT_CANCEL_ACTIONS, MKT_EXECUTABLE_PROFILES, MKT_HARDENING_PROTOCOL_REVISION,
         MKT_HARDENING_SCHEMA, MKT_OUTCOMES, MKT_QUOTE_CLASSES, MKT_RECEIPT_SCHEMA,
         MKT_RECEIPT_VERSION, MKT_RESERVATION_CLASSES, MKT_STATUS_STATES, MKT_SWP_INTENT_ACK_KIND,
-        MKT_SWP_REDRIVE_KIND, MKT_SWP_SETTLEMENT_RECEIPT_KIND,
+        MKT_SWP_KEY_ROTATION_KIND, MKT_SWP_REDRIVE_KIND, MKT_SWP_RELAY_SET_KIND,
+        MKT_SWP_SETTLEMENT_RECEIPT_KIND,
     },
     gateway::{GatewayLimits, MKT_PRIVATE_REQUIRES_GIFT_WRAP},
 };
@@ -28,7 +29,17 @@ fn contract_builder_is_deterministic_and_matches_the_checked_in_artifact() {
     assert_eq!(descriptor.identity.contract_version, CONTRACT_VERSION);
     assert_eq!(descriptor.fixture_manifest, FIXTURE_MANIFEST_PATH);
     assert_eq!(descriptor.identity.nips.len(), 3);
-    assert_eq!(descriptor.kinds.len(), 23);
+    assert_eq!(descriptor.kinds.len(), 25);
+    assert!(descriptor.kinds.iter().any(|kind| {
+        kind.kind == MKT_SWP_KEY_ROTATION_KIND
+            && kind.name == "mkt_swp_provider_key_rotation"
+            && kind.publication == "public_immutable_digest"
+    }));
+    assert!(descriptor.kinds.iter().any(|kind| {
+        kind.kind == MKT_SWP_RELAY_SET_KIND
+            && kind.name == "mkt_swp_provider_relay_set"
+            && kind.publication == "public_immutable_digest"
+    }));
     assert!(descriptor.kinds.iter().any(|kind| {
         kind.kind == 32_170 && kind.identifier == "NIP-WK" && kind.enforcement_scope == "relay"
     }));

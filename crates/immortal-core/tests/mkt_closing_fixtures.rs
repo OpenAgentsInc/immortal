@@ -120,6 +120,14 @@ fn nipmkt_relay_closing_corpus_pins_every_observable_boundary() {
         fixture["classification"][4]["allocation"],
         "private_mkt_swp_receipt"
     );
+    assert_eq!(
+        fixture["classification"][5]["allocation"],
+        "public_mkt_swp_key_rotation"
+    );
+    assert_eq!(
+        fixture["classification"][6]["allocation"],
+        "public_mkt_swp_relay_set"
+    );
 }
 
 #[test]

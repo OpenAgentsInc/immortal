@@ -97,19 +97,74 @@ struct NoSpendMode {
 }
 
 pub fn run() -> Result<(), String> {
-    let relay_url = required_environment("IMMORTAL_PROVIDER_RELAY_URL")?;
-    validate_relay_url(&relay_url, "no-spend")?;
+    let relay_urls = provider_relay_urls()?;
+    let relay_auth_urls = provider_relay_auth_urls(&relay_urls)?;
     let identity_secret = required_environment("IMMORTAL_PROVIDER_IDENTITY_SECRET")?;
     let signer = signer_from_lower_hex(&identity_secret)?;
     let variant = NoSpendVariant::from_environment()?;
     run_with_mode(
-        relay_url.clone(),
-        relay_url,
+        relay_urls,
+        relay_auth_urls,
         signer,
         NoSpendMode { variant },
         None,
         Arc::new(ProviderHealth::default()),
     )
+}
+
+fn provider_relay_urls() -> Result<Vec<String>, String> {
+    let relay_urls = match std::env::var("IMMORTAL_PROVIDER_RELAY_URLS") {
+        Ok(value) => {
+            let values = value.split(',').map(str::to_owned).collect::<Vec<_>>();
+            if !(2..=8).contains(&values.len())
+                || values
+                    .iter()
+                    .any(|value| value.is_empty() || value.trim() != value)
+                || values.windows(2).any(|pair| pair[0] >= pair[1])
+            {
+                return Err(
+                    "IMMORTAL_PROVIDER_RELAY_URLS requires 2..=8 distinct sorted URLs".to_owned(),
+                );
+            }
+            values
+        }
+        Err(std::env::VarError::NotPresent) => {
+            vec![required_environment("IMMORTAL_PROVIDER_RELAY_URL")?]
+        }
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err("IMMORTAL_PROVIDER_RELAY_URLS is not UTF-8".to_owned());
+        }
+    };
+    for relay_url in &relay_urls {
+        validate_relay_url(relay_url, "no-spend")?;
+    }
+    Ok(relay_urls)
+}
+
+fn provider_relay_auth_urls(relay_urls: &[String]) -> Result<Vec<String>, String> {
+    match std::env::var("IMMORTAL_PROVIDER_RELAY_AUTH_URLS") {
+        Ok(value) => {
+            let values = value.split(',').map(str::to_owned).collect::<Vec<_>>();
+            if values.len() != relay_urls.len()
+                || values
+                    .iter()
+                    .any(|value| value.is_empty() || value.trim() != value)
+            {
+                return Err(
+                    "IMMORTAL_PROVIDER_RELAY_AUTH_URLS must match the relay URL count".to_owned(),
+                );
+            }
+            Ok(values)
+        }
+        Err(std::env::VarError::NotPresent) if relay_urls.len() == 1 => Ok(vec![
+            std::env::var("IMMORTAL_PROVIDER_RELAY_AUTH_URL")
+                .unwrap_or_else(|_| relay_urls[0].clone()),
+        ]),
+        Err(std::env::VarError::NotPresent) => Ok(relay_urls.to_vec()),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err("IMMORTAL_PROVIDER_RELAY_AUTH_URLS is not UTF-8".to_owned())
+        }
+    }
 }
 
 impl ProviderMode for NoSpendMode {

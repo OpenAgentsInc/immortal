@@ -397,8 +397,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/common-grammar.json",
-      "sha256": "0bab3c691a650b38a34eab09e816c4b7c4fb7019f608303a963bd9aa747d25dd",
-      "bytes": 7065,
+      "sha256": "c4e7e1629ca64cb3e7dab6b13f02603c8736d28987f161fe7f54a70f7399a231",
+      "bytes": 7075,
       "scope": "relay_and_client"
     },
     {
@@ -475,8 +475,8 @@
     },
     {
       "path": "tests/fixtures/nipmkt/relay-closing.json",
-      "sha256": "c88952b369c09fd46834f966d99ef5ce36f0e0b94976939909a226d62752e2e6",
-      "bytes": 7041,
+      "sha256": "f9f527d327afd076fdd958ef9a3fcc576c18eff53f196128b5a704b6760a30a8",
+      "bytes": 7262,
       "scope": "relay_and_client"
     },
     {

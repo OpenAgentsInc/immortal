@@ -36,6 +36,7 @@ cache, no sync engine. Postgres does all the storage work.
 | [`runbook-provider-debian.md`](runbook-provider-debian.md) | The funded `immortal-provider` v1 prerequisites, custody boundary, separate Postgres, Bitcoin/Lightning/optional Liquid rails, service, health, funding, backup, and upgrade procedure. |
 | [`runbook-public-regtest.md`](runbook-public-regtest.md) | Persistent two-provider public regtest sandbox: private rails, WSS relay publication, readiness, restart, backup, upgrade, and owned reset. |
 | [`runbook-swap-network.md`](runbook-swap-network.md) | Two-relay/two-provider stand-up, bounded live shadow, immutable client route pins, cutover, drain, rollback, and claim boundaries. |
+| [`runbook-market-network.md`](runbook-market-network.md) | Signed relay-set generation changes, provider key rotation, degraded operation, verification, and rollback. |
 | [`swap-network-infrastructure.md`](swap-network-infrastructure.md) | Role-by-role infrastructure for the decentralized Boltz-replacement swap network: relay, liquidity provider, client, and the minimum honest network. |
 
 ## Reading order

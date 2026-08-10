@@ -159,10 +159,10 @@ The installed file has this production shape:
 
 ```ini
 IMMORTAL_PROVIDER_DATABASE_URL=postgres://immortal_provider:<DB_PASSWORD>@127.0.0.1:5432/immortal_provider
-IMMORTAL_PROVIDER_RELAY_URL=ws://127.0.0.1:8080
-# Set this only when the loopback connection terminates at a relay whose
-# configured NIP-42 authority differs, for example:
-# IMMORTAL_PROVIDER_RELAY_AUTH_URL=wss://relay.example.com
+IMMORTAL_PROVIDER_RELAY_URLS=ws://127.0.0.1:8080,ws://127.0.0.1:8081
+# Set public NIP-42 authorities positionally when they differ from the local
+# proxy endpoints:
+IMMORTAL_PROVIDER_RELAY_AUTH_URLS=wss://relay-a.example,wss://relay-b.example
 IMMORTAL_PROVIDER_IDENTITY_SECRET=<64_LOWERCASE_HEX>
 IMMORTAL_PROVIDER_BITCOIN_NETWORK=mainnet
 IMMORTAL_PROVIDER_BITCOIND_HOST=127.0.0.1

@@ -31,3 +31,22 @@
   Receipt. Its exact Order, acknowledgment, Quote, Close, amounts, rails, fees,
   times, outcome, and optional requester confirmation are event-verifiable;
   external settlement remains bounded by native rail evidence.
+
+## Market network operation
+
+- Provider relay sets and key rotations are typed, versioned, public signed
+  events. Canonical content-derived identifiers retain every generation;
+  missing generations are incomplete and competing successors are ambiguous.
+- A provider has one stable genesis `provider_id`. Exactly one old-key-signed
+  successor becomes authoritative at its signed effective time. Event creation
+  time, not relay arrival order, selects the valid signer.
+- Rotation never changes an accepted intent's provider identity or permits a
+  second external-effect attempt. Response keys remain transport-only.
+- Clients and providers send the exact same signed bytes across the effective
+  relay set and deduplicate valid inputs by event ID. Any one relay may be down
+  when the signed read and publish thresholds still hold; history gaps remain
+  explicit.
+- Multi-relay provider transport retains the existing loopback-only runtime
+  policy. Public relay access terminates at operator-owned local proxies; no
+  public peer, credential, wallet material, custody, or settlement authority
+  is added to the provider or relay.

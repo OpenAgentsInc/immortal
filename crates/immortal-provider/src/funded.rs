@@ -207,8 +207,8 @@ async fn run_async() -> Result<(), FundedError> {
     } else {
         None
     };
-    let relay_url = config.relay_url.clone();
-    let relay_auth_url = config.relay_auth_url.clone();
+    let relay_urls = config.relay_urls.clone();
+    let relay_auth_urls = config.relay_auth_urls.clone();
     let mode_bitcoind = config.bitcoind.clone();
     let mode_ark = config.arkd.clone().map(ArkFundedRail::new);
     let mode_liquid = liquid_provider_rail(config.elementsd.clone());
@@ -301,8 +301,8 @@ async fn run_async() -> Result<(), FundedError> {
         .name("immortal-provider-relay".to_owned())
         .spawn(move || {
             let result = run_with_mode(
-                relay_url,
-                relay_auth_url,
+                relay_urls,
+                relay_auth_urls,
                 signer,
                 mode,
                 direct_recovery_bind,

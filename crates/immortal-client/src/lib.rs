@@ -13,6 +13,7 @@ pub mod browser_api;
 pub mod client;
 #[cfg(feature = "mkt-swp-verify")]
 pub mod liquid;
+pub mod market_network;
 #[cfg(feature = "mkt-swp-verify")]
 pub mod mkt_swp_client;
 pub mod tbdex;

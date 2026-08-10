@@ -88,8 +88,8 @@ impl fmt::Debug for DatabaseUrl {
 
 pub struct FundedProviderConfig {
     database_url: DatabaseUrl,
-    pub relay_url: String,
-    pub relay_auth_url: String,
+    pub relay_urls: Vec<String>,
+    pub relay_auth_urls: Vec<String>,
     pub bitcoind: BitcoindClient,
     pub arkd: Option<ArkdClient>,
     pub elementsd: Option<ElementsdClient>,
@@ -159,8 +159,8 @@ impl fmt::Debug for FundedProviderConfig {
         formatter
             .debug_struct("FundedProviderConfig")
             .field("database_url", &self.database_url)
-            .field("relay_url", &self.relay_url)
-            .field("relay_auth_url", &self.relay_auth_url)
+            .field("relay_urls", &self.relay_urls)
+            .field("relay_auth_urls", &self.relay_auth_urls)
             .field("bitcoind", &self.bitcoind)
             .field("arkd", &self.arkd)
             .field("elementsd", &self.elementsd)
@@ -192,13 +192,13 @@ impl FundedProviderConfig {
     pub fn from_environment() -> Result<Self, ConfigError> {
         let database_url = required("IMMORTAL_PROVIDER_DATABASE_URL")?;
         validate_database_url(&database_url)?;
-        let relay_url = required("IMMORTAL_PROVIDER_RELAY_URL")?;
-        validate_relay_url(&relay_url)?;
-        relay_actor::validate_relay_url(&relay_url, "funded")
-            .map_err(|_| ConfigError::Invalid("IMMORTAL_PROVIDER_RELAY_URL"))?;
-        let relay_auth_url =
-            optional("IMMORTAL_PROVIDER_RELAY_AUTH_URL").unwrap_or_else(|| relay_url.clone());
-        validate_relay_auth_url(&relay_auth_url)?;
+        let relay_urls = provider_relay_urls_from_lookup(optional)?;
+        for relay_url in &relay_urls {
+            validate_relay_url(relay_url)?;
+            relay_actor::validate_relay_url(relay_url, "funded")
+                .map_err(|_| ConfigError::Invalid("IMMORTAL_PROVIDER_RELAY_URLS"))?;
+        }
+        let relay_auth_urls = provider_relay_auth_urls_from_lookup(&relay_urls, optional)?;
         let network = parse_network(&required("IMMORTAL_PROVIDER_BITCOIN_NETWORK")?)?;
         let lab_timeout_profile = lab_timeout_profile_from_lookup(network, optional)?;
         let cooperative_signing = cooperative_signing_from_lookup(lab_timeout_profile, optional)?;
@@ -283,8 +283,8 @@ impl FundedProviderConfig {
 
         Ok(Self {
             database_url: DatabaseUrl(database_url),
-            relay_url,
-            relay_auth_url,
+            relay_urls,
+            relay_auth_urls,
             bitcoind,
             arkd,
             elementsd,
@@ -681,6 +681,68 @@ fn validate_relay_url(value: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn provider_relay_urls_from_lookup(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<Vec<String>, ConfigError> {
+    match lookup("IMMORTAL_PROVIDER_RELAY_URLS") {
+        Some(value) => parse_relay_csv(&value, "IMMORTAL_PROVIDER_RELAY_URLS", 2),
+        None => {
+            Ok(vec![lookup("IMMORTAL_PROVIDER_RELAY_URL").ok_or(
+                ConfigError::Missing("IMMORTAL_PROVIDER_RELAY_URL"),
+            )?])
+        }
+    }
+}
+
+fn provider_relay_auth_urls_from_lookup(
+    relay_urls: &[String],
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<Vec<String>, ConfigError> {
+    let auth_urls = match lookup("IMMORTAL_PROVIDER_RELAY_AUTH_URLS") {
+        Some(value) => parse_relay_auth_csv(&value, relay_urls.len())?,
+        None if relay_urls.len() == 1 => vec![
+            lookup("IMMORTAL_PROVIDER_RELAY_AUTH_URL").unwrap_or_else(|| relay_urls[0].clone()),
+        ],
+        None => relay_urls.to_vec(),
+    };
+    if auth_urls.len() != relay_urls.len() {
+        return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_RELAY_AUTH_URLS"));
+    }
+    for auth_url in &auth_urls {
+        validate_relay_auth_url(auth_url)?;
+    }
+    Ok(auth_urls)
+}
+
+fn parse_relay_auth_csv(value: &str, expected: usize) -> Result<Vec<String>, ConfigError> {
+    let values = value.split(',').map(str::to_owned).collect::<Vec<_>>();
+    if values.len() != expected
+        || values
+            .iter()
+            .any(|value| value.is_empty() || value.trim() != value)
+    {
+        return Err(ConfigError::Invalid("IMMORTAL_PROVIDER_RELAY_AUTH_URLS"));
+    }
+    Ok(values)
+}
+
+fn parse_relay_csv(
+    value: &str,
+    name: &'static str,
+    minimum: usize,
+) -> Result<Vec<String>, ConfigError> {
+    let values = value.split(',').map(str::to_owned).collect::<Vec<_>>();
+    if !(minimum..=8).contains(&values.len())
+        || values
+            .iter()
+            .any(|value| value.is_empty() || value.trim() != value)
+        || values.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(ConfigError::Invalid(name));
+    }
+    Ok(values)
+}
+
 fn validate_relay_auth_url(value: &str) -> Result<(), ConfigError> {
     if value.len() > MAX_RELAY_URL_BYTES
         || value.bytes().any(|byte| byte.is_ascii_control())
@@ -751,6 +813,41 @@ mod tests {
         assert!(validate_relay_auth_url("wss://relay.example?query").is_err());
         assert!(validate_relay_auth_url("wss://relay.example#fragment").is_err());
         assert!(validate_relay_auth_url("wss://relay example").is_err());
+    }
+
+    #[test]
+    fn provider_relay_set_is_bounded_sorted_and_keeps_legacy_single_url() {
+        let plural = provider_relay_urls_from_lookup(|name| {
+            (name == "IMMORTAL_PROVIDER_RELAY_URLS")
+                .then(|| "ws://127.0.0.1:7001,ws://127.0.0.1:7002".to_owned())
+        })
+        .unwrap();
+        assert_eq!(plural.len(), 2);
+        assert!(
+            provider_relay_urls_from_lookup(|name| {
+                (name == "IMMORTAL_PROVIDER_RELAY_URLS")
+                    .then(|| "ws://127.0.0.1:7002,ws://127.0.0.1:7001".to_owned())
+            })
+            .is_err()
+        );
+        assert_eq!(
+            provider_relay_urls_from_lookup(|name| {
+                (name == "IMMORTAL_PROVIDER_RELAY_URL").then(|| "ws://127.0.0.1:7001".to_owned())
+            })
+            .unwrap(),
+            vec!["ws://127.0.0.1:7001"]
+        );
+        let auth = provider_relay_auth_urls_from_lookup(&plural, |_| None).unwrap();
+        assert_eq!(auth, plural);
+        let positional_auth = provider_relay_auth_urls_from_lookup(&plural, |name| {
+            (name == "IMMORTAL_PROVIDER_RELAY_AUTH_URLS")
+                .then(|| "wss://auth-b.example,wss://auth-a.example".to_owned())
+        })
+        .unwrap();
+        assert_eq!(
+            positional_auth,
+            vec!["wss://auth-b.example", "wss://auth-a.example"]
+        );
     }
 
     #[test]
