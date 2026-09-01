@@ -113,6 +113,11 @@ as early as possible.
       when stable upstream)
 - [x] `nips/block/` and `nips/openagents/` lanes: per-NIP owner decision,
       official lane wins on identifier conflict
+- [x] NIP-19 bare keys: `npub` and `nsec` bech32 encoding in
+      `immortal-core::nip19`, fixture-backed against the pinned vectors
+- [ ] NIP-CA Coder authentication (kinds 27240-27241, NIP-98 and NIP-42
+      profiles): draft text in `nips/openagents/CA.md`; verification lives
+      in the consuming Coder repository's `coder-auth` crate
 - [x] Block agent identity and turns: NIP-OA owner attestations, NIP-AA
       agent authentication, NIP-AO ephemeral observer routing, and NIP-AM
       owner-private turn metrics

@@ -11,4 +11,5 @@ pub mod liquid;
 pub mod market;
 #[cfg(feature = "mkt-swp-verify")]
 pub mod mkt_swp_verify;
+pub mod nip19;
 pub mod nip44;

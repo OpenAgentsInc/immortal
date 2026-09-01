@@ -228,6 +228,12 @@
       "scope": "relay"
     },
     {
+      "path": "tests/fixtures/nip19/keys.json",
+      "sha256": "f9434dd2380a5f1b088cffb71e19e900dbef26bb433ca68d0572321c4892695b",
+      "bytes": 1511,
+      "scope": "relay"
+    },
+    {
       "path": "tests/fixtures/nip29/groups.json",
       "sha256": "5624e299fb869f7fc7fd137718f6cb9b28d665506b743abc4d2cfc14a8f4e87c",
       "bytes": 1046,

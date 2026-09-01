@@ -51,6 +51,9 @@ the pinned upstream applications.
   publishing, and HTTP-authentication boundaries. The live Postgres gateway
   contract checks the associated storage, access-control, signing, sweep,
   management, media metadata/server-list, and wire behavior.
+- `nip19/keys.json` carries the `npub` and `nsec` vectors from the pinned
+  NIP-19 text plus refusal cases written for Immortal: mixed case, a wrong
+  checksum, a prefix swap, and wrong lengths.
 - `nipoa/attestation.json`, `nipaa/auth.json`, `nipao/observer.json`, and
   `nipam/turn-metrics.json` pin the Block agent ownership, agent-authentication,
   ephemeral observer, and private turn-metric envelopes against Buzz commit

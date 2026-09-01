@@ -86,6 +86,14 @@ runtime evidence land:
 | NIP-SI | Security Invariants and Regression Watch | 32480-32482    | [`SI.md`](SI.md) |
 | NIP-BT | Bounties and Contribution Credit         | 32490-32492    | [`BT.md`](BT.md) |
 
+The Coder Cloud service authenticates callers and accepts spending authority
+with signed events in place of bearer tokens. The draft profiles NIP-98 and
+NIP-42 and reserves two ephemeral kinds:
+
+| Spec   | Role                                     | Reserved kinds | File             |
+| ------ | ---------------------------------------- | -------------- | ---------------- |
+| NIP-CA | Coder authentication: identity tokens, spending grants, request and session auth | 27240-27241 (ephemeral) | [`CA.md`](CA.md) |
+
 ## Per-spec summaries
 
 ### NIP-MKT — Negotiated Markets
