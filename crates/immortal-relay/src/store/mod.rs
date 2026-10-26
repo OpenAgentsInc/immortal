@@ -9,10 +9,10 @@ mod migration;
 mod statements;
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     future::poll_fn,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -2571,6 +2571,58 @@ impl Drop for Store {
     }
 }
 
+/// Ephemeral events this process is admitting. Their `NOTIFY` comes back
+/// to this process's own listener, which skips it without decoding or
+/// verifying it again: the admission delivers the event from memory.
+/// Other processes still receive and verify it.
+#[derive(Clone, Default)]
+pub struct LocalEphemeral {
+    inner: Arc<Mutex<LocalEphemeralIds>>,
+}
+
+#[derive(Default)]
+struct LocalEphemeralIds {
+    ids: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+/// The most admissions [`LocalEphemeral`] remembers; older IDs are
+/// forgotten first, and their echoes are then read like any other.
+const LOCAL_EPHEMERAL_CAPACITY: usize = 4_096;
+
+impl LocalEphemeral {
+    fn lock(&self) -> std::sync::MutexGuard<'_, LocalEphemeralIds> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Remember `event_id` before its admission commits, so its echo can't
+    /// arrive first.
+    pub fn insert(&self, event_id: &str) {
+        let mut local = self.lock();
+        if !local.ids.insert(event_id.to_owned()) {
+            return;
+        }
+        local.order.push_back(event_id.to_owned());
+        while local.order.len() > LOCAL_EPHEMERAL_CAPACITY {
+            if let Some(oldest) = local.order.pop_front() {
+                local.ids.remove(&oldest);
+            }
+        }
+    }
+
+    /// Forget `event_id`: its admission sent no `NOTIFY`, or this process
+    /// did not deliver it.
+    pub fn remove(&self, event_id: &str) {
+        self.lock().ids.remove(event_id);
+    }
+
+    fn contains(&self, event_id: &str) -> bool {
+        self.lock().ids.contains(event_id)
+    }
+}
+
 /// Dedicated bounded durable and ephemeral notification connection. A
 /// malformed payload, incomplete protocol state, driver failure, or full
 /// local queue marks it not current so the gateway can fail closed.
@@ -2583,6 +2635,16 @@ pub struct NotificationListener {
 
 impl NotificationListener {
     pub async fn connect(config: &str, capacity: usize) -> Result<Self, StoreError> {
+        Self::connect_with_local(config, capacity, None).await
+    }
+
+    /// Like [`connect`](Self::connect), and skips the echoes of the
+    /// ephemeral events `local` names.
+    pub async fn connect_with_local(
+        config: &str,
+        capacity: usize,
+        local: Option<LocalEphemeral>,
+    ) -> Result<Self, StoreError> {
         let (client, mut connection) = tokio_postgres::connect(config, NoTls).await?;
         let (sender, receiver) = mpsc::channel(capacity.max(1));
         let connection_current = Arc::new(AtomicBool::new(true));
@@ -2608,6 +2670,15 @@ impl NotificationListener {
                     Some(Ok(AsyncMessage::Notification(notification)))
                         if notification.channel() == EPHEMERAL_CHANNEL =>
                     {
+                        let echo = local.as_ref().is_some_and(|local| {
+                            notification
+                                .payload()
+                                .split_once(':')
+                                .is_some_and(|(event_id, _)| local.contains(event_id))
+                        });
+                        if echo {
+                            continue;
+                        }
                         match accept_ephemeral_chunk(notification.payload(), &mut assemblies) {
                             Ok(Some(event)) => {
                                 if sender
@@ -3465,4 +3536,26 @@ fn pg_i64(value: u64, field: &'static str) -> Result<i64, StoreError> {
 
 fn pg_limit(value: usize) -> Result<i64, StoreError> {
     i64::try_from(value).map_err(|_| StoreError::InvalidLimit(value))
+}
+
+#[cfg(test)]
+mod local_ephemeral_tests {
+    use super::{LOCAL_EPHEMERAL_CAPACITY, LocalEphemeral};
+
+    #[test]
+    fn local_admissions_are_remembered_boundedly_and_forgotten_on_failure() {
+        let local = LocalEphemeral::default();
+        local.insert("a");
+        assert!(local.contains("a"));
+        local.remove("a");
+        assert!(!local.contains("a"));
+        for index in 0..=LOCAL_EPHEMERAL_CAPACITY {
+            local.insert(&index.to_string());
+        }
+        // The oldest is forgotten first; its echo is then read normally.
+        assert!(!local.contains("0"));
+        assert!(local.contains("1"));
+        assert!(local.contains(&LOCAL_EPHEMERAL_CAPACITY.to_string()));
+        assert!(local.lock().ids.len() <= LOCAL_EPHEMERAL_CAPACITY);
+    }
 }

@@ -32,7 +32,7 @@ use crate::{
         verify_owner_binding, workspace_icon,
     },
     store::{
-        AdmissionOutcome, AdmissionRejection, MKT_IDEMPOTENCY_CONFLICT_REASON,
+        AdmissionOutcome, AdmissionRejection, LocalEphemeral, MKT_IDEMPOTENCY_CONFLICT_REASON,
         NotificationListener, Store, StoreError, StoreNotification,
     },
 };
@@ -49,7 +49,7 @@ use super::{
         ServerWebSocket, effective_ip, is_websocket_upgrade, read_http_head, serve_http,
         websocket_handshake,
     },
-    subscription::{ConnectionId, HubHandle, PublishedEvent},
+    subscription::{ConnectionId, HubHandle, PublishedEvent, ephemeral_only},
     wire::{
         self, ClientMessage, closed_message, count_message, notice_message, ok_message,
         parse_client_message,
@@ -58,6 +58,13 @@ use super::{
 
 const MAX_PROCESS_CONNECTIONS: usize = 4_096;
 const NOTIFICATION_QUEUE_CAPACITY: usize = 2_048;
+/// The most frames a connection queues before it flushes and reads again,
+/// so a busy room's deliveries can't starve the connection's own requests.
+const WRITE_BATCH: usize = 256;
+/// How long a connection holds ephemeral frames after a flush, so that at a
+/// crowded room's rate several leave in one write. A connection idle longer
+/// than this sends its next frame at once.
+const FLUSH_LINGER: std::time::Duration = std::time::Duration::from_millis(10);
 const HUB_COMMAND_CAPACITY: usize = 2_048;
 const MAX_DB_QUEUED_JOBS: usize = 256;
 const MAX_NOTIFICATION_GAP: usize = 4_096;
@@ -91,6 +98,9 @@ struct ServerState {
     current: Arc<AtomicBool>,
     shutdown: watch::Sender<bool>,
     media: Option<MediaStorage>,
+    /// Ephemeral events this process is admitting, whose `NOTIFY` echo its
+    /// listener skips.
+    local_ephemeral: LocalEphemeral,
 }
 
 struct ConnectionContext {
@@ -134,9 +144,13 @@ impl Gateway {
             print_legacy_import_report("startup", &total);
         }
         let policy = migration_store.relay_policy().await?;
-        let mut notifications =
-            NotificationListener::connect(&config.database_url, NOTIFICATION_QUEUE_CAPACITY)
-                .await?;
+        let local_ephemeral = LocalEphemeral::default();
+        let mut notifications = NotificationListener::connect_with_local(
+            &config.database_url,
+            NOTIFICATION_QUEUE_CAPACITY,
+            Some(local_ephemeral.clone()),
+        )
+        .await?;
         // LISTEN is current before the cursor is sampled. Notifications at or
         // below this boundary can be ignored because no client socket is bound
         // yet; later jumps are caught up through the durable sequence.
@@ -379,6 +393,7 @@ impl Gateway {
             current,
             shutdown: shutdown.clone(),
             media,
+            local_ephemeral,
         });
         Ok(Self {
             listener,
@@ -544,7 +559,7 @@ async fn handle_websocket(
         .hub
         .add_connection(connection_id, state.config.limits.send_queue_capacity)
         .await?;
-    let mut outbound = channels.outbound;
+    let outbound = channels.outbound;
     let mut close = channels.close;
     let mut shutdown = state.shutdown.subscribe();
     let auth = state.config.relay_url.as_ref().map(|relay_url| {
@@ -568,22 +583,72 @@ async fn handle_websocket(
         pending.push_back(wire::auth_message(auth.challenge()));
     }
     let mut write_pending = false;
+    // A frame the socket's write buffer could not take yet; it goes first
+    // once a flush makes room.
+    let mut stalled: Option<Message> = None;
+    let mut last_flush: Option<tokio::time::Instant> = None;
 
     'connection: loop {
         while context.query_tasks.try_join_next().is_some() {}
         let mut progressed = false;
-        if let Some(message) = pending.pop_front() {
-            queue_websocket_text(&mut websocket, message)?;
-            write_pending = true;
-            progressed = true;
-        } else if let Ok(message) = outbound.try_recv() {
-            queue_websocket_text(&mut websocket, message)?;
+        // A crowded room's ephemeral frames wait out the rest of the linger
+        // after the last flush, so they leave together. A reply ends the
+        // wait at once; a stored event that arrives meanwhile waits at most
+        // the linger.
+        let linger_until = if pending.is_empty()
+            && stalled.is_none()
+            && !write_pending
+            && outbound.holds_only_ephemeral()
+        {
+            last_flush
+                .map(|flushed| flushed + FLUSH_LINGER)
+                .filter(|until| *until > tokio::time::Instant::now())
+        } else {
+            None
+        };
+        // Queue a batch of frames, replies first, then write them with one
+        // flush instead of a system call and a packet for each frame.
+        let mut batched = 0;
+        while batched < WRITE_BATCH {
+            let message = match stalled.take() {
+                Some(message) => message,
+                None => match pending.pop_front() {
+                    Some(text) => Message::text(text),
+                    None if linger_until.is_some() => break,
+                    None => match outbound.pop() {
+                        Some(message) => Message::text(message.render()),
+                        None => break,
+                    },
+                },
+            };
+            match websocket.write(message) {
+                Ok(()) => {}
+                // Queued; the socket is full for now.
+                Err(WebSocketError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(WebSocketError::WriteBufferFull(message)) => {
+                    stalled = Some(*message);
+                    write_pending = true;
+                    break;
+                }
+                Err(WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed) => {
+                    break 'connection;
+                }
+                Err(error) => return Err(error.into()),
+            }
+            batched += 1;
             write_pending = true;
             progressed = true;
         }
         if write_pending {
             match websocket.flush() {
-                Ok(()) => write_pending = false,
+                Ok(()) => {
+                    write_pending = false;
+                    if batched > 0 {
+                        last_flush = Some(tokio::time::Instant::now());
+                    }
+                    // The buffer drained: the stalled frame fits now.
+                    progressed |= stalled.is_some();
+                }
                 Err(WebSocketError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {}
                 Err(WebSocketError::ConnectionClosed | WebSocketError::AlreadyClosed) => {
                     break 'connection;
@@ -628,7 +693,7 @@ async fn handle_websocket(
 
         enum Wake {
             Socket,
-            Outbound(Option<String>),
+            Outbound,
             Stop,
         }
         let wake = {
@@ -636,7 +701,16 @@ async fn handle_websocket(
             tokio::select! {
                 _ = socket.readable() => Wake::Socket,
                 _ = socket.writable(), if write_pending => Wake::Socket,
-                message = outbound.recv() => Wake::Outbound(message),
+                // Waited on only while the buffer has room; a stalled frame
+                // waits for the socket to drain instead.
+                () = outbound.ready(), if stalled.is_none() && linger_until.is_none() => {
+                    Wake::Outbound
+                }
+                () = async {
+                    if let Some(until) = linger_until {
+                        tokio::time::sleep_until(until).await;
+                    }
+                }, if linger_until.is_some() => Wake::Outbound,
                 changed = close.changed() => {
                     let _ = changed;
                     Wake::Stop
@@ -648,9 +722,8 @@ async fn handle_websocket(
             }
         };
         match wake {
-            Wake::Socket => {}
-            Wake::Outbound(Some(message)) => pending.push_back(message),
-            Wake::Outbound(None) | Wake::Stop => break 'connection,
+            Wake::Socket | Wake::Outbound => {}
+            Wake::Stop => break 'connection,
         }
     }
 
@@ -1362,12 +1435,18 @@ async fn admit_event(
     let event_id = event.id.clone();
     let ephemeral = (event.class() == EventClass::Ephemeral).then(|| Arc::new(event.clone()));
     let admission_now = unix_now();
-    match context
+    if ephemeral.is_some() {
+        context.state.local_ephemeral.insert(&event_id);
+    }
+    let admission = context
         .state
         .db
         .admit(event, admission_now, virtual_owner)
-        .await
-    {
+        .await;
+    if ephemeral.is_some() && !matches!(admission, Ok(AdmissionOutcome::Ephemeral)) {
+        context.state.local_ephemeral.remove(&event_id);
+    }
+    match admission {
         Ok(outcome) => {
             if matches!(&outcome, AdmissionOutcome::Ephemeral) {
                 if let Some(event) = ephemeral {
@@ -1462,13 +1541,18 @@ async fn handle_req(
         pending.push_back(closed_message(&subscription_id, reason));
         return Ok(());
     }
-    if context.query_tasks.len()
-        >= context
-            .state
-            .config
-            .limits
-            .max_subscriptions
-            .saturating_mul(2)
+    // NIP-01: the relay never stores ephemeral kinds, so a subscription to
+    // them alone has no history to read. It goes live at once and never
+    // touches the database.
+    let live_only = ephemeral_only(&filters);
+    if !live_only
+        && context.query_tasks.len()
+            >= context
+                .state
+                .config
+                .limits
+                .max_subscriptions
+                .saturating_mul(2)
     {
         pending.push_back(closed_message(
             &subscription_id,
@@ -1506,6 +1590,20 @@ async fn handle_req(
         let _ = cancellation.send(true);
     }
     context.active_subscriptions.insert(subscription_id.clone());
+    if live_only {
+        context
+            .state
+            .hub
+            .history_ready(
+                context.connection_id,
+                subscription_id,
+                generation,
+                0,
+                Vec::new(),
+            )
+            .await;
+        return Ok(());
+    }
     let (cancel, cancel_receiver) = watch::channel(false);
     context
         .cancellations
@@ -1602,6 +1700,11 @@ async fn handle_count(
             &query_id,
             "auth-required: cannot count gift wraps without recipient authentication",
         ));
+        return Ok(());
+    }
+    if ephemeral_only(&filters) {
+        // Nothing of these kinds is ever stored.
+        pending.push_back(count_message(&query_id, 0));
         return Ok(());
     }
     match context
@@ -1912,17 +2015,6 @@ fn store_error_response(error: &StoreError) -> String {
 
 fn bounded(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
-}
-
-fn queue_websocket_text(
-    websocket: &mut ServerWebSocket,
-    message: String,
-) -> Result<(), GatewayError> {
-    match websocket.write(Message::text(message)) {
-        Ok(()) => Ok(()),
-        Err(WebSocketError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
-        Err(error) => Err(error.into()),
-    }
 }
 
 fn fail_process(current: &AtomicBool, shutdown: &watch::Sender<bool>) {
